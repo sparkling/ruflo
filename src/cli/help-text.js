@@ -79,6 +79,7 @@ USAGE:
   claude-flow hive-mind wizard     # Start here! Interactive guided setup
   claude-flow init                 # Initialize Claude Flow
   claude-flow help hive-mind       # Learn about Hive Mind features
+  npx claude-flow@alpha swarm "Build API" --claude  # Quick start with Claude Code CLI
 
 📚 Documentation: https://github.com/ruvnet/claude-flow
 🐝 Hive Mind Guide: https://github.com/ruvnet/claude-flow/tree/main/docs/hive-mind
