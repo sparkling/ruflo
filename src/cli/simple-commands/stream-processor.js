@@ -70,19 +70,12 @@ export class StreamJsonProcessor extends Transform {
       return;
     }
     
-    // Otherwise use the original console output
-    // Clear previous line and move cursor up
-    if (!this.options.verbose) {
-      process.stdout.write('\r\x1B[K'); // Clear current line
-    }
-
-    const elapsed = this.formatDuration(Date.now() - this.startTime);
-    const spinner = this.getSpinner();
-    
+    // Use interactive-style formatting for non-interactive mode
     switch (event.type) {
       case 'system':
         if (event.subtype === 'init') {
-          console.log(`    ${this.agentIcon} ${this.agentName} initialized [Session: ${event.session_id?.substring(0, 8)}]`);
+          console.log(`\n● ${this.agentName} - Agent Initialized`);
+          console.log(`  ⎿  Session: ${event.session_id?.substring(0, 8) || 'unknown'}`);
         }
         break;
         
@@ -90,44 +83,101 @@ export class StreamJsonProcessor extends Transform {
         if (event.message?.content?.length > 0) {
           const content = event.message.content[0];
           if (content.type === 'text') {
-            const preview = content.text.substring(0, 60) + (content.text.length > 60 ? '...' : '');
-            console.log(`    ${spinner} ${this.agentName}: ${preview}`);
+            // Format text content with bullet and indentation
+            const lines = content.text.split('\n');
+            console.log(`\n● ${lines[0] || 'Processing...'}`);
+            if (lines.length > 1) {
+              lines.slice(1, 3).forEach(line => {
+                if (line.trim()) {
+                  console.log(`  ⎿  ${line.trim()}`);
+                }
+              });
+              if (lines.length > 3) {
+                console.log(`  … +${lines.length - 3} lines (ctrl+r to expand)`);
+              }
+            }
           } else if (content.type === 'tool_use') {
-            console.log(`    🔧 ${this.agentName}: Using ${content.name} tool`);
+            // Format tool calls like interactive mode
+            const params = content.input ? this.formatToolParams(content.input) : '';
+            console.log(`\n● ${this.agentName} - ${content.name}${params}`);
+            
+            // Show formatted input if available
+            if (content.input && Object.keys(content.input).length > 0) {
+              const inputStr = JSON.stringify(content.input, null, 2);
+              if (inputStr.length > 200) {
+                const preview = JSON.stringify(content.input, null, 0).substring(0, 100);
+                console.log(`  ⎿  ${preview}...`);
+                console.log(`  … +${inputStr.split('\n').length - 1} lines (ctrl+r to expand)`);
+              } else {
+                console.log(`  ⎿  ${inputStr.split('\n').map(l => l.trim()).filter(l => l).join(' ')}`);
+              }
+            }
           }
         }
         break;
         
       case 'user':
-        // Tool results - usually indicates progress
+        // Tool results - format like interactive mode
         if (event.message?.content?.[0]?.type === 'tool_result') {
           const result = event.message.content[0];
           if (!result.is_error) {
-            console.log(`    ✓ Tool completed successfully`);
+            if (result.content) {
+              try {
+                const parsed = typeof result.content === 'string' 
+                  ? JSON.parse(result.content) 
+                  : result.content;
+                
+                if (typeof parsed === 'object') {
+                  console.log(`  ⎿  {`);
+                  const keys = Object.keys(parsed).slice(0, 3);
+                  keys.forEach(key => {
+                    const value = JSON.stringify(parsed[key]);
+                    const displayValue = value.length > 50 ? value.substring(0, 47) + '...' : value;
+                    console.log(`       "${key}": ${displayValue},`);
+                  });
+                  if (Object.keys(parsed).length > 3) {
+                    console.log(`     … +${Object.keys(parsed).length - 3} lines (ctrl+r to expand)`);
+                  } else {
+                    // Remove last comma
+                    process.stdout.write('\x1B[1A\x1B[K'); // Move up and clear line
+                    const lastKey = keys[keys.length - 1];
+                    const value = JSON.stringify(parsed[lastKey]);
+                    const displayValue = value.length > 50 ? value.substring(0, 47) + '...' : value;
+                    console.log(`       "${lastKey}": ${displayValue}`);
+                  }
+                  console.log(`     }`);
+                } else {
+                  console.log(`  ⎿  ${result.content.substring(0, 100)}${result.content.length > 100 ? '...' : ''}`);
+                }
+              } catch (e) {
+                console.log(`  ⎿  ${result.content.substring(0, 100)}${result.content.length > 100 ? '...' : ''}`);
+              }
+            } else {
+              console.log(`  ⎿  Tool completed successfully`);
+            }
+          } else {
+            console.log(`  ⎿  ❌ Error: ${result.error || 'Unknown error'}`);
           }
         }
         break;
         
       case 'result':
         if (event.subtype === 'success') {
-          console.log(`    ✅ ${this.agentName} completed in ${this.formatDuration(event.duration_ms)}`);
+          console.log(`\n● ✅ ${this.agentName} completed successfully`);
+          console.log(`  ⎿  Duration: ${this.formatDuration(event.duration_ms)}`);
           if (event.total_cost_usd) {
-            console.log(`    💰 Cost: $${event.total_cost_usd.toFixed(4)}`);
+            console.log(`  ⎿  Cost: $${event.total_cost_usd.toFixed(4)}`);
           }
         } else if (event.is_error) {
-          console.log(`    ❌ ${this.agentName} failed: ${event.error || 'Unknown error'}`);
+          console.log(`\n● ❌ ${this.agentName} failed`);
+          console.log(`  ⎿  Error: ${event.error || 'Unknown error'}`);
         }
         break;
         
       default:
         if (this.options.verbose) {
-          console.log(`    [${event.type}] ${JSON.stringify(event).substring(0, 100)}...`);
+          console.log(`\n● [${event.type}] ${JSON.stringify(event).substring(0, 100)}...`);
         }
-    }
-    
-    // Show running status
-    if (this.eventCount % 5 === 0 && event.type !== 'result') {
-      this.updateProgress();
     }
   }
   
