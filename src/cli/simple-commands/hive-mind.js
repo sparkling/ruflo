@@ -2000,22 +2000,34 @@ async function spawnClaudeCodeInstances(swarmId, swarmName, objective, workers, 
       }
 
       if (claudeAvailable && !flags.dryRun) {
+        // Check if we should run in non-interactive mode
+        // --claude flag forces interactive mode, otherwise respect --non-interactive
+        const isNonInteractive = !flags.claude && (flags['non-interactive'] || flags.nonInteractive);
+        
         // Pass the prompt directly as an argument to claude
-        // Remove --print to allow interactive session
         const claudeArgs = [hiveMindPrompt];
 
         // Add auto-permission flag by default for hive-mind mode (unless explicitly disabled)
         if (flags['dangerously-skip-permissions'] !== false && !flags['no-auto-permissions']) {
           claudeArgs.push('--dangerously-skip-permissions');
-          console.log(
-            chalk.yellow(
-              '🔓 Using --dangerously-skip-permissions by default for seamless hive-mind execution',
-            ),
-          );
+          if (!isNonInteractive) {
+            console.log(
+              chalk.yellow(
+                '🔓 Using --dangerously-skip-permissions by default for seamless hive-mind execution',
+              ),
+            );
+          }
+        }
+        
+        // Add non-interactive flags if needed
+        if (isNonInteractive) {
+          claudeArgs.push('-p'); // Print mode
+          claudeArgs.push('--output-format', 'stream-json'); // JSON streaming  
+          claudeArgs.push('--verbose'); // Verbose output
+          console.log(chalk.cyan('🤖 Running in non-interactive mode'));
         }
 
         // Spawn claude with the prompt as the first argument
-        // Use 'inherit' to allow interactive session
         const claudeProcess = childSpawn('claude', claudeArgs, {
           stdio: 'inherit',
           shell: false,
