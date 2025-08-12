@@ -186,15 +186,26 @@ agentic-flow-hooks system for better performance and functionality.
   - Performance optimization
   - Memory coordination hooks
   - LLM integration hooks
+  - Comprehensive verification system
+
+🆕 Verification System:
+  - Pre-task verification hooks
+  - Post-task validation hooks
+  - Integration test hooks
+  - Truth telemetry hooks
+  - Rollback trigger hooks
 
 📖 Migration Guide:
   - Replace AgentHookEngine with agenticHookManager
   - Update hook registrations to use modern HookRegistration interface
   - Leverage new hook types: LLM, memory, neural, performance, workflow
+  - Use verification hooks for quality assurance
   - See docs/maestro/specs/hooks-refactoring-plan.md for details
 
 🚀 Get Started:
   import { agenticHookManager, initializeAgenticFlowHooks } from '../services/agentic-flow-hooks/'
+  import { verificationHookManager, initializeVerificationSystem } from '../verification/'
   await initializeAgenticFlowHooks()
+  await initializeVerificationSystem()
   agenticHookManager.register({ ... })
 `);
