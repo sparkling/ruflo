@@ -794,12 +794,12 @@ export async function trainingPipelineCommand(args, flags) {
       const result = await pipeline.runFullPipeline(options);
       
       if (result.success) {
-        console.log('\n✅ Real Training Pipeline completed');
+        console.log('\n✅ Training Pipeline completed');
         console.log(`   Total tasks: ${result.totalTasks}`);
         console.log(`   Real executions: ${result.realExecutions}`);
         
         if (result.improvements) {
-          console.log('\n📈 Real Improvements:');
+          console.log('\n📈 Improvements:');
           console.log(`   Success Rate: ${result.improvements.successRate > 0 ? '+' : ''}${result.improvements.successRate.toFixed(1)}%`);
           console.log(`   Execution Time: ${result.improvements.executionTime > 0 ? '+' : ''}${result.improvements.executionTime.toFixed(1)}%`);
           console.log(`   Score: ${result.improvements.score > 0 ? '+' : ''}${result.improvements.score.toFixed(1)}%`);
