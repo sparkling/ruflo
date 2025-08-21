@@ -86,6 +86,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/core/version.ts` - TypeScript version update
 - `bin/claude-flow.js` - Version display and release notes
 
+### 🛠️ Command Documentation Improvements
+
+#### Complete Command File Generation
+- **Fixed Init Command**: Now creates ALL 91 command documentation files
+  - 10 swarm command files in `.claude/commands/swarm/`
+  - 12 hive-mind command files in `.claude/commands/hive-mind/`
+  - 5 agents documentation files in `.claude/commands/agents/`
+  - All standard command documentation properly organized
+
+- **Enhanced Template Structure**: Updated `enhanced-templates.js`
+  - Added complete COMMAND_STRUCTURE with swarm, hive-mind, and agents categories
+  - Comprehensive fallback documentation for all missing command files
+  - Proper emphasis on Task tool usage in all agent-related docs
+
+### 📁 File Organization Rules
+- **Never save to root folder**: All files properly organized in subdirectories
+- Clear directory structure guidance in CLAUDE.md
+- Proper organization for `/src`, `/tests`, `/docs`, `/config` directories
+
 ### 🎯 Key Takeaways for Users
 
 1. **Always use Claude Code's Task tool** to spawn agents that do actual work
@@ -93,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 3. **Batch everything**: Spawn ALL agents in ONE message
 4. **TodoWrite must batch**: Always include 5-10+ todos in ONE call
 5. **Use coordination hooks**: Every agent must use claude-flow hooks
+6. **Proper file organization**: Never save files to root directory
 
 This release ensures users understand the critical distinction between:
 - **MCP tools**: Coordinate and plan (the "brain")
