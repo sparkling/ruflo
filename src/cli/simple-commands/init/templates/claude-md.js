@@ -479,15 +479,34 @@ export function createOptimizedSparcClaudeMd() {
 1. ALL operations MUST be concurrent/parallel in a single message
 2. **NEVER save working files, text/mds and tests to the root folder**
 3. ALWAYS organize files in appropriate subdirectories
+4. **USE CLAUDE CODE'S TASK TOOL** for spawning agents concurrently, not just MCP
 
 ### ⚡ GOLDEN RULE: "1 MESSAGE = ALL RELATED OPERATIONS"
 
 **MANDATORY PATTERNS:**
 - **TodoWrite**: ALWAYS batch ALL todos in ONE call (5-10+ todos minimum)
-- **Task tool**: ALWAYS spawn ALL agents in ONE message with full instructions
+- **Task tool (Claude Code)**: ALWAYS spawn ALL agents in ONE message with full instructions
 - **File operations**: ALWAYS batch ALL reads/writes/edits in ONE message
 - **Bash commands**: ALWAYS batch ALL terminal operations in ONE message
 - **Memory operations**: ALWAYS batch ALL memory store/retrieve in ONE message
+
+### 🎯 CRITICAL: Claude Code Task Tool for Agent Execution
+
+**Claude Code's Task tool is the PRIMARY way to spawn agents:**
+\`\`\`javascript
+// ✅ CORRECT: Use Claude Code's Task tool for parallel agent execution
+[Single Message]:
+  Task("Research agent", "Analyze requirements and patterns...", "researcher")
+  Task("Coder agent", "Implement core features...", "coder")
+  Task("Tester agent", "Create comprehensive tests...", "tester")
+  Task("Reviewer agent", "Review code quality...", "reviewer")
+  Task("Architect agent", "Design system architecture...", "system-architect")
+\`\`\`
+
+**MCP tools are ONLY for coordination setup:**
+- \`mcp__claude-flow__swarm_init\` - Initialize coordination topology
+- \`mcp__claude-flow__agent_spawn\` - Define agent types for coordination
+- \`mcp__claude-flow__task_orchestrate\` - Orchestrate high-level workflows
 
 ### 📁 File Organization Rules
 
