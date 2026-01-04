@@ -81,6 +81,10 @@ export class FlashAttentionOptimizer {
     peakSpeedup: number;
     totalExecutionTime: number;
     successfulOperations: number;
+    // Memory tracking
+    totalBaselineMemory: number;
+    totalOptimizedMemory: number;
+    peakMemory: number;
   };
 
   constructor(
