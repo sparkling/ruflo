@@ -239,8 +239,9 @@ const diffCommand: Command = {
         output.writeln(output.bold('Recommended Reviewers'));
         output.writeln(output.dim('-'.repeat(50)));
 
-        if (result.recommendedReviewers.length > 0) {
-          output.printNumberedList(result.recommendedReviewers.map(r => output.highlight(r)));
+        const reviewers = result.recommendedReviewers || [];
+        if (reviewers.length > 0) {
+          output.printNumberedList(reviewers.map(r => output.highlight(r)));
         } else {
           output.writeln(output.dim('No specific reviewers recommended'));
         }
