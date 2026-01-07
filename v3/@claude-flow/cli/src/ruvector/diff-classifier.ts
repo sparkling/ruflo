@@ -294,3 +294,267 @@ export class DiffClassifier {
 export function createDiffClassifier(config?: Partial<DiffClassifierConfig>): DiffClassifier {
   return new DiffClassifier(config);
 }
+
+// ============================================================================
+// Additional Exports for MCP Tools
+// ============================================================================
+
+/**
+ * Risk level type for file risk assessment
+ */
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+/**
+ * Diff file interface for analyze tools
+ */
+export interface DiffFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number;
+  deletions: number;
+  hunks: number;
+  binary: boolean;
+}
+
+/**
+ * File risk assessment result
+ */
+export interface FileRisk {
+  file: string;
+  risk: RiskLevel;
+  score: number;
+  reasons: string[];
+}
+
+/**
+ * Overall risk assessment result
+ */
+export interface OverallRisk {
+  overall: RiskLevel;
+  score: number;
+  breakdown: { low: number; medium: number; high: number; critical: number };
+}
+
+/**
+ * Diff analysis result
+ */
+export interface DiffAnalysisResult {
+  ref: string;
+  timestamp: number;
+  files: DiffFile[];
+  risk: OverallRisk;
+  classification: DiffClassification;
+  summary: string;
+  fileRisks?: FileRisk[];
+  recommendedReviewers?: string[];
+}
+
+/**
+ * Get git diff statistics using numstat
+ */
+export function getGitDiffNumstat(ref: string = 'HEAD'): DiffFile[] {
+  const { execSync } = require('child_process');
+  try {
+    const output = execSync(`git diff --numstat ${ref}`, { encoding: 'utf-8' });
+    const statusOutput = execSync(`git diff --name-status ${ref}`, { encoding: 'utf-8' });
+
+    const statusMap = new Map<string, string>();
+    for (const line of statusOutput.trim().split('\n')) {
+      if (!line) continue;
+      const [status, ...pathParts] = line.split('\t');
+      const path = pathParts[pathParts.length - 1] || pathParts[0];
+      if (path) {
+        statusMap.set(path, status.charAt(0));
+      }
+    }
+
+    const files: DiffFile[] = [];
+    for (const line of output.trim().split('\n')) {
+      if (!line) continue;
+      const [addStr, delStr, path] = line.split('\t');
+      if (!path) continue;
+
+      const additions = addStr === '-' ? 0 : parseInt(addStr, 10) || 0;
+      const deletions = delStr === '-' ? 0 : parseInt(delStr, 10) || 0;
+      const binary = addStr === '-' && delStr === '-';
+
+      const statusChar = statusMap.get(path) || 'M';
+      let status: DiffFile['status'] = 'modified';
+      switch (statusChar) {
+        case 'A': status = 'added'; break;
+        case 'D': status = 'deleted'; break;
+        case 'R': status = 'renamed'; break;
+        default: status = 'modified';
+      }
+
+      files.push({ path, status, additions, deletions, hunks: 1, binary });
+    }
+
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Assess risk for a single file
+ */
+export function assessFileRisk(file: DiffFile): FileRisk {
+  const reasons: string[] = [];
+  let score = 0;
+
+  // Size-based risk
+  const totalChanges = file.additions + file.deletions;
+  if (totalChanges > 300) {
+    score += 30;
+    reasons.push('Large change size (>300 lines)');
+  } else if (totalChanges > 100) {
+    score += 15;
+    reasons.push('Medium change size (>100 lines)');
+  }
+
+  // Path-based risk
+  const lowerPath = file.path.toLowerCase();
+  if (/security|auth|crypto|password/.test(lowerPath)) {
+    score += 40;
+    reasons.push('Security-sensitive file');
+  }
+  if (/payment|billing|transaction/.test(lowerPath)) {
+    score += 35;
+    reasons.push('Payment-related file');
+  }
+  if (/database|migration|schema/.test(lowerPath)) {
+    score += 25;
+    reasons.push('Database-related file');
+  }
+  if (/core|main|index/.test(lowerPath)) {
+    score += 15;
+    reasons.push('Core module');
+  }
+  if (/config|env|settings/.test(lowerPath)) {
+    score += 20;
+    reasons.push('Configuration file');
+  }
+
+  // Status-based risk
+  if (file.status === 'deleted') {
+    score += 10;
+    reasons.push('File deleted');
+  }
+
+  // Binary file risk
+  if (file.binary) {
+    score += 5;
+    reasons.push('Binary file');
+  }
+
+  let risk: RiskLevel = 'low';
+  if (score >= 60) risk = 'critical';
+  else if (score >= 40) risk = 'high';
+  else if (score >= 20) risk = 'medium';
+
+  return { file: file.path, risk, score: Math.min(100, score), reasons };
+}
+
+/**
+ * Assess overall risk from files and file risks
+ */
+export function assessOverallRisk(files: DiffFile[], fileRisks: FileRisk[]): OverallRisk {
+  const breakdown = { low: 0, medium: 0, high: 0, critical: 0 };
+  let totalScore = 0;
+
+  for (const fr of fileRisks) {
+    breakdown[fr.risk]++;
+    totalScore += fr.score;
+  }
+
+  const avgScore = fileRisks.length > 0 ? totalScore / fileRisks.length : 0;
+
+  // Weight more heavily towards high/critical files
+  const weightedScore = avgScore + (breakdown.critical * 15) + (breakdown.high * 10);
+
+  let overall: RiskLevel = 'low';
+  if (weightedScore >= 60 || breakdown.critical > 0) overall = 'critical';
+  else if (weightedScore >= 40 || breakdown.high > 1) overall = 'high';
+  else if (weightedScore >= 20 || breakdown.medium > 2) overall = 'medium';
+
+  return { overall, score: Math.min(100, Math.round(weightedScore)), breakdown };
+}
+
+/**
+ * Classify a diff based on files
+ */
+export function classifyDiff(files: DiffFile[]): DiffClassification {
+  const classifier = new DiffClassifier();
+  const fileDiffs: FileDiff[] = files.map(f => ({
+    path: f.path,
+    hunks: [],
+    additions: f.additions,
+    deletions: f.deletions,
+    classification: classifier['classifyFile'](f.path, []),
+  }));
+
+  return classifier['computeOverallClassification'](fileDiffs);
+}
+
+/**
+ * Suggest reviewers based on files and risks
+ */
+export function suggestReviewers(files: DiffFile[], fileRisks: FileRisk[]): string[] {
+  const reviewers = new Set<string>();
+
+  for (const file of files) {
+    const lowerPath = file.path.toLowerCase();
+
+    if (/security|auth|crypto/.test(lowerPath)) reviewers.add('security-team');
+    if (/database|migration/.test(lowerPath)) reviewers.add('dba');
+    if (/api|endpoint|route/.test(lowerPath)) reviewers.add('api-owner');
+    if (/test|spec/.test(lowerPath)) reviewers.add('qa-engineer');
+    if (/config|deploy|ci/.test(lowerPath)) reviewers.add('devops');
+    if (/ui|component|style/.test(lowerPath)) reviewers.add('frontend-lead');
+    if (/model|service|repository/.test(lowerPath)) reviewers.add('backend-lead');
+  }
+
+  // Add based on risk
+  const hasHighRisk = fileRisks.some(fr => fr.risk === 'high' || fr.risk === 'critical');
+  if (hasHighRisk) {
+    reviewers.add('tech-lead');
+    reviewers.add('senior-developer');
+  }
+
+  // Default reviewer
+  if (reviewers.size === 0) {
+    reviewers.add('developer');
+  }
+
+  return Array.from(reviewers).slice(0, 5);
+}
+
+/**
+ * Analyze a diff with full analysis
+ */
+export async function analyzeDiff(options: {
+  ref?: string;
+  useRuVector?: boolean;
+}): Promise<DiffAnalysisResult> {
+  const ref = options.ref || 'HEAD';
+  const files = getGitDiffNumstat(ref);
+  const fileRisks = files.map(assessFileRisk);
+  const risk = assessOverallRisk(files, fileRisks);
+  const classification = classifyDiff(files);
+  const recommendedReviewers = suggestReviewers(files, fileRisks);
+
+  const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
+  const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+
+  return {
+    ref,
+    timestamp: Date.now(),
+    files,
+    risk,
+    classification,
+    summary: `${files.length} files changed (+${totalAdditions}/-${totalDeletions}), ${risk.overall} risk`,
+    fileRisks,
+    recommendedReviewers,
+  };
+}
