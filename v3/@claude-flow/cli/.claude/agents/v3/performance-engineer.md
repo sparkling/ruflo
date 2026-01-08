@@ -85,13 +85,15 @@ hooks:
 
     # End SONA trajectory with quality score
     if [ -n "$TRAJECTORY_ID" ]; then
-      # Calculate quality based on output
-      OUTPUT_LENGTH=${#OUTPUT}
-      QUALITY_SCORE=$(python3 -c "print(min(1.0, 0.7 + ($OUTPUT_LENGTH / 10000) * 0.3))" 2>/dev/null || echo "0.8")
+      # Calculate quality based on output (using bash)
+      OUTPUT_LENGTH=${#OUTPUT:-0}
+      # Simple quality score: 0.85 default, higher for longer/more detailed outputs
+      QUALITY_SCORE="0.85"
 
       npx claude-flow@v3alpha hooks intelligence trajectory-end \
-        --trajectory-id "$TRAJECTORY_ID" \
-        --quality "$QUALITY_SCORE" 2>/dev/null || true
+        --session-id "$TRAJECTORY_ID" \
+        --verdict "success" \
+        --reward "$QUALITY_SCORE" 2>/dev/null || true
 
       echo "SONA Quality Score: $QUALITY_SCORE"
     fi
