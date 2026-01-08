@@ -442,7 +442,7 @@ export class ContainerWorkerPool extends EventEmitter {
   }
 
   /**
-   * Terminate a container
+   * Terminate a container (async)
    */
   private async terminateContainer(id: string): Promise<void> {
     const container = this.containers.get(id);
@@ -451,7 +451,7 @@ export class ContainerWorkerPool extends EventEmitter {
     container.state = 'terminated';
 
     try {
-      execSync(`docker rm -f ${container.name}`, { stdio: 'pipe' });
+      await execAsync(`docker rm -f ${container.name}`, { timeout: 30000 });
     } catch {
       // Ignore removal errors
     }
