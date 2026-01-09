@@ -309,16 +309,38 @@ npx @claude-flow/cli@latest performance benchmark --suite all
 ### Testing & Validation
 `tdd-london-swarm`, `production-validator`
 
-## 🪝 V3 Hooks System (17 Hooks + 12 Workers)
+## 🪝 V3 Hooks System (27 Hooks + 12 Workers)
 
-### Hook Categories
+### All Available Hooks
 
-| Category | Hooks | Purpose |
-|----------|-------|---------|
-| **Core** | `pre-edit`, `post-edit`, `pre-command`, `post-command`, `pre-task`, `post-task` | Tool lifecycle |
-| **Session** | `session-start`, `session-end`, `session-restore`, `notify` | Context management |
-| **Intelligence** | `route`, `explain`, `pretrain`, `build-agents`, `transfer` | Neural learning |
-| **Learning** | `intelligence` (trajectory-start/step/end, pattern-store/search, stats, attention) | Reinforcement |
+| Hook | Description | Key Options |
+|------|-------------|-------------|
+| `pre-edit` | Get context before editing files | `--file`, `--operation` |
+| `post-edit` | Record editing outcome for learning | `--file`, `--success`, `--train-neural` |
+| `pre-command` | Assess risk before commands | `--command`, `--validate-safety` |
+| `post-command` | Record command execution outcome | `--command`, `--track-metrics` |
+| `pre-task` | Record task start, get agent suggestions | `--description`, `--coordinate-swarm` |
+| `post-task` | Record task completion for learning | `--task-id`, `--success`, `--store-results` |
+| `session-start` | Start/restore session (v2 compat) | `--session-id`, `--auto-configure` |
+| `session-end` | End session and persist state | `--generate-summary`, `--export-metrics` |
+| `session-restore` | Restore a previous session | `--session-id`, `--latest` |
+| `route` | Route task to optimal agent | `--task`, `--context`, `--top-k` |
+| `route-task` | (v2 compat) Alias for route | `--task`, `--auto-swarm` |
+| `explain` | Explain routing decision | `--topic`, `--detailed` |
+| `pretrain` | Bootstrap intelligence from repo | `--model-type`, `--epochs` |
+| `build-agents` | Generate optimized agent configs | `--agent-types`, `--focus` |
+| `metrics` | View learning metrics dashboard | `--v3-dashboard`, `--format` |
+| `transfer` | Transfer patterns via IPFS registry | `store`, `from-project` |
+| `list` | List all registered hooks | `--format` |
+| `intelligence` | RuVector intelligence system | `trajectory-*`, `pattern-*`, `stats` |
+| `worker` | Background worker management | `list`, `dispatch`, `status`, `detect` |
+| `progress` | Check V3 implementation progress | `--detailed`, `--format` |
+| `statusline` | Generate dynamic statusline | `--json`, `--compact`, `--no-color` |
+| `coverage-route` | Route based on test coverage gaps | `--task`, `--path` |
+| `coverage-suggest` | Suggest coverage improvements | `--path` |
+| `coverage-gaps` | List coverage gaps with priorities | `--format`, `--limit` |
+| `pre-bash` | (v2 compat) Alias for pre-command | Same as pre-command |
+| `post-bash` | (v2 compat) Alias for post-command | Same as post-command |
 
 ### 12 Background Workers
 
@@ -343,7 +365,7 @@ npx @claude-flow/cli@latest performance benchmark --suite all
 # Core hooks
 npx @claude-flow/cli@latest hooks pre-task --description "[task]"
 npx @claude-flow/cli@latest hooks post-task --task-id "[id]" --success true
-npx @claude-flow/cli@latest hooks post-edit --file "[file]" --train-patterns
+npx @claude-flow/cli@latest hooks post-edit --file "[file]" --train-neural true
 
 # Session management
 npx @claude-flow/cli@latest hooks session-start --session-id "[id]"
@@ -362,6 +384,30 @@ npx @claude-flow/cli@latest hooks build-agents --agent-types coder,tester
 npx @claude-flow/cli@latest hooks worker list
 npx @claude-flow/cli@latest hooks worker dispatch --trigger audit
 npx @claude-flow/cli@latest hooks worker status
+
+# Coverage-aware routing
+npx @claude-flow/cli@latest hooks coverage-gaps --format table
+npx @claude-flow/cli@latest hooks coverage-route --task "[task]"
+
+# Statusline (for Claude Code integration)
+npx @claude-flow/cli@latest hooks statusline
+npx @claude-flow/cli@latest hooks statusline --json
+```
+
+## 🔄 Migration (V2 to V3)
+
+```bash
+# Check migration status
+npx @claude-flow/cli@latest migrate status
+
+# Run migration with backup
+npx @claude-flow/cli@latest migrate run --backup
+
+# Rollback if needed
+npx @claude-flow/cli@latest migrate rollback
+
+# Validate migration
+npx @claude-flow/cli@latest migrate validate
 ```
 
 ## 🧠 Intelligence System (RuVector)

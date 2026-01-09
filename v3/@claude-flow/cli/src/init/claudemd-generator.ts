@@ -576,9 +576,49 @@ npx @claude-flow/cli@latest doctor --fix
 - **Swarm init**: \`npx @claude-flow/cli@latest swarm init --topology <type>\`
 - **Swarm status**: \`npx @claude-flow/cli@latest swarm status\`
 - **Agent spawn**: \`npx @claude-flow/cli@latest agent spawn -t <type> --name <name>\`
-- **Memory store**: \`npx @claude-flow/cli@latest memory store --namespace <ns> --key <k> --value <v>\`
-- **Memory search**: \`npx @claude-flow/cli@latest memory search -q "<query>"\`
+- **Memory store**: \`npx @claude-flow/cli@latest memory store --key "mykey" --value "myvalue" --namespace patterns\`
+- **Memory search**: \`npx @claude-flow/cli@latest memory search --query "search terms"\`
+- **Memory list**: \`npx @claude-flow/cli@latest memory list --namespace patterns\`
+- **Memory retrieve**: \`npx @claude-flow/cli@latest memory retrieve --key "mykey" --namespace patterns\`
 - **Hooks**: \`npx @claude-flow/cli@latest hooks <hook-name> [options]\`
+
+## 📝 Memory Commands Reference (IMPORTANT)
+
+### Store Data (ALL options shown)
+\`\`\`bash
+# REQUIRED: --key and --value
+# OPTIONAL: --namespace (default: "default"), --ttl, --tags
+npx @claude-flow/cli@latest memory store --key "pattern-auth" --value "JWT with refresh tokens" --namespace patterns
+npx @claude-flow/cli@latest memory store --key "bug-fix-123" --value "Fixed null check" --namespace solutions --tags "bugfix,auth"
+\`\`\`
+
+### Search Data (semantic vector search)
+\`\`\`bash
+# REQUIRED: --query (full flag, not -q)
+# OPTIONAL: --namespace, --limit, --threshold
+npx @claude-flow/cli@latest memory search --query "authentication patterns"
+npx @claude-flow/cli@latest memory search --query "error handling" --namespace patterns --limit 5
+\`\`\`
+
+### List Entries
+\`\`\`bash
+# OPTIONAL: --namespace, --limit
+npx @claude-flow/cli@latest memory list
+npx @claude-flow/cli@latest memory list --namespace patterns --limit 10
+\`\`\`
+
+### Retrieve Specific Entry
+\`\`\`bash
+# REQUIRED: --key
+# OPTIONAL: --namespace (default: "default")
+npx @claude-flow/cli@latest memory retrieve --key "pattern-auth"
+npx @claude-flow/cli@latest memory retrieve --key "pattern-auth" --namespace patterns
+\`\`\`
+
+### Initialize Memory Database
+\`\`\`bash
+npx @claude-flow/cli@latest memory init --force --verbose
+\`\`\`
 
 **KEY**: CLI coordinates the strategy via Bash, Claude Code's Task tool executes with real agents.
 

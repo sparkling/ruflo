@@ -148,7 +148,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "npx @claude-flow/hooks statusline 2>/dev/null || node .claude/helpers/statusline.js 2>/dev/null || echo \"▊ V3\"",
+    "command": "npx @claude-flow/cli@latest hooks statusline 2>/dev/null || node .claude/helpers/statusline.cjs 2>/dev/null || echo \"▊ Claude Flow V3\"",
     "refreshMs": 5000,
     "enabled": true
   },
@@ -165,7 +165,7 @@
     "enabled": true,
     "modelPreferences": {
       "default": "claude-opus-4-5-20251101",
-      "routing": "claude-opus-4-5-20251101"
+      "routing": "claude-3-5-haiku-20241022"
     },
     "swarm": {
       "topology": "hierarchical-mesh",
