@@ -83,7 +83,7 @@ export interface AIDefence {
   /**
    * Detect threats in input text
    */
-  detect(input: string): Promise<import('./domain/entities/threat.js').ThreatDetectionResult>;
+  detect(input: string): Promise<ThreatDetectionResult>;
 
   /**
    * Quick scan for threats (faster, less detailed)
@@ -109,7 +109,7 @@ export interface AIDefence {
    */
   learnFromDetection(
     input: string,
-    result: import('./domain/entities/threat.js').ThreatDetectionResult,
+    result: ThreatDetectionResult,
     feedback?: { wasAccurate: boolean; userVerdict?: string }
   ): Promise<void>;
 
@@ -284,7 +284,7 @@ export function checkThreats(input: string) {
  */
 export interface AttentionContext {
   agentId: string;
-  threatAssessment: import('./domain/entities/threat.js').ThreatDetectionResult;
+  threatAssessment: ThreatDetectionResult;
   weight: number;
 }
 
