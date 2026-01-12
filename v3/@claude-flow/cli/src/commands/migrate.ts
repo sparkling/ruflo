@@ -32,7 +32,8 @@ const statusCommand: Command = {
         { name: 'Memory Data', status: 'pending', v2Path: './.claude-flow/memory', v3Path: './data/memory' },
         { name: 'Agent Configs', status: 'pending', v2Path: './.claude-flow/agents', v3Path: './v3/agents' },
         { name: 'Hooks', status: 'pending', v2Path: './src/hooks', v3Path: './v3/hooks' },
-        { name: 'Workflows', status: 'not-required', v2Path: 'N/A', v3Path: 'N/A' }
+        { name: 'Workflows', status: 'not-required', v2Path: 'N/A', v3Path: 'N/A' },
+        { name: 'Embeddings', status: 'pending', v2Path: 'OpenAI/TF.js', v3Path: 'ONNX + Hyperbolic' }
       ],
       recommendations: [
         'Backup v2 data before migration',
