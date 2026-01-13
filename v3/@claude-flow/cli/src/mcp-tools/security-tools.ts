@@ -11,32 +11,10 @@
  */
 
 import type { MCPTool, MCPToolResult } from './types.js';
-import { execSync } from 'child_process';
+import { autoInstallPackage } from './auto-install.js';
 
 // Lazy-loaded AIDefence instance
 let aidefenceInstance: Awaited<ReturnType<typeof import('@claude-flow/aidefence').createAIDefence>> | null = null;
-let installAttempted = false;
-
-/**
- * Auto-install a package if not available
- */
-async function autoInstallPackage(packageName: string): Promise<boolean> {
-  if (installAttempted) return false;
-  installAttempted = true;
-
-  try {
-    console.error(`[claude-flow] Auto-installing ${packageName}...`);
-    execSync(`npm install ${packageName} --no-save`, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 60000, // 60 second timeout
-    });
-    console.error(`[claude-flow] Successfully installed ${packageName}`);
-    return true;
-  } catch (error) {
-    console.error(`[claude-flow] Failed to auto-install ${packageName}: ${error}`);
-    return false;
-  }
-}
 
 async function getAIDefence() {
   if (!aidefenceInstance) {
@@ -48,7 +26,7 @@ async function getAIDefence() {
       const installed = await autoInstallPackage('@claude-flow/aidefence');
       if (installed) {
         try {
-          // Clear module cache and retry
+          // Retry import after installation
           const { createAIDefence } = await import('@claude-flow/aidefence');
           aidefenceInstance = createAIDefence({ enableLearning: true });
         } catch {
