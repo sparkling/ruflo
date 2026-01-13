@@ -37,10 +37,21 @@ sed -i 's/"name": "@claude-flow\/cli"/"name": "claude-flow"/' package.json
 npm publish --tag v3alpha
 
 echo ""
+echo "=== Updating dist-tags ==="
+
+# Update all tags to point to the new version
+npm dist-tag add @claude-flow/cli@$VERSION alpha
+npm dist-tag add @claude-flow/cli@$VERSION latest
+npm dist-tag add @claude-flow/cli@$VERSION v3alpha
+npm dist-tag add claude-flow@$VERSION alpha
+npm dist-tag add claude-flow@$VERSION latest
+npm dist-tag add claude-flow@$VERSION v3alpha
+
+echo ""
 echo "=== Published successfully ==="
-echo "  @claude-flow/cli@$VERSION (alpha)"
-echo "  claude-flow@$VERSION (v3alpha)"
+echo "  @claude-flow/cli@$VERSION (alpha, latest, v3alpha)"
+echo "  claude-flow@$VERSION (alpha, latest, v3alpha)"
 echo ""
 echo "Install with:"
-echo "  npx @claude-flow/cli@alpha"
-echo "  npx claude-flow@v3alpha"
+echo "  npx claude-flow@alpha"
+echo "  npx @claude-flow/cli@latest"
