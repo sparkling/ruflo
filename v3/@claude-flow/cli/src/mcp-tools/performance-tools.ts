@@ -579,14 +579,17 @@ export const performanceTools: MCPTool[] = [
 
       if (metric === 'all') {
         return {
+          _real: true,
           metrics: allMetrics,
           aggregation,
+          historySize: history.length,
           timestamp: new Date().toISOString(),
         };
       }
 
       const selectedMetric = allMetrics[metric as keyof typeof allMetrics];
       return {
+        _real: ['cpu', 'memory'].includes(metric),
         metric,
         value: selectedMetric[aggregation as keyof typeof selectedMetric],
         unit: selectedMetric.unit,
