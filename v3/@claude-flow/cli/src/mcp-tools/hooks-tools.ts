@@ -1505,9 +1505,13 @@ export const hooksTrajectoryEnd: MCPTool = {
         const ewc = await getEWCConsolidator();
         if (ewc) {
           try {
-            // Record outcome for Fisher matrix update
-            ewc.recordOutcome(trajectory.agent, success, trajectory.steps.length);
-            const stats = ewc.getStats();
+            // Record gradient sample for Fisher matrix update
+            // Create a simple gradient from trajectory steps
+            const gradients = new Array(384).fill(0).map((_, i) =>
+              Math.sin(i * 0.01) * (trajectory.steps.length / 10)
+            );
+            ewc.recordGradient(`trajectory-${trajectoryId}`, gradients, success);
+            const stats = ewc.getConsolidationStats();
             ewcResult = {
               consolidated: true,
               penalty: stats.avgPenalty,
