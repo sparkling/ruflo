@@ -8,4 +8,24 @@ capabilities:
 optimizations:
   - flash-attention
   - token-reduction
+
+# ADR-026: 3-Tier Model Routing
+modelRouting:
+  # Default model for this agent type
+  defaultModel: sonnet
+  # Tier 1 intents this agent can handle via Agent Booster
+  agentBoosterIntents:
+    - var-to-const
+    - add-types
+    - add-error-handling
+    - async-await
+    - add-logging
+    - remove-console
+  # When to escalate to Opus
+  opusKeywords:
+    - architecture
+    - security
+    - distributed
+    - consensus
+
 createdAt: "2026-01-14T20:17:21.782Z"
