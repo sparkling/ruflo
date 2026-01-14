@@ -12,10 +12,6 @@
 
 import type { MCPTool, MCPToolResult } from './types.js';
 import { autoInstallPackage } from './auto-install.js';
-import { createRequire } from 'module';
-
-// Create require for CJS-style imports (allows cache clearing)
-const require = createRequire(import.meta.url);
 
 // AIDefence instance type
 type AIDefenceInstance = ReturnType<typeof import('@claude-flow/aidefence').createAIDefence>;
@@ -23,17 +19,8 @@ type AIDefenceInstance = ReturnType<typeof import('@claude-flow/aidefence').crea
 // Lazy-loaded AIDefence instance
 let aidefenceInstance: AIDefenceInstance | null = null;
 
-/**
- * Clear require cache for a module (allows re-import after install)
- */
-function clearRequireCache(moduleName: string): void {
-  try {
-    const resolvedPath = require.resolve(moduleName);
-    delete require.cache[resolvedPath];
-  } catch {
-    // Module not in cache, ignore
-  }
-}
+// Track if we've attempted install this session
+let installAttempted = false;
 
 /**
  * Get or create AIDefence instance (throws if unavailable)
@@ -45,18 +32,29 @@ async function getAIDefence(): Promise<AIDefenceInstance> {
 
   const packageName = '@claude-flow/aidefence';
 
-  // First attempt - try to load
+  // First attempt - try to load via dynamic import (ESM)
   try {
-    const aidefence = require(packageName);
+    const aidefence = await import(packageName);
     const instance = aidefence.createAIDefence({ enableLearning: true });
     if (!instance) {
       throw new Error('createAIDefence returned null');
     }
     aidefenceInstance = instance;
     return instance;
-  } catch {
-    // Package not found, continue to auto-install
+  } catch (e) {
+    // Package not found or failed to load
+    const error = e as Error;
+    if (!error.message?.includes('Cannot find package') && !error.message?.includes('ERR_MODULE_NOT_FOUND')) {
+      // Different error - might be a real issue
+      throw new Error(`AIDefence failed to load: ${error.message}`);
+    }
   }
+
+  // Don't attempt install more than once per session
+  if (installAttempted) {
+    throw new Error('AIDefence package not available. Install with: npm install @claude-flow/aidefence');
+  }
+  installAttempted = true;
 
   // Second attempt - auto-install and retry
   console.error(`[claude-flow] ${packageName} not found, attempting auto-install...`);
@@ -66,20 +64,11 @@ async function getAIDefence(): Promise<AIDefenceInstance> {
     throw new Error('AIDefence package not available. Install with: npm install @claude-flow/aidefence');
   }
 
-  // Clear cache and retry
-  clearRequireCache(packageName);
-  try {
-    const aidefence = require(packageName);
-    const instance = aidefence.createAIDefence({ enableLearning: true });
-    if (!instance) {
-      throw new Error('createAIDefence returned null after install');
-    }
-    aidefenceInstance = instance;
-    console.error(`[claude-flow] ${packageName} loaded successfully after install`);
-    return instance;
-  } catch (retryError) {
-    throw new Error(`AIDefence installed but failed to load: ${retryError}. Try restarting the MCP server.`);
-  }
+  // After install, we need to restart to pick up the new module
+  // ESM caches import failures, so we can't retry in the same process
+  console.error(`[claude-flow] ${packageName} installed successfully.`);
+  console.error(`[claude-flow] Please restart the MCP server to load the new package.`);
+  throw new Error('AIDefence installed successfully. Please restart the MCP server to use it.');
 }
 
 /**
