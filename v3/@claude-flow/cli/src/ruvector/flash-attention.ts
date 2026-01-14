@@ -340,7 +340,7 @@ export class FlashAttention {
   }
 
   /**
-   * Run benchmark comparing naive vs flash attention
+   * Run benchmark comparing naive vs CPU-optimized attention
    *
    * @param numVectors - Number of vectors to test
    * @param dimensions - Dimensions per vector
@@ -356,9 +356,9 @@ export class FlashAttention {
     const keys = this.generateRandomVectors(numVectors, dimensions);
     const values = this.generateRandomVectors(numVectors, dimensions);
 
-    // Warm up
+    // Warm up both paths
     this.naiveAttention(queries.slice(0, 10), keys.slice(0, 10), values.slice(0, 10));
-    this.blockAttention(queries.slice(0, 10), keys.slice(0, 10), values.slice(0, 10), this.config.blockSize);
+    this.cpuOptimizedAttention(queries.slice(0, 10), keys.slice(0, 10), values.slice(0, 10));
 
     // Benchmark naive attention
     let naiveTotalMs = 0;
@@ -369,11 +369,11 @@ export class FlashAttention {
     }
     const naiveTimeMs = naiveTotalMs / iterations;
 
-    // Benchmark flash attention
+    // Benchmark CPU-optimized attention
     let flashTotalMs = 0;
     for (let i = 0; i < iterations; i++) {
       const start = performance.now();
-      this.blockAttention(queries, keys, values, this.config.blockSize);
+      this.cpuOptimizedAttention(queries, keys, values);
       flashTotalMs += performance.now() - start;
     }
     const flashTimeMs = flashTotalMs / iterations;
