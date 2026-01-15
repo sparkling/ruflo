@@ -963,6 +963,49 @@ Choose the right topology for your task complexity and team size.
 </details>
 
 <details>
+<summary>👑 <strong>Hive Mind</strong> — Queen-led collective intelligence with consensus</summary>
+
+The Hive Mind system implements queen-led hierarchical coordination where strategic queen agents direct specialized workers through collective decision-making and shared memory.
+
+**Queen Types:**
+
+| Queen Type | Best For | Strategy |
+|------------|----------|----------|
+| **Strategic** | Research, planning, analysis | High-level objective coordination |
+| **Tactical** | Implementation, execution | Direct task management |
+| **Adaptive** | Optimization, dynamic tasks | Real-time strategy adjustment |
+
+**Worker Specializations (8 types):**
+`researcher`, `coder`, `analyst`, `tester`, `architect`, `reviewer`, `optimizer`, `documenter`
+
+**Consensus Mechanisms:**
+
+| Algorithm | Voting | Fault Tolerance | Best For |
+|-----------|--------|-----------------|----------|
+| **Majority** | Simple democratic | None | Quick decisions |
+| **Weighted** | Queen 3x weight | None | Strategic guidance |
+| **Byzantine** | 2/3 supermajority | f < n/3 faulty | Critical decisions |
+
+**Collective Memory Types:**
+- `knowledge` (permanent), `context` (1h TTL), `task` (30min TTL), `result` (permanent)
+- `error` (24h TTL), `metric` (1h TTL), `consensus` (permanent), `system` (permanent)
+
+**CLI Commands:**
+```bash
+npx claude-flow hive-mind init                    # Initialize hive mind
+npx claude-flow hive-mind spawn "Build API"       # Spawn with objective
+npx claude-flow hive-mind spawn "..." --queen-type strategic --consensus byzantine
+npx claude-flow hive-mind status                  # Check status
+npx claude-flow hive-mind metrics                 # Performance metrics
+npx claude-flow hive-mind memory                  # Collective memory stats
+npx claude-flow hive-mind sessions                # List active sessions
+```
+
+**Performance:** 10-20x faster batch spawning, 2.8-4.4x speed improvement, 84.8% SWE-Bench solve rate
+
+</details>
+
+<details>
 <summary>🔧 <strong>MCP Tools & Integration</strong> — 31+ tools across 7 categories</summary>
 
 Full MCP server with tools for coordination, monitoring, memory, and GitHub integration.
