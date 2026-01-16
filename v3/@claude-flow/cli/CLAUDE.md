@@ -19,42 +19,71 @@
 
 ### 🤖 INTELLIGENT 3-TIER MODEL ROUTING (ADR-026)
 
-**Before spawning agents, check for model recommendations:**
-
-```bash
-# Get routing recommendation
-npx @claude-flow/cli@latest hooks pre-task --description "[task]"
-```
-
-**The routing system has 3 tiers:**
+**The routing system has 3 tiers for optimal cost/performance:**
 
 | Tier | Handler | Latency | Cost | Use Cases |
 |------|---------|---------|------|-----------|
-| **1** | Agent Booster (WASM) | <1ms | $0 | Simple transforms (var→const, add-types, remove-console) |
-| **2** | Haiku/Sonnet | 500ms-2s | $0.0002-$0.003 | Bug fixes, refactoring, features |
-| **3** | Opus | 2-5s | $0.015 | Architecture, security, distributed systems |
+| **1** | Agent Booster | <1ms | $0 | Simple transforms (var→const, add-types, remove-console) |
+| **2** | Haiku | ~500ms | $0.0002 | Simple tasks, bug fixes, low complexity |
+| **3** | Sonnet/Opus | 2-5s | $0.003-$0.015 | Architecture, security, complex reasoning |
+
+**Before spawning agents, get routing recommendation:**
+```bash
+npx @claude-flow/cli@latest hooks pre-task --description "[task description]"
+```
 
 **When you see these recommendations:**
 
-1. `[AGENT_BOOSTER_AVAILABLE]` → Skip LLM, use Edit tool directly for simple transforms
-2. `[TASK_MODEL_RECOMMENDATION] Use model="X"` → Use that model in Task tool:
-   ```javascript
-   Task({
-     prompt: "...",
-     subagent_type: "coder",
-     model: "sonnet"  // ← USE RECOMMENDED MODEL
-   })
-   ```
+1. `[AGENT_BOOSTER_AVAILABLE]` → Skip LLM entirely, use Edit tool directly
+   - Intent types: `var-to-const`, `add-types`, `add-error-handling`, `async-await`, `add-logging`, `remove-console`
 
-**Benefits:** 75% cost reduction, 2.5x quota extension for Claude Max users
+2. `[TASK_MODEL_RECOMMENDATION] Use model="X"` → Use that model in Task tool:
+```javascript
+Task({
+  prompt: "...",
+  subagent_type: "coder",
+  model: "haiku"  // ← USE THE RECOMMENDED MODEL (haiku/sonnet/opus)
+})
+```
+
+**Benefits:** 75% cost reduction, 352x faster for Tier 1 tasks
+
+---
+
+### 🛡️ Anti-Drift Config (PREFERRED)
+
+**Use this to prevent agent drift:**
+```bash
+# Small teams (6-8 agents) - use hierarchical for tight control
+npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized
+
+# Large teams (10-15 agents) - use hierarchical-mesh for V3 queen + peer communication
+npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh --max-agents 15 --strategy specialized
+```
+
+**Valid Topologies:**
+- `hierarchical` - Queen controls workers directly (anti-drift for small teams)
+- `hierarchical-mesh` - V3 queen + peer communication (recommended for 10+ agents)
+- `mesh` - Fully connected peer network
+- `ring` - Circular communication pattern
+- `star` - Central coordinator with spokes
+- `hybrid` - Dynamic topology switching
+
+**Anti-Drift Guidelines:**
+- **hierarchical**: Coordinator catches divergence
+- **max-agents 6-8**: Smaller team = less drift
+- **specialized**: Clear roles, no overlap
+- **consensus**: raft (leader maintains state)
+
+---
 
 ### 🔄 Auto-Start Swarm Protocol (Background Execution)
 
 When the user requests a complex task, **spawn agents in background and WAIT for completion:**
 
 ```javascript
-// STEP 1: Initialize swarm coordination
-Bash("npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh --max-agents 15")
+// STEP 1: Initialize swarm coordination (anti-drift config)
+Bash("npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized")
 
 // STEP 2: Spawn ALL agents IN BACKGROUND in a SINGLE message
 // Use run_in_background: true so agents work concurrently
@@ -132,10 +161,10 @@ They're working in parallel. I'll synthesize their results when they complete.
 ### Before Starting Any Task
 ```bash
 # 1. Search memory for relevant patterns from past successes
-Bash("npx @claude-flow/cli@latest memory search -q '[task keywords]' --namespace patterns")
+Bash("npx @claude-flow/cli@latest memory search --query '[task keywords]' --namespace patterns")
 
 # 2. Check if similar task was done before
-Bash("npx @claude-flow/cli@latest memory search -q '[task type]' --namespace tasks")
+Bash("npx @claude-flow/cli@latest memory search --query '[task type]' --namespace tasks")
 
 # 3. Load learned optimizations
 Bash("npx @claude-flow/cli@latest hooks route --task '[task description]'")
@@ -181,17 +210,18 @@ Bash("npx @claude-flow/cli@latest hooks worker dispatch --trigger optimize")
 - Finding a performance fix (store the optimization)
 - Discovering a security issue (store the vulnerability pattern)
 
-### 📋 Agent Routing by Task Type
+### 📋 Agent Routing (Anti-Drift)
 
-| Task Type | Required Agents | Topology |
-|-----------|-----------------|----------|
-| Bug Fix | researcher, coder, tester | mesh |
-| New Feature | coordinator, architect, coder, tester, reviewer | hierarchical |
-| Refactoring | architect, coder, reviewer | mesh |
-| Performance | researcher, performance-engineer, coder | hierarchical |
-| Security Audit | security-architect, security-auditor, reviewer | hierarchical |
-| Memory Optimization | memory-specialist, performance-engineer | mesh |
-| Documentation | researcher, api-docs | mesh |
+| Code | Task | Agents |
+|------|------|--------|
+| 1 | Bug Fix | coordinator, researcher, coder, tester |
+| 3 | Feature | coordinator, architect, coder, tester, reviewer |
+| 5 | Refactor | coordinator, architect, coder, reviewer |
+| 7 | Performance | coordinator, perf-engineer, coder |
+| 9 | Security | coordinator, security-architect, auditor |
+| 11 | Docs | researcher, api-docs |
+
+**Codes 1-9: hierarchical/specialized (anti-drift). Code 11: mesh/balanced**
 
 ### 🎯 Task Complexity Detection
 
@@ -238,14 +268,15 @@ Bash("npx @claude-flow/cli@latest hooks worker dispatch --trigger optimize")
 - `/scripts` - Utility scripts
 - `/examples` - Example code
 
-## Project Configuration
+## Project Config (Anti-Drift Defaults)
 
-This project is configured with Claude Flow V3:
-- **Topology**: hierarchical-mesh
-- **Max Agents**: 15
-- **Memory Backend**: hybrid
-- **HNSW Indexing**: Enabled (150x-12,500x faster)
-- **Neural Learning**: Enabled (SONA)
+- **Topology**: hierarchical (prevents drift)
+- **Max Agents**: 8 (smaller = less drift)
+- **Strategy**: specialized (clear roles)
+- **Consensus**: raft
+- **Memory**: hybrid
+- **HNSW**: Enabled
+- **Neural**: Enabled
 
 ## 🚀 V3 CLI Commands (26 Commands, 140+ Subcommands)
 
@@ -299,7 +330,7 @@ npx @claude-flow/cli@latest agent spawn -t coder --name my-coder
 npx @claude-flow/cli@latest swarm init --v3-mode
 
 # Search memory (HNSW-indexed)
-npx @claude-flow/cli@latest memory search -q "authentication patterns"
+npx @claude-flow/cli@latest memory search --query "authentication patterns"
 
 # System diagnostics
 npx @claude-flow/cli@latest doctor --fix
@@ -318,6 +349,12 @@ npx @claude-flow/cli@latest performance benchmark --suite all
 
 ### V3 Specialized Agents
 `security-architect`, `security-auditor`, `memory-specialist`, `performance-engineer`
+
+### 🔐 @claude-flow/security
+CVE remediation, input validation, path security:
+- `InputValidator` - Zod validation
+- `PathValidator` - Traversal prevention
+- `SafeExecutor` - Injection protection
 
 ### Swarm Coordination
 `hierarchical-coordinator`, `mesh-coordinator`, `adaptive-coordinator`, `collective-intelligence-coordinator`, `swarm-memory-manager`
@@ -446,67 +483,15 @@ npx @claude-flow/cli@latest migrate validate
 V3 includes the RuVector Intelligence System:
 - **SONA**: Self-Optimizing Neural Architecture (<0.05ms adaptation)
 - **MoE**: Mixture of Experts for specialized routing
-- **HNSW**: 150x-12,500x faster pattern search (persistent to disk)
+- **HNSW**: 150x-12,500x faster pattern search
 - **EWC++**: Elastic Weight Consolidation (prevents forgetting)
 - **Flash Attention**: 2.49x-7.47x speedup
-- **Int8 Quantization**: 3.92x memory compression
 
 The 4-step intelligence pipeline:
 1. **RETRIEVE** - Fetch relevant patterns via HNSW
 2. **JUDGE** - Evaluate with verdicts (success/failure)
 3. **DISTILL** - Extract key learnings via LoRA
 4. **CONSOLIDATE** - Prevent catastrophic forgetting via EWC++
-
-### Implemented Optimizations (alpha.76+)
-
-| Feature | Benefit | Location |
-|---------|---------|----------|
-| **Persistent HNSW** | 0ms warm loads, instant startup | `.swarm/hnsw.index` |
-| **Int8 Quantization** | 3.92x compression, 75% less memory | `quantizeInt8()` |
-| **ReasoningBank** | Pattern storage & similarity search | `intelligence.ts` |
-| **SONA Coordinator** | Trajectory recording & learning | `initializeIntelligence()` |
-
-### Using the Intelligence API
-
-```typescript
-import {
-  initializeIntelligence,
-  recordStep,
-  recordTrajectory,
-  findSimilarPatterns,
-  getIntelligenceStats
-} from '@claude-flow/cli/memory/intelligence';
-
-// Initialize SONA + ReasoningBank
-const init = await initializeIntelligence();
-
-// Record steps during task execution
-await recordStep({ type: 'observation', content: 'Found bug in auth module' });
-await recordStep({ type: 'action', content: 'Fixed validation logic' });
-
-// Record complete trajectory with verdict
-await recordTrajectory(steps, 'success');
-
-// Find similar patterns for new tasks
-const patterns = await findSimilarPatterns('authentication bug');
-```
-
-### Using Int8 Quantization
-
-```typescript
-import { quantizeInt8, dequantizeInt8, getQuantizationStats } from '@claude-flow/cli/memory';
-
-// Quantize embeddings for storage
-const { quantized, scale, zeroPoint } = quantizeInt8(embedding);
-// Result: Int8Array with 3.92x smaller footprint
-
-// Dequantize when needed
-const restored = dequantizeInt8(quantized, scale, zeroPoint);
-
-// Check compression stats
-const stats = getQuantizationStats(embedding);
-// { originalBytes: 1536, quantizedBytes: 392, compressionRatio: 3.92 }
-```
 
 ## 📦 Embeddings Package (v3.0.0-alpha.12)
 
@@ -535,15 +520,14 @@ Features:
 
 ## V3 Performance Targets
 
-| Metric | Target | Status |
-|--------|--------|--------|
-| HNSW Search | 150x-12,500x faster | **Implemented** (persistent) |
-| Memory Reduction | 50-75% with quantization | **Implemented** (3.92x Int8) |
-| SONA Integration | Pattern learning | **Implemented** (ReasoningBank) |
-| Flash Attention | 2.49x-7.47x speedup | In progress |
-| MCP Response | <100ms | Achieved |
-| CLI Startup | <500ms | Achieved |
-| SONA Adaptation | <0.05ms | In progress |
+| Metric | Target |
+|--------|--------|
+| Flash Attention | 2.49x-7.47x speedup |
+| HNSW Search | 150x-12,500x faster |
+| Memory Reduction | 50-75% with quantization |
+| MCP Response | <100ms |
+| CLI Startup | <500ms |
+| SONA Adaptation | <0.05ms |
 
 ## 📊 Performance Optimization Protocol
 
@@ -645,11 +629,66 @@ npx @claude-flow/cli@latest doctor --fix
 - **Swarm init**: `npx @claude-flow/cli@latest swarm init --topology <type>`
 - **Swarm status**: `npx @claude-flow/cli@latest swarm status`
 - **Agent spawn**: `npx @claude-flow/cli@latest agent spawn -t <type> --name <name>`
-- **Memory store**: `npx @claude-flow/cli@latest memory store --namespace <ns> --key <k> --value <v>`
-- **Memory search**: `npx @claude-flow/cli@latest memory search -q "<query>"`
+- **Memory store**: `npx @claude-flow/cli@latest memory store --key "mykey" --value "myvalue" --namespace patterns`
+- **Memory search**: `npx @claude-flow/cli@latest memory search --query "search terms"`
+- **Memory list**: `npx @claude-flow/cli@latest memory list --namespace patterns`
+- **Memory retrieve**: `npx @claude-flow/cli@latest memory retrieve --key "mykey" --namespace patterns`
 - **Hooks**: `npx @claude-flow/cli@latest hooks <hook-name> [options]`
 
+## 📝 Memory Commands Reference (IMPORTANT)
+
+### Store Data (ALL options shown)
+```bash
+# REQUIRED: --key and --value
+# OPTIONAL: --namespace (default: "default"), --ttl, --tags
+npx @claude-flow/cli@latest memory store --key "pattern-auth" --value "JWT with refresh tokens" --namespace patterns
+npx @claude-flow/cli@latest memory store --key "bug-fix-123" --value "Fixed null check" --namespace solutions --tags "bugfix,auth"
+```
+
+### Search Data (semantic vector search)
+```bash
+# REQUIRED: --query (full flag, not -q)
+# OPTIONAL: --namespace, --limit, --threshold
+npx @claude-flow/cli@latest memory search --query "authentication patterns"
+npx @claude-flow/cli@latest memory search --query "error handling" --namespace patterns --limit 5
+```
+
+### List Entries
+```bash
+# OPTIONAL: --namespace, --limit
+npx @claude-flow/cli@latest memory list
+npx @claude-flow/cli@latest memory list --namespace patterns --limit 10
+```
+
+### Retrieve Specific Entry
+```bash
+# REQUIRED: --key
+# OPTIONAL: --namespace (default: "default")
+npx @claude-flow/cli@latest memory retrieve --key "pattern-auth"
+npx @claude-flow/cli@latest memory retrieve --key "pattern-auth" --namespace patterns
+```
+
+### Initialize Memory Database
+```bash
+npx @claude-flow/cli@latest memory init --force --verbose
+```
+
 **KEY**: CLI coordinates the strategy via Bash, Claude Code's Task tool executes with real agents.
+
+## 📚 Full Capabilities Reference
+
+For a comprehensive overview of all Claude Flow V3 features, agents, commands, and integrations, see:
+
+**`.claude-flow/CAPABILITIES.md`** - Complete reference generated during init
+
+This includes:
+- All 60+ agent types with routing recommendations
+- All 26 CLI commands with 140+ subcommands
+- All 27 hooks + 12 background workers
+- RuVector intelligence system details
+- Hive-Mind consensus mechanisms
+- Integration ecosystem (agentic-flow, agentdb, ruv-swarm, flow-nexus, agentic-jujutsu)
+- Performance targets and status
 
 ## Support
 

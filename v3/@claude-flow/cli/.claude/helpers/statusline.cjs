@@ -27,10 +27,6 @@ const CONFIG = {
   topology: 'hierarchical-mesh',
 };
 
-// Cross-platform helpers
-const isWindows = process.platform === 'win32';
-const nullDevice = isWindows ? 'NUL' : '/dev/null';
-
 // ANSI colors
 const c = {
   reset: '\x1b[0m',
@@ -58,15 +54,8 @@ function getUserInfo() {
   let modelName = 'Unknown';
 
   try {
-    const gitUserCmd = isWindows
-      ? 'git config user.name 2>NUL || echo user'
-      : 'git config user.name 2>/dev/null || echo "user"';
-    const gitBranchCmd = isWindows
-      ? 'git branch --show-current 2>NUL || echo.'
-      : 'git branch --show-current 2>/dev/null || echo ""';
-    name = execSync(gitUserCmd, { encoding: 'utf-8' }).trim();
-    gitBranch = execSync(gitBranchCmd, { encoding: 'utf-8' }).trim();
-    if (gitBranch === '.') gitBranch = ''; // Windows echo. outputs a dot
+    name = execSync('git config user.name 2>/dev/null || echo "user"', { encoding: 'utf-8' }).trim();
+    gitBranch = execSync('git branch --show-current 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim();
   } catch (e) {
     // Ignore errors
   }
@@ -235,17 +224,11 @@ function getSwarmStatus() {
   let coordinationActive = false;
 
   try {
-    if (isWindows) {
-      // Windows: use tasklist and findstr
-      const ps = execSync('tasklist 2>NUL | findstr /I "agentic-flow" 2>NUL | find /C /V "" 2>NUL || echo 0', { encoding: 'utf-8' });
-      activeAgents = Math.max(0, parseInt(ps.trim()) || 0);
-    } else {
-      const ps = execSync('ps aux 2>/dev/null | grep -c agentic-flow || echo "0"', { encoding: 'utf-8' });
-      activeAgents = Math.max(0, parseInt(ps.trim()) - 1);
-    }
+    const ps = execSync('ps aux 2>/dev/null | grep -c agentic-flow || echo "0"', { encoding: 'utf-8' });
+    activeAgents = Math.max(0, parseInt(ps.trim()) - 1);
     coordinationActive = activeAgents > 0;
   } catch (e) {
-    // Ignore errors - default to 0 agents
+    // Ignore errors
   }
 
   return {
@@ -261,14 +244,8 @@ function getSystemMetrics() {
   let subAgents = 0;
 
   try {
-    if (isWindows) {
-      // Windows: use tasklist for memory info, fallback to process.memoryUsage
-      // tasklist memory column is complex to parse, use Node.js API instead
-      memoryMB = Math.floor(process.memoryUsage().heapUsed / 1024 / 1024);
-    } else {
-      const mem = execSync('ps aux | grep -E "(node|agentic|claude)" | grep -v grep | awk \'{sum += $6} END {print int(sum/1024)}\'', { encoding: 'utf-8' });
-      memoryMB = parseInt(mem.trim()) || 0;
-    }
+    const mem = execSync('ps aux | grep -E "(node|agentic|claude)" | grep -v grep | awk \'{sum += \$6} END {print int(sum/1024)}\'', { encoding: 'utf-8' });
+    memoryMB = parseInt(mem.trim()) || 0;
   } catch (e) {
     // Fallback
     memoryMB = Math.floor(process.memoryUsage().heapUsed / 1024 / 1024);
@@ -285,16 +262,10 @@ function getSystemMetrics() {
 
   // Count active sub-agents from process list
   try {
-    if (isWindows) {
-      // Windows: use tasklist and findstr for agent counting
-      const agents = execSync('tasklist 2>NUL | findstr /I "claude-flow" 2>NUL | find /C /V "" 2>NUL || echo 0', { encoding: 'utf-8' });
-      subAgents = Math.max(0, parseInt(agents.trim()) || 0);
-    } else {
-      const agents = execSync('ps aux 2>/dev/null | grep -c "claude-flow.*agent" || echo "0"', { encoding: 'utf-8' });
-      subAgents = Math.max(0, parseInt(agents.trim()) - 1);
-    }
+    const agents = execSync('ps aux 2>/dev/null | grep -c "claude-flow.*agent" || echo "0"', { encoding: 'utf-8' });
+    subAgents = Math.max(0, parseInt(agents.trim()) - 1);
   } catch (e) {
-    // Ignore - default to 0
+    // Ignore
   }
 
   return {

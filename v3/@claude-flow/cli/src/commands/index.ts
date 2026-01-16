@@ -116,6 +116,7 @@ import { embeddingsCommand } from './embeddings.js';
 import { neuralCommand } from './neural.js';
 import { performanceCommand } from './performance.js';
 import { securityCommand } from './security.js';
+import { hiveMindCommand } from './hive-mind.js';
 
 // Pre-populate cache with core commands
 loadedCommands.set('init', initCommand);
