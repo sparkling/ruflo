@@ -57,7 +57,7 @@ is_running() {
 
 # Start the swarm monitor daemon
 start_swarm_monitor() {
-    local interval="${1:-3}"
+    local interval="${1:-30}"
 
     if is_running "$SWARM_MONITOR_PID"; then
         log "Swarm monitor already running (PID: $(cat "$SWARM_MONITOR_PID"))"
