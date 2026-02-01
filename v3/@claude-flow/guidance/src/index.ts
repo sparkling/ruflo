@@ -269,6 +269,87 @@ export type {
   CollusionDetectorConfig,
   MemoryQuorumConfig,
 } from './adversarial.js';
+export { ContinueGate, createContinueGate } from './continue-gate.js';
+export type {
+  ContinueGateConfig,
+  StepContext,
+  ContinueDecision,
+} from './continue-gate.js';
+export {
+  TrustAccumulator,
+  TrustLedger as TrustScoreLedger,
+  TrustSystem,
+  getTrustBasedRateLimit,
+  createTrustAccumulator,
+  createTrustSystem,
+} from './trust.js';
+export type {
+  TrustTier,
+  GateOutcome,
+  TrustConfig,
+  TrustRecord,
+  TrustSnapshot,
+} from './trust.js';
+export {
+  TruthAnchorStore,
+  TruthResolver,
+  createTruthAnchorStore,
+  createTruthResolver,
+} from './truth-anchors.js';
+export type {
+  TruthSourceKind,
+  TruthAnchor,
+  TruthAnchorConfig,
+  AnchorParams,
+  TruthAnchorQuery,
+  VerifyAllResult,
+  ConflictResolution,
+} from './truth-anchors.js';
+export {
+  UncertaintyLedger,
+  UncertaintyAggregator,
+  createUncertaintyLedger,
+  createUncertaintyAggregator,
+} from './uncertainty.js';
+export type {
+  BeliefStatus,
+  ConfidenceInterval,
+  Belief,
+  UncertaintyConfig,
+} from './uncertainty.js';
+export {
+  TemporalStore,
+  TemporalReasoner,
+  createTemporalStore,
+  createTemporalReasoner,
+} from './temporal.js';
+export type {
+  TemporalStatus,
+  ValidityWindow,
+  TemporalAssertion,
+  TemporalTimeline,
+  TemporalChange,
+  TemporalConfig,
+} from './temporal.js';
+export {
+  AuthorityGate,
+  IrreversibilityClassifier,
+  createAuthorityGate,
+  createIrreversibilityClassifier,
+  isHigherAuthority,
+  getAuthorityHierarchy,
+} from './authority.js';
+export type {
+  AuthorityLevel,
+  IrreversibilityClass,
+  ProofLevel,
+  AuthorityScope,
+  HumanIntervention,
+  AuthorityCheckResult,
+  IrreversibilityResult,
+  AuthorityGateConfig,
+  IrreversibilityClassifierConfig,
+} from './authority.js';
 
 import type {
   PolicyBundle,

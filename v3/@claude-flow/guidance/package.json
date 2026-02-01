@@ -81,6 +81,38 @@
     "./ruvbot-integration": {
       "types": "./dist/ruvbot-integration.d.ts",
       "import": "./dist/ruvbot-integration.js"
+    },
+    "./trust": {
+      "types": "./dist/trust.d.ts",
+      "import": "./dist/trust.js"
+    },
+    "./truth-anchors": {
+      "types": "./dist/truth-anchors.d.ts",
+      "import": "./dist/truth-anchors.js"
+    },
+    "./uncertainty": {
+      "types": "./dist/uncertainty.d.ts",
+      "import": "./dist/uncertainty.js"
+    },
+    "./temporal": {
+      "types": "./dist/temporal.d.ts",
+      "import": "./dist/temporal.js"
+    },
+    "./authority": {
+      "types": "./dist/authority.d.ts",
+      "import": "./dist/authority.js"
+    },
+    "./adversarial": {
+      "types": "./dist/adversarial.d.ts",
+      "import": "./dist/adversarial.js"
+    },
+    "./meta-governance": {
+      "types": "./dist/meta-governance.d.ts",
+      "import": "./dist/meta-governance.js"
+    },
+    "./continue-gate": {
+      "types": "./dist/continue-gate.d.ts",
+      "import": "./dist/continue-gate.js"
     }
   },
   "files": [
