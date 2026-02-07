@@ -497,25 +497,115 @@ bunx claude-flow@alpha init
 npm install -g claude-flow@alpha --omit=optional
 ```
 
-#### OpenAI Codex CLI Support
+<details>
+<summary>🤖 <strong>OpenAI Codex CLI Support</strong> — Full Codex integration with self-learning</summary>
 
 Claude-Flow supports both **Claude Code** and **OpenAI Codex CLI** via the [@claude-flow/codex](https://www.npmjs.com/package/@claude-flow/codex) package.
+
+### Quick Start for Codex
 
 ```bash
 # Initialize for Codex CLI (creates AGENTS.md instead of CLAUDE.md)
 npx claude-flow@alpha init --codex
 
-# Initialize for both platforms (dual mode)
-npx claude-flow@alpha init --dual
-
 # Full Codex setup with all 137+ skills
 npx claude-flow@alpha init --codex --full
+
+# Initialize for both platforms (dual mode)
+npx claude-flow@alpha init --dual
 ```
 
-| Platform | Config File | Skills Dir | Skill Syntax |
-|----------|-------------|------------|--------------|
-| Claude Code | `CLAUDE.md` | `.claude/skills/` | `/skill-name` |
-| OpenAI Codex | `AGENTS.md` | `.agents/skills/` | `$skill-name` |
+### Platform Comparison
+
+| Feature | Claude Code | OpenAI Codex |
+|---------|-------------|--------------|
+| Config File | `CLAUDE.md` | `AGENTS.md` |
+| Skills Dir | `.claude/skills/` | `.agents/skills/` |
+| Skill Syntax | `/skill-name` | `$skill-name` |
+| Settings | `settings.json` | `config.toml` |
+| MCP | Native | Via `codex mcp add` |
+
+### Key Concept: Execution Model
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  CLAUDE-FLOW = ORCHESTRATOR (tracks state, stores memory)       │
+│  CODEX = EXECUTOR (writes code, runs commands, implements)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Codex does the work. Claude-flow coordinates and learns.**
+
+### MCP Integration for Codex
+
+When you run `init --codex`, the MCP server is automatically registered:
+
+```bash
+# Verify MCP is registered
+codex mcp list
+
+# If not present, add manually:
+codex mcp add claude-flow -- npx claude-flow mcp start
+```
+
+### Self-Learning Workflow
+
+```
+1. LEARN:   memory_search(query="task keywords") → Find similar patterns
+2. COORD:   swarm_init(topology="hierarchical") → Set up coordination
+3. EXECUTE: YOU write code, run commands       → Codex does real work
+4. REMEMBER: memory_store(key, value, namespace="patterns") → Save for future
+```
+
+### MCP Tools for Learning
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `memory_search` | Semantic vector search | BEFORE starting any task |
+| `memory_store` | Save patterns with embeddings | AFTER completing successfully |
+| `swarm_init` | Initialize coordination | Start of complex tasks |
+| `agent_spawn` | Register agent roles | Multi-agent workflows |
+| `neural_train` | Train on patterns | Periodic improvement |
+
+### Example Prompt for Codex
+
+```
+Build an email validator using a learning-enabled swarm.
+
+STEP 1 - LEARN (use MCP tool):
+Use tool: memory_search
+  query: "validation utility function patterns"
+  namespace: "patterns"
+If score > 0.7, use that pattern as reference.
+
+STEP 2 - COORDINATE (use MCP tools):
+Use tool: swarm_init with topology="hierarchical", maxAgents=3
+Use tool: agent_spawn with type="coder", name="validator"
+
+STEP 3 - EXECUTE (YOU do this):
+Create /tmp/validator/email.js with validateEmail() function
+Create /tmp/validator/test.js with test cases
+Run the tests
+
+STEP 4 - REMEMBER (use MCP tool):
+Use tool: memory_store
+  key: "pattern-email-validator"
+  value: "Email validation: regex, returns boolean, test cases"
+  namespace: "patterns"
+
+YOU execute all code. Use MCP tools for learning.
+```
+
+### Vector Search Details
+
+- **Embedding Dimensions**: 384
+- **Search Algorithm**: HNSW (150x-12,500x faster)
+- **Similarity Scoring**: 0-1 (higher = better)
+  - Score > 0.7: Strong match, use pattern
+  - Score 0.5-0.7: Partial match, adapt
+  - Score < 0.5: Weak match, create new
+
+</details>
 
 ### Basic Usage
 
