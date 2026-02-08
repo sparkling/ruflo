@@ -27,6 +27,7 @@ All ADRs are located in [`/v3/implementation/adrs/`](../../implementation/adrs/)
 | [ADR-019](../../implementation/adrs/ADR-019-headless-runtime-package.md) | Headless Runtime Package | Complete |
 | [ADR-020](../../implementation/adrs/ADR-020-headless-worker-integration.md) | Headless Worker Integration | Complete |
 | [ADR-046](../../implementation/adrs/ADR-046-ruvflow-rebrand.md) | Rebrand Umbrella to RuvFlow | Proposed |
+| [ADR-047](../../implementation/adrs/ADR-047-fast-mode-integration.md) | Fast Mode Integration | Proposed |
 
 ## Summary Documents
 
