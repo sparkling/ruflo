@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-legal-contracts",
-  "version": "3.0.0-alpha.1",
+  "version": "3.0.0-alpha.1-patch.1",
   "description": "Legal contract analysis plugin for Claude Flow V3 - clause extraction, risk assessment, contract comparison, obligation tracking, and playbook matching",
   "type": "module",
   "main": "./dist/index.js",
@@ -62,7 +62,7 @@
     "directory": "v3/plugins/legal-contracts"
   },
   "dependencies": {
-    "@claude-flow/ruvector-upstream": "^0.1.0",
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
@@ -71,7 +71,7 @@
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/plugins": "^3.0.0-alpha.1"
+    "@claude-flow/plugins": "3.0.0-alpha.7-patch.1"
   },
   "engines": {
     "node": ">=20.0.0"
