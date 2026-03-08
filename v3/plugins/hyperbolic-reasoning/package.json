@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-hyperbolic-reasoning",
-  "version": "3.0.0-alpha.1-patch.4",
+  "version": "3.0.0-alpha.1-patch.5",
   "description": "Hyperbolic reasoning plugin providing Poincare ball embeddings, taxonomic reasoning, hierarchical search, and entailment graphs for superior hierarchical understanding.",
   "type": "module",
   "main": "./dist/index.js",
@@ -77,7 +77,7 @@
     "node": ">=20.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.4"
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.5"
   },
   "peerDependenciesMeta": {
     "@claude-flow/ruvector-upstream": {

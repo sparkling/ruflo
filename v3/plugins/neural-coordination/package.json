@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-neural-coordination",
-  "version": "3.0.0-alpha.1-patch.4",
+  "version": "3.0.0-alpha.1-patch.5",
   "description": "Neural coordination plugin for multi-agent swarm intelligence using SONA, GNN, and attention mechanisms",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -67,7 +67,7 @@
     "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.4"
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.5"
   },
   "peerDependenciesMeta": {
     "@claude-flow/ruvector-upstream": {
