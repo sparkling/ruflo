@@ -403,7 +403,7 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
     skills: true,
     commands: false,
     agents: false,
-    helpers: false,
+    helpers: true,
     statusline: false,
     mcp: true,
     runtime: true,

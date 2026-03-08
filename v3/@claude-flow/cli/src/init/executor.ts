@@ -468,6 +468,28 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
       result.preserved.push('.claude-flow/security/audit-status.json');
     }
 
+    // 2b. Ensure core helper scripts exist (create missing, preserve existing)
+    const helpersDir = path.join(targetDir, '.claude', 'helpers');
+    const coreHelpers: Record<string, () => string> = {
+      'pre-commit': generatePreCommitHook,
+      'post-commit': generatePostCommitHook,
+      'session.js': generateSessionManager,
+      'router.js': generateAgentRouter,
+      'memory.js': generateMemoryHelper,
+    };
+    for (const [name, generator] of Object.entries(coreHelpers)) {
+      const helperPath = path.join(helpersDir, name);
+      if (!fs.existsSync(helperPath)) {
+        fs.writeFileSync(helperPath, generator(), 'utf-8');
+        if (!name.endsWith('.js')) {
+          fs.chmodSync(helperPath, '755');
+        }
+        result.created.push(`.claude/helpers/${name}`);
+      } else {
+        result.preserved.push(`.claude/helpers/${name}`);
+      }
+    }
+
     // 3. Merge settings if requested
     if (upgradeSettings) {
       const settingsPath = path.join(targetDir, '.claude', 'settings.json');
