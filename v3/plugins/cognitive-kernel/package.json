@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-cognitive-kernel",
-  "version": "3.0.0-alpha.1-patch.8",
+  "version": "3.0.0-alpha.1-patch.9",
   "description": "Cognitive kernel plugin for LLM augmentation with working memory, attention control, meta-cognition, and scaffolding",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -66,7 +66,7 @@
     "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.8"
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.9"
   },
   "peerDependenciesMeta": {
     "@claude-flow/ruvector-upstream": {
