@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/performance",
-  "version": "3.0.0-alpha.6-patch.6",
+  "version": "3.0.0-alpha.6-patch.7",
   "type": "module",
   "description": "Performance module - benchmarking, Flash Attention validation, optimization",
   "main": "dist/index.js",
