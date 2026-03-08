@@ -1958,7 +1958,7 @@ export async function searchEntries(options: {
     query,
     namespace = 'default',
     limit = 10,
-    threshold = 0.3,
+    threshold = 0.1,
     dbPath: customPath
   } = options;
 
