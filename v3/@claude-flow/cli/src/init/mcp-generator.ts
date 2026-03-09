@@ -2,6 +2,8 @@
  * MCP Configuration Generator
  * Creates .mcp.json for Claude Code MCP server integration
  * Handles cross-platform compatibility (Windows requires cmd /c wrapper)
+ *
+ * E2E-002: Dummy patch for CI/CD end-to-end validation
  */
 
 import type { InitOptions, MCPConfig } from './types.js';
