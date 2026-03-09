@@ -664,3 +664,4 @@ export type {
 
 // Default export
 export default CLI;
+// E2E-001: end-to-end deployment pipeline test (temporary)
