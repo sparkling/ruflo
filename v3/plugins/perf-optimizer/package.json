@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-perf-optimizer",
-  "version": "3.0.0-alpha.1-patch.10",
+  "version": "3.0.0-alpha.1-patch.11",
   "description": "AI-powered performance optimization plugin for bottleneck detection, memory analysis, and configuration tuning",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -59,7 +59,7 @@
     "zod": "^3.22.4"
   },
   "peerDependencies": {
-    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.10"
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.11"
   },
   "peerDependenciesMeta": {
     "@claude-flow/ruvector-upstream": {
