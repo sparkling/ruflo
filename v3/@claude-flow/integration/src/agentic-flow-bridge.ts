@@ -154,40 +154,57 @@ export class AgenticFlowBridge extends EventEmitter {
       await this.connectToAgenticFlow();
 
       // Initialize SDK bridge first (required for version negotiation)
-      this.sdk = new SDKBridge({
-        targetVersion: 'alpha',
-        enableVersionNegotiation: true,
-        fallbackBehavior: 'warn',
-        enableCompatibilityLayer: true,
-        supportDeprecatedAPIs: true,
-      });
-      await this.sdk.initialize();
-      this.updateComponentHealth('sdk', 'healthy');
+      try {
+        this.sdk = new SDKBridge({
+          targetVersion: 'alpha',
+          enableVersionNegotiation: true,
+          fallbackBehavior: 'warn',
+          enableCompatibilityLayer: true,
+          supportDeprecatedAPIs: true,
+        });
+        await this.sdk.initialize();
+        this.updateComponentHealth('sdk', 'healthy');
+      } catch (sdkError) {
+        this.updateComponentHealth('sdk', 'degraded', (sdkError as Error).message);
+        this.logDebug('SDK bridge initialization failed, continuing', sdkError);
+      }
 
       // Initialize SONA adapter if enabled
       // Pass agentic-flow reference for delegation when available
       if (this.config.features.enableSONA) {
-        this.sona = new SONAAdapter(this.config.sona);
-        if (this.agenticFlowCore) {
-          // Type cast: agentic-flow runtime API is compatible but typed as `unknown`
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this.sona.setAgenticFlowReference(this.agenticFlowCore.sona as any);
+        try {
+          this.sona = new SONAAdapter(this.config.sona);
+          if (this.agenticFlowCore) {
+            // Type cast: agentic-flow runtime API is compatible but typed as `unknown`
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            this.sona.setAgenticFlowReference(this.agenticFlowCore.sona as any);
+          }
+          await this.sona.initialize();
+          this.updateComponentHealth('sona', 'healthy');
+        } catch (sonaError) {
+          this.sona = null;
+          this.updateComponentHealth('sona', 'degraded', (sonaError as Error).message);
+          this.logDebug('SONA initialization failed, continuing', sonaError);
         }
-        await this.sona.initialize();
-        this.updateComponentHealth('sona', 'healthy');
       }
 
       // Initialize Attention coordinator if enabled
       // Pass agentic-flow reference for delegation when available
       if (this.config.features.enableFlashAttention) {
-        this.attention = new AttentionCoordinator(this.config.attention);
-        if (this.agenticFlowCore) {
-          // Type cast: agentic-flow runtime API is compatible but typed as `unknown`
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this.attention.setAgenticFlowReference(this.agenticFlowCore.attention as any);
+        try {
+          this.attention = new AttentionCoordinator(this.config.attention);
+          if (this.agenticFlowCore) {
+            // Type cast: agentic-flow runtime API is compatible but typed as `unknown`
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            this.attention.setAgenticFlowReference(this.agenticFlowCore.attention as any);
+          }
+          await this.attention.initialize();
+          this.updateComponentHealth('attention', 'healthy');
+        } catch (attentionError) {
+          this.attention = null;
+          this.updateComponentHealth('attention', 'degraded', (attentionError as Error).message);
+          this.logDebug('Attention initialization failed, continuing', attentionError);
         }
-        await this.attention.initialize();
-        this.updateComponentHealth('attention', 'healthy');
       }
 
       this.initialized = true;

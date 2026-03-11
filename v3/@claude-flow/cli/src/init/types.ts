@@ -381,7 +381,7 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     claudeFlow: true,
     ruvSwarm: false,
     flowNexus: false,
-    autoStart: false,
+    autoStart: true,
     port: 3000,
   },
   runtime: {
@@ -415,7 +415,7 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
     skills: true,
     commands: false,
     agents: false,
-    helpers: false,
+    helpers: true,
     statusline: false,
     mcp: true,
     runtime: true,
@@ -510,7 +510,7 @@ export const FULL_INIT_OPTIONS: InitOptions = {
     claudeFlow: true,
     ruvSwarm: true,
     flowNexus: true,
-    autoStart: false,
+    autoStart: true,
     port: 3000,
   },
   embeddings: {

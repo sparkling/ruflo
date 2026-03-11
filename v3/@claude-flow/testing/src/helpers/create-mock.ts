@@ -13,7 +13,7 @@ import { vi, type Mock } from 'vitest';
  */
 export type MockedInterface<T> = {
   [K in keyof T]: T[K] extends (...args: infer A) => infer R
-    ? Mock<(...args: A) => R>
+    ? Mock<A, R>
     : T[K];
 };
 

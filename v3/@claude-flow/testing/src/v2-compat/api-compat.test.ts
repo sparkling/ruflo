@@ -19,11 +19,11 @@ import {
  * Mock V3 module registry for testing
  */
 interface MockModuleRegistry {
-  getClass: Mock<(name: string) => MockClass | null>;
-  getClasses: Mock<() => string[]>;
-  resolveImport: Mock<(path: string) => string | null>;
-  getMethodSignature: Mock<(className: string, method: string) => string | null>;
-  checkTypeCompatibility: Mock<(v2Type: string, v3Type: string) => boolean>;
+  getClass: Mock<[name: string], MockClass | null>;
+  getClasses: Mock<[], string[]>;
+  resolveImport: Mock<[path: string], string | null>;
+  getMethodSignature: Mock<[className: string, method: string], string | null>;
+  checkTypeCompatibility: Mock<[v2Type: string, v3Type: string], boolean>;
 }
 
 /**

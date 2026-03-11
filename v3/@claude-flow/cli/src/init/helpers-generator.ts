@@ -1161,23 +1161,27 @@ export function generateHelpers(options: InitOptions): Record<string, string> {
   const helpers: Record<string, string> = {};
 
   if (options.components.helpers) {
-    // Unix/macOS shell scripts
-    helpers['pre-commit'] = generatePreCommitHook();
-    helpers['post-commit'] = generatePostCommitHook();
-
-    // Cross-platform Node.js scripts
-    helpers['session.js'] = generateCrossPlatformSessionManager();
-    helpers['router.js'] = generateAgentRouter();
-    helpers['memory.js'] = generateMemoryHelper();
-
-    // Windows-specific scripts
-    helpers['daemon-manager.ps1'] = generateWindowsDaemonManager();
-    helpers['daemon-manager.cmd'] = generateWindowsBatchWrapper();
+    const helperOps: Array<[string, () => string]> = [
+      ['pre-commit', generatePreCommitHook],
+      ['post-commit', generatePostCommitHook],
+      ['session.js', generateCrossPlatformSessionManager],
+      ['router.js', generateAgentRouter],
+      ['memory.js', generateMemoryHelper],
+      ['daemon-manager.ps1', generateWindowsDaemonManager],
+      ['daemon-manager.cmd', generateWindowsBatchWrapper],
+    ];
+    for (const [name, gen] of helperOps) {
+      try {
+        helpers[name] = gen();
+      } catch {
+        // Fallback: skip helper if generation fails
+      }
+    }
   }
 
   if (options.components.statusline) {
-    helpers['statusline.cjs'] = generateStatuslineScript(options);  // .cjs for ES module compatibility
-    helpers['statusline-hook.sh'] = generateStatuslineHook(options);
+    try { helpers['statusline.cjs'] = generateStatuslineScript(options); } catch { /* skip */ }
+    try { helpers['statusline-hook.sh'] = generateStatuslineHook(options); } catch { /* skip */ }
   }
 
   return helpers;

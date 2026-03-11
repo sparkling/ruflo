@@ -474,6 +474,23 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
     }
     fs.writeFileSync(statuslinePath, statuslineContent, 'utf-8');
 
+    // 1b. Generate non-critical helpers (session, router, memory) if missing
+    const nonCriticalHelpers: Record<string, () => string> = {
+      'session.js': generateSessionManager,
+      'router.js': generateAgentRouter,
+      'memory.js': generateMemoryHelper,
+    };
+    for (const [helperName, genFn] of Object.entries(nonCriticalHelpers)) {
+      const targetPath = path.join(targetDir, '.claude', 'helpers', helperName);
+      if (!fs.existsSync(targetPath)) {
+        try {
+          fs.writeFileSync(targetPath, genFn(), 'utf-8');
+          try { fs.chmodSync(targetPath, '755'); } catch {}
+          result.created.push(`.claude/helpers/${helperName}`);
+        } catch { /* non-critical, skip on failure */ }
+      }
+    }
+
     // 2. Create MISSING metrics files only (preserve existing data)
     const metricsDir = path.join(targetDir, '.claude-flow', 'metrics');
     const securityDir = path.join(targetDir, '.claude-flow', 'security');
