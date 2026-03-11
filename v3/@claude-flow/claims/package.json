@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/claims",
-  "version": "3.0.0-alpha.8-patch.71",
+  "version": "3.0.0-alpha.8-patch.72",
   "description": "Issue claiming and work coordination module for Claude Flow V3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

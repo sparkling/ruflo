@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-test-intelligence",
-  "version": "3.0.0-alpha.1-patch.70",
+  "version": "3.0.0-alpha.1-patch.71",
   "description": "AI-powered test intelligence plugin for predictive test selection, flaky detection, and coverage optimization",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
