@@ -779,14 +779,14 @@ export const invalidSwarmConfigs = {
  * Mock swarm coordinator interface
  */
 export interface MockSwarmCoordinator {
-  initialize: Mock<(config: SwarmConfig) => Promise<SwarmState>>;
-  coordinate: Mock<(agents: string[], task: SwarmTask) => Promise<CoordinationResult>>;
-  shutdown: Mock<(graceful?: boolean) => Promise<void>>;
-  addAgent: Mock<(agentId: string) => Promise<void>>;
-  removeAgent: Mock<(agentId: string) => Promise<void>>;
-  getState: Mock<() => SwarmState>;
-  broadcast: Mock<(message: SwarmMessage) => Promise<void>>;
-  requestConsensus: Mock<<T>(request: ConsensusRequest<T>) => Promise<ConsensusResponse<T>>>;
+  initialize: Mock<[config: SwarmConfig], Promise<SwarmState>>;
+  coordinate: Mock<[agents: string[], task: SwarmTask], Promise<CoordinationResult>>;
+  shutdown: Mock<[graceful?: boolean], Promise<void>>;
+  addAgent: Mock<[agentId: string], Promise<void>>;
+  removeAgent: Mock<[agentId: string], Promise<void>>;
+  getState: Mock<[], SwarmState>;
+  broadcast: Mock<[message: SwarmMessage], Promise<void>>;
+  requestConsensus: Mock<[request: ConsensusRequest<unknown>], Promise<ConsensusResponse<unknown>>>;
 }
 
 /**
@@ -816,11 +816,11 @@ export function createMockSwarmCoordinator(): MockSwarmCoordinator {
  * Mock message bus interface
  */
 export interface MockMessageBus {
-  publish: Mock<(message: SwarmMessage) => Promise<void>>;
-  subscribe: Mock<(pattern: string, handler: (message: SwarmMessage) => void) => () => void>;
-  unsubscribe: Mock<(pattern: string) => void>;
-  request: Mock<(message: SwarmMessage, timeout?: number) => Promise<SwarmMessage>>;
-  getStats: Mock<() => { messagesSent: number; messagesReceived: number }>;
+  publish: Mock<[message: SwarmMessage], Promise<void>>;
+  subscribe: Mock<[pattern: string, handler: (message: SwarmMessage) => void], () => void>;
+  unsubscribe: Mock<[pattern: string], void>;
+  request: Mock<[message: SwarmMessage, timeout?: number], Promise<SwarmMessage>>;
+  getStats: Mock<[], { messagesSent: number; messagesReceived: number }>;
 }
 
 /**

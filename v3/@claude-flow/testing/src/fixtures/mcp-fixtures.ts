@@ -932,16 +932,16 @@ export const invalidMCPConfigs = {
  * Mock MCP client interface
  */
 export interface MockMCPClient {
-  connect: Mock<() => Promise<void>>;
-  disconnect: Mock<() => Promise<void>>;
-  callTool: Mock<(name: string, params: Record<string, unknown>) => Promise<MCPToolResult>>;
-  listTools: Mock<() => Promise<MCPTool[]>>;
-  readResource: Mock<(uri: string) => Promise<MCPResourceContent>>;
-  listResources: Mock<() => Promise<MCPResource[]>>;
-  getPrompt: Mock<(name: string, args: Record<string, string>) => Promise<string>>;
-  listPrompts: Mock<() => Promise<MCPPrompt[]>>;
-  isConnected: Mock<() => boolean>;
-  getSessionContext: Mock<() => MCPSessionContext | null>;
+  connect: Mock<[], Promise<void>>;
+  disconnect: Mock<[], Promise<void>>;
+  callTool: Mock<[name: string, params: Record<string, unknown>], Promise<MCPToolResult>>;
+  listTools: Mock<[], Promise<MCPTool[]>>;
+  readResource: Mock<[uri: string], Promise<MCPResourceContent>>;
+  listResources: Mock<[], Promise<MCPResource[]>>;
+  getPrompt: Mock<[name: string, args: Record<string, string>], Promise<string>>;
+  listPrompts: Mock<[], Promise<MCPPrompt[]>>;
+  isConnected: Mock<[], boolean>;
+  getSessionContext: Mock<[], MCPSessionContext | null>;
 }
 
 /**
@@ -969,13 +969,13 @@ export function createMockMCPClient(): MockMCPClient {
  * Mock MCP server interface
  */
 export interface MockMCPServer {
-  start: Mock<() => Promise<void>>;
-  stop: Mock<() => Promise<void>>;
-  registerTool: Mock<(tool: MCPTool) => void>;
-  registerResource: Mock<(resource: MCPResource) => void>;
-  registerPrompt: Mock<(prompt: MCPPrompt) => void>;
-  handleRequest: Mock<(request: MCPRequestBase) => Promise<MCPResponseBase>>;
-  getStatus: Mock<() => MCPServerStatus>;
+  start: Mock<[], Promise<void>>;
+  stop: Mock<[], Promise<void>>;
+  registerTool: Mock<[tool: MCPTool], void>;
+  registerResource: Mock<[resource: MCPResource], void>;
+  registerPrompt: Mock<[prompt: MCPPrompt], void>;
+  handleRequest: Mock<[request: MCPRequestBase], Promise<MCPResponseBase>>;
+  getStatus: Mock<[], MCPServerStatus>;
 }
 
 /**
@@ -1011,10 +1011,10 @@ export function createMockMCPServer(): MockMCPServer {
  * Mock transport interface
  */
 export interface MockMCPTransport {
-  send: Mock<(message: string) => Promise<void>>;
-  receive: Mock<() => Promise<string>>;
-  close: Mock<() => Promise<void>>;
-  isOpen: Mock<() => boolean>;
+  send: Mock<[message: string], Promise<void>>;
+  receive: Mock<[], Promise<string>>;
+  close: Mock<[], Promise<void>>;
+  isOpen: Mock<[], boolean>;
 }
 
 /**
