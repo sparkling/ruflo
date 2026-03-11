@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-legal-contracts",
-  "version": "3.0.0-alpha.1-patch.80",
+  "version": "3.0.0-alpha.1-patch.81",
   "description": "Legal contract analysis plugin for Claude Flow V3 - clause extraction, risk assessment, contract comparison, obligation tracking, and playbook matching",
   "type": "module",
   "main": "./dist/index.js",
@@ -71,7 +71,7 @@
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/plugins": "3.0.0-alpha.7-patch.57"
+    "@claude-flow/plugins": "3.0.0-alpha.7-patch.58"
   },
   "engines": {
     "node": ">=20.0.0"
