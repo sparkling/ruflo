@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-prime-radiant",
-  "version": "0.1.5-patch.74",
+  "version": "0.1.5-patch.75",
   "description": "Mathematical AI interpretability plugin providing sheaf cohomology, spectral analysis, causal inference, and quantum topology for coherence validation, consensus verification, and hallucination prevention.",
   "type": "module",
   "main": "./dist/index.js",
@@ -54,8 +54,8 @@
     "node": ">=20.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/memory": "3.0.0-alpha.11-patch.65",
-    "@claude-flow/security": "3.0.0-alpha.6-patch.52",
+    "@claude-flow/memory": "3.0.0-alpha.11-patch.66",
+    "@claude-flow/security": "3.0.0-alpha.6-patch.53",
     "@claude-flow/coordination": ">=3.0.0"
   },
   "peerDependenciesMeta": {
