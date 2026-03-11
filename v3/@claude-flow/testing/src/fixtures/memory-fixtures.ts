@@ -701,12 +701,12 @@ export const invalidMemoryEntries = {
  * Mock memory service interface
  */
 export interface MockMemoryService {
-  store: Mock<(key: string, value: unknown, metadata?: MemoryMetadata) => Promise<void>>;
-  retrieve: Mock<(key: string) => Promise<unknown>>;
-  search: Mock<(query: VectorQuery) => Promise<SearchResult[]>>;
-  delete: Mock<(key: string) => Promise<void>>;
-  clear: Mock<() => Promise<void>>;
-  getStats: Mock<() => Promise<{ totalEntries: number; sizeBytes: number }>>;
+  store: Mock<[key: string, value: unknown, metadata?: MemoryMetadata], Promise<void>>;
+  retrieve: Mock<[key: string], Promise<unknown>>;
+  search: Mock<[query: VectorQuery], Promise<SearchResult[]>>;
+  delete: Mock<[key: string], Promise<void>>;
+  clear: Mock<[], Promise<void>>;
+  getStats: Mock<[], Promise<{ totalEntries: number; sizeBytes: number }>>;
 }
 
 /**
@@ -727,12 +727,12 @@ export function createMockMemoryService(): MockMemoryService {
  * Mock AgentDB interface
  */
 export interface MockAgentDB {
-  insert: Mock<(id: string, embedding: number[], metadata?: unknown) => Promise<void>>;
-  search: Mock<(embedding: number[], k: number) => Promise<SearchResult[]>>;
-  delete: Mock<(id: string) => Promise<void>>;
-  update: Mock<(id: string, embedding: number[], metadata?: unknown) => Promise<void>>;
-  getStats: Mock<() => Promise<{ vectorCount: number; indexSize: number }>>;
-  rebuildIndex: Mock<() => Promise<void>>;
+  insert: Mock<[id: string, embedding: number[], metadata?: unknown], Promise<void>>;
+  search: Mock<[embedding: number[], k: number], Promise<SearchResult[]>>;
+  delete: Mock<[id: string], Promise<void>>;
+  update: Mock<[id: string, embedding: number[], metadata?: unknown], Promise<void>>;
+  getStats: Mock<[], Promise<{ vectorCount: number; indexSize: number }>>;
+  rebuildIndex: Mock<[], Promise<void>>;
 }
 
 /**

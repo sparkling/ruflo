@@ -726,10 +726,10 @@ export interface MockAgent {
   type: V3AgentType;
   status: AgentStatus;
   capabilities: string[];
-  execute: Mock<(task: unknown) => Promise<unknown>>;
-  communicate: Mock<(message: unknown) => Promise<void>>;
-  terminate: Mock<() => Promise<void>>;
-  getMetrics: Mock<() => AgentMetrics>;
+  execute: Mock<[task: unknown], Promise<unknown>>;
+  communicate: Mock<[message: unknown], Promise<void>>;
+  terminate: Mock<[], Promise<void>>;
+  getMetrics: Mock<[], AgentMetrics>;
 }
 
 /**
