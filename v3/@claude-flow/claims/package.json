@@ -67,7 +67,7 @@
     "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@claude-flow/shared": "^3.0.0-alpha.1"
+    "@claude-flow/shared": "3.0.0-alpha.6"
   },
   "peerDependenciesMeta": {
     "@claude-flow/shared": {

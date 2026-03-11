@@ -60,9 +60,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claude-flow/memory": "^3.0.0-alpha.2",
-    "@claude-flow/neural": "^3.0.0-alpha.2",
-    "@claude-flow/shared": "^3.0.0-alpha.1",
+    "@claude-flow/memory": "3.0.0-alpha.11",
+    "@claude-flow/neural": "3.0.0-alpha.7",
+    "@claude-flow/shared": "3.0.0-alpha.6",
     "zod": "^3.23.0"
   },
   "optionalDependencies": {
@@ -75,7 +75,7 @@
     "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@claude-flow/shared": "^3.0.0-alpha.1"
+    "@claude-flow/shared": "3.0.0-alpha.6"
   },
   "engines": {
     "node": ">=20.0.0"

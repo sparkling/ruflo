@@ -61,7 +61,7 @@
     "directory": "v3/plugins/code-intelligence"
   },
   "dependencies": {
-    "@claude-flow/ruvector-upstream": "^0.1.0",
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
@@ -70,7 +70,7 @@
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/plugins": "^3.0.0-alpha.1"
+    "@claude-flow/plugins": "3.0.0-alpha.7"
   },
   "engines": {
     "node": ">=20.0.0"

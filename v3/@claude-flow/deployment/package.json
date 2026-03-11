@@ -14,7 +14,7 @@
     "release": "semantic-release"
   },
   "dependencies": {
-    "@claude-flow/shared": "^3.0.0-alpha.1"
+    "@claude-flow/shared": "3.0.0-alpha.6"
   },
   "devDependencies": {
     "semantic-release": "^25.0.2",

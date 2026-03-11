@@ -13,11 +13,11 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@claude-flow/memory": "^3.0.0-alpha.2",
+    "@claude-flow/memory": "3.0.0-alpha.11",
     "@ruvector/sona": "latest"
   },
   "optionalDependencies": {
-    "agentdb": "^2.0.0 || ^3.0.0-alpha.1"
+    "agentdb": "3.0.0-alpha.3"
   },
   "publishConfig": {
     "access": "public",
