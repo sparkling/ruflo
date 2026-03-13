@@ -3,7 +3,7 @@
   "version": "0.1.3",
   "description": "Gas Town orchestrator integration for Claude Flow V3 with WASM-accelerated formula parsing and graph analysis",
   "type": "module",
-  "main": "./dist/index.cjs",
+  "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "sideEffects": false,
