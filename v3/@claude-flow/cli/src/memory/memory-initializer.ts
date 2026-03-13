@@ -1766,6 +1766,28 @@ function generateHashEmbedding(text: string, dimensions: number): number[] {
 }
 
 /**
+ * Get the appropriate similarity threshold for the current embedding model.
+ * Hash fallback embeddings produce similarity ~0.05-0.28 (not semantic).
+ * ONNX embeddings produce meaningful similarity 0.3-0.95.
+ *
+ * FB-004: Adaptive thresholds prevent silent empty results with hash embeddings.
+ */
+export async function getAdaptiveThreshold(explicitThreshold?: number): Promise<number> {
+  if (explicitThreshold !== undefined && explicitThreshold !== null) {
+    return explicitThreshold;
+  }
+  try {
+    const { model } = await generateEmbedding('threshold probe');
+    if (model === 'hash-fallback') {
+      return 0.05; // Hash: low threshold, ranking is noise
+    }
+    return 0.3; // ONNX: meaningful similarity scores
+  } catch {
+    return 0.05; // If embedding fails, use permissive threshold
+  }
+}
+
+/**
  * Verify memory initialization works correctly
  * Tests: write, read, search, patterns
  */
@@ -2129,9 +2151,11 @@ export async function searchEntries(options: {
     query,
     namespace = 'default',
     limit = 10,
-    threshold = 0.3,
+    threshold: explicitThreshold,
     dbPath: customPath
   } = options;
+  // FB-004: adaptive threshold based on embedding model
+  const threshold = await getAdaptiveThreshold(explicitThreshold);
 
   const swarmDir = path.join(process.cwd(), '.swarm');
   const dbPath = customPath || path.join(swarmDir, 'memory.db');
