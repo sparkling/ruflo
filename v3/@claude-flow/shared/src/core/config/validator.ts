@@ -43,7 +43,7 @@ export interface ValidationError {
  * Convert Zod error to validation errors
  */
 function zodErrorToValidationErrors(error: ZodError): ValidationError[] {
-  return error.errors.map((e) => ({
+  return error.issues.map((e) => ({
     path: e.path.join('.'),
     message: e.message,
     code: e.code,
