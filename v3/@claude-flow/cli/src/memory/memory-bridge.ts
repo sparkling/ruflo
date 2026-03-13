@@ -20,6 +20,28 @@
 import * as path from 'path';
 import * as crypto from 'crypto';
 
+// FB-004: Adaptive search threshold based on embedding model.
+// Hash fallback produces similarity ~0.05-0.28 (not semantic).
+// ONNX produces meaningful similarity 0.3-0.95.
+const HASH_THRESHOLD = 0.05;
+const ONNX_THRESHOLD = 0.3;
+let _detectedModel: string | null = null;
+
+async function _getAdaptiveThreshold(explicit?: number): Promise<number> {
+  if (explicit !== undefined && explicit !== null) return explicit;
+  if (!_detectedModel) {
+    try {
+      // Probe the embedding model once and cache
+      const { generateEmbedding } = await import('./memory-initializer.js');
+      const { model } = await generateEmbedding('probe');
+      _detectedModel = model;
+    } catch {
+      _detectedModel = 'hash-fallback';
+    }
+  }
+  return _detectedModel === 'hash-fallback' ? HASH_THRESHOLD : ONNX_THRESHOLD;
+}
+
 // ===== Lazy singleton =====
 
 let registryPromise: Promise<any> | null = null;
@@ -444,7 +466,8 @@ export async function bridgeSearchEntries(options: {
   if (!ctx) return null;
 
   try {
-    const { query: queryStr, namespace = 'default', limit = 10, threshold = 0.3 } = options;
+    const { query: queryStr, namespace = 'default', limit = 10, threshold: explicitThreshold } = options;
+    const threshold = await _getAdaptiveThreshold(explicitThreshold);
     const startTime = Date.now();
 
     // Generate query embedding
@@ -941,7 +964,7 @@ export async function bridgeSearchHNSW(
 
   try {
     const k = options?.k ?? 10;
-    const threshold = options?.threshold ?? 0.3;
+    const threshold = await _getAdaptiveThreshold(options?.threshold);
     const nsFilter = options?.namespace && options.namespace !== 'all'
       ? `AND namespace = ?`
       : '';
@@ -1197,7 +1220,7 @@ export async function bridgeSearchPatterns(options: {
       query: options.query,
       namespace: 'pattern',
       limit: options.topK || 5,
-      threshold: options.minConfidence || 0.3,
+      threshold: options.minConfidence || await _getAdaptiveThreshold(),
       dbPath: options.dbPath,
     });
 
@@ -1384,7 +1407,7 @@ export async function bridgeSessionStart(options: {
       query: options.context || 'session patterns',
       namespace: 'session',
       limit: 10,
-      threshold: 0.2,
+      threshold: await _getAdaptiveThreshold(),
       dbPath: options.dbPath,
     });
 
