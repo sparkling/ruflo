@@ -7,6 +7,17 @@ import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { select, confirm, input } from '../prompt.js';
 import { callMCPTool, MCPClientError } from '../mcp-client.js';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+
+// CF-004: Read project config from .claude-flow/config.json
+function readJsonConfig(): Record<string, unknown> {
+  const jsonPath = join(process.cwd(), '.claude-flow', 'config.json');
+  if (existsSync(jsonPath)) {
+    try { return JSON.parse(readFileSync(jsonPath, 'utf-8')); } catch { /* T4: config.json may be malformed */ }
+  }
+  return {};
+}
 
 // Init configuration
 const initCommand: Command = {
@@ -44,7 +55,6 @@ const initCommand: Command = {
     // Create default configuration
     const config = {
       version: '3.0.0',
-      v3Mode: v3,
       sparc: sparc,
       agents: {
         defaultType: 'coder',
@@ -53,7 +63,7 @@ const initCommand: Command = {
         timeout: 300
       },
       swarm: {
-        topology: 'hybrid',
+        topology: 'hierarchical-mesh',
         maxAgents: 15,
         autoScale: true,
         coordinationStrategy: 'consensus'
@@ -98,7 +108,6 @@ const initCommand: Command = {
       ],
       data: [
         { setting: 'Version', value: config.version },
-        { setting: 'V3 Mode', value: config.v3Mode ? 'Enabled' : 'Disabled' },
         { setting: 'SPARC Mode', value: config.sparc ? 'Enabled' : 'Disabled' },
         { setting: 'Swarm Topology', value: config.swarm.topology },
         { setting: 'Max Agents', value: config.swarm.maxAgents },
@@ -134,11 +143,10 @@ const getCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const key = ctx.flags.key as string || ctx.args[0];
 
-    // Default config values (loaded from actual config when available)
-    const configValues: Record<string, unknown> = {
+    // CF-002/CF-004: Default config values merged with config.json
+    const defaults: Record<string, unknown> = {
       'version': '3.0.0',
-      'v3Mode': true,
-      'swarm.topology': 'hybrid',
+      'swarm.topology': 'hierarchical-mesh',
       'swarm.maxAgents': 15,
       'swarm.autoScale': true,
       'memory.backend': 'hybrid',
@@ -147,6 +155,27 @@ const getCommand: Command = {
       'agents.defaultType': 'coder',
       'agents.maxConcurrent': 15
     };
+    // Read config.json and merge with defaults
+    const diskConfig = readJsonConfig();
+    const configValues: Record<string, unknown> = { ...defaults };
+    if (diskConfig.swarm && typeof diskConfig.swarm === 'object') {
+      const sw = diskConfig.swarm as Record<string, unknown>;
+      if (sw.topology) configValues['swarm.topology'] = sw.topology;
+      if (sw.maxAgents) configValues['swarm.maxAgents'] = parseInt(String(sw.maxAgents)) || (defaults['swarm.maxAgents'] as number);
+      if (sw.autoScale !== undefined) configValues['swarm.autoScale'] = sw.autoScale === 'true' || sw.autoScale === true;
+    }
+    if (diskConfig.memory && typeof diskConfig.memory === 'object') {
+      const mem = diskConfig.memory as Record<string, unknown>;
+      if (mem.backend) configValues['memory.backend'] = mem.backend;
+      if (mem.cacheSize) configValues['memory.cacheSize'] = parseInt(String(mem.cacheSize)) || (defaults['memory.cacheSize'] as number);
+    }
+    if (diskConfig.mcp && typeof diskConfig.mcp === 'object') {
+      const mcp = diskConfig.mcp as Record<string, unknown>;
+      if (mcp.transport) configValues['mcp.transport'] = mcp.transport;
+    }
+    if (diskConfig.version) {
+      configValues['version'] = diskConfig.version;
+    }
 
     if (!key) {
       // Show all config
@@ -357,14 +386,32 @@ const exportCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const outputPath = ctx.flags.output as string || './claude-flow.config.export.json';
 
+    // CF-002: Start with defaults, merge config.json
     const config = {
       version: '3.0.0',
       exportedAt: new Date().toISOString(),
       agents: { defaultType: 'coder', maxConcurrent: 15 },
-      swarm: { topology: 'hybrid', maxAgents: 15 },
-      memory: { backend: 'hybrid', cacheSize: 256 },
-      mcp: { transport: 'stdio', tools: 'all' }
+      swarm: { topology: 'hierarchical-mesh' as string, maxAgents: 15 },
+      memory: { backend: 'hybrid' as string, cacheSize: 256 },
+      mcp: { transport: 'stdio' as string, tools: 'all' }
     };
+    // Read config.json and merge
+    const diskCfg = readJsonConfig();
+    if (diskCfg.version) { config.version = String(diskCfg.version); }
+    if (diskCfg.swarm && typeof diskCfg.swarm === 'object') {
+      const sw = diskCfg.swarm as Record<string, unknown>;
+      if (sw.topology) config.swarm.topology = String(sw.topology);
+      if (sw.maxAgents) config.swarm.maxAgents = parseInt(String(sw.maxAgents)) || 15;
+    }
+    if (diskCfg.memory && typeof diskCfg.memory === 'object') {
+      const mem = diskCfg.memory as Record<string, unknown>;
+      if (mem.backend) config.memory.backend = String(mem.backend);
+      if (mem.cacheSize) config.memory.cacheSize = parseInt(String(mem.cacheSize)) || 256;
+    }
+    if (diskCfg.mcp && typeof diskCfg.mcp === 'object') {
+      const mcp = diskCfg.mcp as Record<string, unknown>;
+      if (mcp.transport) config.mcp.transport = String(mcp.transport);
+    }
 
     output.printInfo(`Exporting configuration to ${outputPath}...`);
     output.printJson(config);
