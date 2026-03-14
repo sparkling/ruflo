@@ -598,6 +598,16 @@ export const memoryTools: MCPTool[] = [
           if (entry.hasEmbedding) withEmbeddings++;
         }
 
+        let oldest = Infinity;
+        let newest = 0;
+        for (const entry of allEntries.entries) {
+          const raw = entry.createdAt || entry.updatedAt;
+          if (!raw) continue;
+          const ts = typeof raw === 'number' ? raw : new Date(raw).getTime();
+          if (ts && ts < oldest) oldest = ts;
+          if (ts && ts > newest) newest = ts;
+        }
+
         return {
           initialized: status.initialized,
           totalEntries: allEntries.total,
@@ -606,6 +616,8 @@ export const memoryTools: MCPTool[] = [
             ? `${((withEmbeddings / allEntries.total) * 100).toFixed(1)}%`
             : '0%',
           namespaces,
+          oldestEntry: oldest < Infinity ? new Date(oldest).toISOString() : null,
+          newestEntry: newest > 0 ? new Date(newest).toISOString() : null,
           backend: 'sql.js + HNSW',
           version: status.version || '3.0.0',
           features: status.features || {
