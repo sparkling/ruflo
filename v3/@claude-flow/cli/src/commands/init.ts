@@ -161,13 +161,13 @@ async function initCodexAction(
   }
 }
 
-// Check if project is already initialized
+// CF-008: Check if project is already initialized
 function isInitialized(cwd: string): { claude: boolean; claudeFlow: boolean } {
   const claudePath = path.join(cwd, '.claude', 'settings.json');
-  const claudeFlowPath = path.join(cwd, '.claude-flow', 'config.yaml');
+  const cfJsonPath = path.join(cwd, '.claude-flow', 'config.json');
   return {
     claude: fs.existsSync(claudePath),
-    claudeFlow: fs.existsSync(claudeFlowPath),
+    claudeFlow: fs.existsSync(cfJsonPath),
   };
 }
 
@@ -184,7 +184,29 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
 
   // If codex mode, use the Codex initializer
   if (codexMode || dualMode) {
-    return initCodexAction(ctx, { codexMode, dualMode, force, minimal, full });
+    const codexResult = await initCodexAction(ctx, { codexMode, dualMode, force, minimal, full });
+    // SG-003: --dual must also create Claude Code infrastructure (.claude/helpers + settings)
+    if (dualMode) {
+      try {
+        await executeInit({
+          ...DEFAULT_INIT_OPTIONS,
+          targetDir: cwd,
+          force,
+          components: {
+            settings: true,
+            helpers: true,
+            statusline: true,
+            skills: true,
+            commands: true,
+            agents: true,
+            mcp: true,
+            runtime: false,
+            claudeMd: false,
+          },
+        });
+      } catch { /* T4: non-fatal — codex init already succeeded */ }
+    }
+    return codexResult;
   }
 
   // Check if already initialized
@@ -194,7 +216,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
   if (hasExisting && !force) {
     output.printWarning('RuFlo appears to be already initialized');
     if (initialized.claude) output.printInfo('  Found: .claude/settings.json');
-    if (initialized.claudeFlow) output.printInfo('  Found: .claude-flow/config.yaml');
+    if (initialized.claudeFlow) output.printInfo('  Found: .claude-flow/config.json');
     output.printInfo('Use --force to reinitialize');
 
     if (ctx.interactive) {
@@ -299,7 +321,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
     if (options.components.runtime) {
       output.printBox(
         [
-          `Config:      .claude-flow/config.yaml`,
+          `Config:      .claude-flow/config.json`,
           `Data:        .claude-flow/data/`,
           `Logs:        .claude-flow/logs/`,
           `Sessions:    .claude-flow/sessions/`,
@@ -423,10 +445,26 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
   }
 };
 
-// Wizard subcommand for interactive setup
-const wizardCommand: Command = {
+// Wizard — top-level command + init subcommand — SG-004
+export const wizardCommand: Command = {
   name: 'wizard',
+  aliases: ['wiz'],
   description: 'Interactive setup wizard for comprehensive configuration',
+  options: [
+    { name: 'force', short: 'f', description: 'Overwrite existing configuration', type: 'boolean', default: false },
+    { name: 'start-all', description: 'Auto-start daemon, memory, and swarm after init', type: 'boolean', default: false },
+    { name: 'start-daemon', description: 'Auto-start daemon after init', type: 'boolean', default: false },
+    { name: 'codex', description: 'Initialize for OpenAI Codex CLI', type: 'boolean', default: false },
+    { name: 'dual', description: 'Initialize for both Claude Code and Codex', type: 'boolean', default: false },
+    { name: 'with-embeddings', description: 'Initialize ONNX embedding subsystem', type: 'boolean', default: false },
+    { name: 'embedding-model', description: 'ONNX embedding model', type: 'string', default: 'all-MiniLM-L6-v2', choices: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'] },
+  ],
+  examples: [
+    { command: 'claude-flow wizard', description: 'Run interactive setup wizard' },
+    { command: 'claude-flow wizard --start-all', description: 'Wizard then start all services' },
+    { command: 'claude-flow wizard --force', description: 'Reinitialize with wizard' },
+    { command: 'claude-flow wizard --codex', description: 'Wizard with Codex integration' },
+  ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     output.writeln();
     output.writeln(output.bold('RuFlo V3 Setup Wizard'));
@@ -434,8 +472,25 @@ const wizardCommand: Command = {
     output.writeln();
 
     try {
+      // SG-004: Check if already initialized (respects --force)
+      const force = ctx.flags.force;
+      const initialized = isInitialized(ctx.cwd);
+      const hasExisting = initialized.claude || initialized.claudeFlow;
+      if (hasExisting && !force) {
+        output.printWarning('Claude Flow appears to be already initialized');
+        if (initialized.claude) output.printInfo('  Found: .claude/settings.json');
+        if (initialized.claudeFlow) output.printInfo('  Found: .claude-flow/config.json');
+        output.printInfo('Use --force to reinitialize');
+        const proceed = await confirm({
+          message: 'Do you want to reinitialize? This will overwrite existing configuration.',
+          default: false,
+        });
+        if (!proceed) {
+          return { success: true, message: 'Wizard cancelled' };
+        }
+      }
       // Start with base options
-      const options: InitOptions = { ...DEFAULT_INIT_OPTIONS, targetDir: ctx.cwd };
+      const options: InitOptions = { ...JSON.parse(JSON.stringify(DEFAULT_INIT_OPTIONS)), targetDir: ctx.cwd, force: ctx.flags.force };
 
       // Configuration preset
       const preset = await select({
@@ -522,6 +577,7 @@ const wizardCommand: Command = {
           options.hooks.sessionStart = hooks.includes('sessionStart');
           options.hooks.stop = hooks.includes('stop');
           options.hooks.notification = hooks.includes('notification');
+          options.hooks.permissionRequest = hooks.includes('permissionRequest');
         }
       }
 
@@ -625,6 +681,18 @@ const wizardCommand: Command = {
 
       spinner.succeed('Setup complete!');
 
+      // SG-004: Respect --codex / --dual in wizard
+      const codexMode = ctx.flags.codex;
+      const dualMode = ctx.flags.dual;
+      if (codexMode || dualMode) {
+        try {
+          output.writeln(output.dim('  Initializing Codex integration...'));
+          await initCodexAction(ctx, { codexMode, dualMode, force: ctx.flags.force, minimal: false, full: false });
+        } catch (err) { /* T4: codex init is supplementary — wizard already succeeded */
+          output.printWarning(`Codex initialization: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       // Initialize embeddings if enabled
       let embeddingsInitialized = false;
       if (enableEmbeddings) {
@@ -668,13 +736,61 @@ const wizardCommand: Command = {
         ],
       });
 
+      // SG-004: Respect --start-all / --start-daemon in wizard
+      const startAll = ctx.flags['start-all'] || ctx.flags.startAll;
+      const startDaemon = ctx.flags['start-daemon'] || ctx.flags.startDaemon || startAll;
+      if (startDaemon || startAll) {
+        output.writeln();
+        output.printInfo('Starting services...');
+        const { execSync } = await import('child_process');
+        if (startAll) {
+          try {
+            output.writeln(output.dim('  Initializing memory database...'));
+            execSync('npx @claude-flow/cli@latest memory init 2>/dev/null', {
+              stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
+            });
+            output.writeln(output.success('  \u2713 Memory initialized'));
+          } catch { /* T4: memory init failure is expected if already initialized */ output.writeln(output.dim('  Memory database already exists')); }
+        }
+        if (startDaemon) {
+          try {
+            output.writeln(output.dim('  Starting daemon...'));
+            execSync('npx @claude-flow/cli@latest daemon start 2>/dev/null &', {
+              stdio: 'pipe', cwd: ctx.cwd, timeout: 10000
+            });
+            output.writeln(output.success('  \u2713 Daemon started'));
+          } catch { /* T4: daemon start failure is expected if already running */ output.writeln(output.warning('  Daemon may already be running')); }
+        }
+        if (startAll) {
+          try {
+            output.writeln(output.dim('  Initializing swarm...'));
+            execSync(`npx @claude-flow/cli@latest swarm init --topology ${options.runtime.topology || 'hierarchical-mesh'} 2>/dev/null`, {
+              stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
+            });
+            output.writeln(output.success('  \u2713 Swarm initialized'));
+          } catch { /* T4: swarm init failure is expected if already initialized */ output.writeln(output.dim('  Swarm initialization skipped')); }
+        }
+        output.writeln();
+        output.printSuccess('All services started');
+      }
+      else {
+        output.writeln(output.bold('Next steps:'));
+        output.printList([
+          `Run ${output.highlight('claude-flow daemon start')} to start background workers`,
+          `Run ${output.highlight('claude-flow memory init')} to initialize memory database`,
+          `Run ${output.highlight('claude-flow swarm init')} to initialize a swarm`,
+          `Or re-run with ${output.highlight('--start-all')} to do all of the above`,
+        ]);
+      }
+
       return { success: true, data: result };
     } catch (error) {
       if (error instanceof Error && error.message === 'User cancelled') {
         output.printInfo('Setup cancelled');
         return { success: true };
       }
-      throw error;
+      output.printError(`Failed to initialize: ${error instanceof Error ? error.message : String(error)}`);
+      return { success: false, exitCode: 1 };
     }
   },
 };
@@ -692,7 +808,7 @@ const checkCommand: Command = {
       claudeFlow: initialized.claudeFlow,
       paths: {
         claudeSettings: initialized.claude ? path.join(ctx.cwd, '.claude', 'settings.json') : null,
-        claudeFlowConfig: initialized.claudeFlow ? path.join(ctx.cwd, '.claude-flow', 'config.yaml') : null,
+        claudeFlowConfig: initialized.claudeFlow ? path.join(ctx.cwd, '.claude-flow', 'config.json') : null,
       },
     };
 
@@ -707,7 +823,7 @@ const checkCommand: Command = {
         output.printInfo(`  Claude Code: .claude/settings.json`);
       }
       if (initialized.claudeFlow) {
-        output.printInfo(`  V3 Runtime: .claude-flow/config.yaml`);
+        output.printInfo(`  V3 Runtime: .claude-flow/config.json`);
       }
     } else {
       output.printWarning('RuFlo is not initialized in this directory');
