@@ -412,7 +412,7 @@ const statusCommand: Command = {
     try {
       // Import real implementations
       const { getIntelligenceStats, initializeIntelligence, benchmarkAdaptation } = await import('../memory/intelligence.js');
-      const { getHNSWStatus, loadEmbeddingModel } = await import('../memory/memory-initializer.js');
+      const { getHNSWIndex, getHNSWStatus, loadEmbeddingModel } = await import('../memory/memory-initializer.js');
       const ruvector = await import('../services/ruvector-training.js');
 
       // Initialize if needed and get real stats
@@ -426,6 +426,11 @@ const statusCommand: Command = {
       // Check embedding model
       const modelInfo = await loadEmbeddingModel({ verbose: false });
 
+      // UI-002: Initialize RuVector WASM + SONA + HNSW so status reflects reality
+      if (!ruvector.getTrainingStats().initialized) {
+        await ruvector.initializeTraining({ useSona: true }).catch(() => {}); /* UI-002: optional init */
+      }
+      await getHNSWIndex().catch(() => null); /* UI-002: optional init */
       // Check RuVector WASM status
       const ruvectorStats = ruvector.getTrainingStats();
       const sonaAvailable = ruvector.isSonaAvailable();
