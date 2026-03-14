@@ -1603,12 +1603,12 @@ export async function loadEmbeddingModel(options?: {
       loaded: true,
       model: null, // Will use simple hash-based fallback
       tokenizer: null,
-      dimensions: 128 // Smaller fallback dimensions
+      dimensions: 768 // Match HNSW index dimensions (hash fallback)
     };
 
     return {
       success: true,
-      dimensions: 128,
+      dimensions: 768,
       modelName: 'hash-fallback',
       loadTime: Date.now() - startTime
     };
