@@ -1558,6 +1558,12 @@ export async function loadEmbeddingModel(options?: {
         }
     } catch { /* EM-001: embeddings.json may not exist — use defaults */ }
     const xenovaModel = modelName.startsWith('Xenova/') ? modelName : `Xenova/${modelName}`;
+    // EM-002: Set TRANSFORMERS_CACHE to user-writable path to prevent EACCES on global installs
+    if (!process.env.TRANSFORMERS_CACHE) {
+      const os = await import('os');
+      const path = await import('path');
+      process.env.TRANSFORMERS_CACHE = path.join(os.homedir(), '.cache', 'transformers');
+    }
     // Try to import @xenova/transformers for ONNX embeddings
     const transformers = await import('@xenova/transformers').catch(() => null); /* EM-001: optional dependency */
     if (transformers) {
