@@ -4,7 +4,7 @@
  * Custom Vitest matchers and assertion utilities for V3 module testing.
  * Implements London School TDD behavior verification patterns.
  */
-import { expect, type Mock, type ExpectStatic } from 'vitest';
+import { expect, type Mock } from 'vitest';
 
 /**
  * Assert that a mock was called with arguments matching a pattern
