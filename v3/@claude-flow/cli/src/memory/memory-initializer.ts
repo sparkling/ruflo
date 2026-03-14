@@ -919,8 +919,8 @@ INSERT OR REPLACE INTO metadata (key, value) VALUES
 
 -- Create default vector index configuration
 INSERT OR IGNORE INTO vector_indexes (id, name, dimensions) VALUES
-  ('default', 'default', 768),
-  ('patterns', 'patterns', 768);
+  ('default', 'default', 384),
+  ('patterns', 'patterns', 384);
 `;
 }
 
@@ -1564,12 +1564,12 @@ export async function loadEmbeddingModel(options?: {
         loaded: true,
         model: { embed: reasoningBank.computeEmbedding },
         tokenizer: null,
-        dimensions: 768
+        dimensions: 384
       };
 
       return {
         success: true,
-        dimensions: 768,
+        dimensions: 384,
         modelName: 'agentic-flow/reasoningbank',
         loadTime: Date.now() - startTime
       };
@@ -1587,12 +1587,12 @@ export async function loadEmbeddingModel(options?: {
         loaded: true,
         model: (agenticFlow as any).embeddings,
         tokenizer: null,
-        dimensions: 768
+        dimensions: 384
       };
 
       return {
         success: true,
-        dimensions: 768,
+        dimensions: 384,
         modelName: 'agentic-flow',
         loadTime: Date.now() - startTime
       };
