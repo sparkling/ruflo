@@ -1345,7 +1345,7 @@ const initMemoryCommand: Command = {
               controllerLines.push(`  ${output.success('✓')} ${name}`);
             }
           }
-          if (failed.length > 0 && verbose) {
+          if (failed.length > 0) {
             controllerLines.push('');
             for (const name of failed) {
               controllerLines.push(`  ${output.dim('✗')} ${name}`);
