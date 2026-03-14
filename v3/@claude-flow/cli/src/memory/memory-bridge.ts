@@ -103,7 +103,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
         try {
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
-            dimension: 384,
+            dimension: 768,
             controllers: {
               reasoningBank: true,
               learningBridge: false,
@@ -381,7 +381,7 @@ export async function bridgeStoreEntry(options: {
           if (emb) {
             embeddingJson = JSON.stringify(Array.from(emb));
             dimensions = emb.length;
-            model = 'Xenova/all-MiniLM-L6-v2';
+            model = 'Xenova/all-mpnet-base-v2';
           }
         }
       } catch {
@@ -854,7 +854,7 @@ export async function bridgeGenerateEmbedding(
     return {
       embedding: Array.from(emb),
       dimensions: emb.length,
-      model: 'Xenova/all-MiniLM-L6-v2',
+      model: 'Xenova/all-mpnet-base-v2',
     };
   } catch {
     return null;
@@ -889,7 +889,7 @@ export async function bridgeLoadEmbeddingModel(
     return {
       success: true,
       dimensions: test.length,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
+      modelName: 'Xenova/all-mpnet-base-v2',
       loadTime: Date.now() - startTime,
     };
   } catch {
@@ -933,7 +933,7 @@ export async function bridgeGetHNSWStatus(
       available: true,
       initialized: true,
       entryCount,
-      dimensions: 384,
+      dimensions: 768,
     };
   } catch {
     return null;
@@ -1039,7 +1039,7 @@ export async function bridgeAddToHNSW(
         id, key, namespace, content, type,
         embedding, embedding_dimensions, embedding_model,
         created_at, updated_at, status
-      ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, 'Xenova/all-MiniLM-L6-v2', ?, ?, 'active')
+      ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, 'Xenova/all-mpnet-base-v2', ?, ?, 'active')
     `).run(
       id, entry.key, entry.namespace, entry.content,
       embeddingJson, embedding.length,
