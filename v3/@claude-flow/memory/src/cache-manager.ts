@@ -397,6 +397,7 @@ export class CacheManager<T = MemoryEntry> extends EventEmitter {
     this.cleanupInterval = setInterval(() => {
       this.cleanupExpired();
     }, 60000);
+    this.cleanupInterval.unref(); // MM-002: don't prevent process exit
   }
 
   private cleanupExpired(): void {

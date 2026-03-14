@@ -138,6 +138,7 @@ export class SqlJsBackend extends EventEmitter implements IMemoryBackend {
           this.emit('error', { operation: 'auto-persist', error: err });
         });
       }, this.config.autoPersistInterval);
+      this.persistTimer.unref(); // MM-002: don't prevent process exit
     }
 
     this.initialized = true;
