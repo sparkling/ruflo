@@ -285,7 +285,7 @@ export class SwarmTestInstance {
 
     // Execute task on appropriate agent
     for (const agent of this.agents.values()) {
-      const result = await agent.execute(task);
+      const result = await (agent.execute as any)(task) as SwarmTaskResult;
       results.push(result);
     }
 

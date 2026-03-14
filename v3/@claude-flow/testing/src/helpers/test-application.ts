@@ -290,12 +290,12 @@ class TestApplicationBuilder {
   build(): TestApplication {
     return {
       services: {
-        eventBus: this.eventBus as IEventBus,
-        taskManager: this.taskManager as ITaskManager,
-        agentLifecycle: this.agentLifecycle as IAgentLifecycle,
-        memoryService: this.memoryService as IMemoryService,
-        securityService: this.securityService as ISecurityService,
-        swarmCoordinator: this.swarmCoordinator as ISwarmCoordinator,
+        eventBus: this.eventBus as unknown as IEventBus,
+        taskManager: this.taskManager as unknown as ITaskManager,
+        agentLifecycle: this.agentLifecycle as unknown as IAgentLifecycle,
+        memoryService: this.memoryService as unknown as IMemoryService,
+        securityService: this.securityService as unknown as ISecurityService,
+        swarmCoordinator: this.swarmCoordinator as unknown as ISwarmCoordinator,
       },
       mocks: {
         eventBus: this.eventBus,
