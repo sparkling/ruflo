@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-healthcare-clinical",
-  "version": "3.0.0-alpha.1-patch.12",
+  "version": "3.0.0-alpha.1-patch.13",
   "description": "HIPAA-compliant clinical decision support plugin with patient similarity search, drug interaction detection, and clinical pathway recommendations using RuVector WASM packages.",
   "type": "module",
   "main": "./dist/index.js",
@@ -79,7 +79,7 @@
     "node": ">=20.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.6"
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.7"
   },
   "peerDependenciesMeta": {
     "@claude-flow/ruvector-upstream": {
