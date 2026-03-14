@@ -19,7 +19,7 @@ const trainCommand: Command = {
     { name: 'model', short: 'm', type: 'string', description: 'Model ID to train' },
     { name: 'learning-rate', short: 'l', type: 'number', description: 'Learning rate', default: '0.01' },
     { name: 'batch-size', short: 'b', type: 'number', description: 'Batch size', default: '32' },
-    { name: 'dim', type: 'number', description: 'Embedding dimension (max 384)', default: '384' },
+    { name: 'dim', type: 'number', description: 'Embedding dimension (max 768)', default: '768' },
     { name: 'wasm', short: 'w', type: 'boolean', description: 'Use RuVector WASM acceleration', default: 'true' },
     { name: 'flash', type: 'boolean', description: 'Enable Flash Attention (2.49x-7.47x speedup)', default: 'true' },
     { name: 'moe', type: 'boolean', description: 'Enable Mixture of Experts routing', default: 'false' },
@@ -37,7 +37,7 @@ const trainCommand: Command = {
     const epochs = parseInt(ctx.flags.epochs as string || '50', 10);
     const learningRate = parseFloat(ctx.flags['learning-rate'] as string || '0.01');
     const batchSize = parseInt(ctx.flags['batch-size'] as string || '32', 10);
-    const dim = Math.min(parseInt(ctx.flags.dim as string || '384', 10), 384);
+    const dim = Math.min(parseInt(ctx.flags.dim as string || '768', 10), 768);
     const useWasm = ctx.flags.wasm !== false;
     const useFlash = ctx.flags.flash !== false;
     const useMoE = ctx.flags.moe === true;
@@ -1521,7 +1521,7 @@ const benchmarkCommand: Command = {
   name: 'benchmark',
   description: 'Benchmark RuVector WASM training performance',
   options: [
-    { name: 'dim', short: 'd', type: 'number', description: 'Embedding dimension (max 384)', default: '384' },
+    { name: 'dim', short: 'd', type: 'number', description: 'Embedding dimension (max 768)', default: '768' },
     { name: 'iterations', short: 'i', type: 'number', description: 'Number of iterations', default: '1000' },
     { name: 'keys', short: 'k', type: 'number', description: 'Number of keys for attention', default: '100' },
   ],
@@ -1530,7 +1530,7 @@ const benchmarkCommand: Command = {
     { command: 'claude-flow neural benchmark -d 128 -i 5000', description: 'Custom benchmark' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const dim = Math.min(parseInt(ctx.flags.dim as string || '384', 10), 384);
+    const dim = Math.min(parseInt(ctx.flags.dim as string || '768', 10), 768);
     const iterations = parseInt(ctx.flags.iterations as string || '1000', 10);
     const numKeys = parseInt(ctx.flags.keys as string || '100', 10);
 

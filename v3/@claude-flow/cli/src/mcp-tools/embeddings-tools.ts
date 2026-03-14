@@ -165,7 +165,7 @@ export const embeddingsTools: MCPTool[] = [
           type: 'string',
           description: 'ONNX model ID',
           enum: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
-          default: 'all-MiniLM-L6-v2',
+          default: 'all-mpnet-base-v2',
         },
         hyperbolic: {
           type: 'boolean',
@@ -190,7 +190,7 @@ export const embeddingsTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const model = (input.model as string) || 'all-MiniLM-L6-v2';
+      const model = (input.model as string) || 'all-mpnet-base-v2';
       const hyperbolic = input.hyperbolic !== false;
       const curvature = (input.curvature as number) || -1;
       const cacheSize = (input.cacheSize as number) || 256;

@@ -110,7 +110,7 @@ export interface RuntimeConfig {
   /** Database path for AgentDB */
   dbPath?: string;
 
-  /** Vector dimension (default: 384 for MiniLM) */
+  /** Vector dimension (default: 768 for all-mpnet) */
   dimension?: number;
 
   /** Embedding generator function */

@@ -352,7 +352,7 @@ export async function getHNSWIndex(options?: {
   dimensions?: number;
   forceRebuild?: boolean;
 }): Promise<HNSWIndex | null> {
-  const dimensions = options?.dimensions ?? 384;
+  const dimensions = options?.dimensions ?? 768;
 
   // Return existing index if already initialized
   if (hnswIndex?.initialized && !options?.forceRebuild) {
@@ -620,7 +620,7 @@ export function getHNSWStatus(): {
       available: true,
       initialized: true,
       entryCount: hnswIndex?.entries.size ?? 0,
-      dimensions: hnswIndex?.dimensions ?? 384
+      dimensions: hnswIndex?.dimensions ?? 768
     };
   }
 
@@ -628,7 +628,7 @@ export function getHNSWStatus(): {
     available: hnswIndex !== null,
     initialized: hnswIndex?.initialized ?? false,
     entryCount: hnswIndex?.entries.size ?? 0,
-    dimensions: hnswIndex?.dimensions ?? 384
+    dimensions: hnswIndex?.dimensions ?? 768
   };
 }
 
@@ -745,7 +745,7 @@ export function getQuantizationStats(embedding: number[] | Float32Array): {
 /**
  * Batch cosine similarity - compute query against multiple vectors
  * Optimized for V8 JIT with typed arrays
- * ~50μs per 1000 vectors (384-dim)
+ * ~50μs per 1000 vectors (768-dim)
  */
 export function batchCosineSim(
   query: Float32Array | number[],
@@ -919,8 +919,8 @@ INSERT OR REPLACE INTO metadata (key, value) VALUES
 
 -- Create default vector index configuration
 INSERT OR IGNORE INTO vector_indexes (id, name, dimensions) VALUES
-  ('default', 'default', 384),
-  ('patterns', 'patterns', 384);
+  ('default', 'default', 768),
+  ('patterns', 'patterns', 768);
 `;
 }
 
@@ -1530,24 +1530,24 @@ export async function loadEmbeddingModel(options?: {
 
     if (transformers) {
       if (verbose) {
-        console.log('Loading ONNX embedding model (all-MiniLM-L6-v2)...');
+        console.log('Loading ONNX embedding model (all-mpnet-base-v2)...');
       }
 
       // Use small, fast model for local embeddings
       const { pipeline } = transformers;
-      const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+      const embedder = await pipeline('feature-extraction', 'Xenova/all-mpnet-base-v2');
 
       embeddingModelState = {
         loaded: true,
         model: embedder,
         tokenizer: null,
-        dimensions: 384 // MiniLM-L6 produces 384-dim vectors
+        dimensions: 768 // all-mpnet-base-v2 produces 768-dim vectors
       };
 
       return {
         success: true,
-        dimensions: 384,
-        modelName: 'all-MiniLM-L6-v2',
+        dimensions: 768,
+        modelName: 'all-mpnet-base-v2',
         loadTime: Date.now() - startTime
       };
     }
@@ -1564,12 +1564,12 @@ export async function loadEmbeddingModel(options?: {
         loaded: true,
         model: { embed: reasoningBank.computeEmbedding },
         tokenizer: null,
-        dimensions: 384
+        dimensions: 768
       };
 
       return {
         success: true,
-        dimensions: 384,
+        dimensions: 768,
         modelName: 'agentic-flow/reasoningbank',
         loadTime: Date.now() - startTime
       };
@@ -1587,12 +1587,12 @@ export async function loadEmbeddingModel(options?: {
         loaded: true,
         model: (agenticFlow as any).embeddings,
         tokenizer: null,
-        dimensions: 384
+        dimensions: 768
       };
 
       return {
         success: true,
-        dimensions: 384,
+        dimensions: 768,
         modelName: 'agentic-flow',
         loadTime: Date.now() - startTime
       };
@@ -2263,7 +2263,7 @@ export async function searchEntries(options: {
 /**
  * Optimized cosine similarity
  * V8 JIT-friendly - avoids manual unrolling which can hurt performance
- * ~0.5μs per 384-dim vector comparison
+ * ~0.5μs per 768-dim vector comparison
  */
 function cosineSim(a: number[], b: number[]): number {
   if (!a || !b || a.length === 0 || b.length === 0) return 0;
