@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/ruvector-upstream",
-  "version": "3.0.0-alpha.1-patch.5",
+  "version": "3.0.0-alpha.1-patch.6",
   "description": "RuVector WASM package bridges for Claude Flow plugins",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
