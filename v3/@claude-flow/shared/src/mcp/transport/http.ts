@@ -92,7 +92,7 @@ export class HttpTransport extends EventEmitter implements ITransport {
     });
 
     // Create HTTP server
-    this.server = createServer(this.app);
+    this.server = createServer(this.app as any);
 
     // Create WebSocket server
     this.wss = new WebSocketServer({

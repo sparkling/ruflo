@@ -73,7 +73,7 @@ export class HttpTransport extends EventEmitter implements ITransport {
       port: this.config.port,
     });
 
-    this.server = createServer(this.app);
+    this.server = createServer(this.app as any);
 
     this.wss = new WebSocketServer({
       server: this.server,
@@ -178,7 +178,7 @@ export class HttpTransport extends EventEmitter implements ITransport {
       }
 
       this.app.use(cors({
-        origin: (origin, callback) => {
+        origin: (origin: any, callback: any) => {
           if (!origin) {
             callback(null, true);
             return;
@@ -195,9 +195,9 @@ export class HttpTransport extends EventEmitter implements ITransport {
           }
         },
         credentials: true,
-        maxAge: 86400,
         methods: ['GET', 'POST', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+        ...(({ maxAge: 86400 }) as any),
       }));
     }
 
@@ -206,7 +206,7 @@ export class HttpTransport extends EventEmitter implements ITransport {
     }));
 
     if (this.config.requestTimeout) {
-      this.app.use((req, res, next) => {
+      this.app.use((req: any, res: any, next: any) => {
         res.setTimeout(this.config.requestTimeout!, () => {
           res.status(408).json({
             jsonrpc: '2.0',
@@ -218,7 +218,7 @@ export class HttpTransport extends EventEmitter implements ITransport {
       });
     }
 
-    this.app.use((req, res, next) => {
+    this.app.use((req: any, res: any, next: any) => {
       const startTime = performance.now();
       res.on('finish', () => {
         const duration = performance.now() - startTime;
@@ -234,7 +234,7 @@ export class HttpTransport extends EventEmitter implements ITransport {
   }
 
   private setupRoutes(): void {
-    this.app.get('/health', (req, res) => {
+    this.app.get('/health', (req: any, res: any) => {
       res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -242,15 +242,15 @@ export class HttpTransport extends EventEmitter implements ITransport {
       });
     });
 
-    this.app.post('/rpc', async (req, res) => {
+    this.app.post('/rpc', async (req: any, res: any) => {
       await this.handleHttpRequest(req, res);
     });
 
-    this.app.post('/mcp', async (req, res) => {
+    this.app.post('/mcp', async (req: any, res: any) => {
       await this.handleHttpRequest(req, res);
     });
 
-    this.app.get('/info', (req, res) => {
+    this.app.get('/info', (req: any, res: any) => {
       res.json({
         name: 'Claude-Flow MCP Server V3',
         version: '3.0.0',
@@ -262,7 +262,7 @@ export class HttpTransport extends EventEmitter implements ITransport {
       });
     });
 
-    this.app.use((req, res) => {
+    this.app.use((req: any, res: any) => {
       res.status(404).json({
         error: 'Not found',
         path: req.path,
