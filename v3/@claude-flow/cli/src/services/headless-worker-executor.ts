@@ -21,7 +21,7 @@
 
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { join, relative } from 'path';
 import type { WorkerType } from './worker-daemon.js';
 
@@ -817,9 +817,33 @@ export class HeadlessWorkerExecutor extends EventEmitter {
       if (!existsSync(this.config.logDir)) {
         mkdirSync(this.config.logDir, { recursive: true });
       }
+      this.cleanupOldLogs();
     } catch (error) {
       this.emit('warning', { message: 'Failed to create log directory', error });
     }
+  }
+
+  /**
+   * Clean up old log files (DM-006: log rotation)
+   */
+  private cleanupOldLogs(maxAgeDays = 7, maxFiles = 500): void {
+    try {
+      const files = readdirSync(this.config.logDir)
+        .filter(f => f.endsWith('.log'))
+        .map(f => {
+          try { return { name: f, mtime: statSync(join(this.config.logDir, f)).mtimeMs }; }
+          catch { return null; }
+        })
+        .filter(Boolean) as Array<{ name: string; mtime: number }>
+      ;
+      files.sort((a, b) => b.mtime - a.mtime);
+      const cutoff = Date.now() - maxAgeDays * 86400000;
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].mtime < cutoff || i >= maxFiles) {
+          try { unlinkSync(join(this.config.logDir, files[i].name)); } catch { /* best-effort */ }
+        }
+      }
+    } catch { /* entire cleanup is best-effort */ }
   }
 
   /**
@@ -1125,7 +1149,7 @@ Analyze the above codebase context and provide your response following the forma
       const child = spawn('claude', ['--print', prompt], {
         cwd: this.projectRoot,
         env,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true, // Prevent phantom console windows on Windows
       });
 

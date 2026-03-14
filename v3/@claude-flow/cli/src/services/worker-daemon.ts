@@ -11,7 +11,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import {
   HeadlessWorkerExecutor,
@@ -94,16 +94,21 @@ interface WorkerConfigInternal extends WorkerConfig {
 // Default worker configurations with improved intervals (P0 fix: map 5min -> 15min)
 const DEFAULT_WORKERS: WorkerConfigInternal[] = [
   { type: 'map', intervalMs: 15 * 60 * 1000, offsetMs: 0, priority: 'normal', description: 'Codebase mapping', enabled: true },
-  { type: 'audit', intervalMs: 10 * 60 * 1000, offsetMs: 2 * 60 * 1000, priority: 'critical', description: 'Security analysis', enabled: true },
-  { type: 'optimize', intervalMs: 15 * 60 * 1000, offsetMs: 4 * 60 * 1000, priority: 'high', description: 'Performance optimization', enabled: true },
-  { type: 'consolidate', intervalMs: 30 * 60 * 1000, offsetMs: 6 * 60 * 1000, priority: 'low', description: 'Memory consolidation', enabled: true },
-  { type: 'testgaps', intervalMs: 20 * 60 * 1000, offsetMs: 8 * 60 * 1000, priority: 'normal', description: 'Test coverage analysis', enabled: true },
+  { type: 'audit', intervalMs: 30 * 60 * 1000, offsetMs: 2 * 60 * 1000, priority: 'critical', description: 'Security analysis', enabled: true },
+  { type: 'optimize', intervalMs: 60 * 60 * 1000, offsetMs: 4 * 60 * 1000, priority: 'high', description: 'Performance optimization', enabled: true },
+  { type: 'consolidate', intervalMs: 10 * 60 * 1000, offsetMs: 6 * 60 * 1000, priority: 'low', description: 'Memory consolidation', enabled: true },
+  { type: 'testgaps', intervalMs: 60 * 60 * 1000, offsetMs: 8 * 60 * 1000, priority: 'normal', description: 'Test coverage analysis', enabled: true },
   { type: 'predict', intervalMs: 10 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Predictive preloading', enabled: false },
   { type: 'document', intervalMs: 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Auto-documentation', enabled: false },
+  { type: 'ultralearn', intervalMs: 0, offsetMs: 0, priority: 'normal', description: 'Deep knowledge acquisition (headless, manual trigger)', enabled: false },
+  { type: 'deepdive', intervalMs: 4 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Deep code analysis', enabled: false },
+  { type: 'refactor', intervalMs: 4 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Refactoring suggestions', enabled: false },
+  { type: 'benchmark', intervalMs: 2 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Performance benchmarking', enabled: false },
+  { type: 'preload', intervalMs: 10 * 60 * 1000, offsetMs: 0, priority: 'high', description: 'Embedding model + HNSW preload', enabled: true },
 ];
 
-// Worker timeout (5 minutes max per worker)
-const DEFAULT_WORKER_TIMEOUT_MS = 5 * 60 * 1000;
+// Worker timeout — must exceed max headless timeout (15 min for audit/refactor)
+const DEFAULT_WORKER_TIMEOUT_MS = 16 * 60 * 1000;
 
 /**
  * Worker Daemon - Manages background workers with Node.js
@@ -135,10 +140,39 @@ export class WorkerDaemon extends EventEmitter {
       maxConcurrent: config?.maxConcurrent ?? 2, // P0 fix: Limit concurrent workers
       workerTimeoutMs: config?.workerTimeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
       resourceThresholds: config?.resourceThresholds ?? {
-        maxCpuLoad: 2.0,
+        maxCpuLoad: 28.0,
         minFreeMemoryPercent: 20,
       },
-      workers: config?.workers ?? DEFAULT_WORKERS,
+      workers: (() => {
+        const base = config?.workers ?? DEFAULT_WORKERS;
+        try {
+          const sp = join(projectRoot, '.claude', 'settings.json');
+          const s = JSON.parse(readFileSync(sp, 'utf-8'));
+          const schedules = s?.claudeFlow?.daemon?.schedules;
+          if (!schedules || typeof schedules !== 'object') return base;
+          const parseInterval = (v: unknown): number | null => {
+            if (typeof v === 'number') return v;
+            if (typeof v !== 'string') return null;
+            const m = v.match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h)$/i);
+            if (!m) return null;
+            const n = parseFloat(m[1]);
+            switch (m[2].toLowerCase()) {
+              case 'ms': return n;
+              case 's': return n * 1000;
+              case 'm': return n * 60 * 1000;
+              case 'h': return n * 3600 * 1000;
+              default: return null;
+            }
+          };
+          return base.map(w => {
+            const sched = schedules[w.type] as Record<string, unknown> | undefined;
+            if (!sched) return w;
+            const iv = parseInterval(sched.interval ?? sched.intervalMs);
+            const en = typeof sched.enabled === 'boolean' ? sched.enabled : w.enabled;
+            return { ...w, ...(iv !== null ? { intervalMs: iv } : {}), enabled: en };
+          });
+        } catch { return base; }
+      })(),
     };
 
     // Setup graceful shutdown handlers
@@ -242,7 +276,7 @@ export class WorkerDaemon extends EventEmitter {
     if (cpuLoad > this.config.resourceThresholds.maxCpuLoad) {
       return { allowed: false, reason: `CPU load too high: ${cpuLoad.toFixed(2)}` };
     }
-    if (freePercent < this.config.resourceThresholds.minFreeMemoryPercent) {
+    if (os.platform() !== 'darwin' && freePercent < this.config.resourceThresholds.minFreeMemoryPercent) {
       return { allowed: false, reason: `Memory too low: ${freePercent.toFixed(1)}% free` };
     }
     return { allowed: true };
@@ -357,6 +391,11 @@ export class WorkerDaemon extends EventEmitter {
     this.timers.clear();
 
     this.running = false;
+    // WM-108c: Shut down bridge to close DB connections + clear timers (ADR-073 Gap E)
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      if (bridge.shutdownBridge) await bridge.shutdownBridge();
+    } catch { /* bridge may not be loaded */ }
     this.saveState();
     this.emit('stopped', { stoppedAt: new Date() });
     this.log('info', 'Daemon stopped');
@@ -541,21 +580,23 @@ export class WorkerDaemon extends EventEmitter {
   private async runWorkerLogic(workerConfig: WorkerConfig): Promise<unknown> {
     // Check if this is a headless worker type and headless execution is available
     if (isHeadlessWorker(workerConfig.type) && this.headlessAvailable && this.headlessExecutor) {
+      let result: HeadlessExecutionResult;
       try {
         this.log('info', `Running ${workerConfig.type} in headless mode (Claude Code AI)`);
-        const result = await this.headlessExecutor.execute(workerConfig.type as HeadlessWorkerType);
-        return {
-          mode: 'headless',
-          ...result,
-        };
+        result = await this.headlessExecutor.execute(workerConfig.type as HeadlessWorkerType);
       } catch (error) {
-        this.log('warn', `Headless execution failed for ${workerConfig.type}, falling back to local mode`);
-        this.emit('headless:fallback', {
-          type: workerConfig.type,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // Fall through to local execution
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        this.log('warn', `Headless execution threw for ${workerConfig.type}: ${errorMsg}`);
+        this.emit('headless:fallback', { type: workerConfig.type, error: errorMsg });
+        throw error instanceof Error ? error : new Error(errorMsg);
       }
+      if (result.success) {
+        return { mode: 'headless', ...result };
+      }
+      const errorMsg = result.error || 'Unknown headless failure';
+      this.log('warn', `Headless failed for ${workerConfig.type}: ${errorMsg}`);
+      this.emit('headless:fallback', { type: workerConfig.type, error: errorMsg });
+      throw new Error(`Headless execution failed for ${workerConfig.type}: ${errorMsg}`);
     }
 
     // Local execution (fallback or for non-headless workers)
@@ -674,7 +715,6 @@ export class WorkerDaemon extends EventEmitter {
   }
 
   private async runConsolidateWorker(): Promise<unknown> {
-    // Memory consolidation - clean up old patterns
     const consolidateFile = join(this.projectRoot, '.claude-flow', 'metrics', 'consolidation.json');
     const metricsDir = join(this.projectRoot, '.claude-flow', 'metrics');
 
@@ -682,12 +722,44 @@ export class WorkerDaemon extends EventEmitter {
       mkdirSync(metricsDir, { recursive: true });
     }
 
-    const result = {
+    const result: Record<string, unknown> = {
       timestamp: new Date().toISOString(),
       patternsConsolidated: 0,
       memoryCleaned: 0,
       duplicatesRemoved: 0,
     };
+
+    try {
+      const mi = await import('../memory/memory-initializer.js');
+      // 1. Apply temporal decay (reduce confidence of stale patterns)
+      const decayResult = await mi.applyTemporalDecay();
+      if (decayResult?.success) result.patternsConsolidated = decayResult.patternsDecayed || 0;
+      // 2. Rebuild HNSW index with current data
+      mi.clearHNSWIndex();
+      const hnsw = await mi.getHNSWIndex({ forceRebuild: true });
+      if (hnsw) result.hnswRebuilt = hnsw.entries?.size ?? 0;
+      result.memoryCleaned = 1;
+      // WM-108b: Run bridge consolidation pipeline (ADR-073 Gap D)
+      try {
+        const bridge = await import('../memory/memory-bridge.js');
+        if (bridge.bridgeConsolidate) {
+          const bridgeResult = await bridge.bridgeConsolidate({});
+          result.bridgeConsolidated = bridgeResult?.success ?? false;
+        }
+      } catch (bridgeErr: unknown) {
+        const msg = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr);
+        throw new Error(
+          `bridgeConsolidate failed: ${msg}\n` +
+          `Fix: set "memory.agentdb.enableLearning": false in .claude-flow/config.json`
+        );
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        `Consolidation worker failed: ${msg}\n` +
+        `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
+      );
+    }
 
     writeFileSync(consolidateFile, JSON.stringify(result, null, 2));
     return result;
@@ -812,12 +884,21 @@ export class WorkerDaemon extends EventEmitter {
    * Local preload worker
    */
   private async runPreloadWorkerLocal(): Promise<unknown> {
-    return {
-      timestamp: new Date().toISOString(),
-      mode: 'local',
-      resourcesPreloaded: 0,
-      cacheStatus: 'active',
-    };
+    const result: Record<string, unknown> = { timestamp: new Date().toISOString(), mode: 'local', resourcesPreloaded: 0, cacheStatus: 'active' };
+    try {
+      const mi = await import('../memory/memory-initializer.js');
+      const modelResult = await mi.loadEmbeddingModel({ verbose: false });
+      if (modelResult.success) { result.resourcesPreloaded = (result.resourcesPreloaded as number) + 1; result.embeddingModel = modelResult.modelName; }
+      const hnswResult = await mi.getHNSWIndex();
+      if (hnswResult) { result.resourcesPreloaded = (result.resourcesPreloaded as number) + 1; result.hnswEntries = hnswResult.entries?.size ?? 0; }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        `Preload worker failed: ${msg}\n` +
+        `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
+      );
+    }
+    return result;
   }
 
   /**
@@ -896,8 +977,7 @@ export class WorkerDaemon extends EventEmitter {
     // Also write to log file
     try {
       const logFile = join(this.config.logDir, 'daemon.log');
-      const fs = require('fs');
-      fs.appendFileSync(logFile, logMessage + '\n');
+      appendFileSync(logFile, logMessage + '\n');
     } catch {
       // Ignore log write errors
     }
