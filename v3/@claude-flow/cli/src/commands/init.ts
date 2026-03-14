@@ -241,12 +241,26 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
   let options: InitOptions;
 
   if (minimal) {
-    options = { ...MINIMAL_INIT_OPTIONS, targetDir: cwd, force };
+    options = { ...JSON.parse(JSON.stringify(MINIMAL_INIT_OPTIONS)), targetDir: cwd, force };
   } else if (full) {
-    options = { ...FULL_INIT_OPTIONS, targetDir: cwd, force };
+    options = { ...JSON.parse(JSON.stringify(FULL_INIT_OPTIONS)), targetDir: cwd, force };
   } else {
-    options = { ...DEFAULT_INIT_OPTIONS, targetDir: cwd, force };
+    options = { ...JSON.parse(JSON.stringify(DEFAULT_INIT_OPTIONS)), targetDir: cwd, force };
   }
+
+  // SG-010: Wire CLI flags into options.runtime/options.mcp
+  if (ctx.flags.cacheSize != null) options.runtime.cacheSize = ctx.flags.cacheSize as number;
+  if (ctx.flags.coordinationStrategy) options.runtime.coordinationStrategy = ctx.flags.coordinationStrategy as string;
+  if (ctx.flags.topology) options.runtime.topology = ctx.flags.topology as InitOptions['runtime']['topology'];
+  if (ctx.flags.maxAgents != null) options.runtime.maxAgents = ctx.flags.maxAgents as number;
+  if (ctx.flags.defaultScope) options.runtime.defaultScope = ctx.flags.defaultScope as string;
+  if (ctx.flags.bridgeFallback != null) options.hooks.bridgeFallback = ctx.flags.bridgeFallback as boolean;
+  if (ctx.flags.bridgeInitFallback != null) options.runtime.bridgeInitFallback = ctx.flags.bridgeInitFallback as boolean;
+  if (ctx.flags.agentdbLearning != null) options.runtime.enableAgentdbLearning = ctx.flags.agentdbLearning as boolean;
+  if (ctx.flags.agentdbPositiveThreshold != null) options.runtime.agentdbPositiveThreshold = ctx.flags.agentdbPositiveThreshold as number;
+  if (ctx.flags.agentdbNegativeThreshold != null) options.runtime.agentdbNegativeThreshold = ctx.flags.agentdbNegativeThreshold as number;
+  if (ctx.flags.agentdbBatchSize != null) options.runtime.agentdbBatchSize = ctx.flags.agentdbBatchSize as number;
+  if (ctx.flags.agentdbTickInterval != null) options.runtime.agentdbTickInterval = ctx.flags.agentdbTickInterval as number;
 
   // Handle --skip-claude and --only-claude flags
   if (skipClaude) {
@@ -381,7 +395,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       if (startAll) {
         try {
           output.writeln(output.dim('  Initializing swarm...'));
-          execSync('npx @claude-flow/cli@latest swarm init --topology hierarchical 2>/dev/null', {
+          execSync('npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh 2>/dev/null', {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 30000
@@ -504,10 +518,10 @@ export const wizardCommand: Command = {
       });
 
       if (preset === 'minimal') {
-        Object.assign(options, MINIMAL_INIT_OPTIONS);
+        Object.assign(options, JSON.parse(JSON.stringify(MINIMAL_INIT_OPTIONS)));
         options.targetDir = ctx.cwd;
       } else if (preset === 'full') {
-        Object.assign(options, FULL_INIT_OPTIONS);
+        Object.assign(options, JSON.parse(JSON.stringify(FULL_INIT_OPTIONS)));
         options.targetDir = ctx.cwd;
       } else if (preset === 'custom') {
         // Component selection
@@ -682,12 +696,12 @@ export const wizardCommand: Command = {
       spinner.succeed('Setup complete!');
 
       // SG-004: Respect --codex / --dual in wizard
-      const codexMode = ctx.flags.codex;
-      const dualMode = ctx.flags.dual;
+      const codexMode = ctx.flags.codex as boolean;
+      const dualMode = ctx.flags.dual as boolean;
       if (codexMode || dualMode) {
         try {
           output.writeln(output.dim('  Initializing Codex integration...'));
-          await initCodexAction(ctx, { codexMode, dualMode, force: ctx.flags.force, minimal: false, full: false });
+          await initCodexAction(ctx, { codexMode, dualMode, force: ctx.flags.force as boolean, minimal: false, full: false });
         } catch (err) { /* T4: codex init is supplementary — wizard already succeeded */
           output.printWarning(`Codex initialization: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -1186,6 +1200,73 @@ export const initCommand: Command = {
       type: 'boolean',
       default: false,
     },
+    {
+      name: 'cache-size',
+      description: 'Memory/embedding LRU cache size',
+      type: 'number',
+      default: 256,
+    },
+    {
+      name: 'coordination-strategy',
+      description: 'Swarm coordination strategy',
+      type: 'string',
+      default: 'consensus',
+    },
+    {
+      name: 'topology',
+      description: 'Swarm topology',
+      type: 'string',
+      default: 'hierarchical-mesh',
+      choices: ['hierarchical-mesh', 'hierarchical', 'mesh', 'ring', 'star'],
+    },
+    {
+      name: 'default-scope',
+      description: 'Default agent memory scope',
+      type: 'string',
+      default: 'project',
+    },
+    {
+      name: 'bridge-fallback',
+      description: 'Allow hooks to degrade on bridge failure',
+      type: 'boolean',
+      default: false,
+    },
+    {
+      name: 'bridge-init-fallback',
+      description: 'Allow bridge initialization to fail silently',
+      type: 'boolean',
+      default: false,
+    },
+    {
+      name: 'agentdb-learning',
+      description: 'Enable AgentDB self-learning loop',
+      type: 'boolean',
+      default: true,
+    },
+    {
+      name: 'agentdb-positive-threshold',
+      description: 'AgentDB positive feedback threshold',
+      type: 'number',
+      default: 0.7,
+    },
+    {
+      name: 'agentdb-negative-threshold',
+      description: 'AgentDB negative feedback threshold',
+      type: 'number',
+      default: 0.3,
+    },
+    {
+      name: 'agentdb-batch-size',
+      description: 'AgentDB learning batch size',
+      type: 'number',
+      default: 32,
+    },
+    {
+      name: 'agentdb-tick-interval',
+      description: 'AgentDB learning tick interval (ms)',
+      type: 'number',
+      default: 30000,
+    },
   ],
   examples: [
     { command: 'claude-flow init', description: 'Initialize with default configuration' },
@@ -1198,14 +1279,12 @@ export const initCommand: Command = {
     { command: 'claude-flow init --skip-claude', description: 'Only create V3 runtime' },
     { command: 'claude-flow init wizard', description: 'Interactive setup wizard' },
     { command: 'claude-flow init --with-embeddings', description: 'Initialize with ONNX embeddings' },
-    { command: 'claude-flow init --with-embeddings --embedding-model all-mpnet-base-v2', description: 'Use larger embedding model' },
-    { command: 'claude-flow init skills --all', description: 'Install all available skills' },
-    { command: 'claude-flow init hooks --minimal', description: 'Create minimal hooks configuration' },
-    { command: 'claude-flow init upgrade', description: 'Update helpers while preserving data' },
-    { command: 'claude-flow init upgrade --settings', description: 'Update helpers and merge new settings (Agent Teams)' },
-    { command: 'claude-flow init upgrade --verbose', description: 'Show detailed upgrade info' },
+    { command: 'claude-flow init --cache-size 512', description: 'Initialize with larger cache' },
+    { command: 'claude-flow init --topology mesh --max-agents 8', description: 'Use mesh topology' },
+    { command: 'claude-flow init --no-hooks', description: 'Initialize with hooks disabled' },
+    { command: 'claude-flow init --bridge-fallback', description: 'Allow hooks degradation on bridge failure' },
+    { command: 'claude-flow init --no-agentdb-learning', description: 'Disable AgentDB learning loop' },
     { command: 'claude-flow init --codex', description: 'Initialize for OpenAI Codex (AGENTS.md)' },
-    { command: 'claude-flow init --codex --full', description: 'Codex init with all 137+ skills' },
     { command: 'claude-flow init --dual', description: 'Initialize for both Claude Code and Codex' },
   ],
   action: initAction,

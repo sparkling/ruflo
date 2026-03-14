@@ -75,7 +75,8 @@ export function generateSessionManager(): string {
 const fs = require('fs');
 const path = require('path');
 
-const SESSION_DIR = path.join(process.cwd(), '.claude-flow', 'sessions');
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
+const SESSION_DIR = path.join(PROJECT_ROOT, '.claude-flow', 'sessions');
 const SESSION_FILE = path.join(SESSION_DIR, 'current.json');
 
 const commands = {
@@ -282,7 +283,8 @@ export function generateMemoryHelper(): string {
 const fs = require('fs');
 const path = require('path');
 
-const MEMORY_DIR = path.join(process.cwd(), '.claude-flow', 'data');
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
+const MEMORY_DIR = path.join(PROJECT_ROOT, '.claude-flow', 'data');
 const MEMORY_FILE = path.join(MEMORY_DIR, 'memory.json');
 
 function loadMemory() {
@@ -291,7 +293,7 @@ function loadMemory() {
       return JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf-8'));
     }
   } catch (e) {
-    // Ignore
+    console.error('[FAIL] memory.loadMemory: ' + (e?.message || e));
   }
   return {};
 }
@@ -394,7 +396,7 @@ export function generateHookHandler(): string {
     '      }',
     '    }',
     '  } catch (e) {',
-    '    // silently fail',
+    '    console.error(`[FAIL] hook-handler.safeRequire: ${e?.message || e}`);',
     '  }',
     '  return null;',
     '}',
@@ -441,7 +443,7 @@ export function generateHookHandler(): string {
     '      try {',
     '        const ctx = intelligence.getContext(prompt);',
     '        if (ctx) console.log(ctx);',
-    '      } catch (e) { /* non-fatal */ }',
+    '      } catch (e) { console.error(`[FAIL] hook-handler.route.getContext: ${e?.message || e}`); }',
     '    }',
     '    if (router && router.routeTask) {',
     '      const result = router.routeTask(prompt);',
@@ -473,13 +475,13 @@ export function generateHookHandler(): string {
     '',
     "  'post-edit': () => {",
     '    if (session && session.metric) {',
-    "      try { session.metric('edits'); } catch (e) { /* no active session */ }",
+    "      try { session.metric('edits'); } catch (e) { console.error(`[FAIL] hook-handler.post-edit.metric: ${e?.message || e}`); }",
     '    }',
     '    if (intelligence && intelligence.recordEdit) {',
     '      try {',
-    "        var file = process.env.TOOL_INPUT_file_path || args[0] || '';",
+    "        var file = (hookInput.tool_input && hookInput.tool_input.file_path) || args[0] || '';",
     '        intelligence.recordEdit(file);',
-    '      } catch (e) { /* non-fatal */ }',
+    '      } catch (e) { console.error(`[FAIL] hook-handler.post-edit.recordEdit: ${e?.message || e}`); }',
     '    }',
     "    console.log('[OK] Edit recorded');",
     '  },',
@@ -499,7 +501,7 @@ export function generateHookHandler(): string {
     '        if (result && result.nodes > 0) {',
     "          console.log('[INTELLIGENCE] Loaded ' + result.nodes + ' patterns, ' + result.edges + ' edges');",
     '        }',
-    '      } catch (e) { /* non-fatal */ }',
+    '      } catch (e) { console.error(`[FAIL] hook-handler.session-restore.init: ${e?.message || e}`); }',
     '    }',
     '  },',
     '',
@@ -513,7 +515,7 @@ export function generateHookHandler(): string {
     "          msg += ', PageRank recomputed';",
     '          console.log(msg);',
     '        }',
-    '      } catch (e) { /* non-fatal */ }',
+    '      } catch (e) { console.error(`[FAIL] hook-handler.session-end.consolidate: ${e?.message || e}`); }',
     '    }',
     '    if (session && session.end) {',
     '      session.end();',
@@ -524,7 +526,7 @@ export function generateHookHandler(): string {
     '',
     "  'pre-task': () => {",
     '    if (session && session.metric) {',
-    "      try { session.metric('tasks'); } catch (e) { /* no active session */ }",
+    "      try { session.metric('tasks'); } catch (e) { console.error(`[FAIL] hook-handler.pre-task.metric: ${e?.message || e}`); }",
     '    }',
     '    if (router && router.routeTask && prompt) {',
     '      var result = router.routeTask(prompt);',
@@ -538,7 +540,7 @@ export function generateHookHandler(): string {
     '    if (intelligence && intelligence.feedback) {',
     '      try {',
     '        intelligence.feedback(true);',
-    '      } catch (e) { /* non-fatal */ }',
+    '      } catch (e) { console.error(`[FAIL] hook-handler.post-task.feedback: ${e?.message || e}`); }',
     '    }',
     "    console.log('[OK] Task completed');",
     '  },',
@@ -579,7 +581,7 @@ export function generateHookHandler(): string {
     '  try {',
     '    handlers[command]();',
     '  } catch (e) {',
-    "    console.log('[WARN] Hook ' + command + ' encountered an error: ' + e.message);",
+    "    console.error('[FAIL] hook-handler.' + command + ': ' + (e?.message || e));",
     '  }',
     '} else if (command) {',
     "  console.log('[OK] Hook: ' + command);",
@@ -613,11 +615,12 @@ export function generateIntelligenceStub(): string {
     "const path = require('path');",
     "const os = require('os');",
     '',
-    "const DATA_DIR = path.join(process.cwd(), '.claude-flow', 'data');",
+    "const PROJECT_ROOT = path.resolve(__dirname, '../..');",
+    "const DATA_DIR = path.join(PROJECT_ROOT, '.claude-flow', 'data');",
     "const STORE_PATH = path.join(DATA_DIR, 'auto-memory-store.json');",
     "const RANKED_PATH = path.join(DATA_DIR, 'ranked-context.json');",
     "const PENDING_PATH = path.join(DATA_DIR, 'pending-insights.jsonl');",
-    "const SESSION_DIR = path.join(process.cwd(), '.claude-flow', 'sessions');",
+    "const SESSION_DIR = path.join(PROJECT_ROOT, '.claude-flow', 'sessions');",
     "const SESSION_FILE = path.join(SESSION_DIR, 'current.json');",
     '',
     'function ensureDir(dir) {',
@@ -661,8 +664,9 @@ export function generateIntelligenceStub(): string {
     '  var entries = [];',
     '  var candidates = [',
     '    path.join(os.homedir(), ".claude", "projects"),',
-    '    path.join(process.cwd(), ".claude-flow", "memory"),',
-    '    path.join(process.cwd(), ".claude", "memory"),',
+    '    // Local project memory (use PROJECT_ROOT, not cwd — ADR-066)',
+    '    path.join(PROJECT_ROOT, ".claude-flow", "memory"),',
+    '    path.join(PROJECT_ROOT, ".claude", "memory"),',
     '  ];',
     '  for (var i = 0; i < candidates.length; i++) {',
     '    try {',
@@ -843,10 +847,10 @@ async function loadMemoryPackage() {
     const { createRequire } = await import('module');
     const require = createRequire(join(PROJECT_ROOT, 'package.json'));
     return require('@claude-flow/memory');
-  } catch { /* fall through */ }
+  } catch { /* T4: optional module probe — fall through to next strategy */ }
 
   // Strategy 2: ESM import (works when @claude-flow/memory is a direct dependency)
-  try { return await import('@claude-flow/memory'); } catch { /* fall through */ }
+  try { return await import('@claude-flow/memory'); } catch { /* T4: optional module probe — fall through to next strategy */ }
 
   // Strategy 3: Walk up from PROJECT_ROOT looking for the package in any node_modules
   let searchDir = PROJECT_ROOT;
@@ -854,7 +858,7 @@ async function loadMemoryPackage() {
   while (searchDir !== parse(searchDir).root) {
     const candidate = join(searchDir, 'node_modules', '@claude-flow', 'memory', 'dist', 'index.js');
     if (existsSync(candidate)) {
-      try { return await import(\`file://\${candidate}\`); } catch { /* fall through */ }
+      try { return await import(\`file://\${candidate}\`); } catch { /* T4: optional module probe — fall through to next strategy */ }
     }
     searchDir = dirname(searchDir);
   }
@@ -909,8 +913,8 @@ try {
       process.exit(1);
   }
 } catch (err) {
-  // Hooks must never crash Claude Code - fail silently
-  dim(\`Error (non-critical): \${err.message}\`);
+  // Hooks must never crash Claude Code
+  console.error('[FAIL] auto-memory-hook: ' + (err?.message || err));
 }
 `;
 }

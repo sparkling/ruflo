@@ -50,6 +50,14 @@ export interface HooksConfig {
   preCompact: boolean;
   /** Enable Notification hooks */
   notification: boolean;
+  /** Enable PermissionRequest hooks */
+  permissionRequest?: boolean;
+  /** Allow hooks to degrade on bridge failure */
+  bridgeFallback?: boolean;
+  /** Master hooks enable switch (used in config.json generation) */
+  enabled?: boolean;
+  /** Auto-execute hooks */
+  autoExecute?: boolean;
   /** Hook timeout in milliseconds */
   timeout: number;
   /** Continue on hook error */
@@ -188,6 +196,44 @@ export interface RuntimeConfig {
   enableMemoryGraph?: boolean;
   /** Enable AgentMemoryScope (ADR-049) - 3-scope agent memory */
   enableAgentScopes?: boolean;
+  /** Swarm coordination strategy */
+  coordinationStrategy?: string;
+  /** Memory/embedding LRU cache size */
+  cacheSize?: number;
+  /** SONA access boost amount */
+  accessBoostAmount?: number;
+  /** Default agent memory scope */
+  defaultScope?: string;
+  /** Neural model path */
+  modelPath?: string;
+  /** Swarm auto-scale */
+  autoScale?: boolean;
+  /** Vector backend for AgentDB */
+  vectorBackend?: string;
+  /** Enable AgentDB learning */
+  enableLearning?: boolean;
+  /** AgentDB learning positive threshold */
+  learningPositiveThreshold?: number;
+  /** AgentDB learning negative threshold */
+  learningNegativeThreshold?: number;
+  /** AgentDB learning batch size */
+  learningBatchSize?: number;
+  /** AgentDB learning tick interval (ms) */
+  learningTickInterval?: number;
+  /** SONA mode */
+  sonaMode?: string;
+  /** Bridge init fallback */
+  bridgeInitFallback?: boolean;
+  /** Enable AgentDB learning (CLI flag) */
+  enableAgentdbLearning?: boolean;
+  /** AgentDB positive threshold (CLI flag) */
+  agentdbPositiveThreshold?: number;
+  /** AgentDB negative threshold (CLI flag) */
+  agentdbNegativeThreshold?: number;
+  /** AgentDB batch size (CLI flag) */
+  agentdbBatchSize?: number;
+  /** AgentDB tick interval (CLI flag) */
+  agentdbTickInterval?: number;
   /** CLAUDE.md template variant */
   claudeMdTemplate?: ClaudeMdTemplate;
 }
@@ -427,6 +473,12 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
     stop: false,
     notification: false,
   },
+  // SG-001: statusline file not generated (components.statusline: false)
+  // so disable the feature flag to prevent dangling settings.json references
+  statusline: {
+    ...DEFAULT_INIT_OPTIONS.statusline,
+    enabled: false,
+  },
   skills: {
     core: true,
     agentdb: false,
@@ -452,14 +504,14 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
     all: false,
   },
   runtime: {
-    topology: 'mesh',
-    maxAgents: 5,
-    memoryBackend: 'memory',
-    enableHNSW: false,
-    enableNeural: false,
-    enableLearningBridge: false,
-    enableMemoryGraph: false,
-    enableAgentScopes: false,
+    topology: 'hierarchical-mesh',
+    maxAgents: 15,
+    memoryBackend: 'hybrid',
+    enableHNSW: true,
+    enableNeural: true,
+    enableLearningBridge: true,
+    enableMemoryGraph: true,
+    enableAgentScopes: true,
   },
   embeddings: {
     enabled: false,

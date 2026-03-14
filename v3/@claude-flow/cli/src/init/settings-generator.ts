@@ -18,16 +18,17 @@ export function generateSettings(options: InitOptions): object {
   }
 
   // Add statusLine configuration if enabled
-  if (options.statusline.enabled) {
+  // SG-001: Only emit statusLine config if the component will actually be generated
+  if (options.components.statusline && options.statusline.enabled) {
     settings.statusLine = generateStatusLineConfig(options);
   }
 
   // Add permissions
   settings.permissions = {
     allow: [
-      'Bash(npx @claude-flow*)',
-      'Bash(npx claude-flow*)',
-      'Bash(node .claude/*)',
+      'Bash(npx @claude-flow/cli:*)',
+      'Bash(npx claude-flow:*)',
+      'Bash(node "$CLAUDE_PROJECT_DIR"/.claude/*)',
       'mcp__claude-flow__:*',
     ],
     deny: [
@@ -53,6 +54,16 @@ export function generateSettings(options: InitOptions): object {
     // Claude Flow specific environment
     CLAUDE_FLOW_V3_ENABLED: 'true',
     CLAUDE_FLOW_HOOKS_ENABLED: 'true',
+    // GUIDANCE autopilot environment
+    GUIDANCE_EVENT_WIRING_ENABLED: 'true',
+    GUIDANCE_PRE_EDIT_HOOK: 'true',
+    GUIDANCE_POST_COMMAND_SENTINEL: 'true',
+    GUIDANCE_TEAMMATE_IDLE_HOOK: 'true',
+    GUIDANCE_POST_TOOL_FAILURE: 'true',
+    GUIDANCE_SESSION_SENTINEL: 'true',
+    GUIDANCE_AUTO_MEMORY: 'true',
+    GUIDANCE_LEARNING_BRIDGE: 'true',
+    GUIDANCE_STATUS_LINE: 'true',
   };
 
   // Detect platform for platform-aware configuration
@@ -98,16 +109,42 @@ export function generateSettings(options: InitOptions): object {
     swarm: {
       topology: options.runtime.topology,
       maxAgents: options.runtime.maxAgents,
+      autoScale: true,
+      coordinationStrategy: 'adaptive',
     },
     memory: {
       backend: options.runtime.memoryBackend,
+      cacheSize: 256,
       enableHNSW: options.runtime.enableHNSW,
-      learningBridge: { enabled: options.runtime.enableLearningBridge ?? true },
-      memoryGraph: { enabled: options.runtime.enableMemoryGraph ?? true },
-      agentScopes: { enabled: options.runtime.enableAgentScopes ?? true },
+      agentdb: {
+        learningThreshold: 0.6,
+        vectorBackend: 'auto',
+        tickInterval: 300000,
+      },
+      learningBridge: {
+        enabled: options.runtime.enableLearningBridge ?? true,
+        sonaMode: 'adaptive',
+        confidenceDecayRate: 0.02,
+        accessBoostAmount: 0.1,
+      },
+      memoryGraph: {
+        enabled: options.runtime.enableMemoryGraph ?? true,
+        pageRankDamping: 0.85,
+        maxNodes: 10000,
+        similarityThreshold: 0.7,
+      },
+      agentScopes: {
+        enabled: options.runtime.enableAgentScopes ?? true,
+        defaultScope: 'project',
+      },
     },
     neural: {
       enabled: options.runtime.enableNeural,
+      modelPath: '.claude-flow/neural',
+    },
+    hooks: {
+      enabled: true,
+      autoExecute: true,
     },
     daemon: {
       autoStart: true,
@@ -242,7 +279,17 @@ function generateHooksConfig(config: HooksConfig): object {
           {
             type: 'command',
             command: hookHandlerCmd('pre-edit'),
-            timeout: config.timeout,
+            timeout: 5000,
+          },
+        ],
+      },
+      {
+        matcher: 'Task',
+        hooks: [
+          {
+            type: 'command',
+            command: hookHandlerCmd('pre-task'),
+            timeout: 5000,
           },
         ],
       },
@@ -267,8 +314,18 @@ function generateHooksConfig(config: HooksConfig): object {
         hooks: [
           {
             type: 'command',
-            command: hookHandlerCmd('post-bash'),
-            timeout: config.timeout,
+            command: hookHandlerCmd('post-command'),
+            timeout: 5000,
+          },
+        ],
+      },
+      {
+        matcher: 'Task',
+        hooks: [
+          {
+            type: 'command',
+            command: hookHandlerCmd('post-task'),
+            timeout: 5000,
           },
         ],
       },
@@ -285,6 +342,11 @@ function generateHooksConfig(config: HooksConfig): object {
             command: hookHandlerCmd('route'),
             timeout: 10000,
           },
+          {
+            type: 'command',
+            command: hookHandlerCmd('user-prompt'),
+            timeout: 5000,
+          },
         ],
       },
     ];
@@ -298,12 +360,17 @@ function generateHooksConfig(config: HooksConfig): object {
           {
             type: 'command',
             command: hookHandlerCmd('session-restore'),
-            timeout: 15000,
+            timeout: 5000,
           },
           {
             type: 'command',
             command: autoMemoryCmd('import'),
             timeout: 8000,
+          },
+          {
+            type: 'command',
+            command: 'bash "$CLAUDE_PROJECT_DIR"/.claude/scripts/check-patches.sh --global',
+            timeout: 30000,
           },
         ],
       },
@@ -318,7 +385,7 @@ function generateHooksConfig(config: HooksConfig): object {
           {
             type: 'command',
             command: hookHandlerCmd('session-end'),
-            timeout: 10000,
+            timeout: 5000,
           },
         ],
       },
@@ -387,14 +454,26 @@ function generateHooksConfig(config: HooksConfig): object {
     },
   ];
 
-  // SubagentStop — track agent completion for metrics
-  // NOTE: The valid event is "SubagentStop" (not "SubagentEnd")
+  // SubagentStop — teammate idle handler
   hooks.SubagentStop = [
     {
       hooks: [
         {
           type: 'command',
-          command: hookHandlerCmd('post-task'),
+          command: hookHandlerCmd('teammate-idle'),
+          timeout: 5000,
+        },
+      ],
+    },
+  ];
+
+  // PostToolUseFailure — error tracking
+  hooks.PostToolUseFailure = [
+    {
+      hooks: [
+        {
+          type: 'command',
+          command: hookHandlerCmd('post-tool-failure'),
           timeout: 5000,
         },
       ],

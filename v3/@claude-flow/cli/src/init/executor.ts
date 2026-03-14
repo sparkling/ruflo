@@ -206,6 +206,24 @@ export async function executeInit(options: InitOptions): Promise<InitResult> {
     if (options.components.helpers) {
       await writeHelpers(targetDir, options, result);
     }
+    // SG-003: If settings will be generated but helpers were skipped,
+    // generate the critical helpers that settings.json hooks reference
+    else if (options.components.settings) {
+      const hDir = path.join(targetDir, '.claude', 'helpers');
+      fs.mkdirSync(hDir, { recursive: true });
+      const criticalForSettings: Record<string, string> = {
+        'hook-handler.cjs': generateHookHandler(),
+        'auto-memory-hook.mjs': generateAutoMemoryHook(),
+      };
+      for (const [name, content] of Object.entries(criticalForSettings)) {
+        const fp = path.join(hDir, name);
+        if (!fs.existsSync(fp)) {
+          fs.writeFileSync(fp, content, 'utf-8');
+          try { fs.chmodSync(fp, '755'); } catch { /* T4: chmod is best-effort */ }
+          result.created.files.push(`.claude/helpers/${name}`);
+        }
+      }
+    }
 
     // Generate statusline
     if (options.components.statusline) {
@@ -1152,60 +1170,69 @@ async function writeRuntimeConfig(
   options: InitOptions,
   result: InitResult
 ): Promise<void> {
-  const configPath = path.join(targetDir, '.claude-flow', 'config.yaml');
+  // SG-008: Generate config.json (canonical runtime config, replaces config.yaml)
+  const configJsonPath = path.join(targetDir, '.claude-flow', 'config.json');
 
-  if (fs.existsSync(configPath) && !options.force) {
-    result.skipped.push('.claude-flow/config.yaml');
+  if (fs.existsSync(configJsonPath) && !options.force) {
+    result.skipped.push('.claude-flow/config.json');
     return;
   }
 
-  const config = `# RuFlo V3 Runtime Configuration
-# Generated: ${new Date().toISOString()}
+  // SG-008c: Generate valid JSON for config.json
+  const config = JSON.stringify({
+    version: '3.0.0',
+    swarm: {
+      topology: options.runtime.topology || 'hierarchical-mesh',
+      maxAgents: options.runtime.maxAgents || 15,
+      autoScale: options.runtime.autoScale !== false,
+      coordinationStrategy: options.runtime.coordinationStrategy || 'consensus',
+    },
+    memory: {
+      backend: options.runtime.memoryBackend || 'agentdb',
+      enableHNSW: true,
+      cacheSize: options.runtime.cacheSize || 256,
+      learningBridge: {
+        enabled: !!(options.runtime.enableLearningBridge ?? options.runtime.enableNeural),
+        sonaMode: options.runtime.sonaMode || 'balanced',
+        confidenceDecayRate: 0.005,
+        accessBoostAmount: options.runtime.accessBoostAmount ?? 0.03,
+        consolidationThreshold: 10,
+      },
+      memoryGraph: {
+        enabled: !!(options.runtime.enableMemoryGraph ?? true),
+        pageRankDamping: 0.85,
+        maxNodes: 5000,
+        similarityThreshold: 0.8,
+      },
+      agentScopes: {
+        enabled: !!(options.runtime.enableAgentScopes ?? true),
+        defaultScope: options.runtime.defaultScope || 'project',
+      },
+      agentdb: {
+        vectorBackend: options.runtime.vectorBackend || 'rvf',
+        enableLearning: !!(options.runtime.enableLearning ?? true),
+        learningPositiveThreshold: options.runtime.learningPositiveThreshold || 0.7,
+        learningNegativeThreshold: options.runtime.learningNegativeThreshold || 0.3,
+        learningBatchSize: options.runtime.learningBatchSize || 32,
+        learningTickInterval: options.runtime.learningTickInterval || 30000,
+      },
+    },
+    neural: {
+      enabled: !!(options.runtime.enableNeural),
+      modelPath: options.runtime.modelPath || '.claude-flow/neural',
+    },
+    hooks: {
+      enabled: !!(options.hooks?.enabled ?? options.hooks?.autoExecute ?? true),
+      autoExecute: !!(options.hooks?.autoExecute ?? true),
+    },
+    mcp: {
+      autoStart: !!(options.mcp?.autoStart ?? true),
+      port: options.mcp?.port || 3000,
+    },
+  }, null, 4);
 
-version: "3.0.0"
-
-swarm:
-  topology: ${options.runtime.topology}
-  maxAgents: ${options.runtime.maxAgents}
-  autoScale: true
-  coordinationStrategy: consensus
-
-memory:
-  backend: ${options.runtime.memoryBackend}
-  enableHNSW: ${options.runtime.enableHNSW}
-  persistPath: .claude-flow/data
-  cacheSize: 100
-  # ADR-049: Self-Learning Memory
-  learningBridge:
-    enabled: ${options.runtime.enableLearningBridge ?? options.runtime.enableNeural}
-    sonaMode: balanced
-    confidenceDecayRate: 0.005
-    accessBoostAmount: 0.03
-    consolidationThreshold: 10
-  memoryGraph:
-    enabled: ${options.runtime.enableMemoryGraph ?? true}
-    pageRankDamping: 0.85
-    maxNodes: 5000
-    similarityThreshold: 0.8
-  agentScopes:
-    enabled: ${options.runtime.enableAgentScopes ?? true}
-    defaultScope: project
-
-neural:
-  enabled: ${options.runtime.enableNeural}
-  modelPath: .claude-flow/neural
-
-hooks:
-  enabled: true
-  autoExecute: true
-
-mcp:
-  autoStart: ${options.mcp.autoStart}
-  port: ${options.mcp.port}
-`;
-
-  fs.writeFileSync(configPath, config, 'utf-8');
-  result.created.files.push('.claude-flow/config.yaml');
+  fs.writeFileSync(configJsonPath, config, 'utf-8');
+  result.created.files.push('.claude-flow/config.json');
 
   // Write .gitignore
   const gitignorePath = path.join(targetDir, '.claude-flow', '.gitignore');
@@ -1422,7 +1449,7 @@ RuFlo V3 is a domain-driven design architecture for multi-agent AI coordination 
 ### Quick Commands
 \`\`\`bash
 # Initialize swarm
-npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized
+npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh --max-agents 8 --strategy specialized
 
 # Check status
 npx @claude-flow/cli@latest swarm status
@@ -1731,7 +1758,7 @@ npx @claude-flow/cli@latest daemon start
 npx @claude-flow/cli@latest doctor --fix
 
 # Swarm
-npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8
+npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh --max-agents 8
 npx @claude-flow/cli@latest swarm status
 
 # Agents
@@ -1749,7 +1776,7 @@ npx @claude-flow/cli@latest hooks worker dispatch --trigger optimize
 ### File Structure
 \`\`\`
 .claude-flow/
-├── config.yaml      # Runtime configuration
+├── config.json      # Runtime configuration
 ├── CAPABILITIES.md  # This file
 ├── data/            # Memory storage
 ├── logs/            # Operation logs
