@@ -193,7 +193,7 @@ const initCommand: Command = {
       description: 'Swarm topology',
       type: 'string',
       choices: TOPOLOGIES.map(t => t.value),
-      default: 'hierarchical'
+      default: 'hierarchical-mesh'
     },
     {
       name: 'max-agents',
@@ -214,31 +214,18 @@ const initCommand: Command = {
       description: 'Coordination strategy',
       type: 'string',
       choices: STRATEGIES.map(s => s.value)
-    },
-    {
-      name: 'v3-mode',
-      description: 'Enable V3 15-agent hierarchical mesh mode',
-      type: 'boolean',
-      default: false
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     let topology = ctx.flags.topology as string;
     const maxAgents = ctx.flags.maxAgents as number || 15;
-    const v3Mode = ctx.flags.v3Mode as boolean;
-
-    // V3 mode enables hierarchical-mesh hybrid
-    if (v3Mode) {
-      topology = 'hierarchical-mesh';
-      output.printInfo('V3 Mode: Using hierarchical-mesh topology with 15-agent coordination');
-    }
 
     // Interactive topology selection
     if (!topology && ctx.interactive) {
       topology = await select({
         message: 'Select swarm topology:',
         options: TOPOLOGIES,
-        default: 'hierarchical'
+        default: 'hierarchical-mesh'
       });
     }
 
@@ -269,7 +256,6 @@ const initCommand: Command = {
           autoScaling: ctx.flags.autoScale ?? true,
         },
         metadata: {
-          v3Mode,
           strategy: ctx.flags.strategy || 'development',
         },
       });
@@ -279,11 +265,9 @@ const initCommand: Command = {
       output.writeln(output.dim('  Initializing memory namespace...'));
       output.writeln(output.dim('  Setting up communication channels...'));
 
-      if (v3Mode) {
-        output.writeln(output.dim('  Enabling Flash Attention (2.49x-7.47x speedup)...'));
-        output.writeln(output.dim('  Configuring AgentDB integration (150x faster)...'));
-        output.writeln(output.dim('  Initializing SONA learning system...'));
-      }
+      output.writeln(output.dim('  Enabling Flash Attention (2.49x-7.47x speedup)...'));
+      output.writeln(output.dim('  Configuring AgentDB integration (150x faster)...'));
+      output.writeln(output.dim('  Initializing SONA learning system...'));
 
       output.writeln();
       output.printTable({
@@ -296,8 +280,7 @@ const initCommand: Command = {
           { property: 'Topology', value: result.topology },
           { property: 'Max Agents', value: result.config.maxAgents },
           { property: 'Auto Scale', value: result.config.autoScaling ? 'Enabled' : 'Disabled' },
-          { property: 'Protocol', value: result.config.communicationProtocol || 'N/A' },
-          { property: 'V3 Mode', value: v3Mode ? 'Enabled' : 'Disabled' }
+          { property: 'Protocol', value: result.config.communicationProtocol || 'N/A' }
         ]
       });
 
@@ -316,7 +299,6 @@ const initCommand: Command = {
           topology: result.topology,
           maxAgents: result.config.maxAgents,
           strategy: ctx.flags.strategy || 'development',
-          v3Mode,
           initializedAt: result.initializedAt,
           status: 'ready'
         }, null, 2));
@@ -737,7 +719,7 @@ export const swarmCommand: Command = {
   subcommands: [initCommand, startCommand, statusCommand, stopCommand, scaleCommand, coordinateCommand],
   options: [],
   examples: [
-    { command: 'claude-flow swarm init --v3-mode', description: 'Initialize V3 swarm' },
+    { command: 'claude-flow swarm init', description: 'Initialize V3 swarm' },
     { command: 'claude-flow swarm start -o "Build API" -s development', description: 'Start development swarm' },
     { command: 'claude-flow swarm coordinate --agents 15', description: 'V3 coordination' }
   ],
