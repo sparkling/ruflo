@@ -333,7 +333,7 @@ export class CLI {
 
     this.output.writeln(this.output.bold('EXAMPLES:'));
     this.output.writeln(`  ${this.name} agent spawn -t coder              # Spawn a coder agent`);
-    this.output.writeln(`  ${this.name} swarm init --v3-mode              # Initialize V3 swarm`);
+    this.output.writeln(`  ${this.name} swarm init                        # Initialize V3 swarm`);
     this.output.writeln(`  ${this.name} memory search -q "auth patterns"  # Semantic search`);
     this.output.writeln(`  ${this.name} mcp start                         # Start MCP server`);
     this.output.writeln();
