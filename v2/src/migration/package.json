@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/migration",
-  "version": "1.0.0",
+  "version": "1.0.0-patch.1",
   "description": "Migration system for claude-flow projects",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-quantum-optimizer",
-  "version": "3.0.0-alpha.1-patch.6",
+  "version": "3.0.0-alpha.1-patch.7",
   "description": "Quantum-inspired optimization plugin providing simulated annealing, QAOA, Grover search, dependency resolution, and schedule optimization for combinatorial problems.",
   "type": "module",
   "main": "./dist/index.js",
@@ -77,7 +77,7 @@
     "node": ">=20.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1"
+    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.1"
   },
   "peerDependenciesMeta": {
     "@claude-flow/ruvector-upstream": {

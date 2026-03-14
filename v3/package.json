@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/v3-monorepo",
-  "version": "3.0.0-alpha.1",
+  "version": "3.0.0-alpha.1-patch.1",
   "private": true,
   "type": "module",
   "description": "Claude Flow V3 - Modular AI Agent Coordination System",
@@ -55,7 +55,9 @@
     "semantic-release": "25.0.2"
   },
   "pnpm": {
-    "neverBuiltDependencies": ["sharp"],
+    "neverBuiltDependencies": [
+      "sharp"
+    ],
     "overrides": {
       "@ruvector/gnn": "0.1.25",
       "@ruvector/gnn-linux-x64-gnu": "0.1.25"
