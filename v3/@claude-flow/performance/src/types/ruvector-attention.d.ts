@@ -12,6 +12,8 @@ declare module '@ruvector/attention' {
   export class MoEAttention { constructor(dim: number, numExperts?: number); compute(q: Float32Array, k: Float32Array[], v: Float32Array[]): Float32Array; }
   export class InfoNceLoss { constructor(config?: any); compute(a: Float32Array[], p: Float32Array[], n?: Float32Array[]): number; }
   export class AdamWOptimizer { constructor(config?: any); step(p: Float32Array, g: Float32Array): Float32Array; }
+  export type ArrayInput = Float32Array | number[];
+  export interface BenchmarkResult { averageTimeMs: number; opsPerSecond: number; speedup?: number; }
   export function benchmarkAttention(config: any): any;
   export const version: string;
 }

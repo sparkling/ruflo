@@ -121,6 +121,17 @@ declare module '@ruvector/core' {
   export default core;
 }
 
+declare module '@claude-flow/memory' {
+  export class ControllerRegistry {
+    constructor();
+    initialize(config?: any): Promise<void>;
+    getAgentDB(): any;
+    getBackend(): any;
+    getActiveCount(): number;
+    register(name: string, instance: any): void;
+  }
+}
+
 declare module '@xenova/transformers' {
   const transformers: any;
   export default transformers;
