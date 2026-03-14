@@ -678,6 +678,10 @@ export class FlashAttention extends BaseAttentionMechanism {
   readonly description = 'Memory-efficient attention using tiling and recomputation';
   readonly category: AttentionCategory = 'efficient';
 
+  constructor(config?: Partial<AttentionConfig>) {
+    super(config);
+  }
+
   async compute(query: number[], keys: number[][], values: number[][]): Promise<number[]> {
     const blockSize = this.config.params?.flashBlockSize ?? 64;
     const scale = this.getScale();
@@ -746,6 +750,10 @@ export class FlashAttentionV2 extends BaseAttentionMechanism {
   readonly name = 'Flash Attention V2';
   readonly description = 'Improved Flash Attention with better parallelism and reduced memory';
   readonly category: AttentionCategory = 'efficient';
+
+  constructor(config?: Partial<AttentionConfig>) {
+    super(config);
+  }
 
   async compute(query: number[], keys: number[][], values: number[][]): Promise<number[]> {
     // Similar to Flash Attention but with improved block scheduling
