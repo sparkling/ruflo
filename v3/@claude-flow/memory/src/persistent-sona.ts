@@ -174,10 +174,13 @@ export class PersistentSonaCoordinator {
     this.ensureInitialized();
 
     const id = generateId('pat');
+    const { quantized, scale, offset } = this.quantizeInt8(embedding);
     const record: PatternRecord = {
       id,
       type,
-      embedding: [...embedding],
+      embedding: quantized,
+      embeddingScale: scale,
+      embeddingOffset: offset,
       successRate: 1.0,
       useCount: 0,
       lastUsed: new Date().toISOString(),
@@ -199,7 +202,11 @@ export class PersistentSonaCoordinator {
     const results: Array<{ record: PatternRecord; score: number }> = [];
 
     for (const record of this.patterns.values()) {
-      const score = cosineSimilarity(embedding, record.embedding);
+      // Dequantize Int8 embeddings back to float for comparison
+      const recordEmbedding = record.embeddingScale != null && record.embeddingOffset != null
+        ? this.dequantizeInt8(record.embedding, record.embeddingScale, record.embeddingOffset)
+        : record.embedding;
+      const score = cosineSimilarity(embedding, recordEmbedding);
       if (score >= this.patternThreshold) {
         results.push({ record, score });
       }
@@ -420,6 +427,31 @@ export class PersistentSonaCoordinator {
     }
 
     return embedding;
+  }
+
+  /**
+   * Quantize a float embedding to Int8 range [-128, 127].
+   * Returns the quantized values plus scale/offset for dequantization.
+   */
+  private quantizeInt8(embedding: number[]): { quantized: number[]; scale: number; offset: number } {
+    if (embedding.length === 0) return { quantized: [], scale: 1, offset: 0 };
+    let min = embedding[0], max = embedding[0];
+    for (let i = 1; i < embedding.length; i++) {
+      if (embedding[i] < min) min = embedding[i];
+      if (embedding[i] > max) max = embedding[i];
+    }
+    const range = max - min || 1;
+    const scale = range / 255;
+    const offset = min;
+    const quantized = embedding.map(v => Math.round((v - offset) / scale) - 128);
+    return { quantized, scale, offset };
+  }
+
+  /**
+   * Dequantize an Int8 embedding back to float values.
+   */
+  private dequantizeInt8(quantized: number[], scale: number, offset: number): number[] {
+    return quantized.map(v => (v + 128) * scale + offset);
   }
 
   private ensureInitialized(): void {

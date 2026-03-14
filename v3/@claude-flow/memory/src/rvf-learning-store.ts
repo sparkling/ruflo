@@ -34,6 +34,10 @@ export interface PatternRecord {
   successRate: number;
   useCount: number;
   lastUsed: string;
+  /** Int8 quantization scale factor (range / 255) */
+  embeddingScale?: number;
+  /** Int8 quantization offset (min value) */
+  embeddingOffset?: number;
 }
 
 export interface LoraRecord {
