@@ -191,14 +191,17 @@ export const memoryTools: MCPTool[] = [
         ttl: { type: 'number', description: 'Time-to-live in seconds (optional)' },
         upsert: { type: 'boolean', description: 'If true, update existing key instead of failing (default: false)' },
       },
-      required: ['key', 'value'],
+      required: ['key', 'value', 'namespace'],
     },
     handler: async (input) => {
       await ensureInitialized();
       const { storeEntry } = await getMemoryFunctions();
 
       const key = input.key as string;
-      const namespace = (input.namespace as string) || 'default';
+      const namespace = input.namespace as string;
+      if (!namespace || namespace === 'all') {
+        throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+      }
       const value = typeof input.value === 'string' ? input.value : JSON.stringify(input.value);
       const tags = (input.tags as string[]) || [];
       const ttl = input.ttl as number | undefined;
@@ -220,6 +223,22 @@ export const memoryTools: MCPTool[] = [
         });
 
         const duration = performance.now() - startTime;
+
+        // WM-105a: Register node in MemoryGraph for importance scoring
+        if (result.success) {
+          try {
+            const { bridgeGetController } = await import('../memory/memory-bridge.js');
+            const mg = await bridgeGetController('memoryGraph');
+            if (mg && typeof (mg as Record<string, unknown>).addNode === 'function') {
+              (mg as { addNode: (key: string, meta: Record<string, unknown>) => void }).addNode(key, { namespace, value, tags });
+            }
+          } catch (e) {
+            throw new Error(
+              `MemoryGraph.addNode failed: ${(e as Error)?.message}\n` +
+              `Fix: set "memory.agentdb.enableGraph": false in .claude-flow/config.json`
+            );
+          }
+        }
 
         return {
           success: result.success,
@@ -250,16 +269,19 @@ export const memoryTools: MCPTool[] = [
       type: 'object',
       properties: {
         key: { type: 'string', description: 'Memory key' },
-        namespace: { type: 'string', description: 'Namespace (default: "default")' },
+        namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
       },
-      required: ['key'],
+      required: ['key', 'namespace'],
     },
     handler: async (input) => {
       await ensureInitialized();
       const { getEntry } = await getMemoryFunctions();
 
       const key = input.key as string;
-      const namespace = (input.namespace as string) || 'default';
+      const namespace = input.namespace as string;
+      if (!namespace || namespace === 'all') {
+        throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+      }
 
       try {
         const result = await getEntry({ key, namespace });
@@ -312,9 +334,11 @@ export const memoryTools: MCPTool[] = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query (semantic similarity)' },
-        namespace: { type: 'string', description: 'Namespace to search (default: "default")' },
+        namespace: { type: 'string', description: 'Namespace to search (default: "all" = all namespaces)' },
         limit: { type: 'number', description: 'Maximum results (default: 10)' },
         threshold: { type: 'number', description: 'Minimum similarity threshold 0-1 (default: 0.3)' },
+        metadata_filter: { type: 'object', description: 'Optional metadata predicates for structured filtering (MongoDB-style)' },
+        mmr_lambda: { type: 'number', description: 'MMR diversity lambda 0-1 (default: 0.5; 1.0 = pure relevance, 0.0 = pure diversity)' },
       },
       required: ['query'],
     },
@@ -323,7 +347,7 @@ export const memoryTools: MCPTool[] = [
       const { searchEntries } = await getMemoryFunctions();
 
       const query = input.query as string;
-      const namespace = (input.namespace as string) || 'default';
+      const namespace = (input.namespace as string) || 'all';
       const limit = (input.limit as number) || 10;
       const threshold = (input.threshold as number) || 0.3;
 
@@ -341,7 +365,22 @@ export const memoryTools: MCPTool[] = [
 
         const duration = performance.now() - startTime;
 
-        // Parse JSON values in results
+        // WM-105b: Get MemoryGraph controller for importance boosting
+        let _mg: { getImportance: (key: string) => number | undefined } | null = null;
+        try {
+          const { bridgeGetController } = await import('../memory/memory-bridge.js');
+          const _mgCtrl = await bridgeGetController('memoryGraph');
+          if (_mgCtrl && typeof (_mgCtrl as Record<string, unknown>).getImportance === 'function') {
+            _mg = _mgCtrl as { getImportance: (key: string) => number | undefined };
+          }
+        } catch (e) {
+          throw new Error(
+            `MemoryGraph.getImportance failed: ${(e as Error)?.message}\n` +
+            `Fix: set "memory.agentdb.enableGraph": false in .claude-flow/config.json`
+          );
+        }
+
+        // Parse JSON values in results, apply importance boost if available
         const results = result.results.map(r => {
           let value: unknown = r.content;
           try {
@@ -350,20 +389,81 @@ export const memoryTools: MCPTool[] = [
             // Keep as string
           }
 
+          const importance = _mg ? (_mg.getImportance(r.key) ?? 0) : 0;
           return {
             key: r.key,
             namespace: r.namespace,
             value,
-            similarity: r.score,
+            similarity: r.score + importance * 0.1,
+            importance: importance || undefined,
           };
         });
 
+        // WM-103b: Apply MetadataFilter for structured filtering (ADR-068)
+        let filteredResults = results;
+        if (input.metadata_filter) {
+          try {
+            const bridge = await import('../memory/memory-bridge.js');
+            const mf = await bridge.bridgeGetController('metadataFilter');
+            if (mf && typeof (mf as Record<string, unknown>).filter === 'function') {
+              filteredResults = (mf as { filter: (r: typeof results, f: unknown) => typeof results }).filter(results, input.metadata_filter);
+            }
+          } catch (e) {
+            throw new Error(
+              `MetadataFilter.filter failed: ${(e as Error)?.message}\n` +
+              `Fix: set "memory.metadataFilter.enabled": false in .claude-flow/config.json`
+            );
+          }
+        }
+
+        // WM-103b: Apply MMRDiversityRanker for diversity re-ranking (ADR-068)
+        let outputResults = filteredResults;
+        try {
+          const bridge = await import('../memory/memory-bridge.js');
+          const mmr = await bridge.bridgeGetController('mmrDiversity');
+          if (mmr && typeof (mmr as Record<string, unknown>).selectDiverse === 'function' && outputResults.length > 1) {
+            const lambda = (input.mmr_lambda as number) ?? 0.5;
+            outputResults = (mmr as { selectDiverse: (r: typeof outputResults, q: string, opts: { lambda: number }) => typeof outputResults }).selectDiverse(outputResults, query, { lambda });
+          }
+        } catch (e) {
+          throw new Error(
+            `MMRDiversityRanker.selectDiverse failed: ${(e as Error)?.message}\n` +
+            `Fix: set "memory.mmrDiversity.enabled": false in .claude-flow/config.json`
+          );
+        }
+
+        // WM-114c: Boost results with attention scores when available
+        let attentionApplied = false;
+        try {
+          const bridge = await import('../memory/memory-bridge.js');
+          if (typeof bridge.bridgeGetController === 'function') {
+            const attnService = await bridge.bridgeGetController('attentionService');
+            if (attnService && typeof (attnService as Record<string, unknown>).score === 'function' && outputResults.length > 1) {
+              for (const r of outputResults) {
+                const attnScore = (attnService as { score: (key: string) => number }).score(r.key);
+                if (typeof attnScore === 'number' && attnScore > 0) {
+                  r.similarity = r.similarity * 0.8 + attnScore * 0.2;
+                  (r as Record<string, unknown>).attentionBoosted = true;
+                }
+              }
+              outputResults.sort((a, b) => b.similarity - a.similarity);
+              attentionApplied = true;
+            }
+          }
+        } catch (e) {
+          throw new Error(
+            `AttentionService.score re-ranking failed: ${(e as Error)?.message}\n` +
+            `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
+          );
+        }
+
         return {
           query,
-          results,
-          total: results.length,
+          results: outputResults,
+          total: outputResults.length,
           searchTime: `${duration.toFixed(2)}ms`,
           backend: 'HNSW + sql.js',
+          attention: attentionApplied,
         };
       } catch (error) {
         return {
@@ -383,16 +483,19 @@ export const memoryTools: MCPTool[] = [
       type: 'object',
       properties: {
         key: { type: 'string', description: 'Memory key' },
-        namespace: { type: 'string', description: 'Namespace (default: "default")' },
+        namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
       },
-      required: ['key'],
+      required: ['key', 'namespace'],
     },
     handler: async (input) => {
       await ensureInitialized();
       const { deleteEntry } = await getMemoryFunctions();
 
       const key = input.key as string;
-      const namespace = (input.namespace as string) || 'default';
+      const namespace = input.namespace as string;
+      if (!namespace || namespace === 'all') {
+        throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+      }
 
       try {
         const result = await deleteEntry({ key, namespace });
@@ -422,7 +525,7 @@ export const memoryTools: MCPTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        namespace: { type: 'string', description: 'Filter by namespace' },
+        namespace: { type: 'string', description: 'Namespace to list (default: "all" = all namespaces)' },
         limit: { type: 'number', description: 'Maximum results (default: 50)' },
         offset: { type: 'number', description: 'Offset for pagination (default: 0)' },
       },
@@ -431,7 +534,7 @@ export const memoryTools: MCPTool[] = [
       await ensureInitialized();
       const { listEntries } = await getMemoryFunctions();
 
-      const namespace = input.namespace as string | undefined;
+      const namespace = (input.namespace as string) || 'all';
       const limit = (input.limit as number) || 50;
       const offset = (input.offset as number) || 0;
 
