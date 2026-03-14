@@ -15,73 +15,19 @@ const DEFAULT_PORT = 3000;
 const DEFAULT_TOPOLOGY = 'hierarchical-mesh';
 const DEFAULT_MAX_AGENTS = 15;
 
-// Check if project is initialized
+// CF-006: Check if project is initialized
 function isInitialized(cwd: string): boolean {
-  const configPath = path.join(cwd, '.claude-flow', 'config.yaml');
-  return fs.existsSync(configPath);
+  const jsonPath = path.join(cwd, '.claude-flow', 'config.json');
+  return fs.existsSync(jsonPath);
 }
 
-// Simple YAML parser for config (basic implementation)
-function parseSimpleYaml(content: string): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  const lines = content.split('\n');
-  const stack: Array<{ indent: number; obj: Record<string, unknown>; key?: string }> = [
-    { indent: -1, obj: result }
-  ];
-
-  for (const line of lines) {
-    // Skip comments and empty lines
-    if (line.trim().startsWith('#') || line.trim() === '') continue;
-
-    const match = line.match(/^(\s*)(\w+):\s*(.*)$/);
-    if (!match) continue;
-
-    const indent = match[1].length;
-    const key = match[2];
-    let value: unknown = match[3].trim();
-
-    // Parse value
-    if (value === '' || value === undefined) {
-      value = {};
-    } else if (value === 'true') {
-      value = true;
-    } else if (value === 'false') {
-      value = false;
-    } else if (value === 'null') {
-      value = null;
-    } else if (!isNaN(Number(value as string)) && value !== '') {
-      value = Number(value);
-    } else if (typeof value === 'string' && value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1);
-    }
-
-    // Find parent based on indentation
-    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
-      stack.pop();
-    }
-
-    const parent = stack[stack.length - 1].obj;
-
-    if (typeof value === 'object' && value !== null) {
-      parent[key] = value;
-      stack.push({ indent, obj: value as Record<string, unknown>, key });
-    } else {
-      parent[key] = value;
-    }
-  }
-
-  return result;
-}
-
-// Load configuration
+// CF-006: Load configuration from config.json
 function loadConfig(cwd: string): Record<string, unknown> | null {
-  const configPath = path.join(cwd, '.claude-flow', 'config.yaml');
-  if (!fs.existsSync(configPath)) return null;
-
+  const jsonPath = path.join(cwd, '.claude-flow', 'config.json');
+  if (!fs.existsSync(jsonPath)) return null;
   try {
-    const content = fs.readFileSync(configPath, 'utf-8');
-    return parseSimpleYaml(content);
-  } catch {
+    return JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+  } catch { /* T4: config.json may be malformed -- return null */
     return null;
   }
 }
@@ -131,7 +77,7 @@ const startAction = async (ctx: CommandContext): Promise<CommandResult> => {
       topology: finalTopology,
       maxAgents,
       autoScaling: swarmConfig.autoScale !== false,
-      v3Mode: true
+      coordinationStrategy: swarmConfig.coordinationStrategy || 'consensus',
     });
 
     spinner.succeed(`Swarm initialized (${finalTopology})`);
@@ -400,6 +346,48 @@ const restartCommand: Command = {
   }
 };
 
+// SG-005: Start-all subcommand
+const allCommand: Command = {
+  name: 'all',
+  aliases: ['everything'],
+  description: 'Start memory, daemon, swarm, and MCP server',
+  action: async (ctx: CommandContext): Promise<CommandResult> => {
+    // Check initialization
+    if (!isInitialized(ctx.cwd)) {
+      output.printError('Claude Flow is not initialized in this directory');
+      output.printInfo('Run "claude-flow init" first, or use "claude-flow start quick"');
+      return { success: false, exitCode: 1 };
+    }
+
+    output.writeln();
+    output.writeln(output.bold('Starting all Claude Flow services'));
+    output.writeln();
+
+    const { execSync } = await import('child_process');
+
+    // Step 1: Initialize memory
+    try {
+      output.writeln(output.dim('  Initializing memory database...'));
+      execSync('npx @claude-flow/cli@latest memory init 2>/dev/null', {
+        stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
+      });
+      output.writeln('  \u2713 Memory initialized');
+    } catch { /* T4: memory init failure is expected if already initialized */ output.writeln('  Memory database already exists'); }
+
+    // Step 2: Start daemon
+    try {
+      output.writeln(output.dim('  Starting daemon...'));
+      execSync('npx @claude-flow/cli@latest daemon start 2>/dev/null &', {
+        stdio: 'pipe', cwd: ctx.cwd, timeout: 10000
+      });
+      output.writeln('  \u2713 Daemon started');
+    } catch { /* T4: daemon start failure is expected if already running */ output.writeln('  Daemon may already be running'); }
+
+    // Step 3: Start swarm + MCP via normal startAction
+    return startAction(ctx);
+  }
+};
+
 // Quick start subcommand
 const quickCommand: Command = {
   name: 'quick',
@@ -433,7 +421,7 @@ const quickCommand: Command = {
 export const startCommand: Command = {
   name: 'start',
   description: 'Start the RuFlo orchestration system',
-  subcommands: [stopCommand, restartCommand, quickCommand],
+  subcommands: [stopCommand, restartCommand, quickCommand, allCommand],
   options: [
     {
       name: 'daemon',
@@ -470,7 +458,8 @@ export const startCommand: Command = {
     { command: 'claude-flow start --topology mesh', description: 'Start with mesh topology' },
     { command: 'claude-flow start --skip-mcp', description: 'Start without MCP server' },
     { command: 'claude-flow start quick', description: 'Quick start with defaults' },
-    { command: 'claude-flow start stop', description: 'Stop the running system' }
+    { command: 'claude-flow start stop', description: 'Stop the running system' },
+    { command: 'claude-flow start all', description: 'Start memory, daemon, swarm, and MCP' }
   ],
   action: startAction
 };
