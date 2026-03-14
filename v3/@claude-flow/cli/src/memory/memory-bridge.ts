@@ -17,8 +17,19 @@
  * @module v3/cli/memory-bridge
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+// ===== WM-102: Read config.json for ControllerRegistry =====
+function readProjectConfig(): any {
+    try {
+        const cfgPath = path.join(process.cwd(), '.claude-flow', 'config.json');
+        if (fs.existsSync(cfgPath)) {
+            return JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+        }
+    } catch { /* WM-102: config.json may not exist or may be malformed — use defaults */ }
+    return {};
+}
 
 // FB-004: Adaptive search threshold based on embedding model.
 // Hash fallback produces similarity ~0.05-0.28 (not semantic).
@@ -82,6 +93,12 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
 
   if (registryInstance) return registryInstance;
 
+  // WM-102c: Respect neural.enabled from config.json
+  const _neuralCfg = readProjectConfig().neural || {};
+  if (_neuralCfg.enabled === false) {
+      bridgeAvailable = false;
+      return null;
+  }
   if (!registryPromise) {
     registryPromise = (async () => {
       try {
@@ -101,26 +118,65 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
         };
 
         try {
+          // WM-102b: wire config.json into ControllerRegistry
+          const _cfg = readProjectConfig();
+          const _mem = _cfg.memory || {};
+          const _lb = _mem.learningBridge || {};
+          const _mg = _mem.memoryGraph || {};
+          const _neural = _cfg.neural || {};
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
-            dimension: 768,
+            dimension: 384,
+            enableHNSW: _mem.enableHNSW !== false,
+            cacheSize: _mem.cacheSize || 100,
+            similarityThreshold: _mg.similarityThreshold || 0.8,
             controllers: {
               reasoningBank: true,
-              learningBridge: false,
+              learningBridge: _lb.enabled !== false,
               tieredCache: true,
               hierarchicalMemory: true,
               memoryConsolidation: true,
+              enhancedEmbedding: true,  // WM-111: wire EnhancedEmbeddingService
               memoryGraph: true, // issue #1214: enable MemoryGraph for graph-aware ranking
             },
-          });
+            memory: {
+              enableHNSW: _mem.enableHNSW !== false,
+              cacheSize: _mem.cacheSize || 100,
+              learningBridge: {
+                sonaMode: _lb.sonaMode || 'balanced',
+                confidenceDecayRate: _lb.confidenceDecayRate || 0.005,
+                accessBoostAmount: _lb.accessBoostAmount || 0.03,
+                consolidationThreshold: _lb.consolidationThreshold || 10,
+              },
+              memoryGraph: {
+                pageRankDamping: _mg.pageRankDamping || 0.85,
+                maxNodes: _mg.maxNodes || 5000,
+                similarityThreshold: _mg.similarityThreshold || 0.8,
+              },
+            },
+          } as any);
         } finally {
           console.log = origLog;
         }
 
         registryInstance = registry;
         bridgeAvailable = true;
+        // WM-115a: Instantiate WASMVectorSearch (JS fallback)
+        try {
+          const agentdbMod: any = await import('agentdb');
+          const WASMVectorSearch = agentdbMod.WASMVectorSearch || agentdbMod.default?.WASMVectorSearch;
+          if (WASMVectorSearch) {
+            const wasmSearch = new WASMVectorSearch({
+              dimension: 384,
+              wasmAvailable: false, // JS fallback active
+            });
+            registry.register('wasmVectorSearch', wasmSearch);
+          }
+        } catch {
+          // WM-115: WASMVectorSearch instantiation failed — non-fatal
+        }
         return registry;
-      } catch {
+      } catch { /* WM-115: bridge may not be loaded — agentdb is an optional dependency */
         bridgeAvailable = false;
         registryPromise = null;
         return null;
@@ -129,6 +185,19 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
   }
 
   return registryPromise;
+}
+// WM-115b: Expose computeSimilarity helper using WASMVectorSearch JS fallback
+async function wasmComputeSimilarity(vecA: Float32Array, vecB: Float32Array): Promise<number | null> {
+  if (!registryInstance) return null;
+  try {
+    const wasmSearch = registryInstance.get('wasmVectorSearch');
+    if (wasmSearch && typeof (wasmSearch as any).computeSimilarity === 'function') {
+      return (wasmSearch as any).computeSimilarity(vecA, vecB);
+    }
+  } catch {
+    // WM-115: computeSimilarity failed — non-fatal
+  }
+  return null;
 }
 
 // ===== Phase 2: BM25 hybrid scoring =====
