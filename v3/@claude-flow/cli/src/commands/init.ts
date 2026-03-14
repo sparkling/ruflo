@@ -295,6 +295,22 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
     }
 
     spinner.succeed('RuFlo V3 initialized successfully!');
+
+    // ML-002: Chain memory init into init --full
+    if (full) {
+      try {
+        const { initializeMemoryDatabase } = await import('../memory/memory-initializer.js');
+        await initializeMemoryDatabase({
+          backend: 'hybrid',
+          dbPath: undefined,
+          force: false,
+          verbose: false,
+        });
+      } catch {
+        // Memory init is best-effort during full init
+      }
+    }
+
     output.writeln();
 
     // Display summary
