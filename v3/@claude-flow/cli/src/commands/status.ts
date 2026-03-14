@@ -43,10 +43,10 @@ function getProcessMemoryUsage(): number {
   return (usedMemory / totalMemory) * 100;
 }
 
-// Check if project is initialized
+// CF-007: Check if project is initialized
 function isInitialized(cwd: string): boolean {
-  const configPath = path.join(cwd, '.claude-flow', 'config.yaml');
-  return fs.existsSync(configPath);
+  const jsonPath = path.join(cwd, '.claude-flow', 'config.json');
+  return fs.existsSync(jsonPath);
 }
 
 // Format uptime
