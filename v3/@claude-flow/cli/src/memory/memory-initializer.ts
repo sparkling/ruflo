@@ -352,7 +352,18 @@ export async function getHNSWIndex(options?: {
   dimensions?: number;
   forceRebuild?: boolean;
 }): Promise<HNSWIndex | null> {
-  const dimensions = options?.dimensions ?? 768;
+  // EM-001: Read dims from embeddings.json
+    let dimensions = options?.dimensions;
+    if (!dimensions) {
+        try {
+            const embConfigPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json');
+            if (fs.existsSync(embConfigPath)) {
+                const embConfig = JSON.parse(fs.readFileSync(embConfigPath, 'utf-8'));
+                dimensions = embConfig.dimension || 768;
+            }
+        } catch { /* EM-001: embeddings.json may not exist — use defaults */ }
+        dimensions = dimensions || 768;
+    }
 
   // Return existing index if already initialized
   if (hnswIndex?.initialized && !options?.forceRebuild) {
@@ -396,7 +407,15 @@ export async function getHNSWIndex(options?: {
     const hnswPath = path.join(swarmDir, 'hnsw.index');
     const metadataPath = path.join(swarmDir, 'hnsw.metadata.json');
     const dbPath = options?.dbPath || path.join(swarmDir, 'memory.db');
-
+    // EM-001: delete stale persistent files on forceRebuild
+    if (options?.forceRebuild) {
+        try {
+            if (fs.existsSync(hnswPath)) fs.unlinkSync(hnswPath);
+        } catch { /* EM-001: file cleanup */ }
+        try {
+            if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
+        } catch { /* EM-001: file cleanup */ }
+    }
     // Create HNSW index with persistent storage
     // @ruvector/core uses string enum for distanceMetric: 'Cosine', 'Euclidean', 'DotProduct', 'Manhattan'
     const db = new VectorDb({
@@ -407,7 +426,7 @@ export async function getHNSWIndex(options?: {
 
     // Load metadata (entry info) if exists
     const entries = new Map<string, HNSWEntry>();
-    if (fs.existsSync(metadataPath)) {
+    if (!options?.forceRebuild && fs.existsSync(metadataPath)) {
       try {
         const metadataJson = fs.readFileSync(metadataPath, 'utf-8');
         const metadata = JSON.parse(metadataJson) as Array<[string, HNSWEntry]>;
@@ -428,7 +447,7 @@ export async function getHNSWIndex(options?: {
 
     // Check if index already has data (from persistent storage)
     const existingLen = await db.len();
-    if (existingLen > 0 && entries.size > 0) {
+    if (existingLen > 0 && entries.size > 0 && !options?.forceRebuild) {
       // Index loaded from disk, skip SQLite sync
       hnswIndex.initialized = true;
       hnswInitializing = false;
@@ -919,8 +938,8 @@ INSERT OR REPLACE INTO metadata (key, value) VALUES
 
 -- Create default vector index configuration
 INSERT OR IGNORE INTO vector_indexes (id, name, dimensions) VALUES
-  ('default', 'default', 768),
-  ('patterns', 'patterns', 768);
+  ('default', 'default', 384),
+  ('patterns', 'patterns', 384);
 `;
 }
 
@@ -1525,29 +1544,41 @@ export async function loadEmbeddingModel(options?: {
   }
 
   try {
+    // EM-001: Read embedding model from project config instead of hardcoding
+    let modelName = 'all-mpnet-base-v2';
+    let modelDimensions = 768;
+    try {
+        const embConfigPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json');
+        if (fs.existsSync(embConfigPath)) {
+            const embConfig = JSON.parse(fs.readFileSync(embConfigPath, 'utf-8'));
+            if (embConfig.model) {
+                modelName = embConfig.model;
+                modelDimensions = embConfig.dimension || 768;
+            }
+        }
+    } catch { /* EM-001: embeddings.json may not exist — use defaults */ }
+    const xenovaModel = modelName.startsWith('Xenova/') ? modelName : `Xenova/${modelName}`;
     // Try to import @xenova/transformers for ONNX embeddings
-    const transformers = await import('@xenova/transformers').catch(() => null);
-
+    const transformers = await import('@xenova/transformers').catch(() => null); /* EM-001: optional dependency */
     if (transformers) {
       if (verbose) {
-        console.log('Loading ONNX embedding model (all-mpnet-base-v2)...');
+        console.log(`Loading ONNX embedding model (${modelName})...`);
       }
 
-      // Use small, fast model for local embeddings
       const { pipeline } = transformers;
-      const embedder = await pipeline('feature-extraction', 'Xenova/all-mpnet-base-v2');
+      const embedder = await pipeline('feature-extraction', xenovaModel);
 
       embeddingModelState = {
         loaded: true,
         model: embedder,
         tokenizer: null,
-        dimensions: 768 // all-mpnet-base-v2 produces 768-dim vectors
+        dimensions: modelDimensions
       };
 
       return {
         success: true,
-        dimensions: 768,
-        modelName: 'all-mpnet-base-v2',
+        dimensions: modelDimensions,
+        modelName: modelName,
         loadTime: Date.now() - startTime
       };
     }
@@ -2606,6 +2637,23 @@ export async function deleteEntry(options: {
         AND status = 'active'
     `);
 
+    // GV-001: Remove ghost vector from HNSW metadata file
+    const entryId = String(checkResult[0].values[0][0]);
+    try {
+        const swarmDir = path.join(process.cwd(), '.swarm');
+        const metadataPath = path.join(swarmDir, 'hnsw.metadata.json');
+        if (fs.existsSync(metadataPath)) {
+            const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+            const filtered = metadata.filter(([id]: [string, unknown]) => id !== entryId);
+            if (filtered.length < metadata.length) {
+                fs.writeFileSync(metadataPath, JSON.stringify(filtered));
+            }
+        }
+    } catch { /* GV-001: best-effort file cleanup — metadata file may not exist */ }
+    // GV-001: Also clear in-memory index if loaded
+    if (hnswIndex?.entries?.has(entryId)) {
+        hnswIndex.entries.delete(entryId);
+    }
     // Get remaining count
     const countResult = db.exec(`SELECT COUNT(*) FROM memory_entries WHERE status = 'active'`);
     const remainingEntries = countResult[0]?.values?.[0]?.[0] as number || 0;
