@@ -556,9 +556,12 @@ export class ControllerRegistry extends EventEmitter {
       case 'semanticRouter':
         return this.agentdb !== null;
 
+      // WM-116b: Agent memory scope — enabled when backend available
+      case 'agentMemoryScope':
+        return this.agentdb !== null || this.backend !== null;
+
       // Optional controllers
       case 'hybridSearch':
-      case 'agentMemoryScope':
       case 'sonaTrajectory':
       case 'federatedSession':
         return false; // Require explicit enabling
@@ -664,9 +667,19 @@ export class ControllerRegistry extends EventEmitter {
         // BM25 hybrid search — placeholder for future implementation
         return null;
 
-      case 'agentMemoryScope':
-        // Agent memory scope — placeholder, activated when explicitly enabled
+      case 'agentMemoryScope': {
+        // WM-116a: Instantiate AgentMemoryScope (pure JS: per-agent memory isolation)
+        try {
+          const amsModule: any = await import('./agent-memory-scope.js');
+          const createAgentBridge = amsModule.createAgentBridge || amsModule.default?.createAgentBridge;
+          if (createAgentBridge) {
+            return createAgentBridge(this.backend, { agentName: 'default', scope: 'project' });
+          }
+        } catch (e: any) {
+          // WM-116a: AgentMemoryScope init failed — non-fatal, return null
+        }
         return null;
+      }
 
       case 'semanticRouter': {
         // SemanticRouter exported from agentdb 3.0.0-alpha.10 (ADR-062)
