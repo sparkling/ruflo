@@ -190,6 +190,8 @@ export const memoryTools: MCPTool[] = [
         },
         ttl: { type: 'number', description: 'Time-to-live in seconds (optional)' },
         upsert: { type: 'boolean', description: 'If true, update existing key instead of failing (default: false)' },
+        scope: { type: 'string', enum: ['agent', 'session', 'global'], description: 'Memory scope (default: unscoped)' },
+        scope_id: { type: 'string', description: 'Scope identifier (agent ID or session ID)' },
       },
       required: ['key', 'value', 'namespace'],
     },
@@ -197,7 +199,22 @@ export const memoryTools: MCPTool[] = [
       await ensureInitialized();
       const { storeEntry } = await getMemoryFunctions();
 
-      const key = input.key as string;
+      let key = input.key as string;
+
+      // Phase 4: AgentMemoryScope — apply scope prefix to key
+      try {
+        if (input.scope) {
+          const { bridgeGetController } = await import('../memory/memory-bridge.js');
+          const scopeCtrl: any = await bridgeGetController('agentMemoryScope');
+          if (scopeCtrl && typeof scopeCtrl.scopeKey === 'function') {
+            key = scopeCtrl.scopeKey(
+              key,
+              input.scope as 'agent' | 'session' | 'global',
+              (input.scope_id || input.agent_id || input.session_id) as string | undefined,
+            );
+          }
+        }
+      } catch { /* scope controller unavailable — use unscoped key */ }
       const namespace = input.namespace as string;
       if (!namespace || namespace === 'all') {
         throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
@@ -339,6 +356,8 @@ export const memoryTools: MCPTool[] = [
         threshold: { type: 'number', description: 'Minimum similarity threshold 0-1 (default: 0.3)' },
         metadata_filter: { type: 'object', description: 'Optional metadata predicates for structured filtering (MongoDB-style)' },
         mmr_lambda: { type: 'number', description: 'MMR diversity lambda 0-1 (default: 0.5; 1.0 = pure relevance, 0.0 = pure diversity)' },
+        scope: { type: 'string', enum: ['agent', 'session', 'global'], description: 'Memory scope (default: unscoped)' },
+        scope_id: { type: 'string', description: 'Scope identifier (agent ID or session ID)' },
       },
       required: ['query'],
     },
@@ -456,6 +475,21 @@ export const memoryTools: MCPTool[] = [
             `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
           );
         }
+
+        // Phase 4: AgentMemoryScope — filter results by scope
+        try {
+          if (input.scope) {
+            const bridge = await import('../memory/memory-bridge.js');
+            const scopeCtrl: any = await bridge.bridgeGetController('agentMemoryScope');
+            if (scopeCtrl && typeof scopeCtrl.filterByScope === 'function') {
+              outputResults = scopeCtrl.filterByScope(
+                outputResults,
+                input.scope as 'agent' | 'session' | 'global',
+                (input.scope_id || input.agent_id || input.session_id) as string | undefined,
+              );
+            }
+          }
+        } catch { /* scope filtering unavailable */ }
 
         return {
           query,

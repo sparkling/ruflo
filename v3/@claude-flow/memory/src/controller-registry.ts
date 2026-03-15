@@ -694,17 +694,65 @@ export class ControllerRegistry extends EventEmitter {
         return null;
 
       case 'agentMemoryScope': {
-        // WM-116a: Instantiate AgentMemoryScope (pure JS: per-agent memory isolation)
+        // P4-D: 3-scope isolation: agent, session, global
+        // Each scope is a namespace prefix that isolates memory access
         try {
-          const amsModule: any = await import('./agent-memory-scope.js');
-          const createAgentBridge = amsModule.createAgentBridge || amsModule.default?.createAgentBridge;
-          if (createAgentBridge) {
-            return createAgentBridge(this.backend, { agentName: 'default', scope: 'project' });
-          }
-        } catch (e: any) {
-          // WM-116a: AgentMemoryScope init failed — non-fatal, return null
+          const scopes = {
+            agent: (agentId: string) => `agent:${agentId}:`,
+            session: (sessionId: string) => `session:${sessionId}:`,
+            global: () => 'global:',
+          };
+
+          const getScope = (type: 'agent' | 'session' | 'global', id?: string): string => {
+            if (type === 'agent') return scopes.agent(id || 'default');
+            if (type === 'session') return scopes.session(id || 'default');
+            return scopes.global();
+          };
+
+          return {
+            getScope,
+
+            scopeKey(key: string, type: 'agent' | 'session' | 'global', id?: string): string {
+              return getScope(type, id) + key;
+            },
+
+            unscopeKey(scopedKey: string): { key: string; scope: string; type: string } {
+              for (const type of ['agent', 'session', 'global'] as const) {
+                if (scopedKey.startsWith(`${type}:`)) {
+                  const rest = scopedKey.slice(type.length + 1);
+                  if (type === 'global') {
+                    return { key: rest, scope: 'global:', type: 'global' };
+                  }
+                  const colonIdx = rest.indexOf(':');
+                  if (colonIdx > 0) {
+                    const id = rest.slice(0, colonIdx);
+                    const key = rest.slice(colonIdx + 1);
+                    return { key, scope: `${type}:${id}:`, type };
+                  }
+                }
+              }
+              return { key: scopedKey, scope: '', type: 'unscoped' };
+            },
+
+            filterByScope(entries: any[], type: 'agent' | 'session' | 'global', id?: string): any[] {
+              const prefix = getScope(type, id);
+              return entries.filter((e: any) => {
+                const key = e.key || e.id || '';
+                return key.startsWith(prefix);
+              });
+            },
+
+            getStats(): { scopes: string[]; description: string } {
+              return {
+                scopes: ['agent', 'session', 'global'],
+                description: '3-scope isolation: agent-local, session-local, global shared',
+              };
+            },
+          };
+        } catch {
+          // AgentMemoryScope init failed — non-fatal
+          return null;
         }
-        return null;
       }
 
       case 'semanticRouter': {
