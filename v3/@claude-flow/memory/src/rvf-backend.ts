@@ -409,6 +409,182 @@ export class RvfBackend implements IMemoryBackend {
     return arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
   }
 
+  // ===== P6-B: Copy-on-Write branching =====
+
+  /**
+   * P6-B: Copy-on-Write branching.
+   * Creates an isolated branch that reads from parent but writes locally.
+   * Changes in the branch don't affect the parent until explicitly merged.
+   */
+  async derive(branchName: string): Promise<{
+    success: boolean;
+    branchId: string;
+    parentId: string;
+    error?: string;
+  }> {
+    try {
+      const branchId = `branch:${branchName}:${Date.now()}`;
+      const parentId = this.config.defaultNamespace;
+
+      // Store branch metadata
+      const metaKey = `_branch_meta:${branchId}`;
+      const now = Date.now();
+      const metaEntry: MemoryEntry = {
+        id: `meta-${branchId}`,
+        key: metaKey,
+        content: JSON.stringify({
+          branchId,
+          branchName,
+          parentId,
+          createdAt: new Date(now).toISOString(),
+          status: 'active',
+          writeCount: 0,
+        }),
+        type: 'working',
+        namespace: 'default',
+        tags: ['branch-meta'],
+        metadata: { branchId, branchName, parentId },
+        accessLevel: 'system',
+        createdAt: now,
+        updatedAt: now,
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: now,
+      };
+      await this.store(metaEntry);
+
+      return { success: true, branchId, parentId };
+    } catch (e: any) {
+      return { success: false, branchId: '', parentId: '', error: e?.message || String(e) };
+    }
+  }
+
+  /**
+   * Read from a COW branch -- checks branch first, falls back to parent.
+   */
+  async branchGet(branchId: string, key: string, namespace?: string): Promise<MemoryEntry | null> {
+    try {
+      const ns = namespace || this.config.defaultNamespace;
+      // Try branch-local key first
+      const branchKey = `${branchId}:${key}`;
+      const branchResult = await this.getByKey(ns, branchKey);
+      if (branchResult) return branchResult;
+
+      // Fall back to parent
+      return await this.getByKey(ns, key);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Write to a COW branch -- stores with branch prefix, doesn't affect parent.
+   */
+  async branchStore(branchId: string, key: string, value: string, namespace?: string): Promise<{ success: boolean }> {
+    try {
+      const ns = namespace || this.config.defaultNamespace;
+      const branchKey = `${branchId}:${key}`;
+      const now = Date.now();
+      const entry: MemoryEntry = {
+        id: `${branchId}-${key}-${now}`,
+        key: branchKey,
+        content: value,
+        type: 'working',
+        namespace: ns,
+        tags: ['branch-data', branchId],
+        metadata: { branchId, originalKey: key },
+        accessLevel: 'private',
+        createdAt: now,
+        updatedAt: now,
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: now,
+      };
+      await this.store(entry);
+
+      // Update branch write count (optional, best-effort)
+      try {
+        const metaKey = `_branch_meta:${branchId}`;
+        const meta = await this.getByKey('default', metaKey);
+        if (meta) {
+          const parsed = JSON.parse(meta.content);
+          parsed.writeCount = (parsed.writeCount || 0) + 1;
+          await this.update(meta.id, { content: JSON.stringify(parsed) });
+        }
+      } catch { /* meta update optional */ }
+
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
+  }
+
+  /**
+   * Merge a COW branch back into parent -- copies all branch-local writes.
+   */
+  async branchMerge(branchId: string, namespace?: string): Promise<{
+    success: boolean;
+    mergedKeys: number;
+    error?: string;
+  }> {
+    try {
+      const ns = namespace || this.config.defaultNamespace;
+      const prefix = `${branchId}:`;
+      let mergedKeys = 0;
+
+      // Find all entries with this branch prefix using query
+      const branchEntries = await this.query({
+        namespace: ns,
+        keyPrefix: prefix,
+        limit: 10000,
+        type: 'prefix',
+      });
+
+      for (const entry of branchEntries) {
+        const originalKey = entry.key.slice(prefix.length);
+        const now = Date.now();
+        // Write to parent (unscoped key)
+        const parentEntry: MemoryEntry = {
+          id: `merged-${originalKey}-${now}`,
+          key: originalKey,
+          content: entry.content,
+          type: entry.type,
+          namespace: ns,
+          tags: entry.tags.filter(t => t !== branchId && t !== 'branch-data'),
+          metadata: { ...entry.metadata, mergedFrom: branchId },
+          accessLevel: entry.accessLevel,
+          createdAt: now,
+          updatedAt: now,
+          version: 1,
+          references: entry.references,
+          accessCount: 0,
+          lastAccessedAt: now,
+        };
+        await this.store(parentEntry);
+        mergedKeys++;
+      }
+
+      // Mark branch as merged (best-effort)
+      try {
+        const metaKey = `_branch_meta:${branchId}`;
+        const meta = await this.getByKey('default', metaKey);
+        if (meta) {
+          const parsed = JSON.parse(meta.content);
+          parsed.status = 'merged';
+          parsed.mergedAt = new Date().toISOString();
+          parsed.mergedKeys = mergedKeys;
+          await this.update(meta.id, { content: JSON.stringify(parsed) });
+        }
+      } catch { /* meta update optional */ }
+
+      return { success: true, mergedKeys };
+    } catch (e: any) {
+      return { success: false, mergedKeys: 0, error: e?.message || String(e) };
+    }
+  }
+
   private async loadFromDisk(): Promise<void> {
     if (this.config.databasePath === ':memory:') return;
     if (!existsSync(this.config.databasePath)) return;

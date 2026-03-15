@@ -693,6 +693,107 @@ export const agentdbCausalQuery: MCPTool = {
   },
 };
 
+// ===== agentdb_branch — COW branching (P6-B) =====
+
+export const agentdbBranch: MCPTool = {
+  name: 'agentdb_branch',
+  description: 'Create and manage copy-on-write memory branches for experimentation',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['create', 'get', 'store', 'merge', 'status'],
+        description: 'Branch operation',
+      },
+      branch_name: { type: 'string', description: 'Name for the branch (create action)' },
+      branch_id: { type: 'string', description: 'Branch ID (get/store/merge/status actions)' },
+      key: { type: 'string', description: 'Entry key (get/store actions)' },
+      value: { type: 'string', description: 'Entry value (store action)' },
+      namespace: { type: 'string', description: 'Namespace (default: "default")' },
+    },
+    required: ['action'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const action = validateString(params.action, 'action', 20);
+      if (!action) return { success: false, error: 'action is required' };
+
+      const bridge = await getBridge();
+      const backend = await bridge.bridgeGetController('vectorBackend');
+
+      if (!backend) {
+        return { success: false, error: 'Backend not available for branching' };
+      }
+
+      const timeoutMs = 2000;
+      const timeout = () => new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('branch operation timeout (2s)')), timeoutMs),
+      );
+
+      switch (action) {
+        case 'create': {
+          const branchName = validateString(params.branch_name, 'branch_name', 500);
+          if (!branchName) return { success: false, error: 'branch_name is required (non-empty string)' };
+          if (typeof backend.derive !== 'function') {
+            return { success: false, error: 'COW branching not supported by backend' };
+          }
+          return await Promise.race([backend.derive(branchName), timeout()]);
+        }
+        case 'get': {
+          const branchId = validateString(params.branch_id, 'branch_id', 1000);
+          const key = validateString(params.key, 'key', 1000);
+          if (!branchId || !key) return { success: false, error: 'branch_id and key are required' };
+          if (typeof backend.branchGet !== 'function') {
+            return { success: false, error: 'COW branching not supported by backend' };
+          }
+          const ns = validateString(params.namespace, 'namespace', 200) ?? undefined;
+          const entry = await Promise.race([backend.branchGet(branchId, key, ns), timeout()]);
+          return { success: true, entry: entry ?? null };
+        }
+        case 'store': {
+          const branchId = validateString(params.branch_id, 'branch_id', 1000);
+          const key = validateString(params.key, 'key', 1000);
+          const value = validateString(params.value, 'value');
+          if (!branchId || !key || !value) {
+            return { success: false, error: 'branch_id, key, and value are required' };
+          }
+          if (typeof backend.branchStore !== 'function') {
+            return { success: false, error: 'COW branching not supported by backend' };
+          }
+          const ns = validateString(params.namespace, 'namespace', 200) ?? undefined;
+          return await Promise.race([backend.branchStore(branchId, key, value, ns), timeout()]);
+        }
+        case 'merge': {
+          const branchId = validateString(params.branch_id, 'branch_id', 1000);
+          if (!branchId) return { success: false, error: 'branch_id is required' };
+          if (typeof backend.branchMerge !== 'function') {
+            return { success: false, error: 'COW branching not supported by backend' };
+          }
+          const ns = validateString(params.namespace, 'namespace', 200) ?? undefined;
+          return await Promise.race([backend.branchMerge(branchId, ns), timeout()]);
+        }
+        case 'status': {
+          const branchId = validateString(params.branch_id, 'branch_id', 1000);
+          if (!branchId) return { success: false, error: 'branch_id is required' };
+          const metaKey = `_branch_meta:${branchId}`;
+          const meta = typeof backend.getByKey === 'function'
+            ? await Promise.race([backend.getByKey('default', metaKey), timeout()])
+            : null;
+          return {
+            success: true,
+            branch: meta?.content ? JSON.parse(meta.content) : null,
+          };
+        }
+        default:
+          return { success: false, error: `Unknown action: ${action}. Must be create, get, store, merge, or status` };
+      }
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
 // ===== Export all tools =====
 
 export const agentdbTools: MCPTool[] = [
@@ -714,4 +815,5 @@ export const agentdbTools: MCPTool[] = [
   agentdbReflexionRetrieve,
   agentdbReflexionStore,
   agentdbCausalQuery,
+  agentdbBranch,
 ];
