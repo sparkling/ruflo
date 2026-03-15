@@ -105,6 +105,19 @@ async function getMoERouter() {
   return moeRouter;
 }
 
+// SonaTrajectory - lazy loaded (P5-F: ADR-0033)
+let _sonaTrajectory: any = null;
+async function getSonaTrajectory(): Promise<any> {
+  if (_sonaTrajectory) return _sonaTrajectory;
+  try {
+    const bridge = await import('../memory/memory-bridge.js');
+    _sonaTrajectory = bridge.bridgeGetController
+      ? await bridge.bridgeGetController('sonaTrajectory')
+      : null;
+  } catch { _sonaTrajectory = null; }
+  return _sonaTrajectory;
+}
+
 // Semantic Router - lazy loaded
 // Tries native VectorDb first (16k+ routes/s HNSW), falls back to pure JS (47k routes/s cosine)
 let semanticRouter: import('../ruvector/semantic-router.js').SemanticRouter | null = null;
@@ -812,6 +825,38 @@ export const hooksRoute: MCPTool = {
       }
     } catch { /* SolverBandit unavailable — fall through to patterns */ }
 
+    // Phase 4: SkillLibrary — check for learned skills matching this task (P4-A: ADR-0033)
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      const skills = bridge.bridgeGetController
+        ? await bridge.bridgeGetController('skills')
+        : null;
+      if (skills && typeof skills.search === 'function') {
+        const taskType = (params.task_type as string) || task || 'default';
+        const skillResult = await Promise.race([
+          skills.search(taskType, 3),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('SkillLibrary.search timeout')), 2000))
+        ]);
+        if (skillResult && Array.isArray(skillResult) && skillResult.length > 0) {
+          const bestSkill = skillResult[0];
+          if (bestSkill.confidence > 0.7 || bestSkill.score > 0.7) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: JSON.stringify({
+                  recommended_agent: bestSkill.agent || bestSkill.pattern || bestSkill.name,
+                  confidence: bestSkill.confidence || bestSkill.score,
+                  routing_method: 'skillLibrary',
+                  skill: bestSkill.name || bestSkill.pattern,
+                  task_type: taskType,
+                }),
+              }],
+            };
+          }
+        }
+      }
+    } catch { /* SkillLibrary unavailable — fall through */ }
+
     // Phase 4: LearningSystem algorithm recommendation
     try {
       const bridge = await import('../memory/memory-bridge.js');
@@ -1301,6 +1346,44 @@ export const hooksPostTask: MCPTool = {
         bridge.bridgeSolverBanditUpdate(taskType, agent, quality).catch(() => {});
       }
     } catch { /* bandit update failure is non-fatal */ }
+
+    // Phase 4: Create skill from successful novel patterns (P4-A: ADR-0033)
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      const skills = bridge.bridgeGetController
+        ? await bridge.bridgeGetController('skills')
+        : null;
+      if (skills && typeof skills.create === 'function') {
+        if (quality > 0.8) {
+          const taskType = (params.task_type as string) || (params.task as string) || 'default';
+          // Fire-and-forget — skill creation is background learning
+          skills.create({
+            name: `${taskType}-${agent}`,
+            pattern: taskType,
+            context: JSON.stringify({ agent, quality, timestamp: Date.now() }),
+          }).catch(() => {});
+        }
+      }
+    } catch { /* skill creation failure is non-fatal */ }
+
+    // Phase 5: SonaTrajectory — record task trajectory for SONA learning (P5-F: ADR-0033)
+    try {
+      const trajectory = await getSonaTrajectory();
+      if (trajectory && typeof trajectory.recordStep === 'function') {
+        const taskType = (params.task_type as string) || (params.task as string) || 'default';
+        // Fire-and-forget trajectory recording
+        Promise.race([
+          trajectory.recordStep({
+            task: taskType,
+            agent,
+            reward: quality,
+            success,
+            timestamp: Date.now(),
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('trajectory timeout')), 2000))
+        ]).catch(() => {});
+      }
+    } catch { /* trajectory recording failure is non-fatal */ }
 
     const duration = Date.now() - startTime;
 
@@ -2605,12 +2688,26 @@ export const hooksIntelligenceStats: MCPTool = {
       };
     }
 
+    // Phase 5: SonaTrajectory stats (P5-F: ADR-0033)
+    let sonaTrajectoryStats: Record<string, unknown> | null = null;
+    try {
+      const trajectory = await getSonaTrajectory();
+      if (trajectory && typeof trajectory.getStats === 'function') {
+        const tStats = await Promise.race([
+          trajectory.getStats(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+        ]);
+        sonaTrajectoryStats = tStats;
+      }
+    } catch { /* stats unavailable */ }
+
     const stats = {
       sona: sonaStats,
       moe: moeStats,
       ewc: ewcStats,
       flash: flashStats,
       lora: loraStats,
+      ...(sonaTrajectoryStats ? { sonaTrajectory: sonaTrajectoryStats } : {}),
       hnsw: {
         indexSize: memoryStats.memory.indexSize,
         avgSearchTimeMs: 0.12,
