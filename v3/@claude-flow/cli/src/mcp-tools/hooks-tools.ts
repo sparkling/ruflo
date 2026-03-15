@@ -783,6 +783,77 @@ export const hooksRoute: MCPTool = {
     const context = params.context as string | undefined;
     const useSemanticRouter = params.useSemanticRouter !== false;
 
+    // Mutable metadata that controllers can enrich
+    let routingMetadata: Record<string, unknown> = {};
+
+    // Phase 2: Try SolverBandit first (learned routing)
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      if (bridge.bridgeSolverBanditSelect) {
+        const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
+        const taskType = task;
+        const banditResult = await Promise.race([
+          bridge.bridgeSolverBanditSelect(taskType, agents),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SolverBandit timeout')), 2000)),
+        ]);
+        if (banditResult.confidence > 0.6 && banditResult.controller !== 'fallback') {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                recommended_agent: banditResult.arm,
+                confidence: banditResult.confidence,
+                routing_method: 'solverBandit',
+                task_type: taskType,
+              }),
+            }],
+          };
+        }
+      }
+    } catch { /* SolverBandit unavailable — fall through to patterns */ }
+
+    // Phase 4: LearningSystem algorithm recommendation
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      const ls = bridge.bridgeGetController ? await bridge.bridgeGetController('learningSystem') : null;
+      if (ls && typeof ls.recommendAlgorithm === 'function') {
+        const taskType = task;
+        const recommendation = await Promise.race([
+          ls.recommendAlgorithm(taskType),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('LearningSystem timeout')), 2000)),
+        ]);
+        if (recommendation?.algorithm) {
+          // Merge into routing metadata (don't override agent selection)
+          routingMetadata = { ...routingMetadata, learningSystem: recommendation };
+        }
+      }
+    } catch { /* LearningSystem unavailable */ }
+
+    // Phase 5: Use bridge SemanticRouter when available (replaces static TASK_PATTERNS)
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      if (bridge.bridgeSemanticRoute) {
+        const routeResult = await Promise.race([
+          bridge.bridgeSemanticRoute({ input: task }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SemanticRouter timeout')), 2000)),
+        ]);
+        if (routeResult?.route && !routeResult.error) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                recommended_agent: routeResult.route,
+                confidence: routeResult.confidence || 0.7,
+                routing_method: 'semanticRouter',
+                task_type: task,
+                ...routingMetadata,
+              }),
+            }],
+          };
+        }
+      }
+    } catch { /* SemanticRouter unavailable — fall through to patterns */ }
+
     // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first
     if (useSemanticRouter) {
       try {
@@ -1221,6 +1292,16 @@ export const hooksPostTask: MCPTool = {
       );
     }
 
+    // Phase 2: Update SolverBandit with task outcome
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      if (bridge.bridgeSolverBanditUpdate) {
+        const taskType = (params.task_type as string) || (params.task as string) || 'default';
+        // Fire-and-forget — learning writes must not block response
+        bridge.bridgeSolverBanditUpdate(taskType, agent, quality).catch(() => {});
+      }
+    } catch { /* bandit update failure is non-fatal */ }
+
     const duration = Date.now() - startTime;
 
     return {
@@ -1639,6 +1720,19 @@ export const hooksSessionEnd: MCPTool = {
     } catch {
       // Bridge not available
     }
+
+    // Phase 3: Trigger NightlyLearner consolidation on session end
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      const registry = bridge.bridgeGetController ? await bridge.bridgeGetController('nightlyLearner') : null;
+      if (registry && typeof registry.consolidate === 'function') {
+        // Fire-and-forget — consolidation is background work
+        Promise.race([
+          registry.consolidate(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('NightlyLearner timeout')), 2000)),
+        ]).catch(() => {});
+      }
+    } catch { /* NightlyLearner unavailable */ }
 
     return {
       sessionId,
