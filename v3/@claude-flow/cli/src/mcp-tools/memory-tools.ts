@@ -356,6 +356,7 @@ export const memoryTools: MCPTool[] = [
         threshold: { type: 'number', description: 'Minimum similarity threshold 0-1 (default: 0.3)' },
         metadata_filter: { type: 'object', description: 'Optional metadata predicates for structured filtering (MongoDB-style)' },
         mmr_lambda: { type: 'number', description: 'MMR diversity lambda 0-1 (default: 0.5; 1.0 = pure relevance, 0.0 = pure diversity)' },
+        synthesize: { type: 'boolean', description: 'Synthesize context from search results (default: false)' },
         scope: { type: 'string', enum: ['agent', 'session', 'global'], description: 'Memory scope (default: unscoped)' },
         scope_id: { type: 'string', description: 'Scope identifier (agent ID or session ID)' },
       },
@@ -442,14 +443,18 @@ export const memoryTools: MCPTool[] = [
           const mmr = await bridge.bridgeGetController('mmrDiversity');
           if (mmr && typeof (mmr as Record<string, unknown>).selectDiverse === 'function' && outputResults.length > 1) {
             const lambda = (input.mmr_lambda as number) ?? 0.5;
-            outputResults = (mmr as { selectDiverse: (r: typeof outputResults, q: string, opts: { lambda: number }) => typeof outputResults }).selectDiverse(outputResults, query, { lambda });
+            const diverseResults = await Promise.race([
+              Promise.resolve(
+                (mmr as { selectDiverse: (r: typeof outputResults, q: string, opts: { lambda: number; k: number }) => typeof outputResults })
+                  .selectDiverse(outputResults, query, { lambda, k: limit })
+              ),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('MMR timeout')), 2000)),
+            ]);
+            if (Array.isArray(diverseResults) && diverseResults.length > 0) {
+              outputResults = diverseResults;
+            }
           }
-        } catch (e) {
-          throw new Error(
-            `MMRDiversityRanker.selectDiverse failed: ${(e as Error)?.message}\n` +
-            `Fix: set "memory.mmrDiversity.enabled": false in .claude-flow/config.json`
-          );
-        }
+        } catch { /* MMR diversity re-ranking unavailable — continue with unranked results */ }
 
         // WM-114c: Boost results with attention scores when available
         let attentionApplied = false;
@@ -491,6 +496,23 @@ export const memoryTools: MCPTool[] = [
           }
         } catch { /* scope filtering unavailable */ }
 
+        // Context synthesis when requested (ADR-0033)
+        let synthesis: unknown = undefined;
+        if (input.synthesize && outputResults.length > 0) {
+          try {
+            const bridge = await import('../memory/memory-bridge.js');
+            const ctx = await bridge.bridgeGetController('contextSynthesizer');
+            if (ctx && typeof (ctx as Record<string, unknown>).synthesize === 'function') {
+              synthesis = await Promise.race([
+                Promise.resolve(
+                  (ctx as { synthesize: (r: typeof outputResults) => unknown }).synthesize(outputResults)
+                ),
+                new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ContextSynthesizer timeout')), 2000)),
+              ]);
+            }
+          } catch { /* context synthesis unavailable */ }
+        }
+
         return {
           query,
           results: outputResults,
@@ -498,6 +520,7 @@ export const memoryTools: MCPTool[] = [
           searchTime: `${duration.toFixed(2)}ms`,
           backend: 'HNSW + sql.js',
           attention: attentionApplied,
+          ...(synthesis ? { synthesis } : {}),
         };
       } catch (error) {
         return {
