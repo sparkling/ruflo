@@ -1010,7 +1010,7 @@ const hyperbolicCommand: Command = {
         case 'convert': {
           const vec = Array.isArray(input[0]) ? input[0] as number[] : input as number[];
           const rawResult = hyperbolic.euclideanToPoincare(vec, { curvature });
-          const result = Array.from(rawResult);
+          const result = Array.from(rawResult) as number[];
           output.writeln(output.success('Euclidean → Poincaré conversion:'));
           output.writeln();
           output.writeln(`Input (Euclidean):  [${vec.slice(0, 6).map(v => v.toFixed(4)).join(', ')}${vec.length > 6 ? ', ...' : ''}]`);
@@ -1042,7 +1042,7 @@ const hyperbolicCommand: Command = {
           }
           const vectors = input as number[][];
           const rawCentroid = hyperbolic.hyperbolicCentroid(vectors, { curvature });
-          const centroid = Array.from(rawCentroid);
+          const centroid = Array.from(rawCentroid) as number[];
           output.writeln(output.success('Hyperbolic centroid (Fréchet mean):'));
           output.writeln();
           output.writeln(`Input vectors: ${vectors.length}`);
