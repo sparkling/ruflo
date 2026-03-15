@@ -794,6 +794,87 @@ export const agentdbBranch: MCPTool = {
   },
 };
 
+// ===== agentdb_causal_recall — Causal-aware search (ADR-0033) =====
+
+export const agentdbCausalRecall: MCPTool = {
+  name: 'agentdb_causal-recall',
+  description: 'Search with causal-aware re-ranking (boosts results with higher causal uplift)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query' },
+      k: { type: 'number', description: 'Number of results (default: 10)' },
+      include_evidence: { type: 'boolean', description: 'Include causal evidence chains' },
+    },
+    required: ['query'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const query = validateString(params.query, 'query', 10_000);
+      if (!query) return { success: false, error: 'query is required (non-empty string, max 10KB)' };
+      const bridge = await getBridge();
+      if (!bridge?.bridgeCausalRecall) {
+        return { success: false, error: 'bridgeCausalRecall not available' };
+      }
+      const result = await bridge.bridgeCausalRecall({
+        query,
+        k: validatePositiveInt(params.k, 10, MAX_TOP_K),
+        includeEvidence: params.include_evidence === true,
+      });
+      return result;
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_batch_optimize — Optimize and prune storage (ADR-0033) =====
+
+export const agentdbBatchOptimize: MCPTool = {
+  name: 'agentdb_batch-optimize',
+  description: 'Optimize and prune AgentDB storage (vacuum, stats, pruning)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['optimize', 'prune', 'stats'], description: 'Operation to perform' },
+      max_age: { type: 'number', description: 'Prune entries older than N days (prune action)' },
+      min_reward: { type: 'number', description: 'Prune entries with reward below threshold (prune action)' },
+    },
+    required: ['action'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const action = validateString(params.action, 'action', 20);
+      if (!action) return { success: false, error: 'action is required' };
+      if (!['optimize', 'prune', 'stats'].includes(action)) {
+        return { success: false, error: `Unknown action: ${action}. Must be optimize, prune, or stats` };
+      }
+      const bridge = await getBridge();
+      switch (action) {
+        case 'optimize': {
+          if (!bridge?.bridgeBatchOptimize) return { success: false, error: 'bridgeBatchOptimize not available' };
+          return await bridge.bridgeBatchOptimize();
+        }
+        case 'prune': {
+          if (!bridge?.bridgeBatchPrune) return { success: false, error: 'bridgeBatchPrune not available' };
+          return await bridge.bridgeBatchPrune({
+            maxAge: typeof params.max_age === 'number' ? Math.max(0, params.max_age) : undefined,
+            minReward: validateScore(params.min_reward, 0),
+          });
+        }
+        case 'stats': {
+          if (!bridge?.bridgeBatchOptimize) return { success: false, error: 'bridgeBatchOptimize not available' };
+          return await bridge.bridgeBatchOptimize();
+        }
+        default:
+          return { success: false, error: `Unknown action: ${action}` };
+      }
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
 // ===== Export all tools =====
 
 export const agentdbTools: MCPTool[] = [
@@ -816,4 +897,6 @@ export const agentdbTools: MCPTool[] = [
   agentdbReflexionStore,
   agentdbCausalQuery,
   agentdbBranch,
+  agentdbCausalRecall,
+  agentdbBatchOptimize,
 ];

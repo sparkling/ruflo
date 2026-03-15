@@ -2196,6 +2196,96 @@ export async function bridgeGraphTransformerRerank(
   }
 }
 
+// ===== ADR-0033: CausalRecall bridge =====
+
+/**
+ * CausalRecall — causal-aware search that re-ranks by causal uplift.
+ */
+export async function bridgeCausalRecall(options: {
+  query: string;
+  k?: number;
+  includeEvidence?: boolean;
+}): Promise<{ success: boolean; results?: any[]; warning?: string; error?: string }> {
+  try {
+    const registry = await getRegistry();
+    const cr = registry?.getController?.('causalRecall') ?? registry?.get?.('causalRecall');
+    if (!cr || typeof cr.search !== 'function') {
+      return { success: false, error: 'CausalRecall not available' };
+    }
+    // Cold-start guard: check if causal graph has enough edges
+    if (typeof cr.getStats === 'function') {
+      const stats = cr.getStats();
+      if (stats && (stats.totalCausalEdges || 0) < 5) {
+        return { success: true, results: [], warning: 'Cold start: fewer than 5 causal edges' };
+      }
+    }
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('CausalRecall timeout (2s)')), 2000)
+    );
+    const results = await Promise.race([
+      cr.search({ query: options.query, k: options.k || 10, includeEvidence: options.includeEvidence }),
+      timeoutPromise,
+    ]);
+    return { success: true, results: Array.isArray(results) ? results : [] };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+// ===== ADR-0033: BatchOperations optimize/prune bridge =====
+
+/**
+ * BatchOperations — bulk data management and optimization.
+ */
+export async function bridgeBatchOptimize(): Promise<{
+  success: boolean;
+  stats?: any;
+  error?: string;
+}> {
+  try {
+    const registry = await getRegistry();
+    const bo = registry?.getController?.('batchOperations') ?? registry?.get?.('batchOperations');
+    if (!bo) {
+      return { success: false, error: 'BatchOperations not available' };
+    }
+    // Run optimize if available
+    if (typeof bo.optimize === 'function') {
+      bo.optimize();
+    }
+    // Get stats
+    let stats = null;
+    if (typeof bo.getStats === 'function') {
+      stats = await Promise.race([
+        Promise.resolve(bo.getStats()),
+        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+      ]);
+    }
+    return { success: true, stats };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+export async function bridgeBatchPrune(config?: {
+  maxAge?: number;
+  minReward?: number;
+}): Promise<{ success: boolean; pruned?: any; error?: string }> {
+  try {
+    const registry = await getRegistry();
+    const bo = registry?.getController?.('batchOperations') ?? registry?.get?.('batchOperations');
+    if (!bo || typeof bo.pruneData !== 'function') {
+      return { success: false, error: 'BatchOperations not available' };
+    }
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('BatchOperations prune timeout (2s)')), 2000)
+    );
+    const pruned = await Promise.race([bo.pruneData(config), timeoutPromise]);
+    return { success: true, pruned };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
 // ===== Utility =====
 
 function cosineSim(a: number[], b: number[]): number {
