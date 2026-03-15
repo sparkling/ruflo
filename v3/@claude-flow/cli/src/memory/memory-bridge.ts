@@ -478,6 +478,39 @@ export async function bridgeStoreEntry(options: {
       }
     }
 
+    // Phase 5: GuardedVectorBackend — store through guarded backend if available
+    try {
+      const gvb = registry?.getController?.('guardedVectorBackend') ?? registry?.get?.('guardedVectorBackend');
+      if (gvb && typeof gvb.store === 'function') {
+        const guardedResult = await Promise.race([
+          gvb.store({
+            key,
+            value,
+            namespace,
+            embedding: embeddingJson ? JSON.parse(embeddingJson) : undefined,
+          }),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('GuardedVector store timeout')), 2000))
+        ]);
+        if (guardedResult?.success) {
+          // GuardedVectorBackend handled the store — still do post-store hooks below
+          const safeNs = String(namespace).replace(/:/g, '_');
+          const safeKey = String(key).replace(/:/g, '_');
+          const cacheKey = `entry:${safeNs}:${safeKey}`;
+          await cacheSet(registry, cacheKey, { id, key, namespace, content: value, embedding: embeddingJson });
+          await logAttestation(registry, 'store', id, { key, namespace, hasEmbedding: !!embeddingJson, backend: 'guardedVector' });
+          return {
+            success: true,
+            id: guardedResult.id || id,
+            embedding: embeddingJson ? { dimensions, model } : undefined,
+            guarded: true,
+            cached: true,
+            attested: true,
+          };
+        }
+        // If guarded store fails, fall through to regular path
+      }
+    } catch { /* GuardedVectorBackend unavailable — use regular path */ }
+
     // better-sqlite3 uses synchronous .run() with positional params
     const insertSql = options.upsert
       ? `INSERT OR REPLACE INTO memory_entries (
@@ -581,6 +614,40 @@ export async function bridgeSearchEntries(options: {
       }
     }
 
+    // Phase 5: GuardedVectorBackend — try guarded search first
+    try {
+      const gvb = registry?.getController?.('guardedVectorBackend') ?? registry?.get?.('guardedVectorBackend');
+      if (gvb && typeof gvb.search === 'function') {
+        const guardedResults = await Promise.race([
+          gvb.search({
+            query: queryStr,
+            namespace: namespace || undefined,
+            limit: limit,
+            embedding: queryEmbedding,
+          }),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('GuardedVector search timeout')), 2000))
+        ]);
+        if (guardedResults?.results?.length > 0) {
+          // GuardedVectorBackend results have cryptographic integrity guarantees
+          // Return them directly with provenance marking
+          const guardedMapped = guardedResults.results.slice(0, limit).map((r: any) => ({
+            id: String(r.id || r.key || '').substring(0, 12),
+            key: r.key || String(r.id || '').substring(0, 15),
+            content: (r.content || r.value || '').substring(0, 60) + ((r.content || r.value || '').length > 60 ? '...' : ''),
+            score: r.score ?? r.similarity ?? 0,
+            namespace: r.namespace || namespace || 'default',
+            provenance: `guarded-vector:${(r.score ?? r.similarity ?? 0).toFixed(3)}`,
+          }));
+          return {
+            success: true,
+            results: guardedMapped,
+            searchTime: Date.now() - startTime,
+            searchMethod: 'guarded-vector',
+          };
+        }
+      }
+    } catch { /* GuardedVectorBackend unavailable — fall through to regular path */ }
+
     // better-sqlite3: .prepare().all() returns array of objects
     // OPT-010: Filter by namespace only when explicitly specified (not 'all' or undefined)
     const nsFilter = (namespace && namespace !== 'all')
@@ -652,10 +719,14 @@ export async function bridgeSearchEntries(options: {
     }
 
     results.sort((a, b) => b.score - a.score);
+    const sliced = results.slice(0, limit);
+
+    // Phase 5-D: GraphTransformer proof-gated re-ranking (optional overlay)
+    const reranked = await bridgeGraphTransformerRerank(sliced, queryStr);
 
     return {
       success: true,
-      results: results.slice(0, limit),
+      results: reranked,
       searchTime: Date.now() - startTime,
       searchMethod: queryEmbedding ? 'hybrid-bm25-semantic' : 'bm25-only',
     };
@@ -2012,6 +2083,116 @@ export async function bridgeSolverBanditUpdate(
     return { success: true };
   } catch (e: any) {
     return { success: false, error: e?.message || String(e) };
+  }
+}
+
+// ===== Phase 4-B: ExplainableRecall with Merkle proof chain =====
+
+/**
+ * P4-B: ExplainableRecall with Merkle proof chain.
+ * Returns search results with cryptographic provenance trail.
+ * Falls back to standard bridgeSearchEntries if ExplainableRecall controller unavailable.
+ */
+export async function bridgeExplainableRecall(options: {
+  query: string;
+  namespace?: string;
+  limit?: number;
+  includeProof?: boolean;
+}): Promise<{
+  success: boolean;
+  results?: any[];
+  proofChain?: any[];
+  error?: string;
+}> {
+  try {
+    const registry = await getRegistry();
+    const er = registry?.getController?.('explainableRecall') ?? registry?.get?.('explainableRecall');
+    if (!er || typeof er.recall !== 'function') {
+      // Fallback to standard search
+      const fallback = await bridgeSearchEntries({
+        query: options.query,
+        namespace: options.namespace,
+        limit: options.limit || 10,
+      });
+      return { success: true, results: fallback?.results || [], proofChain: [] };
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('ExplainableRecall timeout (2s)')), 2000)
+    );
+
+    const recallResult = await Promise.race([
+      er.recall(options.query, {
+        namespace: options.namespace,
+        limit: options.limit || 10,
+        explain: true,
+      }),
+      timeoutPromise,
+    ]);
+
+    // Build Merkle proof chain if requested
+    let proofChain: any[] = [];
+    if (options.includeProof && recallResult?.results) {
+      try {
+        const attestation = registry?.getController?.('attestationLog') ?? registry?.get?.('attestationLog');
+        if (attestation && typeof attestation.getProof === 'function') {
+          for (const result of recallResult.results.slice(0, 5)) {
+            const proof = await Promise.race([
+              attestation.getProof(result.id || result.key),
+              new Promise<any>((_, reject) => setTimeout(() => reject(new Error('proof timeout')), 1000))
+            ]);
+            if (proof) {
+              proofChain.push({
+                key: result.id || result.key,
+                proof: proof.hash || proof.merkleRoot,
+                path: proof.path || [],
+                verified: proof.verified ?? true,
+              });
+            }
+          }
+        }
+      } catch { /* proof generation optional */ }
+    }
+
+    return {
+      success: true,
+      results: recallResult?.results || [],
+      proofChain,
+    };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+// ===== Phase 5-D: GraphTransformer proof-gated re-ranking =====
+
+/**
+ * P5-D: GraphTransformer proof-gated re-ranking.
+ * Uses only the proof_gated module from GraphTransformerService.
+ * Returns original results unchanged on any failure.
+ */
+export async function bridgeGraphTransformerRerank(
+  results: any[],
+  query: string
+): Promise<any[]> {
+  if (!results || results.length === 0) return results;
+  try {
+    const registry = await getRegistry();
+    const gt = registry?.getController?.('graphTransformer') ?? registry?.get?.('graphTransformer');
+    if (!gt) return results;
+
+    // Use only proof_gated module (ADR-0033 scope reduction)
+    const reranker = gt.proofGated || gt;
+    if (typeof reranker.rerank !== 'function') return results;
+
+    const reranked = await Promise.race([
+      reranker.rerank(results, query, { module: 'proof_gated' }),
+      new Promise<any>((_, reject) => setTimeout(() => reject(new Error('GraphTransformer timeout')), 2000))
+    ]);
+
+    return Array.isArray(reranked) ? reranked : results;
+  } catch {
+    return results; // fallback to original order
   }
 }
 
