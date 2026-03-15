@@ -1,0 +1,29 @@
+[
+  {
+    "id": "js1",
+    "namespace": "transcript-archive",
+    "content": "a",
+    "metadata": {
+      "sessionId": "s1",
+      "chunkIndex": 0
+    }
+  },
+  {
+    "id": "js2",
+    "namespace": "transcript-archive",
+    "content": "b",
+    "metadata": {
+      "sessionId": "s1",
+      "chunkIndex": 1
+    }
+  },
+  {
+    "id": "js3",
+    "namespace": "transcript-archive",
+    "content": "c",
+    "metadata": {
+      "sessionId": "s2",
+      "chunkIndex": 0
+    }
+  }
+]

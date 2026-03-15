@@ -1,0 +1,14 @@
+[
+  {
+    "id": "1",
+    "namespace": "ns1",
+    "content": "hello",
+    "metadata": {}
+  },
+  {
+    "id": "2",
+    "namespace": "ns2",
+    "content": "world",
+    "metadata": {}
+  }
+]

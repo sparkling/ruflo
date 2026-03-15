@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/memory",
-  "version": "3.0.0-alpha.11-patch.15",
+  "version": "3.0.0-alpha.11-patch.16",
   "type": "module",
   "description": "Memory module - AgentDB unification, HNSW indexing, vector search, hybrid SQLite+AgentDB backend (ADR-009)",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "agentdb": "3.0.0-alpha.3-patch.14",
+    "agentdb": "3.0.0-alpha.3-patch.15",
     "sql.js": "^1.10.3"
   },
   "optionalDependencies": {

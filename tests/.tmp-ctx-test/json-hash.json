@@ -1,0 +1,10 @@
+[
+  {
+    "id": "jh1",
+    "namespace": "transcript-archive",
+    "content": "x",
+    "metadata": {
+      "contentHash": "hash-abc"
+    }
+  }
+]

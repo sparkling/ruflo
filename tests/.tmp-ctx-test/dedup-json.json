@@ -1,0 +1,35 @@
+[
+  {
+    "id": "ctx-1773566361884-4-7feaie",
+    "key": "transcript:sess1:0:2026-03-15T09:19:21.884Z",
+    "content": "User: hello\n\nAssistant: hi",
+    "type": "episodic",
+    "namespace": "transcript-archive",
+    "tags": [
+      "transcript",
+      "compaction",
+      "sess1"
+    ],
+    "metadata": {
+      "sessionId": "sess1",
+      "chunkIndex": 0,
+      "trigger": "auto",
+      "timestamp": "2026-03-15T09:19:21.884Z",
+      "toolNames": [],
+      "filePaths": [],
+      "summary": "hello | hi",
+      "contentHash": "2b150e8757e3d9a83714468b255ce00f9f361abd323d2c589eee3243908c8707",
+      "turnRange": [
+        0,
+        0
+      ]
+    },
+    "accessLevel": "private",
+    "createdAt": 1773566361884,
+    "updatedAt": 1773566361884,
+    "version": 1,
+    "references": [],
+    "accessCount": 0,
+    "lastAccessedAt": 1773566361884
+  }
+]
