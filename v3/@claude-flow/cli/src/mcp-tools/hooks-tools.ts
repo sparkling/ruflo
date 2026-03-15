@@ -2185,6 +2185,27 @@ export const hooksPatternStore: MCPTool = {
     const success = reasoningResult?.success || storeResult.success;
     const controller = reasoningResult?.controller || (storeResult.success ? 'bridge-store' : 'none');
 
+    // OPT-017: Also populate neural_patterns store to eliminate dual-store divergence
+    let neuralSynced = false;
+    try {
+      const { loadNeuralStore, saveNeuralStore } = await import('./neural-tools.js');
+      const neuralStore = loadNeuralStore();
+      const neuralPatternId = reasoningResult?.patternId || storeResult.id || patternId;
+      neuralStore.patterns[neuralPatternId] = {
+        id: neuralPatternId,
+        name: pattern,
+        type,
+        embedding: [],  // placeholder — neural store generates its own
+        metadata: metadata || {},
+        createdAt: timestamp,
+        usageCount: 0,
+      };
+      saveNeuralStore(neuralStore);
+      neuralSynced = true;
+    } catch {
+      // Neural store sync is best-effort
+    }
+
     return {
       patternId: reasoningResult?.patternId || storeResult.id || patternId,
       pattern,
@@ -2193,6 +2214,7 @@ export const hooksPatternStore: MCPTool = {
       indexed: success,
       hnswIndexed: success && (!!storeResult.embedding || controller === 'reasoningBank'),
       embedding: storeResult.embedding,
+      neuralSynced,
       timestamp,
       controller,
       implementation: controller === 'reasoningBank' ? 'reasoning-bank-controller' : (storeResult.success ? 'real-hnsw-indexed' : 'memory-only'),

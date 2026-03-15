@@ -73,7 +73,7 @@ interface NeuralModel {
   config: Record<string, unknown>;
 }
 
-interface Pattern {
+export interface Pattern {
   id: string;
   name: string;
   type: string;
@@ -104,7 +104,7 @@ function ensureNeuralDir(): void {
   }
 }
 
-function loadNeuralStore(): NeuralStore {
+export function loadNeuralStore(): NeuralStore {
   try {
     const path = getNeuralPath();
     if (existsSync(path)) {
@@ -116,7 +116,7 @@ function loadNeuralStore(): NeuralStore {
   return { models: {}, patterns: {}, version: '3.0.0' };
 }
 
-function saveNeuralStore(store: NeuralStore): void {
+export function saveNeuralStore(store: NeuralStore): void {
   ensureNeuralDir();
   writeFileSync(getNeuralPath(), JSON.stringify(store, null, 2), 'utf-8');
 }

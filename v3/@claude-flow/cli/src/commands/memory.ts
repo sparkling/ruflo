@@ -1458,11 +1458,209 @@ const initMemoryCommand: Command = {
   }
 };
 
+// Migrate command — ADR-0030 S6 (OPT-011): Backfill legacy embeddings
+const migrateCommand: Command = {
+  name: 'migrate',
+  description: 'Backfill embeddings for legacy memory entries',
+  options: [
+    {
+      name: 'force',
+      short: 'f',
+      description: 'Regenerate all embeddings even if already present',
+      type: 'boolean',
+      default: false
+    },
+    {
+      name: 'batch-size',
+      short: 'b',
+      description: 'Number of entries to process per batch',
+      type: 'number',
+      default: 50
+    },
+    {
+      name: 'model',
+      short: 'm',
+      description: 'Override embedding model',
+      type: 'string'
+    },
+    {
+      name: 'namespace',
+      short: 'n',
+      description: 'Only migrate entries in this namespace',
+      type: 'string'
+    }
+  ],
+  examples: [
+    { command: 'claude-flow memory migrate', description: 'Backfill missing embeddings' },
+    { command: 'claude-flow memory migrate --force', description: 'Regenerate all embeddings' },
+    { command: 'claude-flow memory migrate --batch-size 100 --model text-embedding-3-small', description: 'Custom batch size and model' }
+  ],
+  action: async (ctx: CommandContext): Promise<CommandResult> => {
+    const force = ctx.flags.force as boolean;
+    const batchSize = (ctx.flags['batch-size'] as number) || 50;
+    const model = ctx.flags.model as string | undefined;
+    const namespace = ctx.flags.namespace as string | undefined;
+
+    output.writeln();
+    output.writeln(output.bold('Embedding Migration (ADR-0030 OPT-011)'));
+    output.writeln();
+
+    if (force) {
+      output.printWarning('Force mode: will regenerate ALL embeddings');
+    }
+
+    const spinner = output.createSpinner({ text: 'Scanning memory entries...', spinner: 'dots' });
+    spinner.start();
+
+    try {
+      const { listEntries, getEntry, storeEntry } = await import('../memory/memory-initializer.js');
+
+      // Collect all entries by paginating through them
+      const allEntries: { key: string; namespace: string; hasEmbedding: boolean }[] = [];
+      let offset = 0;
+      const pageSize = 200;
+
+      while (true) {
+        const page = await listEntries({ namespace, limit: pageSize, offset });
+        if (!page.success) {
+          spinner.fail('Failed to list entries');
+          output.printError(page.error || 'Unknown error listing entries');
+          return { success: false, exitCode: 1 };
+        }
+        for (const entry of page.entries) {
+          allEntries.push({ key: entry.key, namespace: entry.namespace, hasEmbedding: entry.hasEmbedding });
+        }
+        if (page.entries.length < pageSize) break;
+        offset += pageSize;
+      }
+
+      const totalEntries = allEntries.length;
+      const candidates = force
+        ? allEntries
+        : allEntries.filter(e => !e.hasEmbedding);
+
+      spinner.succeed(`Found ${totalEntries} entries, ${candidates.length} need embedding migration`);
+
+      if (candidates.length === 0) {
+        output.writeln();
+        output.printSuccess('All entries already have embeddings. Nothing to migrate.');
+        return { success: true, data: { total: totalEntries, migrated: 0, skipped: totalEntries, errors: 0 } };
+      }
+
+      // Confirm if interactive and many entries
+      if (ctx.interactive && candidates.length > 10) {
+        const proceed = await confirm({
+          message: `Migrate ${candidates.length} entries? This will re-store each entry with embedding generation.`,
+          default: true
+        });
+        if (!proceed) {
+          output.printInfo('Migration cancelled');
+          return { success: true, data: { cancelled: true } };
+        }
+      }
+
+      let migrated = 0;
+      let skipped = 0;
+      let errors = 0;
+
+      // Process in batches
+      for (let i = 0; i < candidates.length; i += batchSize) {
+        const batch = candidates.slice(i, i + batchSize);
+        const batchNum = Math.floor(i / batchSize) + 1;
+        const totalBatches = Math.ceil(candidates.length / batchSize);
+
+        output.writeln(output.dim(`  Batch ${batchNum}/${totalBatches} (${batch.length} entries)...`));
+
+        for (const candidate of batch) {
+          const progress = migrated + skipped + errors + 1;
+          const pct = Math.round((progress / candidates.length) * 100);
+          output.write(`\r  [${pct}%] ${progress}/${candidates.length} — migrating ${candidate.namespace}/${candidate.key}`);
+
+          // Retrieve the full entry to get its value
+          const retrieved = await getEntry({ key: candidate.key, namespace: candidate.namespace });
+          if (!retrieved.success || !retrieved.found || !retrieved.entry) {
+            errors++;
+            continue;
+          }
+
+          const entry = retrieved.entry;
+
+          // Re-store with embedding generation and upsert
+          const storeOpts: {
+            key: string;
+            value: string;
+            namespace: string;
+            generateEmbeddingFlag: boolean;
+            tags: string[];
+            upsert: boolean;
+            embeddingModel?: string;
+          } = {
+            key: entry.key,
+            value: entry.content,
+            namespace: entry.namespace,
+            generateEmbeddingFlag: true,
+            tags: entry.tags,
+            upsert: true
+          };
+
+          if (model) {
+            storeOpts.embeddingModel = model;
+          }
+
+          const result = await storeEntry(storeOpts);
+
+          if (result.success) {
+            migrated++;
+          } else {
+            errors++;
+          }
+        }
+
+        output.writeln(); // newline after progress line
+      }
+
+      // Summary
+      skipped = totalEntries - candidates.length;
+
+      output.writeln();
+      output.printTable({
+        columns: [
+          { key: 'metric', header: 'Metric', width: 20 },
+          { key: 'count', header: 'Count', width: 10, align: 'right' }
+        ],
+        data: [
+          { metric: 'Total entries', count: totalEntries },
+          { metric: 'Migrated', count: migrated },
+          { metric: 'Skipped (had embedding)', count: skipped },
+          { metric: 'Errors', count: errors }
+        ]
+      });
+
+      output.writeln();
+      if (errors > 0) {
+        output.printWarning(`Migration completed with ${errors} error(s)`);
+      } else {
+        output.printSuccess('Migration completed successfully');
+      }
+
+      return {
+        success: errors === 0,
+        exitCode: errors > 0 ? 1 : 0,
+        data: { total: totalEntries, migrated, skipped, errors }
+      };
+    } catch (error) {
+      spinner.fail('Migration failed');
+      output.printError(`Failed to migrate: ${error instanceof Error ? error.message : String(error)}`);
+      return { success: false, exitCode: 1 };
+    }
+  }
+};
+
 // Main memory command
 export const memoryCommand: Command = {
   name: 'memory',
   description: 'Memory management commands',
-  subcommands: [initMemoryCommand, storeCommand, retrieveCommand, searchCommand, listCommand, deleteCommand, statsCommand, configureCommand, cleanupCommand, compressCommand, exportCommand, importCommand],
+  subcommands: [initMemoryCommand, storeCommand, retrieveCommand, searchCommand, listCommand, deleteCommand, statsCommand, configureCommand, cleanupCommand, compressCommand, exportCommand, importCommand, migrateCommand],
   options: [],
   examples: [
     { command: 'claude-flow memory store -k "key" -v "value"', description: 'Store data' },
@@ -1488,7 +1686,8 @@ export const memoryCommand: Command = {
       `${output.highlight('cleanup')}    - Clean expired entries`,
       `${output.highlight('compress')}   - Compress database`,
       `${output.highlight('export')}     - Export memory to file`,
-      `${output.highlight('import')}     - Import from file`
+      `${output.highlight('import')}     - Import from file`,
+      `${output.highlight('migrate')}    - Backfill legacy embeddings`
     ]);
 
     return { success: true };

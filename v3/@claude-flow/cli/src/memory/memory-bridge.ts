@@ -31,12 +31,16 @@ function readProjectConfig(): any {
     return {};
 }
 
-// FB-004: Adaptive search threshold based on embedding model.
+// FB-004 + OPT-009: Adaptive threshold based on embedding model + dimensions.
 // Hash fallback produces similarity ~0.05-0.28 (not semantic).
-// ONNX produces meaningful similarity 0.3-0.95.
-const HASH_THRESHOLD = 0.05;
-const ONNX_THRESHOLD = 0.3;
+// 384-dim (reasoningbank) produces lower cosine scores than 768-dim ONNX.
+const THRESHOLDS: Record<string, number> = {
+  'hash-fallback': 0.05,
+  'onnx-384':      0.2,    // OPT-009: 384-dim reasoningbank embeddings
+  'onnx-768':      0.3,    // Full ONNX model (Sentence-BERT 768-dim)
+};
 let _detectedModel: string | null = null;
+let _detectedDimensions: number = 0;
 
 async function _getAdaptiveThreshold(explicit?: number): Promise<number> {
   if (explicit !== undefined && explicit !== null) return explicit;
@@ -44,13 +48,17 @@ async function _getAdaptiveThreshold(explicit?: number): Promise<number> {
     try {
       // Probe the embedding model once and cache
       const { generateEmbedding } = await import('./memory-initializer.js');
-      const { model } = await generateEmbedding('probe');
+      const { model, dimensions } = await generateEmbedding('probe');
       _detectedModel = model;
+      _detectedDimensions = dimensions;
     } catch {
       _detectedModel = 'hash-fallback';
+      _detectedDimensions = 0;
     }
   }
-  return _detectedModel === 'hash-fallback' ? HASH_THRESHOLD : ONNX_THRESHOLD;
+  if (_detectedModel === 'hash-fallback') return THRESHOLDS['hash-fallback'];
+  if (_detectedDimensions <= 384) return THRESHOLDS['onnx-384'];
+  return THRESHOLDS['onnx-768'];
 }
 
 // ===== Lazy singleton =====
@@ -535,7 +543,8 @@ export async function bridgeSearchEntries(options: {
   if (!ctx) return null;
 
   try {
-    const { query: queryStr, namespace = 'default', limit = 10, threshold: explicitThreshold } = options;
+    // OPT-010: No default namespace — when unspecified, search across all namespaces
+    const { query: queryStr, namespace, limit = 10, threshold: explicitThreshold } = options;
     const threshold = await _getAdaptiveThreshold(explicitThreshold);
     const startTime = Date.now();
 
@@ -552,7 +561,8 @@ export async function bridgeSearchEntries(options: {
     }
 
     // better-sqlite3: .prepare().all() returns array of objects
-    const nsFilter = namespace !== 'all'
+    // OPT-010: Filter by namespace only when explicitly specified (not 'all' or undefined)
+    const nsFilter = (namespace && namespace !== 'all')
       ? `AND namespace = ?`
       : '';
 
@@ -564,7 +574,7 @@ export async function bridgeSearchEntries(options: {
         WHERE status = 'active' ${nsFilter}
         LIMIT 1000
       `);
-      rows = namespace !== 'all' ? stmt.all(namespace) : stmt.all();
+      rows = (namespace && namespace !== 'all') ? stmt.all(namespace) : stmt.all();
     } catch {
       return null;
     }
@@ -1206,6 +1216,23 @@ export async function shutdownBridge(): Promise<void> {
   }
 }
 
+// ===== OPT-001/OPT-002: Probe controller for callable methods =====
+/**
+ * Probe a controller object for a callable method by trying multiple property paths.
+ * ControllerRegistry may wrap controllers as module objects, class instances, or nested objects.
+ * Fixes bridge-fallback for ReasoningBank store/search operations.
+ */
+function getCallableMethod(obj: any, ...names: string[]): ((...args: any[]) => any) | null {
+  if (!obj) return null;
+  for (const name of names) {
+    if (typeof obj[name] === 'function') return obj[name].bind(obj);
+    if (obj.default && typeof obj.default[name] === 'function') return obj.default[name].bind(obj.default);
+    if (obj.instance && typeof obj.instance[name] === 'function') return obj.instance[name].bind(obj.instance);
+    if (obj.controller && typeof obj.controller[name] === 'function') return obj.controller[name].bind(obj.controller);
+  }
+  return null;
+}
+
 // ===== Phase 3: ReasoningBank pattern operations =====
 
 /**
@@ -1226,8 +1253,10 @@ export async function bridgeStorePattern(options: {
     const reasoningBank = registry.get('reasoningBank');
     const patternId = generateId('pattern');
 
-    if (reasoningBank && typeof reasoningBank.store === 'function') {
-      await reasoningBank.store({
+    // OPT-001: Probe for callable store method across binding patterns
+    const storeFn = getCallableMethod(reasoningBank, 'store', 'storePattern', 'add');
+    if (storeFn) {
+      await storeFn({
         id: patternId,
         content: options.pattern,
         type: options.type,
@@ -1269,8 +1298,10 @@ export async function bridgeSearchPatterns(options: {
   try {
     const reasoningBank = registry.get('reasoningBank');
 
-    if (reasoningBank && typeof reasoningBank.search === 'function') {
-      const results = await reasoningBank.search(options.query, {
+    // OPT-002: Probe for callable search method across binding patterns
+    const searchFn = getCallableMethod(reasoningBank, 'search', 'searchPattern', 'query', 'find');
+    if (searchFn) {
+      const results = await searchFn(options.query, {
         topK: options.topK || 5,
         minScore: options.minConfidence || 0.3,
       });
@@ -1347,15 +1378,18 @@ export async function bridgeRecordFeedback(options: {
     const reasoningBank = registry.get('reasoningBank');
     if (reasoningBank) {
       try {
-        if (typeof reasoningBank.recordOutcome === 'function') {
-          await reasoningBank.recordOutcome({
+        // OPT-001/002: Probe for callable methods across binding patterns
+        const recordOutcomeFn = getCallableMethod(reasoningBank, 'recordOutcome');
+        const recordFn = !recordOutcomeFn ? getCallableMethod(reasoningBank, 'record', 'addFeedback') : null;
+        if (recordOutcomeFn) {
+          await recordOutcomeFn({
             taskId: options.taskId, verdict: options.success ? 'success' : 'failure',
             score: options.quality, timestamp: Date.now(),
           });
           controller = controller === 'none' ? 'reasoningBank' : `${controller}+reasoningBank`;
           updated++;
-        } else if (typeof reasoningBank.record === 'function') {
-          await reasoningBank.record(options.taskId, options.quality);
+        } else if (recordFn) {
+          await recordFn(options.taskId, options.quality);
           controller = controller === 'none' ? 'reasoningBank' : `${controller}+reasoningBank`;
           updated++;
         }
