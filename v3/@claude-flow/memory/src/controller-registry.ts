@@ -948,27 +948,62 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'gnnService': {
-        // GNNService exported from agentdb 3.0.0-alpha.10 (ADR-062)
-        // Constructor: (config?) — requires initialize() after construction
+        // GNNService class doesn't exist in agentdb — wrap gnn-wrapper functions
         try {
-          const agentdbModule: any = await import('agentdb');
-          const GNN = agentdbModule.GNNService;
-          if (!GNN) return null;
-          const gnn = new GNN({ inputDim: this.config.dimension || 384 });
-          await gnn.initialize();
-          return gnn;
-        } catch { return null; }
+          const agentdbModule = await import('agentdb');
+          const gnn = agentdbModule as any;
+
+          // Check if GNN wrapper functions are available
+          const isAvailable = typeof gnn.isGNNAvailable === 'function'
+            ? gnn.isGNNAvailable()
+            : false;
+
+          return {
+            isAvailable() { return isAvailable; },
+            async differentiableSearch(query: any, candidates: any[], k = 10, temperature = 1.0) {
+              if (typeof gnn.differentiableSearch === 'function') {
+                return gnn.differentiableSearch(query, candidates, k, temperature);
+              }
+              return null;
+            },
+            getStats() {
+              return { available: isAvailable, type: 'gnn-wrapper' };
+            },
+          };
+        } catch (e) {
+          this.emit('controller:warn', { name: 'gnnService', error: e });
+          return null;
+        }
       }
 
       case 'rvfOptimizer': {
-        // RVFOptimizer exported from agentdb 3.0.0-alpha.10 (ADR-062/065)
-        // Constructor: (config?) — no-arg for defaults
+        // RVFOptimizer class doesn't exist in agentdb — wrap backend optimization
         try {
-          const agentdbModule: any = await import('agentdb');
-          const RVF = agentdbModule.RVFOptimizer;
-          if (!RVF) return null;
-          return new RVF();
-        } catch { return null; }
+          const _agentdbModule = await import('agentdb');
+          const backend = this.backend;
+
+          return {
+            async optimize() {
+              // Run WAL checkpoint + VACUUM on the backend if supported
+              if (backend && typeof (backend as any).optimize === 'function') {
+                return (backend as any).optimize();
+              }
+              return { success: false, reason: 'no backend optimize method' };
+            },
+            async getStats() {
+              if (backend && typeof (backend as any).getStats === 'function') {
+                return (backend as any).getStats();
+              }
+              return { type: 'rvf-optimizer', status: 'wrapper' };
+            },
+            isAvailable() {
+              return !!backend;
+            },
+          };
+        } catch (e) {
+          this.emit('controller:warn', { name: 'rvfOptimizer', error: e });
+          return null;
+        }
       }
 
       case 'guardedVectorBackend': {

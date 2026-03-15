@@ -1795,7 +1795,19 @@ export async function bridgeHealthCheck(
       }
     } catch { /* attestation stats unavailable */ }
 
-    return { available: true, controllers, attestationCount, cacheStats, attestationLog };
+    // Phase 8: Deferred controllers health (ADR-0033)
+    const result: Record<string, any> = { available: true, controllers, attestationCount, cacheStats, attestationLog };
+    for (const name of ['graphAdapter', 'gnnService', 'rvfOptimizer'] as const) {
+      try {
+        const ctrl = registry.get(name) as any;
+        if (ctrl) {
+          const stats = typeof ctrl.getStats === 'function' ? ctrl.getStats() : { status: 'available' };
+          result[name] = stats;
+        }
+      } catch { /* stats unavailable */ }
+    }
+
+    return result as any;
   } catch {
     return null;
   }
@@ -2281,6 +2293,49 @@ export async function bridgeBatchPrune(config?: {
     );
     const pruned = await Promise.race([bo.pruneData(config), timeoutPromise]);
     return { success: true, pruned };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+// ===== Phase 8: Deferred controllers — graphAdapter, gnnService, rvfOptimizer (ADR-0033) =====
+
+/**
+ * GraphAdapter — graph database operations for episodes, skills, causal edges.
+ */
+export async function bridgeGraphAdapter(options: {
+  action: 'searchSkills' | 'stats';
+  query?: string;
+  k?: number;
+}): Promise<{ success: boolean; results?: any[]; error?: string }> {
+  try {
+    const registry = await getRegistry();
+    const ga = registry?.get?.('graphAdapter') as any;
+    if (!ga) {
+      return { success: false, error: 'GraphAdapter not available' };
+    }
+
+    switch (options.action) {
+      case 'searchSkills': {
+        if (typeof ga.searchSkills !== 'function') {
+          return { success: false, error: 'searchSkills not supported' };
+        }
+        const results = await Promise.race([
+          ga.searchSkills(null, options.k || 10),  // null embedding = text search fallback
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+        ]);
+        return { success: true, results: Array.isArray(results) ? results : [] };
+      }
+      case 'stats': {
+        if (typeof ga.getStats === 'function') {
+          const stats = ga.getStats();
+          return { success: true, results: [stats] };
+        }
+        return { success: true, results: [{ status: 'available', type: 'GraphDatabaseAdapter' }] };
+      }
+      default:
+        return { success: false, error: `Unknown action: ${options.action}` };
+    }
   } catch (e: any) {
     return { success: false, error: e?.message || String(e) };
   }
