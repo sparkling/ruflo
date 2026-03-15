@@ -2188,14 +2188,16 @@ export const hooksPatternStore: MCPTool = {
     // OPT-017: Also populate neural_patterns store to eliminate dual-store divergence
     let neuralSynced = false;
     try {
-      const { loadNeuralStore, saveNeuralStore } = await import('./neural-tools.js');
+      const { loadNeuralStore, saveNeuralStore, generateEmbedding } = await import('./neural-tools.js');
       const neuralStore = loadNeuralStore();
       const neuralPatternId = reasoningResult?.patternId || storeResult.id || patternId;
+      // Generate a real embedding so neural_patterns search (cosine similarity) can find this pattern
+      const embedding = await generateEmbedding(pattern, 384);
       neuralStore.patterns[neuralPatternId] = {
         id: neuralPatternId,
         name: pattern,
         type,
-        embedding: [],  // placeholder — neural store generates its own
+        embedding,
         metadata: metadata || {},
         createdAt: timestamp,
         usageCount: 0,
@@ -2203,7 +2205,7 @@ export const hooksPatternStore: MCPTool = {
       saveNeuralStore(neuralStore);
       neuralSynced = true;
     } catch {
-      // Neural store sync is best-effort
+      // Neural store sync is best-effort; neuralSynced stays false and is reported to caller
     }
 
     return {
@@ -2317,13 +2319,58 @@ export const hooksPatternSearch: MCPTool = {
       }
     }
 
-    // No search function available
+    // OPT-017: Fallback to neural store patterns synced from intelligence_pattern-store
+    try {
+      const { loadNeuralStore, generateEmbedding } = await import('./neural-tools.js');
+      const neuralStore = loadNeuralStore();
+      const neuralPatterns = Object.values(neuralStore.patterns);
+      if (neuralPatterns.length > 0) {
+        const queryEmbedding = await generateEmbedding(query, 384);
+        // Inline cosine similarity to avoid importing private function
+        const cosSim = (a: number[], b: number[]): number => {
+          if (a.length !== b.length || a.length === 0) return 0;
+          let dot = 0, normA = 0, normB = 0;
+          for (let i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+          }
+          return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
+        };
+        const scored = neuralPatterns
+          .filter(p => p.embedding && p.embedding.length > 0)
+          .map(p => ({ ...p, similarity: cosSim(queryEmbedding, p.embedding) }))
+          .filter(p => p.similarity >= minConfidence)
+          .sort((a, b) => b.similarity - a.similarity)
+          .slice(0, topK);
+
+        if (scored.length > 0) {
+          return {
+            query,
+            results: scored.map(r => ({
+              patternId: r.id,
+              pattern: r.name,
+              similarity: r.similarity,
+              confidence: r.similarity,
+              namespace,
+            })),
+            searchTimeMs: 0,
+            backend: 'neural-store-fallback',
+            note: 'Results from neural store (OPT-017 synced patterns)',
+          };
+        }
+      }
+    } catch {
+      // Neural store fallback is best-effort
+    }
+
+    // No search function or neural patterns available
     return {
       query,
       results: [],
       searchTimeMs: 0,
       backend: 'unavailable',
-      note: 'Real vector search not available. Initialize memory database with: claude-flow memory init',
+      note: 'No search backend available. Initialize memory database with: claude-flow memory init',
     };
   },
 };
