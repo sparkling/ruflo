@@ -1688,6 +1688,7 @@ export async function bridgeHealthCheck(
   controllers: Array<{ name: string; enabled: boolean; level: number }>;
   attestationCount?: number;
   cacheStats?: { size: number; hits: number; misses: number };
+  attestationLog?: any;
 } | null> {
   const registry = await getRegistry(dbPath);
   if (!registry) return null;
@@ -1710,7 +1711,20 @@ export async function bridgeHealthCheck(
       cacheStats = { size: s.size ?? 0, hits: s.hits ?? 0, misses: s.misses ?? 0 };
     }
 
-    return { available: true, controllers, attestationCount, cacheStats };
+    // Phase 5: AttestationLog health stats (P5-C)
+    let attestationLog: any = undefined;
+    try {
+      const attestationCtrl = registry.get('attestationLog') as any;
+      if (attestationCtrl && typeof attestationCtrl.getStats === 'function') {
+        const aStats = await Promise.race([
+          attestationCtrl.getStats(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+        ]);
+        attestationLog = aStats;
+      }
+    } catch { /* attestation stats unavailable */ }
+
+    return { available: true, controllers, attestationCount, cacheStats, attestationLog };
   } catch {
     return null;
   }
@@ -1906,6 +1920,99 @@ export async function bridgeSemanticRoute(params: { input: string }): Promise<an
     const result = await router.route(params.input);
     return { route: result, controller: 'semanticRouter' };
   } catch (e: any) { return { route: null, error: e.message }; }
+}
+
+// ===== Phase 2: LearningBridge + SolverBandit bridge functions =====
+
+/**
+ * Bridge function for LearningBridge.learn() with 2s timeout.
+ * ADR-0033 Phase P2-B.
+ */
+export async function bridgeLearningBridgeLearn(options: {
+  input: string;
+  output: string;
+  reward: number;
+  context?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const registry = await getRegistry();
+    const lb = registry?.get?.('learningBridge') as any;
+    if (!lb || typeof lb.learn !== 'function') {
+      return { success: false, error: 'LearningBridge not available' };
+    }
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('LearningBridge.learn timeout (2s)')), 2000)
+    );
+    await Promise.race([lb.learn(options.input, options.output, options.reward, options.context), timeoutPromise]);
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Bridge function for SolverBandit.selectArm() with Thompson Sampling.
+ * ADR-0033 Phase P2-C.
+ */
+export async function bridgeSolverBanditSelect(
+  context: string,
+  arms: string[]
+): Promise<{ arm: string; confidence: number; controller: string }> {
+  try {
+    const registry = await getRegistry();
+    const bandit = registry?.get?.('solverBandit') as any;
+    if (!bandit || typeof bandit.selectArm !== 'function') {
+      return { arm: arms[0] || 'default', confidence: 0.5, controller: 'fallback' };
+    }
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('SolverBandit.selectArm timeout (2s)')), 2000)
+    );
+    const selected = await Promise.race([bandit.selectArm(context, arms), timeoutPromise]);
+    const stats = bandit.getArmStats?.(context, selected);
+    const alpha = stats?.alpha ?? 1;
+    const beta = stats?.beta ?? 1;
+    const confidence = alpha / (alpha + beta);
+    return { arm: selected, confidence, controller: 'solverBandit' };
+  } catch (e: any) {
+    return { arm: arms[0] || 'default', confidence: 0.5, controller: 'fallback' };
+  }
+}
+
+/**
+ * Bridge function for SolverBandit.recordReward() with state persistence.
+ * ADR-0033 Phase P2-C.
+ */
+export async function bridgeSolverBanditUpdate(
+  context: string,
+  arm: string,
+  reward: number,
+  cost?: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const registry = await getRegistry();
+    const bandit = registry?.get?.('solverBandit') as any;
+    if (!bandit || typeof bandit.recordReward !== 'function') {
+      return { success: false, error: 'SolverBandit not available' };
+    }
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('SolverBandit.recordReward timeout (2s)')), 2000)
+    );
+    await Promise.race([bandit.recordReward(context, arm, reward, cost), timeoutPromise]);
+    // Fire-and-forget: persist state (non-blocking)
+    try {
+      const state = bandit.serialize?.();
+      if (state) {
+        bridgeStoreEntry({
+          key: '_solver_bandit_state',
+          value: JSON.stringify(state),
+          namespace: 'default',
+        }).catch(() => {});
+      }
+    } catch { /* persist failure is non-fatal */ }
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
 }
 
 // ===== Utility =====

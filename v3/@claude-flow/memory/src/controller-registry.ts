@@ -65,7 +65,8 @@ export type CLIControllerName =
   | 'gnnService'
   | 'rvfOptimizer'
   | 'mmrDiversityRanker'
-  | 'guardedVectorBackend';
+  | 'guardedVectorBackend'
+  | 'solverBandit';
 
 /**
  * All controller names
@@ -161,7 +162,7 @@ export const INIT_LEVELS: InitLevel[] = [
   // Level 0: Foundation - already exists
   { level: 0, controllers: [] },
   // Level 1: Core intelligence
-  { level: 1, controllers: ['reasoningBank', 'hierarchicalMemory', 'learningBridge', 'hybridSearch', 'tieredCache'] },
+  { level: 1, controllers: ['reasoningBank', 'hierarchicalMemory', 'learningBridge', 'solverBandit', 'hybridSearch', 'tieredCache'] },
   // Level 2: Graph & security
   { level: 2, controllers: ['memoryGraph', 'agentMemoryScope', 'vectorBackend', 'mutationGuard', 'gnnService'] },
   // Level 3: Specialization
@@ -519,6 +520,7 @@ export class ControllerRegistry extends EventEmitter {
       // Core intelligence — enabled by default
       case 'reasoningBank':
       case 'learningBridge':
+      case 'solverBandit':
       case 'tieredCache':
       case 'hierarchicalMemory':
         return true;
@@ -631,6 +633,30 @@ export class ControllerRegistry extends EventEmitter {
           enabled: true,
         });
         return bridge;
+      }
+
+      case 'solverBandit': {
+        try {
+          const agentdbModule = await import('agentdb');
+          const SB = (agentdbModule as any).SolverBandit;
+          if (!SB) return null;
+          const bandit = new SB({
+            costWeight: 0.01,
+            costDecay: 0.1,
+            explorationBonus: 0.1,
+          });
+          // Restore persisted state if available
+          try {
+            const stateEntry = await this.backend?.getByKey?.('default', '_solver_bandit_state');
+            if (stateEntry?.content) {
+              bandit.deserialize(JSON.parse(stateEntry.content));
+            }
+          } catch { /* cold start — no persisted state */ }
+          return bandit;
+        } catch (e) {
+          this.emit('controller:warn', { name: 'solverBandit', error: e });
+          return null;
+        }
       }
 
       case 'memoryGraph': {
