@@ -539,6 +539,160 @@ export const agentdbSemanticRoute: MCPTool = {
   },
 };
 
+// ===== agentdb_reflexion_retrieve — Recall past task experiences (P3-B) =====
+
+export const agentdbReflexionRetrieve: MCPTool = {
+  name: 'agentdb_reflexion-retrieve',
+  description: 'Retrieve reflexion memories for a task to inform decisions',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      task: { type: 'string', description: 'Task description to find relevant reflexions for' },
+      k: { type: 'number', description: 'Number of results to return (default: 5)' },
+    },
+    required: ['task'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const task = validateString(params.task, 'task', 10_000);
+      if (!task) return { success: false, results: [], error: 'task is required (non-empty string, max 10KB)' };
+      const bridge = await getBridge();
+      const reflexion = await bridge.bridgeGetController('reflexion');
+      if (!reflexion || typeof reflexion.retrieve !== 'function') {
+        return { success: false, results: [], error: 'ReflexionMemory not available' };
+      }
+      const k = validatePositiveInt(params.k, 5, MAX_TOP_K);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('reflexion_retrieve timeout (2s)')), 2000),
+      );
+      const results = await Promise.race([
+        reflexion.retrieve(task, k),
+        timeoutPromise,
+      ]);
+      return {
+        success: true,
+        results: Array.isArray(results) ? results : [],
+        count: Array.isArray(results) ? results.length : 0,
+      };
+    } catch (error) {
+      return { success: false, results: [], error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_reflexion_store — Record task outcome (P3-B) =====
+
+export const agentdbReflexionStore: MCPTool = {
+  name: 'agentdb_reflexion-store',
+  description: 'Store a reflexion memory from a completed task',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      session_id: { type: 'string', description: 'Session ID for the task' },
+      task: { type: 'string', description: 'Task description' },
+      reward: { type: 'number', description: 'Reward signal (0-1)' },
+      success: { type: 'boolean', description: 'Whether the task succeeded' },
+    },
+    required: ['session_id', 'task', 'reward', 'success'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const sessionId = validateString(params.session_id, 'session_id', 500);
+      if (!sessionId) return { success: false, error: 'session_id is required (non-empty string, max 500 chars)' };
+      const task = validateString(params.task, 'task', 10_000);
+      if (!task) return { success: false, error: 'task is required (non-empty string, max 10KB)' };
+      const reward = validateScore(params.reward, 0.5);
+      const bridge = await getBridge();
+      const reflexion = await bridge.bridgeGetController('reflexion');
+      if (!reflexion || typeof reflexion.store !== 'function') {
+        return { success: false, error: 'ReflexionMemory not available' };
+      }
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('reflexion_store timeout (2s)')), 2000),
+      );
+      await Promise.race([
+        reflexion.store({
+          session_id: sessionId,
+          task,
+          reward,
+          success: params.success === true,
+        }),
+        timeoutPromise,
+      ]);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_causal_query — Query causal graph (P3-C) =====
+
+export const agentdbCausalQuery: MCPTool = {
+  name: 'agentdb_causal-query',
+  description: 'Query causal relationships and experiment tracking from the causal memory graph',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      cause: { type: 'string', description: 'Cause node to query effects for' },
+      effect: { type: 'string', description: 'Effect node to query causes for' },
+      min_uplift: { type: 'number', description: 'Minimum uplift threshold (default: 0)' },
+      k: { type: 'number', description: 'Max results (default: 10)' },
+    },
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const bridge = await getBridge();
+      const causal = await bridge.bridgeGetController('causalGraph');
+
+      if (!causal) {
+        return { success: false, results: [], error: 'CausalMemoryGraph not available' };
+      }
+
+      // Cold-start guard: skip if graph has <5 edges (returns noise)
+      const stats = typeof causal.getStats === 'function' ? await causal.getStats() : null;
+      if (stats && (stats.edgeCount || stats.edges || 0) < 5) {
+        return {
+          success: true,
+          results: [],
+          warning: 'Cold start: fewer than 5 causal edges recorded. Results would be noise.',
+        };
+      }
+
+      const cause = validateString(params.cause, 'cause', 1000);
+      const effect = validateString(params.effect, 'effect', 1000);
+      const k = validatePositiveInt(params.k, 10, MAX_TOP_K);
+      let results: unknown[] = [];
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('causal_query timeout (2s)')), 2000),
+      );
+
+      if (cause && typeof causal.getEffects === 'function') {
+        results = await Promise.race([causal.getEffects(cause, k), timeoutPromise]) as unknown[];
+      } else if (effect && typeof causal.getCauses === 'function') {
+        results = await Promise.race([causal.getCauses(effect, k), timeoutPromise]) as unknown[];
+      } else if (typeof causal.query === 'function') {
+        results = await Promise.race([causal.query(params), timeoutPromise]) as unknown[];
+      }
+
+      // Filter by min_uplift
+      if (typeof params.min_uplift === 'number' && Array.isArray(results)) {
+        const minUplift = params.min_uplift;
+        results = results.filter((r: any) => (r.uplift || r.weight || 0) >= minUplift);
+      }
+
+      return {
+        success: true,
+        results: Array.isArray(results) ? results : [],
+        count: Array.isArray(results) ? results.length : 0,
+      };
+    } catch (error) {
+      return { success: false, results: [], error: sanitizeError(error) };
+    }
+  },
+};
+
 // ===== Export all tools =====
 
 export const agentdbTools: MCPTool[] = [
@@ -557,4 +711,7 @@ export const agentdbTools: MCPTool[] = [
   agentdbBatch,
   agentdbContextSynthesize,
   agentdbSemanticRoute,
+  agentdbReflexionRetrieve,
+  agentdbReflexionStore,
+  agentdbCausalQuery,
 ];
