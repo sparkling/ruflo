@@ -445,24 +445,36 @@ export async function bridgeStoreEntry(options: {
       return { success: false, id, error: `MutationGuard rejected: ${guardResult.reason}` };
     }
 
-    // Generate embedding via AgentDB's embedder
+    // ADR-0030: Generate embedding via memory-initializer (768-dim preferred)
+    // instead of AgentDB's embedder (384-dim) to ensure consistent dimensions
     let embeddingJson: string | null = null;
     let dimensions = 0;
     let model = 'local';
 
     if (options.generateEmbeddingFlag !== false && value.length > 0) {
       try {
-        const embedder = ctx.agentdb.embedder;
-        if (embedder) {
-          const emb = await embedder.embed(value);
-          if (emb) {
-            embeddingJson = JSON.stringify(Array.from(emb));
-            dimensions = emb.length;
-            model = 'Xenova/all-mpnet-base-v2';
-          }
+        const { generateEmbedding } = await import('./memory-initializer.js');
+        const result = await generateEmbedding(value);
+        if (result && result.embedding) {
+          embeddingJson = JSON.stringify(result.embedding);
+          dimensions = result.dimensions;
+          model = result.model;
         }
       } catch {
-        // Embedding failed — store without
+        // Fallback to AgentDB embedder if memory-initializer unavailable
+        try {
+          const embedder = ctx.agentdb.embedder;
+          if (embedder) {
+            const emb = await embedder.embed(value);
+            if (emb) {
+              embeddingJson = JSON.stringify(Array.from(emb));
+              dimensions = emb.length;
+              model = 'Xenova/all-mpnet-base-v2';
+            }
+          }
+        } catch {
+          // Embedding failed — store without
+        }
       }
     }
 
@@ -548,16 +560,25 @@ export async function bridgeSearchEntries(options: {
     const threshold = await _getAdaptiveThreshold(explicitThreshold);
     const startTime = Date.now();
 
-    // Generate query embedding
+    // ADR-0030: Generate query embedding via memory-initializer (768-dim preferred)
     let queryEmbedding: number[] | null = null;
     try {
-      const embedder = ctx.agentdb.embedder;
-      if (embedder) {
-        const emb = await embedder.embed(queryStr);
-        queryEmbedding = Array.from(emb);
+      const { generateEmbedding } = await import('./memory-initializer.js');
+      const result = await generateEmbedding(queryStr);
+      if (result && result.embedding) {
+        queryEmbedding = result.embedding;
       }
     } catch {
-      // Fall back to keyword search
+      // Fallback to AgentDB embedder
+      try {
+        const embedder = ctx.agentdb.embedder;
+        if (embedder) {
+          const emb = await embedder.embed(queryStr);
+          queryEmbedding = Array.from(emb);
+        }
+      } catch {
+        // Fall back to keyword search
+      }
     }
 
     // better-sqlite3: .prepare().all() returns array of objects
@@ -913,7 +934,9 @@ export async function bridgeDeleteEntry(options: {
 
 /**
  * Generate embedding via AgentDB v3's embedder.
- * Returns null if bridge unavailable — caller falls back to own ONNX/hash.
+ * Returns null if bridge unavailable or dimensions don't match 768 —
+ * caller falls back to own ONNX/hash which produces correct 768-dim.
+ * ADR-0030: Reject 384-dim embeddings to ensure dimension consistency.
  */
 export async function bridgeGenerateEmbedding(
   text: string,
@@ -929,6 +952,9 @@ export async function bridgeGenerateEmbedding(
 
     const emb = await embedder.embed(text);
     if (!emb) return null;
+
+    // ADR-0030: Reject mismatched dimensions — let caller use 768-dim fallback
+    if (emb.length !== 768) return null;
 
     return {
       embedding: Array.from(emb),
