@@ -234,6 +234,14 @@ export interface RuntimeConfig {
   agentdbBatchSize?: number;
   /** AgentDB tick interval (CLI flag) */
   agentdbTickInterval?: number;
+  /** Max HNSW graph nodes (ADR-0030) */
+  maxNodes?: number;
+  /** HNSW similarity threshold (ADR-0030) */
+  similarityThreshold?: number;
+  /** Enable Flash Attention (ADR-0030) */
+  flashAttention?: boolean;
+  /** Max neural models to keep loaded (ADR-0030) */
+  maxModels?: number;
   /** CLAUDE.md template variant */
   claudeMdTemplate?: ClaudeMdTemplate;
 }
@@ -565,9 +573,20 @@ export const FULL_INIT_OPTIONS: InitOptions = {
     autoStart: true,
     port: 3000,
   },
+  runtime: {
+    ...DEFAULT_INIT_OPTIONS.runtime,
+    cacheSize: 2048,
+    sonaMode: 'instant',
+    maxNodes: 50000,
+    similarityThreshold: 0.65,
+    learningBatchSize: 128,
+    learningTickInterval: 15000,
+    flashAttention: true,
+    maxModels: 5,
+  },
   embeddings: {
     enabled: true,
-    model: 'all-MiniLM-L6-v2',
+    model: 'all-mpnet-base-v2',
     hyperbolic: true,
     curvature: -1.0,
     predownload: true,  // Pre-download for full init

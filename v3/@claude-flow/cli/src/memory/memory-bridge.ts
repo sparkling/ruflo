@@ -134,7 +134,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
           const _neural = _cfg.neural || {};
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
-            dimension: 384,
+            dimension: 768,
             enableHNSW: _mem.enableHNSW !== false,
             cacheSize: _mem.cacheSize || 100,
             similarityThreshold: _mg.similarityThreshold || 0.8,
@@ -1299,7 +1299,7 @@ export async function bridgeSearchPatterns(options: {
     const reasoningBank = registry.get('reasoningBank');
 
     // OPT-002: Probe for callable search method across binding patterns
-    const searchFn = getCallableMethod(reasoningBank, 'search', 'searchPattern', 'query', 'find');
+    const searchFn = getCallableMethod(reasoningBank, 'search', 'searchPattern', 'retrievePatterns', 'query', 'find');
     if (searchFn) {
       const results = await searchFn(options.query, {
         topK: options.topK || 5,

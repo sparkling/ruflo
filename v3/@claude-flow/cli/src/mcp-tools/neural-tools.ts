@@ -122,7 +122,7 @@ export function saveNeuralStore(store: NeuralStore): void {
 }
 
 // Generate embedding - uses real embeddings if available, falls back to hash-based
-async function generateEmbedding(text?: string, dims: number = 384): Promise<number[]> {
+export async function generateEmbedding(text?: string, dims: number = 384): Promise<number[]> {
   // If real embeddings available and text provided, use them
   if (realEmbeddings && text) {
     try {

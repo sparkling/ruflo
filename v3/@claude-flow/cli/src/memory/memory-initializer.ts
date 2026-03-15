@@ -2049,7 +2049,10 @@ export async function storeEntry(options: {
   const bridge = await getBridge();
   if (bridge) {
     const bridgeResult = await bridge.bridgeStoreEntry(options);
-    if (bridgeResult) return bridgeResult;
+    // DB-007: Only accept bridge result on explicit success;
+    // null means DB unavailable, false success means a guard rejection etc.
+    // Either way, fall through to sql.js fallback.
+    if (bridgeResult && bridgeResult.success) return bridgeResult;
   }
 
   // Fallback: raw sql.js
@@ -2180,7 +2183,10 @@ export async function searchEntries(options: {
   const bridge = await getBridge();
   if (bridge) {
     const bridgeResult = await bridge.bridgeSearchEntries(options);
-    if (bridgeResult) return bridgeResult;
+    // DB-007: Only use bridge result if it actually found results;
+    // an empty { success: true, results: [] } is truthy but should
+    // fall through to the sql.js fallback for a second chance.
+    if (bridgeResult && bridgeResult.results && bridgeResult.results.length > 0) return bridgeResult;
   }
 
   // Fallback: raw sql.js

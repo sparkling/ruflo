@@ -1190,10 +1190,10 @@ async function writeRuntimeConfig(
     memory: {
       backend: options.runtime.memoryBackend || 'agentdb',
       enableHNSW: true,
-      cacheSize: options.runtime.cacheSize || 256,
+      cacheSize: options.runtime.cacheSize || 2048,
       learningBridge: {
         enabled: !!(options.runtime.enableLearningBridge ?? options.runtime.enableNeural),
-        sonaMode: options.runtime.sonaMode || 'balanced',
+        sonaMode: options.runtime.sonaMode || 'instant',
         confidenceDecayRate: 0.005,
         accessBoostAmount: options.runtime.accessBoostAmount ?? 0.03,
         consolidationThreshold: 10,
@@ -1201,8 +1201,8 @@ async function writeRuntimeConfig(
       memoryGraph: {
         enabled: !!(options.runtime.enableMemoryGraph ?? true),
         pageRankDamping: 0.85,
-        maxNodes: 5000,
-        similarityThreshold: 0.8,
+        maxNodes: options.runtime.maxNodes || 50000,
+        similarityThreshold: options.runtime.similarityThreshold || 0.65,
       },
       agentScopes: {
         enabled: !!(options.runtime.enableAgentScopes ?? true),
@@ -1213,13 +1213,15 @@ async function writeRuntimeConfig(
         enableLearning: !!(options.runtime.enableLearning ?? true),
         learningPositiveThreshold: options.runtime.learningPositiveThreshold || 0.7,
         learningNegativeThreshold: options.runtime.learningNegativeThreshold || 0.3,
-        learningBatchSize: options.runtime.learningBatchSize || 32,
-        learningTickInterval: options.runtime.learningTickInterval || 30000,
+        learningBatchSize: options.runtime.learningBatchSize || 128,
+        learningTickInterval: options.runtime.learningTickInterval || 15000,
       },
     },
     neural: {
       enabled: !!(options.runtime.enableNeural),
       modelPath: options.runtime.modelPath || '.claude-flow/neural',
+      flashAttention: options.runtime.flashAttention !== false,
+      maxModels: options.runtime.maxModels || 5,
     },
     hooks: {
       enabled: !!(options.hooks?.enabled ?? options.hooks?.autoExecute ?? true),
@@ -1233,6 +1235,21 @@ async function writeRuntimeConfig(
 
   fs.writeFileSync(configJsonPath, config, 'utf-8');
   result.created.files.push('.claude-flow/config.json');
+
+  // ADR-0030 S2: Generate embeddings.json for ONNX configuration
+  const embeddingsJsonPath = path.join(targetDir, '.claude-flow', 'embeddings.json');
+  if (!fs.existsSync(embeddingsJsonPath) || options.force) {
+    const embeddingsConfig = JSON.stringify({
+      model: options.embeddings?.model || 'all-mpnet-base-v2',
+      dimension: options.embeddings?.model === 'all-MiniLM-L6-v2' ? 384 : 768,
+      provider: 'onnx',
+      cache: '~/.cache/transformers',
+      batchSize: 32,
+      quantization: 'none',
+    }, null, 4);
+    fs.writeFileSync(embeddingsJsonPath, embeddingsConfig, 'utf-8');
+    result.created.files.push('.claude-flow/embeddings.json');
+  }
 
   // Write .gitignore
   const gitignorePath = path.join(targetDir, '.claude-flow', '.gitignore');
