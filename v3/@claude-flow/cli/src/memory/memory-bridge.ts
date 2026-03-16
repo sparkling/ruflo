@@ -114,17 +114,13 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
         const { ControllerRegistry } = await import('@claude-flow/memory');
         const registry = new ControllerRegistry();
 
-        // Suppress noisy console.log during init
+        // Suppress ALL console.log during registry init to prevent controller
+        // logs (GNN, Sona, WASM, LearningSystem) from polluting MCP tool output.
+        // ADR-0048: comprehensive filter for 42-controller init noise.
         const origLog = console.log;
-        console.log = (...args: unknown[]) => {
-          const msg = String(args[0] ?? '');
-          if (msg.includes('Transformers.js') ||
-              msg.includes('better-sqlite3') ||
-              msg.includes('[AgentDB]') ||
-              msg.includes('[HNSWLibBackend]') ||
-              msg.includes('RuVector graph')) return;
-          origLog.apply(console, args);
-        };
+        const origWarn = console.warn;
+        console.log = (..._args: unknown[]) => { /* suppress all during init */ };
+        console.warn = (..._args: unknown[]) => { /* suppress all during init */ };
 
         try {
           // WM-102b: wire config.json into ControllerRegistry
@@ -166,6 +162,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
           } as any);
         } finally {
           console.log = origLog;
+          console.warn = origWarn;
         }
 
         registryInstance = registry;
