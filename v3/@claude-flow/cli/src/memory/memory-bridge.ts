@@ -39,6 +39,7 @@ const THRESHOLDS: Record<string, number> = {
   'onnx-384':      0.2,    // OPT-009: 384-dim reasoningbank embeddings
   'onnx-768':      0.3,    // Full ONNX model (Sentence-BERT 768-dim)
 };
+const QUANTIZATION_THRESHOLD = 50_000; // ADR-0047: switch to quantized backend above this entry count
 let _detectedModel: string | null = null;
 let _detectedDimensions: number = 0;
 
@@ -1624,6 +1625,18 @@ export async function bridgeRecordFeedback(options: {
       }
     }
 
+    // ADR-0046: Forward to A6 SelfLearningRvfBackend (fire-and-forget)
+    const a6 = registry.get('selfLearningRvfBackend');
+    if (a6 && typeof (a6 as any).recordFeedback === 'function') {
+      (a6 as any).recordFeedback({
+        query: options.taskId,
+        selectedResult: options.agent || 'unknown',
+        reward: options.quality,
+      });
+      controller = controller === 'none' ? 'selfLearningRvf' : `${controller}+selfLearningRvf`;
+      updated++;
+    }
+
     // Always store feedback as a memory entry for retrieval (ensures it persists)
     const storeResult = await bridgeStoreEntry({
       key: `feedback-${options.taskId}`,
@@ -2507,6 +2520,419 @@ export async function bridgeCircuitStatus(
     return { success: true, stats: typeof breaker.getStats === 'function' ? breaker.getStats() : {} };
   } catch {
     return { success: false, error: 'Failed to get circuit breaker status' };
+  }
+}
+
+// ===== ADR-0047: Quantization, health & federated learning bridges =====
+
+export async function bridgeSelectBackend(
+  dbPath?: string,
+  entryCount?: number,
+): Promise<{ success: boolean; backend?: string; quantized?: boolean; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    if (entryCount !== undefined && entryCount > QUANTIZATION_THRESHOLD) {
+      const quantized = registry.get('quantizedVectorStore');
+      if (quantized) {
+        return { success: true, backend: 'quantizedVectorStore', quantized: true };
+      }
+    }
+    return { success: true, backend: 'vectorBackend', quantized: false };
+  } catch {
+    return { success: false, error: 'Failed to select backend' };
+  }
+}
+
+export async function bridgeQuantizeStatus(
+  dbPath?: string,
+): Promise<{ success: boolean; stats?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const quantized = registry.get('quantizedVectorStore');
+    if (!quantized) return { success: false, error: 'QuantizedVectorStore not active' };
+    return { success: true, stats: typeof quantized.getStats === 'function' ? quantized.getStats() : {} };
+  } catch {
+    return { success: false, error: 'Failed to get quantization status' };
+  }
+}
+
+export async function bridgeHealthReport(
+  dbPath?: string,
+): Promise<{ success: boolean; assessment?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const monitor = registry.get('indexHealthMonitor');
+    if (!monitor) return { success: false, error: 'IndexHealthMonitor not active' };
+    return { success: true, assessment: typeof monitor.assess === 'function' ? monitor.assess() : {} };
+  } catch {
+    return { success: false, error: 'Failed to get health report' };
+  }
+}
+
+export async function bridgeFederatedRound(
+  dbPath?: string,
+  action?: string,
+  params?: any,
+): Promise<{ success: boolean; result?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const manager = registry.get('federatedLearningManager');
+    if (!manager) return { success: false, error: 'FederatedLearningManager not active' };
+    const op = action || 'status';
+    switch (op) {
+      case 'start':
+        return { success: true, result: typeof manager.startRound === 'function' ? manager.startRound() : {} };
+      case 'submit':
+        return { success: true, result: typeof manager.submitUpdate === 'function' ? manager.submitUpdate(params) : {} };
+      case 'aggregate':
+        return { success: true, result: typeof manager.aggregateRound === 'function' ? manager.aggregateRound() : {} };
+      case 'status':
+        return { success: true, result: typeof manager.getStatus === 'function' ? manager.getStatus() : {} };
+      default:
+        return { success: false, error: `Unknown federated action: ${op}` };
+    }
+  } catch {
+    return { success: false, error: 'Failed to execute federated round action' };
+  }
+}
+
+// ===== ADR-0043: Query & Filtering Infrastructure =====
+
+/**
+ * Search entries, then apply MetadataFilter (B5) for structured metadata predicates.
+ * Falls back to unfiltered results if controller unavailable.
+ */
+export async function bridgeFilteredSearch(options: {
+  query: string;
+  filter?: Record<string, unknown>;
+  namespace?: string;
+  limit?: number;
+  threshold?: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; results: any[]; filtered: boolean; searchTime: number; error?: string } | null> {
+  const searchResult = await bridgeSearchEntries({
+    query: options.query,
+    namespace: options.namespace,
+    limit: options.limit,
+    threshold: options.threshold,
+    dbPath: options.dbPath,
+  });
+  if (!searchResult) return null;
+  if (!options.filter || Object.keys(options.filter).length === 0) {
+    return { ...searchResult, filtered: false };
+  }
+
+  const registry = await getRegistry(options.dbPath);
+  if (!registry) return { ...searchResult, filtered: false };
+
+  try {
+    const mf = registry.get('metadataFilter');
+    if (!mf || typeof mf.filter !== 'function') {
+      return { ...searchResult, filtered: false };
+    }
+    const filtered = mf.filter(searchResult.results, options.filter);
+    return {
+      success: true,
+      results: Array.isArray(filtered) ? filtered : searchResult.results,
+      filtered: true,
+      searchTime: searchResult.searchTime,
+    };
+  } catch {
+    return { ...searchResult, filtered: false };
+  }
+}
+
+/**
+ * Wraps bridgeSearchEntries with QueryOptimizer (B6) LRU cache.
+ * Falls back to standard search if controller unavailable.
+ */
+export async function bridgeOptimizedSearch(options: {
+  query: string;
+  namespace?: string;
+  limit?: number;
+  threshold?: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; results: any[]; cached: boolean; searchTime: number; error?: string } | null> {
+  const registry = await getRegistry(options.dbPath);
+  if (!registry) return null;
+
+  try {
+    const qo = registry.get('queryOptimizer');
+    if (!qo || typeof qo.getCached !== 'function') {
+      const result = await bridgeSearchEntries(options);
+      return result ? { ...result, cached: false } : null;
+    }
+
+    const cacheKey = JSON.stringify({ q: options.query, ns: options.namespace, limit: options.limit, th: options.threshold });
+    const cached = qo.getCached(cacheKey);
+    if (cached) {
+      return { success: true, results: cached.results || cached, cached: true, searchTime: 0 };
+    }
+
+    const result = await bridgeSearchEntries(options);
+    if (result && result.success) {
+      try { qo.cache(cacheKey, result); } catch { /* cache write failure is non-fatal */ }
+    }
+    return result ? { ...result, cached: false } : null;
+  } catch {
+    const result = await bridgeSearchEntries(options);
+    return result ? { ...result, cached: false } : null;
+  }
+}
+
+/**
+ * Returns QueryOptimizer cache statistics.
+ */
+export async function bridgeQueryStats(
+  dbPath?: string,
+): Promise<{ success: boolean; stats?: { cacheHits: number; cacheMisses: number; cacheSize: number }; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const qo = registry.get('queryOptimizer');
+    if (!qo) return { success: false, error: 'QueryOptimizer not active' };
+    const stats = typeof qo.getStats === 'function' ? qo.getStats() : { cacheHits: 0, cacheMisses: 0, cacheSize: 0 };
+    return { success: true, stats };
+  } catch {
+    return { success: false, error: 'Failed to get query stats' };
+  }
+}
+
+// ===== ADR-0045: Embeddings, Compliance & Observability bridge functions =====
+
+/**
+ * Bridge embed text via A9 EnhancedEmbeddingService with fallback chain.
+ * Falls back to existing embedding pipeline if A9 is not available.
+ */
+export async function bridgeEmbed(
+  text: string,
+  dbPath?: string,
+): Promise<{ success: boolean; embedding?: number[]; dimension?: number; provider?: string; cached?: boolean; error?: string }> {
+  if (!text || typeof text !== 'string') {
+    return { success: false, error: 'text is required (non-empty string)' };
+  }
+  const registry = await getRegistry(dbPath);
+  if (!registry) {
+    // Fallback: use existing embedding pipeline when registry unavailable
+    try {
+      const { generateEmbedding } = await import('./memory-initializer.js');
+      const result = await generateEmbedding(text);
+      return { success: true, embedding: Array.from(result.embedding), dimension: result.dimensions, provider: result.model };
+    } catch (err) {
+      return { success: false, error: 'No embedding service available' };
+    }
+  }
+  try {
+    const enhanced = registry.get('enhancedEmbeddingService');
+    if (enhanced && typeof enhanced.embed === 'function') {
+      const result = await enhanced.embed(text);
+      return {
+        success: true,
+        embedding: Array.isArray(result.embedding) ? result.embedding : Array.from(result.embedding ?? []),
+        dimension: result.dimension ?? result.embedding?.length ?? 0,
+        provider: result.provider ?? 'unknown',
+        cached: result.cached ?? false,
+      };
+    }
+    // A9 not available — fallback to existing pipeline
+    try {
+      const { generateEmbedding } = await import('./memory-initializer.js');
+      const result = await generateEmbedding(text);
+      return { success: true, embedding: Array.from(result.embedding), dimension: result.dimensions, provider: result.model };
+    } catch {
+      return { success: false, error: 'EnhancedEmbeddingService not active and fallback failed' };
+    }
+  } catch (err) {
+    return { success: false, error: 'Embedding failed: ' + (err instanceof Error ? err.message : 'unknown') };
+  }
+}
+
+/**
+ * Bridge audit event via D3 AuditLogger.
+ * No-op when D3 is absent (graceful degradation per ADR-0045).
+ */
+export async function bridgeAuditEvent(
+  type: string,
+  payload: Record<string, unknown>,
+  dbPath?: string,
+): Promise<{ success: boolean; logged?: boolean; error?: string }> {
+  if (!type || typeof type !== 'string') {
+    return { success: false, error: 'type is required (non-empty string)' };
+  }
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: true, logged: false }; // no-op when absent
+  try {
+    const logger = registry.get('auditLogger');
+    if (!logger) return { success: true, logged: false }; // no-op when absent
+    if (typeof logger.log === 'function') {
+      await logger.log({ type, payload: payload ?? {}, timestamp: Date.now() });
+      return { success: true, logged: true };
+    }
+    if (typeof logger.record === 'function') {
+      await logger.record({ type, payload: payload ?? {}, timestamp: Date.now() });
+      return { success: true, logged: true };
+    }
+    return { success: true, logged: false };
+  } catch (err) {
+    return { success: false, error: 'Audit logging failed: ' + (err instanceof Error ? err.message : 'unknown') };
+  }
+}
+
+/**
+ * Bridge telemetry metrics via D1 TelemetryManager.
+ */
+export async function bridgeTelemetryMetrics(
+  dbPath?: string,
+): Promise<{ success: boolean; metrics?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const telemetry = registry.get('telemetryManager');
+    if (!telemetry) return { success: false, error: 'TelemetryManager not active' };
+    return { success: true, metrics: typeof telemetry.getMetrics === 'function' ? telemetry.getMetrics() : {} };
+  } catch {
+    return { success: false, error: 'Failed to get telemetry metrics' };
+  }
+}
+
+/**
+ * Bridge telemetry spans via D1 TelemetryManager.
+ */
+export async function bridgeTelemetrySpans(
+  limit?: number,
+  dbPath?: string,
+): Promise<{ success: boolean; spans?: any[]; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const telemetry = registry.get('telemetryManager');
+    if (!telemetry) return { success: false, error: 'TelemetryManager not active' };
+    return { success: true, spans: typeof telemetry.getSpans === 'function' ? telemetry.getSpans(limit ?? 100) : [] };
+  } catch {
+    return { success: false, error: 'Failed to get telemetry spans' };
+  }
+}
+
+// ===== ADR-0046: Self-Learning Pipeline & Native Acceleration =====
+
+/**
+ * Search via A6 SelfLearningRvfBackend with router + SONA enhancement.
+ * Falls back to standard bridgeSearchEntries when A6 unavailable.
+ */
+export async function bridgeSelfLearningSearch(options: {
+  query: string;
+  limit?: number;
+  namespace?: string;
+  threshold?: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; results: any[]; routed: boolean; controller: string; stats?: any } | null> {
+  const registry = await getRegistry(options.dbPath);
+  if (!registry) return null;
+
+  try {
+    // Try A6 SelfLearningRvfBackend first
+    const a6 = registry.get('selfLearningRvfBackend');
+    if (a6 && typeof (a6 as any).search === 'function') {
+      const results = await (a6 as any).search({
+        query: options.query,
+        limit: options.limit || 10,
+        namespace: options.namespace,
+        threshold: options.threshold,
+      });
+      const stats = typeof (a6 as any).getStats === 'function'
+        ? (a6 as any).getStats()
+        : undefined;
+      return { success: true, results: results || [], routed: true, controller: 'selfLearningRvfBackend', stats };
+    }
+
+    // Fallback to standard search
+    const fallback = await bridgeSearchEntries({
+      query: options.query,
+      limit: options.limit || 10,
+      namespace: options.namespace,
+      threshold: options.threshold,
+      dbPath: options.dbPath,
+    });
+    return {
+      success: !!fallback?.results,
+      results: fallback?.results || [],
+      routed: false,
+      controller: 'bridgeSearchEntries',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record feedback through A6 SelfLearningRvfBackend (fire-and-forget).
+ * A6 uses feedback for Thompson Sampling policy updates and SONA trajectory recording.
+ */
+export async function bridgeSelfLearningFeedback(options: {
+  query: string;
+  selectedResult: string;
+  reward: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; controller: string } | null> {
+  const registry = await getRegistry(options.dbPath);
+  if (!registry) return null;
+
+  try {
+    const a6 = registry.get('selfLearningRvfBackend');
+    if (!a6 || typeof (a6 as any).recordFeedback !== 'function') {
+      return { success: false, controller: 'none' };
+    }
+
+    // Fire-and-forget: do not await — must not block response
+    (a6 as any).recordFeedback({
+      query: options.query,
+      selectedResult: options.selectedResult,
+      reward: options.reward,
+    });
+
+    return { success: true, controller: 'selfLearningRvfBackend' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get A6 SelfLearningRvfBackend stats (sub-component health).
+ */
+export async function bridgeSelfLearningStats(
+  dbPath?: string,
+): Promise<{ success: boolean; stats?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const a6 = registry.get('selfLearningRvfBackend');
+    if (!a6) return { success: false, error: 'SelfLearningRvfBackend not active' };
+    const stats = typeof (a6 as any).getStats === 'function' ? (a6 as any).getStats() : {};
+    return { success: true, stats };
+  } catch {
+    return { success: false, error: 'Failed to get self-learning stats' };
+  }
+}
+
+/**
+ * Get B4 NativeAccelerator capability report.
+ */
+export async function bridgeNativeAcceleratorStats(
+  dbPath?: string,
+): Promise<{ success: boolean; stats?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const b4 = registry.get('nativeAccelerator');
+    if (!b4) return { success: false, error: 'NativeAccelerator not active' };
+    const stats = typeof (b4 as any).getStats === 'function' ? (b4 as any).getStats() : {};
+    return { success: true, stats };
+  } catch {
+    return { success: false, error: 'Failed to get native accelerator stats' };
   }
 }
 

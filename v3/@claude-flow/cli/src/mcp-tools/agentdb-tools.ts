@@ -932,6 +932,312 @@ export const agentdbCircuitStatus: MCPTool = {
   },
 };
 
+// ===== ADR-0047: agentdb_quantize_status =====
+
+export const agentdbQuantizeStatus: MCPTool = {
+  name: 'agentdb_quantize_status',
+  description: 'Get quantized vector store status including compression type, ratio, and entry count',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  handler: async () => {
+    try {
+      const bridge = await getBridge();
+      return await bridge.bridgeQuantizeStatus();
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0047: agentdb_health_report =====
+
+export const agentdbHealthReport: MCPTool = {
+  name: 'agentdb_health_report',
+  description: 'Get index health assessment with p95 latency, recall estimates, and HNSW parameter recommendations',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  handler: async () => {
+    try {
+      const bridge = await getBridge();
+      return await bridge.bridgeHealthReport();
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_filtered_search — Metadata-filtered semantic search (ADR-0043) =====
+
+const agentdbFilteredSearch: MCPTool = {
+  name: 'agentdb_filtered_search',
+  description: 'Semantic search with MongoDB-style metadata filtering (B5 MetadataFilter). Supports $gt, $lt, $gte, $lte, $eq, $ne, $in, $nin, $regex, $exists, $and, $or, $not, $elemMatch operators.',
+  category: 'agentdb',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query (semantic similarity)' },
+      filter: { type: 'object', description: 'MongoDB-style metadata filter (e.g. { score: { $gt: 0.7 } })' },
+      namespace: { type: 'string', description: 'Namespace to search (default: all)' },
+      limit: { type: 'number', description: 'Maximum results (default: 10)' },
+      threshold: { type: 'number', description: 'Minimum similarity 0-1 (default: 0.3)' },
+    },
+    required: ['query'],
+  },
+  handler: async (input) => {
+    try {
+      const { bridgeFilteredSearch } = await import('../memory/memory-bridge.js');
+      const result = await bridgeFilteredSearch({
+        query: input.query as string,
+        filter: input.filter as Record<string, unknown> | undefined,
+        namespace: input.namespace as string | undefined,
+        limit: input.limit as number | undefined,
+        threshold: input.threshold as number | undefined,
+      });
+      if (!result) return { success: false, error: 'Bridge not available' };
+      return result;
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_query_stats — Query optimizer statistics (ADR-0043) =====
+
+const agentdbQueryStats: MCPTool = {
+  name: 'agentdb_query_stats',
+  description: 'Get QueryOptimizer (B6) cache statistics: hits, misses, and cache size.',
+  category: 'agentdb',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  handler: async () => {
+    try {
+      const { bridgeQueryStats } = await import('../memory/memory-bridge.js');
+      const result = await bridgeQueryStats();
+      return result;
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0045: agentdb_embed — Embed text via EnhancedEmbeddingService =====
+
+export const agentdbEmbed: MCPTool = {
+  name: 'agentdb_embed',
+  description: 'Generate embedding for text via A9 EnhancedEmbeddingService with multi-provider fallback chain',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'Text to embed' },
+    },
+    required: ['text'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const text = validateString(params.text, 'text', MAX_STRING_LENGTH);
+      if (!text) return { success: false, error: 'text is required (non-empty string, max 100KB)' };
+      const bridge = await getBridge();
+      const result = await bridge.bridgeEmbed(text);
+      return result ?? { success: false, error: 'Bridge not available' };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0045: agentdb_embed_status — EnhancedEmbeddingService status =====
+
+export const agentdbEmbedStatus: MCPTool = {
+  name: 'agentdb_embed_status',
+  description: 'Get A9 EnhancedEmbeddingService status including provider chain, cache stats, and dimension config',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  handler: async () => {
+    try {
+      const bridge = await getBridge();
+      const has = await bridge.bridgeHasController('enhancedEmbeddingService');
+      if (!has) return { active: false, error: 'EnhancedEmbeddingService not active' };
+      // Try to get status from the controller
+      const controller = await bridge.bridgeGetController('enhancedEmbeddingService');
+      const status: Record<string, unknown> = { active: true };
+      if (controller && typeof controller === 'object') {
+        if (typeof (controller as any).getStats === 'function') {
+          Object.assign(status, (controller as any).getStats());
+        }
+      }
+      return status;
+    } catch (error) {
+      return { active: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0045: agentdb_telemetry_metrics — TelemetryManager metrics =====
+
+export const agentdbTelemetryMetrics: MCPTool = {
+  name: 'agentdb_telemetry_metrics',
+  description: 'Get D1 TelemetryManager metrics: counters, histograms (p50/p95/p99), and exporter config',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  handler: async () => {
+    try {
+      const bridge = await getBridge();
+      const result = await bridge.bridgeTelemetryMetrics();
+      return result ?? { success: false, error: 'Bridge not available' };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0045: agentdb_telemetry_spans — TelemetryManager spans =====
+
+export const agentdbTelemetrySpans: MCPTool = {
+  name: 'agentdb_telemetry_spans',
+  description: 'Get recent D1 TelemetryManager spans with duration and attributes',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Maximum spans to return (default: 100, max: 500)' },
+    },
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const limit = validatePositiveInt(params.limit, 100, 500);
+      const bridge = await getBridge();
+      const result = await bridge.bridgeTelemetrySpans(limit);
+      return result ?? { success: false, error: 'Bridge not available' };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0044: agentdb_attention_compute =====
+
+export const agentdbAttentionCompute: MCPTool = {
+  name: 'agentdb_attention_compute',
+  description: 'Compute attention-weighted search results using multi-head attention re-ranking',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query' },
+      namespace: { type: 'string', description: 'Memory namespace' },
+      limit: { type: 'number', description: 'Max results (default 10)' },
+    },
+    required: ['query'],
+  },
+  handler: async (args: Record<string, unknown>) => {
+    try {
+      const bridge = await getBridge();
+      const query = validateString(args.query, 'query');
+      if (!query) return { success: false, error: 'query is required' };
+      return await bridge.bridgeAttentionSearch({
+        query,
+        namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
+        limit: validatePositiveInt(args.limit, 10, MAX_TOP_K),
+      });
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0044: agentdb_attention_benchmark =====
+
+export const agentdbAttentionBenchmark: MCPTool = {
+  name: 'agentdb_attention_benchmark',
+  description: 'Benchmark Flash Attention consolidation performance',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      entryCount: { type: 'number', description: 'Number of entries to benchmark (default 100)' },
+      blockSize: { type: 'number', description: 'Flash attention block size (default 256)' },
+    },
+  },
+  handler: async (args: Record<string, unknown>) => {
+    try {
+      const bridge = await getBridge();
+      const count = validatePositiveInt(args.entryCount, 100, 10000);
+      // Generate synthetic entries for benchmarking
+      const entries = Array.from({ length: count }, (_, i) => ({
+        id: `bench_${i}`,
+        embedding: Array.from({ length: 64 }, () => Math.random()),
+      }));
+      const start = Date.now();
+      const result = await bridge.bridgeFlashConsolidate({
+        entries,
+        blockSize: validatePositiveInt(args.blockSize, 256, 1024),
+      });
+      const elapsed = Date.now() - start;
+      return { ...result, benchmark: { entries: count, elapsedMs: elapsed, opsPerSec: count / (elapsed / 1000) } };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0044: agentdb_attention_configure =====
+
+export const agentdbAttentionConfigure: MCPTool = {
+  name: 'agentdb_attention_configure',
+  description: 'Get configuration and engine status of AttentionService mechanisms',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  handler: async (args: Record<string, unknown>) => {
+    try {
+      const bridge = await getBridge();
+      // Use bridgeGetController to query the attentionService directly
+      const result = await bridge.bridgeGetController('attentionService');
+      if (!result) return { success: false, error: 'AttentionService not active' };
+      const info = typeof result.getInfo === 'function' ? result.getInfo() : {};
+      const stats = typeof result.getStats === 'function' ? result.getStats() : {};
+      const engine = typeof result.getEngineType === 'function' ? result.getEngineType() : 'unknown';
+      return { success: true, engine, info, stats };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0044: agentdb_attention_metrics =====
+
+export const agentdbAttentionMetrics: MCPTool = {
+  name: 'agentdb_attention_metrics',
+  description: 'Get per-mechanism latency percentiles and head utilization metrics from attention controllers',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  handler: async (args: Record<string, unknown>) => {
+    try {
+      const bridge = await getBridge();
+      const metricsCtrl = await bridge.bridgeGetController('attentionMetrics');
+      if (!metricsCtrl) return { success: false, error: 'AttentionMetrics (D2) not active' };
+      const metrics = typeof metricsCtrl.getAllMetrics === 'function'
+        ? Object.fromEntries(metricsCtrl.getAllMetrics())
+        : typeof metricsCtrl.getStats === 'function'
+          ? metricsCtrl.getStats()
+          : {};
+      return { success: true, metrics };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
 // ===== Export all tools =====
 
 export const agentdbTools: MCPTool[] = [
@@ -959,4 +1265,16 @@ export const agentdbTools: MCPTool[] = [
   agentdbRateLimitStatus,    // ADR-0042
   agentdbResourceUsage,      // ADR-0042
   agentdbCircuitStatus,      // ADR-0042
+  agentdbFilteredSearch,     // ADR-0043
+  agentdbQueryStats,         // ADR-0043
+  agentdbQuantizeStatus,     // ADR-0047
+  agentdbHealthReport,       // ADR-0047
+  agentdbEmbed,              // ADR-0045
+  agentdbEmbedStatus,        // ADR-0045
+  agentdbTelemetryMetrics,   // ADR-0045
+  agentdbTelemetrySpans,     // ADR-0045
+  agentdbAttentionCompute,   // ADR-0044
+  agentdbAttentionBenchmark, // ADR-0044
+  agentdbAttentionConfigure, // ADR-0044
+  agentdbAttentionMetrics,   // ADR-0044
 ];

@@ -373,6 +373,19 @@ export const memoryTools: MCPTool[] = [
 
       validateMemoryInput(undefined, undefined, query);
 
+      // ADR-0043: QueryOptimizer (B6) — check cache before searching
+      try {
+        const bridge = await import('../memory/memory-bridge.js');
+        const qo = await bridge.bridgeGetController('queryOptimizer');
+        if (qo && typeof (qo as Record<string, unknown>).getCached === 'function') {
+          const cacheKey = JSON.stringify({ q: query, ns: namespace, limit, threshold });
+          const cached = (qo as { getCached: (k: string) => Record<string, unknown> | null }).getCached(cacheKey);
+          if (cached) {
+            return { ...cached, cached: true };
+          }
+        }
+      } catch { /* QueryOptimizer cache unavailable — proceed with search */ }
+
       const startTime = performance.now();
 
       try {
@@ -513,7 +526,8 @@ export const memoryTools: MCPTool[] = [
           } catch { /* context synthesis unavailable */ }
         }
 
-        return {
+        // ADR-0043: QueryOptimizer (B6) — cache results
+        const response = {
           query,
           results: outputResults,
           total: outputResults.length,
@@ -522,6 +536,17 @@ export const memoryTools: MCPTool[] = [
           attention: attentionApplied,
           ...(synthesis ? { synthesis } : {}),
         };
+
+        try {
+          const bridge = await import('../memory/memory-bridge.js');
+          const qo = await bridge.bridgeGetController('queryOptimizer');
+          if (qo && typeof (qo as Record<string, unknown>).cache === 'function') {
+            const cacheKey = JSON.stringify({ q: query, ns: namespace, limit, threshold });
+            (qo as { cache: (k: string, v: unknown) => void }).cache(cacheKey, response);
+          }
+        } catch { /* QueryOptimizer cache write failed — non-fatal */ }
+
+        return response;
       } catch (error) {
         return {
           query,
