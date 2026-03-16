@@ -360,6 +360,47 @@ async function logAttestation(
   }
 }
 
+// ===== ADR-0042: Security & Reliability helpers =====
+
+/**
+ * Check rate limit before forwarding operation.
+ * Returns null if allowed, or { error, retryAfter } if rate limited.
+ */
+async function bridgeCheckRateLimit(
+  registry: any,
+  operation: string,
+): Promise<{ error: string; retryAfter: number } | null> {
+  try {
+    const limiter = registry.get('rateLimiter');
+    if (!limiter || typeof limiter.tryConsume !== 'function') return null; // No limiter = allow
+    if (limiter.tryConsume(operation)) return null; // Token acquired
+    const retryAfter = typeof limiter.getRetryAfter === 'function'
+      ? limiter.getRetryAfter(operation)
+      : 1000;
+    return { error: 'rate_limited', retryAfter };
+  } catch {
+    return null; // Non-fatal
+  }
+}
+
+/**
+ * Check resource limits before heavy operations.
+ * Returns null if allowed, or { error } if over limit.
+ */
+async function bridgeCheckResources(
+  registry: any,
+): Promise<{ error: string } | null> {
+  try {
+    const tracker = registry.get('resourceTracker');
+    if (!tracker || typeof tracker.isOverLimit !== 'function') return null;
+    if (tracker.isOverLimit()) return { error: 'resource_limit_exceeded' };
+    if (typeof tracker.recordQuery === 'function') tracker.recordQuery();
+    return null;
+  } catch {
+    return null; // Non-fatal
+  }
+}
+
 /**
  * Get the AgentDB database handle and ensure memory_entries table exists.
  * Returns null if not available.
@@ -433,6 +474,10 @@ export async function bridgeStoreEntry(options: {
 
   const ctx = getDb(registry);
   if (!ctx) return null;
+
+    // ADR-0042: Rate limit check before store
+    const rateCheck = await bridgeCheckRateLimit(registry, 'insert');
+    if (rateCheck) return { success: false, id: '', error: rateCheck.error, retryAfter: rateCheck.retryAfter } as any;
 
   try {
     const { key, value, namespace = 'default', tags = [], ttl } = options;
@@ -586,6 +631,10 @@ export async function bridgeSearchEntries(options: {
 
   const ctx = getDb(registry);
   if (!ctx) return null;
+
+    // ADR-0042: Rate limit check before search
+    const rateCheck = await bridgeCheckRateLimit(registry, 'search');
+    if (rateCheck) return null;
 
   try {
     // OPT-010: No default namespace — when unspecified, search across all namespaces
@@ -947,6 +996,10 @@ export async function bridgeDeleteEntry(options: {
 
   const ctx = getDb(registry);
   if (!ctx) return null;
+
+    // ADR-0042: Rate limit check before delete
+    const rateCheck = await bridgeCheckRateLimit(registry, 'delete');
+    if (rateCheck) return { success: false, deleted: false, key: options.key, namespace: options.namespace || 'default', remainingEntries: 0, error: rateCheck.error } as any;
 
   try {
     const { key, namespace = 'default' } = options;
@@ -1915,6 +1968,11 @@ export async function bridgeConsolidate(params: { minAge?: number; maxEntries?: 
 export async function bridgeBatchOperation(params: { operation: string; entries: any[] }): Promise<any> {
   const registry = await getRegistry();
   if (!registry) return null;
+    // ADR-0042: Resource check before batch
+    const resourceCheck = await bridgeCheckResources(registry);
+    if (resourceCheck) return { success: false, error: resourceCheck.error };
+    const batchRateCheck = await bridgeCheckRateLimit(registry, 'batch');
+    if (batchRateCheck) return { success: false, error: batchRateCheck.error };
   try {
     const batch = registry.get('batchOperations');
     if (!batch) return { success: false, error: 'BatchOperations not available' };
@@ -2338,6 +2396,50 @@ export async function bridgeGraphAdapter(options: {
     }
   } catch (e: any) {
     return { success: false, error: e?.message || String(e) };
+  }
+}
+
+// ===== ADR-0042: Security & Reliability status functions =====
+
+export async function bridgeRateLimitStatus(
+  dbPath?: string,
+): Promise<{ success: boolean; stats?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const limiter = registry.get('rateLimiter');
+    if (!limiter) return { success: false, error: 'RateLimiter not active' };
+    return { success: true, stats: typeof limiter.getStats === 'function' ? limiter.getStats() : {} };
+  } catch {
+    return { success: false, error: 'Failed to get rate limit status' };
+  }
+}
+
+export async function bridgeResourceUsage(
+  dbPath?: string,
+): Promise<{ success: boolean; stats?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const tracker = registry.get('resourceTracker');
+    if (!tracker) return { success: false, error: 'ResourceTracker not active' };
+    return { success: true, stats: typeof tracker.getStats === 'function' ? tracker.getStats() : {} };
+  } catch {
+    return { success: false, error: 'Failed to get resource usage' };
+  }
+}
+
+export async function bridgeCircuitStatus(
+  dbPath?: string,
+): Promise<{ success: boolean; stats?: any; error?: string }> {
+  const registry = await getRegistry(dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const breaker = registry.get('circuitBreakerController');
+    if (!breaker) return { success: false, error: 'CircuitBreaker not active' };
+    return { success: true, stats: typeof breaker.getStats === 'function' ? breaker.getStats() : {} };
+  } catch {
+    return { success: false, error: 'Failed to get circuit breaker status' };
   }
 }
 
