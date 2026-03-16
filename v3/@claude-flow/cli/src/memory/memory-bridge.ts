@@ -2936,6 +2936,150 @@ export async function bridgeNativeAcceleratorStats(
   }
 }
 
+// ===== ADR-0044: Attention Suite Bridge Functions =====
+
+export async function bridgeAttentionSearch(options: {
+  query: string;
+  namespace?: string;
+  limit?: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; results?: any[]; attention?: boolean; error?: string }> {
+  const registry = await getRegistry(options.dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const multiHead = registry.get('multiHeadAttention');
+    if (!multiHead) {
+      // Fallback to standard search when attention controller unavailable
+      const fallback = await bridgeSearchEntries({
+        query: options.query,
+        namespace: options.namespace || 'default',
+        limit: options.limit || 10,
+      });
+      return fallback ?? { success: false, error: 'Search returned null' };
+    }
+    // Get vector results first, then re-rank with attention
+    const vectorResults = await bridgeSearchEntries({
+      query: options.query,
+      namespace: options.namespace || 'default',
+      limit: Math.min((options.limit || 10) * 3, 100), // Over-fetch for re-ranking
+    });
+    if (!vectorResults || !vectorResults.success || !vectorResults.results?.length) {
+      return vectorResults ?? { success: false, error: 'Search returned null' };
+    }
+    // Re-rank using multi-head attention
+    const attended = typeof multiHead.computeMultiHeadAttention === 'function'
+      ? await multiHead.computeMultiHeadAttention(
+          vectorResults.results.map((r: any) => r.embedding || []).filter((e: any) => e.length > 0),
+          { topK: options.limit || 10 }
+        )
+      : null;
+    if (!attended) return { ...vectorResults, attention: false };
+    // Apply attention scores to reorder results
+    const reranked = vectorResults.results
+      .map((r: any, i: number) => ({
+        ...r,
+        attentionScore: attended.aggregatedScores?.[i]?.score ?? r.score ?? 0,
+      }))
+      .sort((a: any, b: any) => (b.attentionScore ?? 0) - (a.attentionScore ?? 0))
+      .slice(0, options.limit || 10);
+    return { success: true, results: reranked, attention: true };
+  } catch {
+    return { success: false, error: 'Attention search failed' };
+  }
+}
+
+export async function bridgeFlashConsolidate(params: {
+  entries?: any[];
+  blockSize?: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; result?: any; error?: string }> {
+  const registry = await getRegistry(params.dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const attn = registry.get('attentionService');
+    if (!attn || typeof attn.applyFlashAttention !== 'function') {
+      // Fallback to standard consolidation
+      return bridgeConsolidate({ maxEntries: params.entries?.length });
+    }
+    const entries = params.entries || [];
+    if (entries.length === 0) return { success: true, result: { consolidated: 0 } };
+    const embeddings = entries.map((e: any) => e.embedding || []).filter((e: any[]) => e.length > 0);
+    if (embeddings.length < 2) return { success: true, result: { consolidated: embeddings.length } };
+    const query = embeddings[0];
+    const keys = embeddings.slice(1);
+    const values = keys; // Self-attention: keys === values
+    const output = await attn.applyFlashAttention(query, keys, values);
+    return { success: true, result: { consolidated: entries.length, flashOutput: output } };
+  } catch {
+    return { success: false, error: 'Flash consolidation failed' };
+  }
+}
+
+export async function bridgeMoERoute(params: {
+  task: string;
+  candidates?: string[];
+  topK?: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; result?: any; error?: string }> {
+  const registry = await getRegistry(params.dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const attn = registry.get('attentionService');
+    if (!attn || typeof attn.applyMoE !== 'function') {
+      return { success: false, error: 'AttentionService (MoE) not available' };
+    }
+    // Generate a simple hash-based input vector from the task string
+    const dim = 64;
+    const input = new Array(dim).fill(0);
+    for (let i = 0; i < params.task.length && i < 1000; i++) {
+      input[i % dim] += params.task.charCodeAt(i) / 128;
+    }
+    const experts = params.candidates?.length || 8;
+    const topK = Math.min(params.topK || 2, experts);
+    const moeResult = await attn.applyMoE(input, experts, topK);
+    return {
+      success: true,
+      result: {
+        expertWeights: moeResult.expertWeights,
+        selectedExperts: moeResult.expertWeights
+          .map((w: number, i: number) => ({ index: i, weight: w, candidate: params.candidates?.[i] }))
+          .filter((e: any) => e.weight > 0)
+          .sort((a: any, b: any) => b.weight - a.weight),
+      },
+    };
+  } catch {
+    return { success: false, error: 'MoE routing failed' };
+  }
+}
+
+export async function bridgeGraphRoPESearch(params: {
+  query: string;
+  hopDistances?: number[];
+  maxHops?: number;
+  dbPath?: string;
+}): Promise<{ success: boolean; result?: any; error?: string }> {
+  const registry = await getRegistry(params.dbPath);
+  if (!registry) return { success: false, error: 'Registry not available' };
+  try {
+    const attn = registry.get('attentionService');
+    if (!attn) {
+      return { success: false, error: 'AttentionService (GraphRoPE) not available' };
+    }
+    // GraphRoPE requires the attention service's low-level API
+    // For now, delegate to the service if it exposes graphRoPE
+    if (typeof (attn as any).graphRoPE === 'function') {
+      const result = await (attn as any).graphRoPE(params.query, {
+        hopDistances: params.hopDistances || [],
+        maxHops: params.maxHops || 10,
+      });
+      return { success: true, result };
+    }
+    return { success: false, error: 'GraphRoPE not available on AttentionService' };
+  } catch {
+    return { success: false, error: 'GraphRoPE search failed' };
+  }
+}
+
 // ===== Utility =====
 
 function cosineSim(a: number[], b: number[]): number {
