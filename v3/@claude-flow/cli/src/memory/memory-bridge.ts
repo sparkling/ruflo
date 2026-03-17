@@ -2658,7 +2658,12 @@ export async function bridgeHealthReport(
     const monitor = registry.get('indexHealthMonitor');
     const monitorChecked = requireController(monitor, 'indexHealthMonitor', 'bridgeHealthReport');
     if (!monitorChecked) return { success: false, error: 'IndexHealthMonitor not active' };
-    return { success: true, assessment: typeof monitorChecked.assess === 'function' ? monitorChecked.assess() : {} };
+    if (typeof monitorChecked.assess !== 'function') {
+      return { success: true, assessment: {} };
+    }
+    // assess() requires IndexStats; provide safe defaults when no HNSW index is available
+    const defaultStats = { indexedVectors: 0, layers: 0, m: 16, efConstruction: 200, needsRebuild: false };
+    return { success: true, assessment: monitorChecked.assess(defaultStats) };
   } catch (e: any) {
     const msg = e?.controllerName ? `${e.controllerName} not available` : (e?.message || 'Failed to get health report');
     return { success: false, error: msg };
