@@ -86,6 +86,8 @@ export const agentdbControllers: MCPTool = {
   handler: async () => {
     try {
       const bridge = await getBridge();
+      // Wait for deferred (Level 2+) controllers to finish background init
+      await bridge.bridgeWaitForDeferred?.();
       const controllers = await bridge.bridgeListControllers();
       if (!controllers) return { available: false, controllers: [], error: 'Bridge not available' };
       return {
@@ -1043,6 +1045,8 @@ export const agentdbEmbed: MCPTool = {
       const text = validateString(params.text, 'text', MAX_STRING_LENGTH);
       if (!text) return { success: false, error: 'text is required (non-empty string, max 100KB)' };
       const bridge = await getBridge();
+      // Wait for deferred (Level 2+) controllers so A9 EnhancedEmbeddingService is ready
+      await bridge.bridgeWaitForDeferred?.();
       const result = await bridge.bridgeEmbed(text);
       return result ?? { success: false, error: 'Bridge not available' };
     } catch (error) {

@@ -117,8 +117,21 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
         // Suppress ALL console.log during registry init to prevent controller
         // logs (GNN, Sona, WASM, LearningSystem) from polluting MCP tool output.
         // ADR-0048: comprehensive filter for 42-controller init noise.
+        //
+        // IMPORTANT: Console must stay suppressed through deferred init (Levels 2-6),
+        // not just the eager init (Levels 0-1). The deferred init runs as a background
+        // promise inside initialize() and controller factories (SemanticRouter, Sona,
+        // GNN) log during their construction. Restoring console only after
+        // 'deferred:initialized' fires prevents log leakage into MCP tool output.
         const origLog = console.log;
         const origWarn = console.warn;
+        let _consoleRestored = false;
+        const _restoreConsole = () => {
+          if (_consoleRestored) return;
+          _consoleRestored = true;
+          console.log = origLog;
+          console.warn = origWarn;
+        };
         console.log = (..._args: unknown[]) => { /* suppress all during init */ };
         console.warn = (..._args: unknown[]) => { /* suppress all during init */ };
 
@@ -129,6 +142,17 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
           const _lb = _mem.learningBridge || {};
           const _mg = _mem.memoryGraph || {};
           const _neural = _cfg.neural || {};
+
+          // Listen for deferred init completion to restore console AFTER all
+          // controller factories (Levels 2-6) have finished logging.
+          // Safety timeout ensures console is always restored even if the
+          // deferred init hangs or the event never fires.
+          const _deferredTimeout = setTimeout(_restoreConsole, 120_000);
+          registry.once('deferred:initialized', () => {
+            clearTimeout(_deferredTimeout);
+            _restoreConsole();
+          });
+
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
             dimension: 768,
@@ -160,9 +184,17 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
               },
             },
           } as any);
-        } finally {
-          console.log = origLog;
-          console.warn = origWarn;
+
+          // If there are no deferred levels (all eager), the 'deferred:initialized'
+          // event won't fire. Schedule a short fallback restore after a microtask to
+          // let the deferred promise start if it exists, then restore if it didn't.
+          void Promise.resolve().then(() => {
+            setTimeout(_restoreConsole, 500);
+          });
+        } catch {
+          // Restore console on init failure so we don't permanently suppress output.
+          _restoreConsole();
+          throw new Error('registry init failed');
         }
 
         registryInstance = registry;
@@ -1393,6 +1425,11 @@ export async function bridgeListControllers(
   if (!registry) return null;
 
   try {
+    // Wait for deferred (Level 2+) controllers to finish background init
+    // so the listing includes A9, D3, etc.
+    if (typeof registry.waitForDeferred === 'function') {
+      await registry.waitForDeferred();
+    }
     return registry.listControllers();
   } catch {
     return null;
@@ -1428,6 +1465,18 @@ export async function shutdownBridge(): Promise<void> {
     registryInstance = null;
     registryPromise = null;
     bridgeAvailable = null;
+  }
+}
+
+/**
+ * Wait for deferred (Level 2+) controllers to complete background initialization.
+ * MCP tool handlers should call this before accessing controllers like A9 or D3
+ * that initialize asynchronously after Level 1 boot.
+ */
+export async function bridgeWaitForDeferred(dbPath?: string): Promise<void> {
+  const registry = await getRegistry(dbPath);
+  if (registry && typeof registry.waitForDeferred === 'function') {
+    await registry.waitForDeferred();
   }
 }
 
@@ -2724,6 +2773,10 @@ export async function bridgeEmbed(
     }
   }
   try {
+    // Wait for deferred (Level 2+) controllers so A9 EnhancedEmbeddingService is ready
+    if (typeof registry.waitForDeferred === 'function') {
+      await registry.waitForDeferred();
+    }
     const enhanced = registry.get('enhancedEmbeddingService');
     if (enhanced && typeof enhanced.embed === 'function') {
       const result = await enhanced.embed(text);
