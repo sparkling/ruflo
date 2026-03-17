@@ -2741,7 +2741,12 @@ export async function bridgeQueryStats(
   try {
     const qo = registry.get('queryOptimizer');
     if (!qo) return { success: false, error: 'QueryOptimizer not active' };
-    const stats = typeof qo.getStats === 'function' ? qo.getStats() : { cacheHits: 0, cacheMisses: 0, cacheSize: 0 };
+    // Use getCacheStats() for cache hit/miss/size (getStats() returns per-query array)
+    const stats = typeof qo.getCacheStats === 'function'
+      ? qo.getCacheStats()
+      : typeof qo.getStats === 'function'
+        ? qo.getStats()
+        : { cacheHits: 0, cacheMisses: 0, cacheSize: 0 };
     return { success: true, stats };
   } catch {
     return { success: false, error: 'Failed to get query stats' };
