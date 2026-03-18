@@ -1430,6 +1430,10 @@ export async function bridgeGetController(
   if (!registry) return null;
 
   try {
+    // Wait for deferred controllers so Level 4 controllers are available
+    if (typeof registry.waitForDeferred === 'function') {
+      await registry.waitForDeferred();
+    }
     return registry.get(name) ?? null;
   } catch {
     return null;

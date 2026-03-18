@@ -1106,7 +1106,9 @@ export const agentdbTelemetryMetrics: MCPTool = {
       const result = await bridge.bridgeTelemetryMetrics();
       if (!result) return { success: false, error: 'Bridge not available' };
       const metrics = result.metrics;
-      const isEmpty = !metrics || (typeof metrics === 'object' && Object.keys(metrics).length === 0);
+      const countersEmpty = !metrics?.counters || Object.keys(metrics.counters).length === 0;
+      const histogramsEmpty = !metrics?.histograms || Object.keys(metrics.histograms).length === 0;
+      const isEmpty = !metrics || (countersEmpty && histogramsEmpty);
       if (result.success && isEmpty) {
         return { ...result, notice: 'No telemetry instrumentation active. Counters require explicit startSpan/increment calls from controller operations.' };
       }

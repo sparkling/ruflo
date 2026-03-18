@@ -560,7 +560,7 @@ const execCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     // Reject unknown flags (X1: --args and other typos are silently ignored otherwise)
-    const knownFlags = new Set(['tool', 'params', 'format', 'help', 'version', 'verbose', 'quiet', 'config', 'noColor', 'interactive', '_']);
+    const knownFlags = new Set(['tool', 'params', 'format', 'help', 'version', 'verbose', 'quiet', 'config', 'noColor', 'color', 'interactive', '_']);
     for (const key of Object.keys(ctx.flags)) {
       if (!knownFlags.has(key)) {
         output.printError(`Unknown option: --${key}`);
