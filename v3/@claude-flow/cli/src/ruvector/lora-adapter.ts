@@ -20,6 +20,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ============================================================================
 // Types & Constants
@@ -33,13 +34,13 @@ export const DEFAULT_RANK = 8;
 /**
  * Input dimension — ADR-0052: matches embedding config default
  */
-export const INPUT_DIM = 768;
+export const INPUT_DIM = EMBEDDING_DIM;
 
 /**
  * Default output dimension (same as input for adapter)
  * ADR-0052: matches embedding config default
  */
-export const OUTPUT_DIM = 768;
+export const OUTPUT_DIM = EMBEDDING_DIM;
 
 /**
  * Default alpha scaling factor

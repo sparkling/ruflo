@@ -15,6 +15,7 @@ import type {
   Trajectory,
   TrajectoryStep,
 } from '../types.js';
+import { EMBEDDING_DIM } from '../embedding-constants.js';
 
 /**
  * Default PPO configuration
@@ -74,7 +75,7 @@ export class PPOAlgorithm {
     this.config = { ...DEFAULT_PPO_CONFIG, ...config };
 
     // ADR-0052: use config.inputDim if provided, default 768
-    const dim = this.config.inputDim ?? 768;
+    const dim = this.config.inputDim ?? EMBEDDING_DIM;
     this.policyWeights = new Float32Array(dim);
     this.valueWeights = new Float32Array(dim);
     this.policyMomentum = new Float32Array(dim);

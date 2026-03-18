@@ -23,6 +23,7 @@ import type {
   RetrievalRequest,
   RetrievalResult,
 } from './types.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ============================================================================
 // Intent Classification
@@ -102,7 +103,7 @@ export class HashEmbeddingProvider implements IEmbeddingProvider {
   private dimensions: number;
   private cache = new Map<string, Float32Array>();
 
-  constructor(dimensions: number = 768) { // ADR-0052: matches embedding config default
+  constructor(dimensions: number = EMBEDDING_DIM) { // ADR-0052: matches embedding config default
     this.dimensions = dimensions;
   }
 

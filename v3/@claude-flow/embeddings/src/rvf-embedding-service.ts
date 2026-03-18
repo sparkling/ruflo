@@ -34,6 +34,7 @@ import type {
 } from './types.js';
 import { normalize } from './normalization.js';
 import { RvfEmbeddingCache } from './rvf-embedding-cache.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ============================================================================
 // Constants
@@ -46,7 +47,7 @@ const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
 /** Default embedding dimensions — ADR-0052: matches embedding config default */
-const DEFAULT_DIMENSIONS = 768;
+const DEFAULT_DIMENSIONS = EMBEDDING_DIM;
 
 /** Default in-memory LRU cache size */
 const DEFAULT_CACHE_SIZE = 1000;

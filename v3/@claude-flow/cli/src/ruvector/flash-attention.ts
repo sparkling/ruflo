@@ -64,6 +64,8 @@ export interface BenchmarkResult {
 // Flash Attention Implementation
 // ============================================================================
 
+import { EMBEDDING_DIM } from './embedding-constants.js';
+
 export class FlashAttention {
   private config: FlashAttentionConfig;
   private lastSpeedup: number = 0;
@@ -77,7 +79,7 @@ export class FlashAttention {
   constructor(config: Partial<FlashAttentionConfig> = {}) {
     this.config = {
       blockSize: config.blockSize ?? 32, // Smaller blocks for CPU L1 cache
-      dimensions: config.dimensions ?? 768, // ADR-0052: matches embedding config default
+      dimensions: config.dimensions ?? EMBEDDING_DIM, // ADR-0052: matches embedding config default
       temperature: config.temperature ?? 1.0,
       useStableMode: config.useStableMode ?? true,
       useCPUOptimizations: config.useCPUOptimizations ?? true,
@@ -460,7 +462,7 @@ export class FlashAttention {
    */
   benchmark(
     numVectors: number = 512,
-    dimensions: number = 768, // ADR-0052: matches embedding config default
+    dimensions: number = EMBEDDING_DIM, // ADR-0052: matches embedding config default
     iterations: number = 5,
   ): BenchmarkResult {
     // Generate random test data

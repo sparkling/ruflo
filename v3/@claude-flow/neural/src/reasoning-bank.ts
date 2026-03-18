@@ -25,6 +25,7 @@ import type {
   NeuralEvent,
   NeuralEventListener,
 } from './types.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ============================================================================
 // AgentDB Integration
@@ -102,7 +103,7 @@ const DEFAULT_CONFIG: ReasoningBankConfig = {
   dedupThreshold: 0.95,
   enableContradictionDetection: true,
   dbPath: undefined,
-  vectorDimension: 768, // ADR-0052: matches embedding config default
+  vectorDimension: EMBEDDING_DIM, // ADR-0052: matches embedding config default
   namespace: 'reasoning-bank',
   enableAgentDB: true,
 };

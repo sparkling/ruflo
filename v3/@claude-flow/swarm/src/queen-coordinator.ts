@@ -36,6 +36,7 @@ import type {
   SwarmEventType,
 } from './types.js';
 import type { AgentDomain, DomainConfig, DomainStatus } from './unified-coordinator.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // =============================================================================
 // Types
@@ -392,7 +393,7 @@ const DEFAULT_CONFIG: QueenCoordinatorConfig = {
   },
   enableFailover: true,
   maxDelegationAttempts: 3,
-  embeddingDim: 768,
+  embeddingDim: EMBEDDING_DIM,
 };
 
 // =============================================================================

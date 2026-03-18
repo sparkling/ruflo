@@ -15,6 +15,7 @@
 
 import { EventEmitter } from 'node:events';
 import type { HookContext, HookEvent } from '../types.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // Dynamic imports for optional dependencies
 let AgentDBAdapter: any = null;
@@ -112,7 +113,7 @@ export interface ReasoningBankMetrics {
 }
 
 const DEFAULT_CONFIG: ReasoningBankConfig = {
-  dimensions: 384, // MiniLM-L6
+  dimensions: EMBEDDING_DIM, // MiniLM-L6
   hnswM: 16,
   hnswEfConstruction: 200,
   hnswEfSearch: 100,
@@ -923,7 +924,7 @@ class RealEmbeddingService implements IEmbeddingService {
   private dimensions: number;
   private cache: Map<string, Float32Array> = new Map();
 
-  constructor(dimensions: number = 384) {
+  constructor(dimensions: number = EMBEDDING_DIM) {
     this.dimensions = dimensions;
   }
 
@@ -962,7 +963,7 @@ class FallbackEmbeddingService implements IEmbeddingService {
   private dimensions: number;
   private cache: Map<string, Float32Array> = new Map();
 
-  constructor(dimensions: number = 384) {
+  constructor(dimensions: number = EMBEDDING_DIM) {
     this.dimensions = dimensions;
   }
 

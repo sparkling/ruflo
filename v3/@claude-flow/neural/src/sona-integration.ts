@@ -11,6 +11,7 @@
  */
 
 import { SonaEngine, type JsSonaConfig, type JsLearnedPattern } from '@ruvector/sona';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 import type {
   Trajectory,
   TrajectoryStep,
@@ -75,8 +76,8 @@ export interface SONAStats {
  */
 function modeToConfig(mode: SONAMode, modeConfig: SONAModeConfig): JsSonaConfig {
   const baseConfig: JsSonaConfig = {
-    hiddenDim: 768, // ADR-0052: matches embedding config default
-    embeddingDim: 768, // ADR-0052: matches embedding config default
+    hiddenDim: EMBEDDING_DIM, // ADR-0052: matches embedding config default
+    embeddingDim: EMBEDDING_DIM, // ADR-0052: matches embedding config default
     microLoraRank: modeConfig.loraRank <= 2 ? modeConfig.loraRank : 1,
     baseLoraRank: modeConfig.loraRank,
     microLoraLr: modeConfig.learningRate,
@@ -346,7 +347,7 @@ export class SONALearningEngine {
       return trajectory.steps[0].stateBefore;
     }
     // Fallback to zero embedding
-    return new Float32Array(768);
+    return new Float32Array(EMBEDDING_DIM);
   }
 
   /**

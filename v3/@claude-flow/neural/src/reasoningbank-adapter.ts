@@ -23,6 +23,7 @@ import type {
   Pattern,
   SONAMode,
 } from './types.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 import { createSONAManager, SONAManager } from './sona-manager.js';
 import { createPatternLearner, PatternLearner } from './pattern-learner.js';
 
@@ -648,7 +649,7 @@ export class ReasoningBankAdapter {
 
   private computePatternEmbedding(trajectory: Trajectory, index: number): Float32Array {
     if (trajectory.steps.length === 0) {
-      return new Float32Array(768); // ADR-0052: matches embedding config default
+      return new Float32Array(EMBEDDING_DIM); // ADR-0052: matches embedding config default
     }
 
     // Use weighted average of step embeddings

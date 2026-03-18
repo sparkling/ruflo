@@ -12,6 +12,7 @@
 import { EventEmitter } from 'node:events';
 import type { IMemoryBackend, MemoryEntry, SONAMode } from './types.js';
 import type { MemoryInsight, InsightCategory } from './auto-memory-bridge.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ===== Types =====
 
@@ -93,7 +94,7 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   ewcLambda: 2000,
   consolidationThreshold: 10,
   enabled: true,
-  embeddingDim: 768,
+  embeddingDim: EMBEDDING_DIM,
 };
 
 const MS_PER_HOUR = 3_600_000;

@@ -33,6 +33,7 @@ import type {
   EWCState,
   RLAlgorithm,
 } from './types.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 import { RealTimeMode } from './modes/real-time.js';
 import { BalancedMode } from './modes/balanced.js';
@@ -525,7 +526,7 @@ export class SONAManager {
     for (const module of config.targetModules) {
       // A: (hidden_dim, rank) initialized with small random values
       // B: (rank, hidden_dim) initialized to zero
-      const hiddenDim = 768; // ADR-0052: matches embedding config default
+      const hiddenDim = EMBEDDING_DIM; // ADR-0052: matches embedding config default
       const A = new Float32Array(hiddenDim * config.rank);
       const B = new Float32Array(config.rank * hiddenDim);
 
@@ -794,7 +795,7 @@ export class SONAManager {
     for (const trajectory of this.trajectories.values()) {
       bytes += 200; // Base trajectory overhead
       bytes += trajectory.context.length * 2;
-      bytes += trajectory.steps.length * (64 + 4 * 768 * 4); // Step overhead + embeddings
+      bytes += trajectory.steps.length * (64 + 4 * EMBEDDING_DIM * 4); // Step overhead + embeddings
     }
     return bytes;
   }

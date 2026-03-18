@@ -15,6 +15,7 @@
 import type { MCPTool } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // Try to import real embeddings — prefer agentic-flow v3 ReasoningBank, then @claude-flow/embeddings
 let realEmbeddings: { embed: (text: string) => Promise<number[]> } | null = null;
@@ -123,7 +124,7 @@ export function saveNeuralStore(store: NeuralStore): void {
 
 // Generate embedding - uses real embeddings if available, falls back to hash-based
 // ADR-0052: matches embedding config default
-export async function generateEmbedding(text?: string, dims: number = 768): Promise<number[]> {
+export async function generateEmbedding(text?: string, dims: number = EMBEDDING_DIM): Promise<number[]> {
   // If real embeddings available and text provided, use them
   if (realEmbeddings && text) {
     try {
@@ -328,7 +329,7 @@ export const neuralTools: MCPTool[] = [
 
         // Generate embedding from pattern name/content
         // ADR-0052: matches embedding config default
-        const embedding = await generateEmbedding(patternName, 768);
+        const embedding = await generateEmbedding(patternName, EMBEDDING_DIM);
 
         const pattern: Pattern = {
           id: patternId,
@@ -359,7 +360,7 @@ export const neuralTools: MCPTool[] = [
 
         // Generate query embedding for real similarity search
         // ADR-0052: matches embedding config default
-        const queryEmbedding = await generateEmbedding(query, 768);
+        const queryEmbedding = await generateEmbedding(query, EMBEDDING_DIM);
 
         // Calculate REAL cosine similarity against stored patterns
         const results = Object.values(store.patterns)
@@ -475,7 +476,7 @@ export const neuralTools: MCPTool[] = [
             acc[p.type] = (acc[p.type] || 0) + 1;
             return acc;
           }, {} as Record<string, number>),
-          totalEmbeddingDims: patterns.length > 0 ? patterns[0].embedding.length : 768, // ADR-0052: matches embedding config default
+          totalEmbeddingDims: patterns.length > 0 ? patterns[0].embedding.length : EMBEDDING_DIM, // ADR-0052: matches embedding config default
         },
         features: {
           hnsw: true,
