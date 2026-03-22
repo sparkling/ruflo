@@ -107,7 +107,7 @@ export const agentdbControllers: MCPTool = {
 // ===== agentdb_pattern_store — Store via ReasoningBank =====
 
 export const agentdbPatternStore: MCPTool = {
-  name: 'agentdb_pattern-store',
+  name: 'agentdb_pattern_store',
   description: 'Store a pattern directly via ReasoningBank controller',
   inputSchema: {
     type: 'object',
@@ -138,7 +138,7 @@ export const agentdbPatternStore: MCPTool = {
 // ===== agentdb_pattern_search — Search via ReasoningBank =====
 
 export const agentdbPatternSearch: MCPTool = {
-  name: 'agentdb_pattern-search',
+  name: 'agentdb_pattern_search',
   description: 'Search patterns via ReasoningBank controller with BM25+semantic hybrid',
   inputSchema: {
     type: 'object',
@@ -202,7 +202,7 @@ export const agentdbFeedback: MCPTool = {
 // ===== agentdb_causal_edge — Record causal relationships =====
 
 export const agentdbCausalEdge: MCPTool = {
-  name: 'agentdb_causal-edge',
+  name: 'agentdb_causal_edge',
   description: 'Record a causal edge between two memory entries via CausalMemoryGraph',
   inputSchema: {
     type: 'object',
@@ -268,7 +268,7 @@ export const agentdbRoute: MCPTool = {
 // ===== agentdb_session_start — Session with ReflexionMemory =====
 
 export const agentdbSessionStart: MCPTool = {
-  name: 'agentdb_session-start',
+  name: 'agentdb_session_start',
   description: 'Start a session with ReflexionMemory episodic replay',
   inputSchema: {
     type: 'object',
@@ -297,7 +297,7 @@ export const agentdbSessionStart: MCPTool = {
 // ===== agentdb_session_end — End session + NightlyLearner =====
 
 export const agentdbSessionEnd: MCPTool = {
-  name: 'agentdb_session-end',
+  name: 'agentdb_session_end',
   description: 'End session, persist to ReflexionMemory, trigger NightlyLearner consolidation',
   inputSchema: {
     type: 'object',
@@ -328,7 +328,7 @@ export const agentdbSessionEnd: MCPTool = {
 // ===== agentdb_hierarchical_store — Store to hierarchical memory =====
 
 export const agentdbHierarchicalStore: MCPTool = {
-  name: 'agentdb_hierarchical-store',
+  name: 'agentdb_hierarchical_store',
   description: 'Store to hierarchical memory with tier (working, episodic, semantic)',
   inputSchema: {
     type: 'object',
@@ -366,7 +366,7 @@ export const agentdbHierarchicalStore: MCPTool = {
 // ===== agentdb_hierarchical_recall — Recall from hierarchical memory =====
 
 export const agentdbHierarchicalRecall: MCPTool = {
-  name: 'agentdb_hierarchical-recall',
+  name: 'agentdb_hierarchical_recall',
   description: 'Recall from hierarchical memory with optional tier filter',
   inputSchema: {
     type: 'object',
@@ -497,7 +497,7 @@ export const agentdbBatch: MCPTool = {
 // ===== agentdb_context_synthesize — Synthesize context from memories =====
 
 export const agentdbContextSynthesize: MCPTool = {
-  name: 'agentdb_context-synthesize',
+  name: 'agentdb_context_synthesize',
   description: 'Synthesize context from stored memories for a given query',
   inputSchema: {
     type: 'object',
@@ -526,7 +526,7 @@ export const agentdbContextSynthesize: MCPTool = {
 // ===== agentdb_semantic_route — Route via SemanticRouter =====
 
 export const agentdbSemanticRoute: MCPTool = {
-  name: 'agentdb_semantic-route',
+  name: 'agentdb_semantic_route',
   description: 'Route an input via AgentDB SemanticRouter for intent classification',
   inputSchema: {
     type: 'object',
@@ -556,7 +556,7 @@ export const agentdbSemanticRoute: MCPTool = {
 // ===== agentdb_reflexion_retrieve — Recall past task experiences (P3-B) =====
 
 export const agentdbReflexionRetrieve: MCPTool = {
-  name: 'agentdb_reflexion-retrieve',
+  name: 'agentdb_reflexion_retrieve',
   description: 'Retrieve reflexion memories for a task to inform decisions',
   inputSchema: {
     type: 'object',
@@ -597,7 +597,7 @@ export const agentdbReflexionRetrieve: MCPTool = {
 // ===== agentdb_reflexion_store — Record task outcome (P3-B) =====
 
 export const agentdbReflexionStore: MCPTool = {
-  name: 'agentdb_reflexion-store',
+  name: 'agentdb_reflexion_store',
   description: 'Store a reflexion memory from a completed task',
   inputSchema: {
     type: 'object',
@@ -643,7 +643,7 @@ export const agentdbReflexionStore: MCPTool = {
 // ===== agentdb_causal_query — Query causal graph (P3-C) =====
 
 export const agentdbCausalQuery: MCPTool = {
-  name: 'agentdb_causal-query',
+  name: 'agentdb_causal_query',
   description: 'Query causal relationships and experiment tracking from the causal memory graph',
   inputSchema: {
     type: 'object',
@@ -816,7 +816,7 @@ export const agentdbBranch: MCPTool = {
 // ===== agentdb_causal_recall — Causal-aware search (ADR-0033) =====
 
 export const agentdbCausalRecall: MCPTool = {
-  name: 'agentdb_causal-recall',
+  name: 'agentdb_causal_recall',
   description: 'Search with causal-aware re-ranking (boosts results with higher causal uplift)',
   inputSchema: {
     type: 'object',
@@ -850,7 +850,7 @@ export const agentdbCausalRecall: MCPTool = {
 // ===== agentdb_batch_optimize — Optimize and prune storage (ADR-0033) =====
 
 export const agentdbBatchOptimize: MCPTool = {
-  name: 'agentdb_batch-optimize',
+  name: 'agentdb_batch_optimize',
   description: 'Optimize and prune AgentDB storage (vacuum, stats, pruning)',
   inputSchema: {
     type: 'object',
