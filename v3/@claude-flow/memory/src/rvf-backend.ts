@@ -13,6 +13,7 @@ import type {
   MemoryType,
 } from './types.js';
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 /** Validate a file path is safe (no null bytes, no traversal above root) */
 function validatePath(p: string): void {
@@ -48,7 +49,7 @@ interface RvfHeader {
 
 const MAGIC = 'RVF\0';
 const VERSION = 1;
-const DEFAULT_DIMENSIONS = 1536;
+const DEFAULT_DIMENSIONS = EMBEDDING_DIM;
 const DEFAULT_M = 16;
 const DEFAULT_EF_CONSTRUCTION = 200;
 const DEFAULT_MAX_ELEMENTS = 100000;

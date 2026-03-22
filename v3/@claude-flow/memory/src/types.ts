@@ -244,7 +244,7 @@ export interface SearchOptions {
  * HNSW index configuration
  */
 export interface HNSWConfig {
-  /** Vector dimensions (e.g., 1536 for OpenAI embeddings) */
+  /** Vector dimensions (e.g., 768 for nomic-embed-text-v1.5) */
   dimensions: number;
 
   /** Maximum number of connections per layer (default: 16) */

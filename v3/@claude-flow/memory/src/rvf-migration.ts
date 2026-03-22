@@ -9,13 +9,14 @@ import { dirname, resolve } from 'node:path';
 import { RvfBackend } from './rvf-backend.js';
 import type { MemoryEntry, MemoryType, AccessLevel } from './types.js';
 import { generateMemoryId } from './types.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 /** Options for controlling the migration process. */
 export interface RvfMigrationOptions {
   verbose?: boolean;
   /** Entries per batch (default 500). */
   batchSize?: number;
-  /** Embedding dimensions for target RVF file (default 1536). */
+  /** Embedding dimensions for target RVF file (default: from embedding config). */
   dimensions?: number;
   onProgress?: (progress: { current: number; total: number; phase: string }) => void;
 }
@@ -148,7 +149,7 @@ async function migrateBatches(
   normalize?: (r: Record<string, unknown>) => Record<string, unknown>,
 ): Promise<{ migrated: number; errors: string[] }> {
   const batchSize = options.batchSize ?? 500;
-  const dimensions = options.dimensions ?? 1536;
+  const dimensions = options.dimensions ?? EMBEDDING_DIM;
   const backend = new RvfBackend({ databasePath: rvfPath, dimensions, verbose: options.verbose });
   await backend.initialize();
   let migrated = 0;

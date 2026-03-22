@@ -29,6 +29,7 @@ import {
   CacheStats,
   HNSWStats,
 } from './types.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ===== AgentDB Optional Import =====
 
@@ -73,7 +74,7 @@ export interface AgentDBBackendConfig {
   /** Vector backend: 'auto', 'ruvector', 'hnswlib' */
   vectorBackend?: 'auto' | 'ruvector' | 'hnswlib';
 
-  /** Vector dimensions (default: 1536) */
+  /** Vector dimensions (default: from embedding config) */
   vectorDimension?: number;
 
   /** HNSW M parameter */
@@ -104,7 +105,7 @@ const DEFAULT_CONFIG: Required<
   namespace: 'default',
   forceWasm: false,
   vectorBackend: 'auto',
-  vectorDimension: 1536,
+  vectorDimension: EMBEDDING_DIM,
   hnswM: 16,
   hnswEfConstruction: 200,
   hnswEfSearch: 100,

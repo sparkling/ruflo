@@ -28,12 +28,13 @@ import {
 } from './types.js';
 import { HNSWIndex } from './hnsw-index.js';
 import { CacheManager } from './cache-manager.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 /**
  * Configuration for AgentDB Adapter
  */
 export interface AgentDBAdapterConfig {
-  /** Vector dimensions for embeddings (default: 1536 for OpenAI) */
+  /** Vector dimensions for embeddings (default: from embedding config (768 for nomic-embed-text-v1.5)) */
   dimensions: number;
 
   /** Maximum number of entries */
@@ -71,7 +72,7 @@ export interface AgentDBAdapterConfig {
  * Default configuration values
  */
 const DEFAULT_CONFIG: AgentDBAdapterConfig = {
-  dimensions: 1536,
+  dimensions: EMBEDDING_DIM,
   maxEntries: 1000000,
   cacheEnabled: true,
   cacheSize: 10000,

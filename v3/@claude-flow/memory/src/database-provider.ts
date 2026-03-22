@@ -24,6 +24,7 @@ import {
 } from './types.js';
 import { SQLiteBackend, SQLiteBackendConfig } from './sqlite-backend.js';
 import { SqlJsBackend, SqlJsBackendConfig } from './sqljs-backend.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 /**
  * Available database provider types
@@ -266,7 +267,7 @@ export async function createDatabase(
       const { RvfBackend } = await import('./rvf-backend.js');
       backend = new RvfBackend({
         databasePath: path.replace(/\.(db|json)$/, '.rvf'),
-        dimensions: 1536,
+        dimensions: EMBEDDING_DIM,
         verbose,
         defaultNamespace,
         autoPersistInterval,

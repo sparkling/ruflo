@@ -13,6 +13,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 import {
   DistanceMetric,
   HNSWConfig,
@@ -532,7 +533,7 @@ export class HNSWIndex extends EventEmitter {
 
   private mergeConfig(config: Partial<HNSWConfig>): HNSWConfig {
     return {
-      dimensions: config.dimensions || 1536, // OpenAI embedding size
+      dimensions: config.dimensions || EMBEDDING_DIM, // ADR-0052: from embedding-constants
       M: config.M || 16,
       efConstruction: config.efConstruction || 200,
       maxElements: config.maxElements || 1000000,

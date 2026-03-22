@@ -12,7 +12,7 @@
  *
  * // Initialize the memory service
  * const memory = new UnifiedMemoryService({
- *   dimensions: 1536,
+ *   dimensions: 768,
  *   cacheEnabled: true,
  *   embeddingGenerator: async (text) => embeddings.embed(text),
  * });
@@ -224,6 +224,7 @@ import {
 } from './types.js';
 import { AgentDBAdapter, AgentDBAdapterConfig } from './agentdb-adapter.js';
 import { MemoryMigrator } from './migration.js';
+import { EMBEDDING_DIM } from './embedding-constants.js';
 
 /**
  * Configuration for UnifiedMemoryService
@@ -258,7 +259,7 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
   constructor(config: UnifiedMemoryServiceConfig = {}) {
     super();
     this.config = {
-      dimensions: 1536,
+      dimensions: EMBEDDING_DIM,
       cacheEnabled: true,
       autoEmbed: true,
       ...config,
@@ -547,7 +548,7 @@ export function createPersistentService(path: string): UnifiedMemoryService {
  */
 export function createEmbeddingService(
   embeddingGenerator: EmbeddingGenerator,
-  dimensions: number = 1536
+  dimensions: number = EMBEDDING_DIM
 ): UnifiedMemoryService {
   return new UnifiedMemoryService({
     embeddingGenerator,
@@ -576,7 +577,7 @@ export function createEmbeddingService(
 export function createHybridService(
   databasePath: string,
   embeddingGenerator: EmbeddingGenerator,
-  dimensions: number = 1536
+  dimensions: number = EMBEDDING_DIM
 ): UnifiedMemoryService {
   return new UnifiedMemoryService({
     embeddingGenerator,
