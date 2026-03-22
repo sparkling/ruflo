@@ -38,6 +38,7 @@ const listCommand: Command = {
         { provider: 'Anthropic', type: 'LLM', models: 'claude-3.5-sonnet, opus', status: output.success('Active') },
         { provider: 'OpenAI', type: 'LLM', models: 'gpt-4o, gpt-4-turbo', status: output.success('Active') },
         { provider: 'OpenAI', type: 'Embedding', models: 'text-embedding-3-small/large', status: output.success('Active') },
+        { provider: 'Nomic AI', type: 'Embedding', models: 'nomic-embed-text-v1.5', status: output.success('Active') },
         { provider: 'Transformers.js', type: 'Embedding', models: 'all-MiniLM-L6-v2', status: output.success('Active') },
         { provider: 'Agentic Flow', type: 'Embedding', models: 'ONNX optimized', status: output.success('Active') },
         { provider: 'Mock', type: 'All', models: 'mock-*', status: output.dim('Dev only') },
@@ -163,6 +164,7 @@ const modelsCommand: Command = {
         { model: 'gpt-4-turbo', provider: 'OpenAI', capability: 'Chat', context: '128K', cost: '$0.01/$0.03' },
         { model: 'text-embedding-3-small', provider: 'OpenAI', capability: 'Embedding', context: '8K', cost: '$0.00002' },
         { model: 'text-embedding-3-large', provider: 'OpenAI', capability: 'Embedding', context: '8K', cost: '$0.00013' },
+        { model: 'nomic-ai/nomic-embed-text-v1.5', provider: 'Nomic AI', capability: 'Embedding', context: '8K', cost: output.success('Free') },
         { model: 'all-MiniLM-L6-v2', provider: 'Transformers', capability: 'Embedding', context: '512', cost: output.success('Free') },
       ],
     });

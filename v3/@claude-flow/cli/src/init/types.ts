@@ -255,8 +255,10 @@ export type ClaudeMdTemplate = 'minimal' | 'standard' | 'full' | 'security' | 'p
 export interface EmbeddingsConfig {
   /** Enable embedding subsystem */
   enabled: boolean;
-  /** ONNX model ID */
-  model: 'all-MiniLM-L6-v2' | 'all-mpnet-base-v2' | 'bge-small-en-v1.5' | string;
+  /** Embedding model ID */
+  model: 'all-MiniLM-L6-v2' | 'all-mpnet-base-v2' | 'bge-small-en-v1.5' | 'nomic-ai/nomic-embed-text-v1.5' | string;
+  /** Embedding provider (transformers or onnx) */
+  provider?: 'transformers' | 'onnx' | string;
   /** Enable hyperbolic (Poincaré ball) embeddings */
   hyperbolic: boolean;
   /** Poincaré ball curvature (negative value, typically -1) */

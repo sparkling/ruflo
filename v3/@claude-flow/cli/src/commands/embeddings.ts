@@ -657,7 +657,7 @@ const initCommand: Command = {
   name: 'init',
   description: 'Initialize embedding subsystem with ONNX model and hyperbolic config',
   options: [
-    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'all-MiniLM-L6-v2' },
+    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'nomic-ai/nomic-embed-text-v1.5' },
     { name: 'hyperbolic', type: 'boolean', description: 'Enable hyperbolic (Poincaré ball) embeddings', default: 'true' },
     { name: 'curvature', short: 'c', type: 'string', description: 'Poincaré ball curvature (use --curvature=-1 for negative)', default: '-1' },
     { name: 'download', short: 'd', type: 'boolean', description: 'Download model during init', default: 'true' },
@@ -666,13 +666,15 @@ const initCommand: Command = {
   ],
   examples: [
     { command: 'claude-flow embeddings init', description: 'Initialize with defaults' },
-    { command: 'claude-flow embeddings init --model all-mpnet-base-v2', description: 'Use higher quality model' },
+    { command: 'claude-flow embeddings init --model nomic-ai/nomic-embed-text-v1.5', description: 'Use Nomic Embed v1.5 (default)' },
     { command: 'claude-flow embeddings init --no-hyperbolic', description: 'Euclidean only' },
     { command: 'claude-flow embeddings init --curvature=-0.5', description: 'Custom curvature (use = for negative)' },
     { command: 'claude-flow embeddings init --force', description: 'Overwrite existing config' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const model = ctx.flags.model as string || 'all-MiniLM-L6-v2';
+    // ADR-0052: read default model from config, not hardcoded
+    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'nomic-ai/nomic-embed-text-v1.5' }));
+    const model = ctx.flags.model as string || _cfg.model;
     const hyperbolic = ctx.flags.hyperbolic !== false;
     const download = ctx.flags.download !== false;
     const force = ctx.flags.force === true;
@@ -829,6 +831,7 @@ const providersCommand: Command = {
       data: [
         { provider: 'OpenAI', model: 'text-embedding-3-small', dims: '1536', type: 'Cloud', status: output.success('Ready') },
         { provider: 'OpenAI', model: 'text-embedding-3-large', dims: '3072', type: 'Cloud', status: output.success('Ready') },
+        { provider: 'Nomic AI', model: 'nomic-embed-text-v1.5', dims: '768', type: 'Local', status: output.success('Ready') },
         { provider: 'Transformers.js', model: 'all-MiniLM-L6-v2', dims: '384', type: 'Local', status: output.success('Ready') },
         { provider: 'Agentic Flow', model: 'ONNX optimized', dims: '384', type: 'Local', status: output.success('Ready') },
         { provider: 'Mock', model: 'mock-embedding', dims: '384', type: 'Dev', status: output.dim('Dev only') },
@@ -1234,7 +1237,7 @@ const modelsCommand: Command = {
   ],
   examples: [
     { command: 'claude-flow embeddings models', description: 'List models' },
-    { command: 'claude-flow embeddings models -d all-MiniLM-L6-v2', description: 'Download model' },
+    { command: 'claude-flow embeddings models -d nomic-ai/nomic-embed-text-v1.5', description: 'Download model' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const download = ctx.flags.download as string;
@@ -1697,7 +1700,7 @@ export const embeddingsCommand: Command = {
   ],
   examples: [
     { command: 'claude-flow embeddings init', description: 'Initialize ONNX embedding system' },
-    { command: 'claude-flow embeddings init --model all-mpnet-base-v2', description: 'Init with larger model' },
+    { command: 'claude-flow embeddings init --model nomic-ai/nomic-embed-text-v1.5', description: 'Init with Nomic Embed v1.5' },
     { command: 'claude-flow embeddings generate -t "Hello"', description: 'Generate embedding' },
     { command: 'claude-flow embeddings search -q "error handling"', description: 'Semantic search' },
     { command: 'claude-flow embeddings chunk -t "Long doc..."', description: 'Chunk document' },

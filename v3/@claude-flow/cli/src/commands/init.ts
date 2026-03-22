@@ -428,7 +428,9 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
 
     // Handle --with-embeddings
     const withEmbeddings = ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings;
-    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || 'all-MiniLM-L6-v2') as string;
+    // ADR-0052: read default model from config, not hardcoded
+    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'nomic-ai/nomic-embed-text-v1.5' }));
+    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || _cfg.model) as string;
 
     if (withEmbeddings) {
       output.writeln();
@@ -487,7 +489,7 @@ export const wizardCommand: Command = {
     { name: 'codex', description: 'Initialize for OpenAI Codex CLI', type: 'boolean', default: false },
     { name: 'dual', description: 'Initialize for both Claude Code and Codex', type: 'boolean', default: false },
     { name: 'with-embeddings', description: 'Initialize ONNX embedding subsystem', type: 'boolean', default: false },
-    { name: 'embedding-model', description: 'ONNX embedding model', type: 'string', default: 'all-MiniLM-L6-v2', choices: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'] },
+    { name: 'embedding-model', description: 'ONNX embedding model', type: 'string', default: 'nomic-ai/nomic-embed-text-v1.5', choices: ['nomic-ai/nomic-embed-text-v1.5', 'all-MiniLM-L6-v2', 'all-mpnet-base-v2'] },
   ],
   examples: [
     { command: 'claude-flow wizard', description: 'Run interactive setup wizard' },
@@ -683,12 +685,15 @@ export const wizardCommand: Command = {
         default: true,
       });
 
-      let embeddingModel = 'all-MiniLM-L6-v2';
+      // ADR-0052: read default model from config, not hardcoded
+      const _wizCfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'nomic-ai/nomic-embed-text-v1.5' }));
+      let embeddingModel = _wizCfg.model;
       if (enableEmbeddings) {
         embeddingModel = await select({
           message: 'Select embedding model:',
           options: [
-            { value: 'all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, good quality (recommended)' },
+            { value: 'nomic-ai/nomic-embed-text-v1.5', label: 'Nomic Embed v1.5 (768d)', hint: '86% MTEB, 8K context (recommended)' },
+            { value: 'all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, good quality' },
             { value: 'all-mpnet-base-v2', label: 'MPNet Base (768d)', hint: 'Higher quality, more memory' },
           ],
         });
@@ -1201,8 +1206,8 @@ export const initCommand: Command = {
       name: 'embedding-model',
       description: 'ONNX embedding model to use',
       type: 'string',
-      default: 'all-MiniLM-L6-v2',
-      choices: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
+      default: 'nomic-ai/nomic-embed-text-v1.5',
+      choices: ['nomic-ai/nomic-embed-text-v1.5', 'all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
     },
     {
       name: 'codex',

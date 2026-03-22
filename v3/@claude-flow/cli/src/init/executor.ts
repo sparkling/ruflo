@@ -1236,11 +1236,11 @@ async function writeRuntimeConfig(
   fs.writeFileSync(configJsonPath, config, 'utf-8');
   result.created.files.push('.claude-flow/config.json');
 
-  // ADR-0030 S2: Generate embeddings.json for ONNX configuration
+  // ADR-0030 S2: Generate embeddings.json for transformer configuration
   const embeddingsJsonPath = path.join(targetDir, '.claude-flow', 'embeddings.json');
   if (!fs.existsSync(embeddingsJsonPath) || options.force) {
     const embeddingsConfig = JSON.stringify({
-      model: options.embeddings?.model || 'all-mpnet-base-v2',
+      model: options.embeddings?.model || 'nomic-ai/nomic-embed-text-v1.5',
       // ADR-0052: model-dimension lookup (inline — no agentdb dependency here)
       dimension: (() => {
         const MODEL_DIMS: Record<string, number> = {
@@ -1248,10 +1248,14 @@ async function writeRuntimeConfig(
           'Xenova/all-MiniLM-L6-v2': 384,
           'bge-small-en-v1.5': 384,
           'BAAI/bge-small-en-v1.5': 384,
+          'all-mpnet-base-v2': 768,
+          'Xenova/all-mpnet-base-v2': 768,
         };
         return MODEL_DIMS[options.embeddings?.model || ''] ?? 768;
       })(),
-      provider: 'onnx',
+      provider: options.embeddings?.provider || 'transformers',
+      taskPrefixQuery: 'search_query: ',
+      taskPrefixIndex: 'search_document: ',
       cache: '~/.cache/transformers',
       batchSize: 32,
       quantization: 'none',

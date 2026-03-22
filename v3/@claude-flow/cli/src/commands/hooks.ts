@@ -789,8 +789,8 @@ const pretrainCommand: Command = {
       name: 'embedding-model',
       description: 'ONNX embedding model',
       type: 'string',
-      default: 'all-MiniLM-L6-v2',
-      choices: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2']
+      default: 'nomic-ai/nomic-embed-text-v1.5',
+      choices: ['nomic-ai/nomic-embed-text-v1.5', 'all-MiniLM-L6-v2', 'all-mpnet-base-v2']
     },
     {
       name: 'file-types',
@@ -809,7 +809,9 @@ const pretrainCommand: Command = {
     const repoPath = ctx.flags.path as string || '.';
     const depth = ctx.flags.depth as string || 'medium';
     const withEmbeddings = ctx.flags['with-embeddings'] !== false && ctx.flags.withEmbeddings !== false;
-    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || 'all-MiniLM-L6-v2') as string;
+    // ADR-0052: read default model from config, not hardcoded
+    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'nomic-ai/nomic-embed-text-v1.5' }));
+    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || _cfg.model) as string;
     const fileTypes = (ctx.flags['file-types'] || ctx.flags.fileTypes || 'ts,js,py,md,json') as string;
 
     output.writeln();
