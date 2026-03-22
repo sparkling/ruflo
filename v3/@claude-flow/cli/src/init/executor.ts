@@ -1237,25 +1237,50 @@ async function writeRuntimeConfig(
   result.created.files.push('.claude-flow/config.json');
 
   // ADR-0030 S2: Generate embeddings.json for transformer configuration
+  // ADR-0052: resolve defaults from agentdb getEmbeddingConfig() at runtime
   const embeddingsJsonPath = path.join(targetDir, '.claude-flow', 'embeddings.json');
   if (!fs.existsSync(embeddingsJsonPath) || options.force) {
-    const embeddingsConfig = JSON.stringify({
-      model: options.embeddings?.model || 'nomic-ai/nomic-embed-text-v1.5',
-      // ADR-0052: model-dimension lookup (inline — no agentdb dependency here)
-      dimension: (() => {
-        const MODEL_DIMS: Record<string, number> = {
-          'all-MiniLM-L6-v2': 384,
-          'Xenova/all-MiniLM-L6-v2': 384,
-          'bge-small-en-v1.5': 384,
-          'BAAI/bge-small-en-v1.5': 384,
-          'all-mpnet-base-v2': 768,
-          'Xenova/all-mpnet-base-v2': 768,
-        };
-        return MODEL_DIMS[options.embeddings?.model || ''] ?? 768;
-      })(),
-      provider: options.embeddings?.provider || 'transformers',
+    // Dynamic import — agentdb may not be available during init
+    let embDefaults = {
+      model: 'nomic-ai/nomic-embed-text-v1.5',
+      dimension: 768,
+      provider: 'transformers' as string,
       taskPrefixQuery: 'search_query: ',
       taskPrefixIndex: 'search_document: ',
+    };
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const agentdb: any = await import('agentdb');
+      const cfg = agentdb.getEmbeddingConfig();
+      embDefaults = {
+        model: cfg.model ?? embDefaults.model,
+        dimension: cfg.dimension ?? embDefaults.dimension,
+        provider: cfg.provider ?? embDefaults.provider,
+        taskPrefixQuery: cfg.taskPrefixQuery ?? embDefaults.taskPrefixQuery,
+        taskPrefixIndex: cfg.taskPrefixIndex ?? embDefaults.taskPrefixIndex,
+      };
+    } catch {
+      // agentdb not available — use hardcoded defaults above
+    }
+
+    // ADR-0052: model-dimension lookup for overrides (inline — no agentdb dependency)
+    const resolvedModel = options.embeddings?.model || embDefaults.model;
+    const MODEL_DIMS: Record<string, number> = {
+      'all-MiniLM-L6-v2': 384,
+      'Xenova/all-MiniLM-L6-v2': 384,
+      'bge-small-en-v1.5': 384,
+      'BAAI/bge-small-en-v1.5': 384,
+      'all-mpnet-base-v2': 768,
+      'Xenova/all-mpnet-base-v2': 768,
+    };
+    const resolvedDimension = MODEL_DIMS[resolvedModel] ?? embDefaults.dimension;
+
+    const embeddingsConfig = JSON.stringify({
+      model: resolvedModel,
+      dimension: resolvedDimension,
+      provider: options.embeddings?.provider || embDefaults.provider,
+      taskPrefixQuery: embDefaults.taskPrefixQuery,
+      taskPrefixIndex: embDefaults.taskPrefixIndex,
       cache: '~/.cache/transformers',
       batchSize: 32,
       quantization: 'none',
