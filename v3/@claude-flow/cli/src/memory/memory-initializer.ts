@@ -2793,7 +2793,6 @@ export async function deleteEntry(options: {
     `, [key, namespace]);
 
     // GV-001: Remove ghost vector from HNSW metadata file
-    const entryId = String(checkResult[0].values[0][0]);
     try {
         const swarmDir = path.join(process.cwd(), '.swarm');
         const metadataPath = path.join(swarmDir, 'hnsw.metadata.json');

@@ -77,7 +77,7 @@ const getCommand: Command = {
     try {
       if (!key) {
         // Show all config
-        const configValues = configManager.getAll(ctx.cwd);
+        const configValues = configManager.getConfig(ctx.cwd);
         if (ctx.flags.format === 'json') {
           output.printJson(configValues);
           return { success: true, data: configValues };
@@ -87,7 +87,18 @@ const getCommand: Command = {
         output.writeln(output.bold('Current Configuration'));
         output.writeln();
 
-        const flat = configManager.flatten(configValues);
+        const flat: Record<string, unknown> = {};
+        const walk = (obj: Record<string, unknown>, prefix = '') => {
+          for (const [k, v] of Object.entries(obj)) {
+            const path = prefix ? `${prefix}.${k}` : k;
+            if (v && typeof v === 'object' && !Array.isArray(v)) {
+              walk(v as Record<string, unknown>, path);
+            } else {
+              flat[path] = v;
+            }
+          }
+        };
+        walk(configValues);
         output.printTable({
           columns: [
             { key: 'key', header: 'Key', width: 25 },

@@ -642,9 +642,11 @@ declare module '@ruvector/learning-wasm' {
     forward_array(operatorType: number, input: Float32Array): Float32Array;
     delta_norm(operatorType: number): number;
     adapt_count(operatorType: number): bigint;
+    forward_count(operatorType: number): bigint;
     total_adapt_count(): bigint;
     total_forward_count(): bigint;
     reset_all(): void;
+    reset_scope(operatorType: number): void;
     free(): void;
   }
   export class WasmTrajectoryBuffer {

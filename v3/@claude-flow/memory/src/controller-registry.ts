@@ -262,6 +262,8 @@ export interface RuntimeConfig {
   auditRotationFiles?: number;
   /** ADR-0045: D3 AuditLogger format (default: 'soc2') */
   auditFormat?: string;
+  /** ADR-0048: Max eager init level (0-1 eager, 2+ deferred). Default: 1 */
+  eagerMaxLevel?: number;
 }
 
 /**
