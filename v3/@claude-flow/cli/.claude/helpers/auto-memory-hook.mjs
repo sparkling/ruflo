@@ -232,34 +232,32 @@ function readConfig() {
   return defaults;
 }
 
-// WM-003: Backend factory — AgentDBBackend only (no more HybridBackend dual-write)
+// ADR-0059: Backend factory — RvfBackend preferred (same package, atomic persist)
 function createBackend(config, memPkg) {
   if (config.backend === 'json') {
     return { backend: new JsonFileBackend(STORE_PATH) };
   }
-  if (!memPkg.AgentDBBackend) {
-    throw new Error(
-      `Memory backend '${config.backend}' requires AgentDBBackend but it is not exported.\n` +
-      `Fix: Run 'npx @claude-flow/cli doctor --install'\n` +
-      `  Or: set "memory.backend": "json" in .claude-flow/config.json`
-    );
-  }
   const swarmDir = join(PROJECT_ROOT, '.swarm');
   if (!existsSync(swarmDir)) mkdirSync(swarmDir, { recursive: true });
-  try {
-    const backend = new memPkg.AgentDBBackend({
-      dbPath: join(swarmDir, 'agentdb-memory.rvf'),
-      vectorBackend: config.agentdb.vectorBackend || 'auto',
-      enableLearning: config.agentdb.enableLearning !== false,
-    });
+  const rvfPath = join(swarmDir, 'agentdb-memory.rvf');
+
+  // Prefer RvfBackend — same package, no cross-package import, atomic persist
+  if (memPkg.RvfBackend) {
+    const backend = new memPkg.RvfBackend({ databasePath: rvfPath });
     return { backend };
-  } catch (err) {
-    throw new Error(
-      `AgentDBBackend failed to initialize: ${err.message}\n` +
-      `Fix: Run 'npx @claude-flow/cli doctor --install'\n` +
-      `  Or: set "memory.backend": "json" in .claude-flow/config.json`
-    );
   }
+  // Fallback: AgentDBBackend (heavier but functional if agentdb is installed)
+  if (memPkg.AgentDBBackend) {
+    try {
+      const backend = new memPkg.AgentDBBackend({ dbPath: rvfPath });
+      return { backend };
+    } catch (err) {
+      dim(`AgentDBBackend init failed: ${err.message} — falling back to JSON`);
+    }
+  }
+  // Last resort: JsonFileBackend
+  dim('RvfBackend and AgentDBBackend unavailable — using JSON file backend');
+  return { backend: new JsonFileBackend(STORE_PATH) };
 }
 
 // ============================================================================

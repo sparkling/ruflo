@@ -79,7 +79,8 @@ async function main() {
   }
 
   // Merge stdin data into prompt resolution: prefer stdin fields, then env, then argv
-  const prompt = hookInput.prompt || hookInput.command || hookInput.toolInput
+  const prompt = hookInput.prompt || hookInput.command
+    || hookInput.tool_input || hookInput.toolInput
     || process.env.PROMPT || process.env.TOOL_INPUT_command || args.join(' ') || '';
 
 const handlers = {
@@ -154,7 +155,9 @@ const handlers = {
     // Record edit for intelligence consolidation — prefer stdin data from Claude Code
     if (intelligence && intelligence.recordEdit) {
       try {
-        const file = hookInput.file_path || (hookInput.toolInput && hookInput.toolInput.file_path)
+        const file = hookInput.file_path
+          || (hookInput.tool_input && hookInput.tool_input.file_path)
+          || (hookInput.toolInput && hookInput.toolInput.file_path)
           || process.env.TOOL_INPUT_file_path || args[0] || '';
         intelligence.recordEdit(file);
       } catch (e) { /* non-fatal */ }
