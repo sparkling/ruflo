@@ -12,24 +12,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-// ADR-053: Lazy import of AgentDB v3 bridge (with timeout to prevent hangs)
+// ADR-053: Lazy import of AgentDB v3 bridge
 let _bridge: typeof import('./memory-bridge.js') | null | undefined;
 async function getBridge(): Promise<typeof import('./memory-bridge.js') | null> {
   if (_bridge === null) return null;
   if (_bridge) return _bridge;
   try {
-    // ControllerRegistry init opens 44 controllers + SQLite handles which can
-    // hang the process. Race against a 5s timeout to fall through to direct ONNX.
-    const result = await Promise.race([
-      import('./memory-bridge.js'),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-    ]);
-    if (result) {
-      _bridge = result;
-      return _bridge;
-    }
-    _bridge = null;
-    return null;
+    _bridge = await import('./memory-bridge.js');
+    return _bridge;
   } catch {
     _bridge = null;
     return null;
