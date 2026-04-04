@@ -52,6 +52,14 @@ function generateId(prefix: string): string {
 }
 
 /**
+ * Composite key for deduplication across stores.
+ * Matches RvfBackend's internal compositeKey format.
+ */
+function contentHash(key: string, namespace: string): string {
+  return `${namespace}\0${key}`;
+}
+
+/**
  * Lazily initialize the ControllerRegistry singleton.
  * Returns null if @claude-flow/memory is not available.
  */
@@ -107,6 +115,160 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
   }
 
   return registryPromise;
+}
+
+// ===== Phase 3: RVF store access (ADR-0059) =====
+
+let rvfStorePromise: Promise<any> | null = null;
+let rvfStoreInstance: any = null;
+let rvfStoreChecked = false;
+
+/**
+ * Lazily open the hook-written RVF store in read-only mode.
+ * Returns null if the file doesn't exist (fresh project) or RvfBackend unavailable.
+ */
+async function getRvfStore(): Promise<any | null> {
+  if (rvfStoreChecked && !rvfStoreInstance) return null;
+
+  if (rvfStoreInstance) return rvfStoreInstance;
+
+  if (!rvfStorePromise) {
+    rvfStorePromise = (async () => {
+      try {
+        const { existsSync } = await import('fs');
+        const rvfPath = path.resolve(process.cwd(), '.swarm', 'agentdb-memory.rvf');
+        if (!existsSync(rvfPath)) {
+          rvfStoreChecked = true;
+          return null;
+        }
+
+        const memPkg = await import('@claude-flow/memory');
+        if (!memPkg.RvfBackend) {
+          rvfStoreChecked = true;
+          return null;
+        }
+
+        const backend = new memPkg.RvfBackend({
+          databasePath: rvfPath,
+          dimensions: 384,
+          autoPersistInterval: 0, // read-only — never write back
+        });
+        await backend.initialize();
+
+        rvfStoreInstance = backend;
+        rvfStoreChecked = true;
+        return backend;
+      } catch {
+        rvfStoreChecked = true;
+        rvfStorePromise = null;
+        return null;
+      }
+    })();
+  }
+
+  return rvfStorePromise;
+}
+
+/**
+ * Query the RVF store with the same BM25+cosine hybrid scoring used by bridgeSearchEntries.
+ * Returns scored results tagged with source:'rvf' for deduplication.
+ */
+async function queryRvfStore(options: {
+  query: string;
+  namespace?: string;
+  limit?: number;
+  threshold?: number;
+  queryEmbedding?: number[] | null;
+}): Promise<{
+  id: string;
+  key: string;
+  content: string;
+  score: number;
+  namespace: string;
+  provenance?: string;
+}[]> {
+  const store = await getRvfStore();
+  if (!store) return [];
+
+  try {
+    const { query: queryStr, namespace, threshold = 0.3, queryEmbedding } = options;
+
+    // Retrieve entries from RVF store
+    let entries: any[];
+    try {
+      const queryOpts: any = { limit: 1000 };
+      if (namespace && namespace !== 'all') queryOpts.namespace = namespace;
+      entries = await store.query(queryOpts);
+    } catch {
+      return [];
+    }
+
+    if (!entries || entries.length === 0) return [];
+
+    // Build rows compatible with existing BM25 functions
+    const rows = entries.map((e: any) => ({
+      id: e.id || '',
+      key: e.key || '',
+      namespace: e.namespace || 'default',
+      content: e.content || (typeof e.value === 'string' ? e.value : JSON.stringify(e.value || '')),
+      embedding: e.embedding || null,
+    }));
+
+    const queryTerms = queryStr.toLowerCase().split(/\s+/).filter((t: string) => t.length > 1);
+    const { termDocFreqs, avgDocLength } = computeTermDocFreqs(queryTerms, rows);
+    const docCount = rows.length;
+
+    const results: { id: string; key: string; content: string; score: number; namespace: string; provenance?: string }[] = [];
+
+    for (const row of rows) {
+      let semanticScore = 0;
+      let bm25ScoreVal = 0;
+
+      // Semantic scoring
+      if (queryEmbedding && row.embedding) {
+        try {
+          const emb = row.embedding instanceof Float32Array
+            ? Array.from(row.embedding)
+            : Array.isArray(row.embedding)
+              ? row.embedding
+              : JSON.parse(row.embedding);
+          semanticScore = cosineSim(queryEmbedding, emb);
+        } catch {
+          // Invalid embedding
+        }
+      }
+
+      // BM25 scoring
+      if (queryTerms.length > 0 && row.content) {
+        bm25ScoreVal = bm25Score(queryTerms, row.content, avgDocLength, docCount, termDocFreqs);
+        bm25ScoreVal = Math.min(bm25ScoreVal / 10, 1.0);
+      }
+
+      const score = queryEmbedding
+        ? (0.7 * semanticScore + 0.3 * bm25ScoreVal)
+        : bm25ScoreVal;
+
+      if (score >= threshold) {
+        const provenance = queryEmbedding
+          ? `rvf:semantic:${semanticScore.toFixed(3)}+bm25:${bm25ScoreVal.toFixed(3)}`
+          : `rvf:bm25:${bm25ScoreVal.toFixed(3)}`;
+
+        results.push({
+          id: String(row.id).substring(0, 12),
+          key: row.key || String(row.id).substring(0, 15),
+          content: (row.content || '').substring(0, 60) + ((row.content || '').length > 60 ? '...' : ''),
+          score,
+          namespace: row.namespace || 'default',
+          provenance,
+        });
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score);
+    return results;
+  } catch {
+    return [];
+  }
 }
 
 // ===== Phase 2: BM25 hybrid scoring =====
@@ -529,13 +691,41 @@ export async function bridgeSearchEntries(options: {
       }
     }
 
+    // --- ADR-0059 Phase 3: Query RVF store and merge ---
+    let rvfCount = 0;
+    try {
+      const rvfResults = await queryRvfStore({
+        query: queryStr,
+        namespace: effectiveNamespace !== 'all' ? effectiveNamespace : undefined,
+        threshold,
+        queryEmbedding,
+      });
+
+      // Dedup: build set of content hashes from SQLite results
+      const seen = new Set<string>();
+      for (const r of results) {
+        seen.add(contentHash(r.key, r.namespace));
+      }
+
+      // Merge RVF results, skipping duplicates
+      for (const r of rvfResults) {
+        const hash = contentHash(r.key, r.namespace);
+        if (seen.has(hash)) continue;
+        seen.add(hash);
+        results.push(r);
+        rvfCount++;
+      }
+    } catch {
+      // RVF query failed — continue with SQLite-only results
+    }
+
     results.sort((a, b) => b.score - a.score);
 
     return {
       success: true,
       results: results.slice(0, limit),
       searchTime: Date.now() - startTime,
-      searchMethod: queryEmbedding ? 'hybrid-bm25-semantic' : 'bm25-only',
+      searchMethod: (queryEmbedding ? 'hybrid-bm25-semantic' : 'bm25-only') + (rvfCount > 0 ? '+rvf' : ''),
     };
   } catch {
     return null;

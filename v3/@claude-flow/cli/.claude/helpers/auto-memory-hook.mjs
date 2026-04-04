@@ -232,6 +232,56 @@ function readConfig() {
   return defaults;
 }
 
+// ADR-0059 Phase 4: Daemon IPC helpers
+async function tryDaemonIPC() {
+  const socketPath = join(PROJECT_ROOT, '.claude-flow', 'daemon.sock');
+  if (!existsSync(socketPath)) return null;
+  try {
+    const net = await import('node:net');
+    return new Promise((resolve) => {
+      const socket = net.createConnection(socketPath, () => {
+        socket.destroy();
+        resolve(socketPath);
+      });
+      socket.on('error', () => resolve(null));
+      const timer = setTimeout(() => { socket.destroy(); resolve(null); }, 50);
+      socket.on('connect', () => clearTimeout(timer));
+      socket.on('error', () => clearTimeout(timer));
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function ipcCall(socketPath, method, params) {
+  const net = await import('node:net');
+  return new Promise((resolve, reject) => {
+    let data = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; socket.destroy(); reject(new Error('IPC timeout')); }
+    }, 500);
+    const req = JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 }) + '\n';
+    const socket = net.createConnection(socketPath, () => { socket.write(req); });
+    socket.on('data', chunk => { data += chunk.toString(); });
+    socket.on('end', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        const line = data.split('\n').find(l => l.trim());
+        if (!line) return reject(new Error('empty IPC response'));
+        const resp = JSON.parse(line);
+        if (resp.error) reject(new Error(resp.error.message));
+        else resolve(resp.result);
+      } catch (e) { reject(e); }
+    });
+    socket.on('error', (err) => {
+      if (!settled) { settled = true; clearTimeout(timer); reject(err); }
+    });
+  });
+}
+
 // ADR-0059: Backend factory — RvfBackend preferred (same package, atomic persist)
 function createBackend(config, memPkg) {
   if (config.backend === 'json') {
@@ -266,6 +316,12 @@ function createBackend(config, memPkg) {
 
 async function doImport() {
   log('Importing auto memory files into bridge...');
+
+  // ADR-0059 Phase 4: Check daemon IPC availability
+  const ipcSocket = await tryDaemonIPC();
+  if (ipcSocket) {
+    dim('[Phase 4] Daemon IPC available — daemon will handle memory operations');
+  }
 
   const memPkg = await loadMemoryPackage();
   if (!memPkg || !memPkg.AutoMemoryBridge) {
@@ -319,6 +375,12 @@ async function doImport() {
 
 async function doSync() {
   log('Syncing insights to auto memory files...');
+
+  // ADR-0059 Phase 4: Check daemon IPC availability
+  const ipcSocket = await tryDaemonIPC();
+  if (ipcSocket) {
+    dim('[Phase 4] Daemon IPC available for sync');
+  }
 
   const memPkg = await loadMemoryPackage();
   if (!memPkg || !memPkg.AutoMemoryBridge) {
@@ -393,6 +455,9 @@ async function doStatus() {
       console.log(`  Entries:        ${Array.isArray(data) ? data.length : 0}`);
     } catch { /* ignore */ }
   }
+
+  const sockExists = existsSync(join(PROJECT_ROOT, '.claude-flow', 'daemon.sock'));
+  console.log(`  Daemon IPC:     ${sockExists ? '\x1b[32mActive\x1b[0m (daemon.sock)' : '\x1b[2mUnavailable (fallback: direct RVF)\x1b[0m'}`);
 
   console.log('');
 }

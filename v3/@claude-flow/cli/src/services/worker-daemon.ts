@@ -22,6 +22,7 @@ import {
   type HeadlessWorkerType,
   type HeadlessExecutionResult,
 } from './headless-worker-executor.js';
+import { DaemonIPCServer, getDaemonSocketPath } from './daemon-ipc.js';
 
 // Worker types matching hooks-tools.ts
 export type WorkerType =
@@ -72,6 +73,7 @@ interface DaemonStatus {
   startedAt?: Date;
   workers: Map<WorkerType, WorkerState>;
   config: DaemonConfig;
+  ipc?: { running: boolean; socketPath: string };
 }
 
 export interface DaemonConfig {
@@ -123,6 +125,9 @@ export class WorkerDaemon extends EventEmitter {
   // Headless execution support
   private headlessExecutor: HeadlessWorkerExecutor | null = null;
   private headlessAvailable: boolean = false;
+
+  // ADR-0059 Phase 4: IPC server for hook<->daemon communication
+  private ipcServer: DaemonIPCServer | null = null;
 
   // Preserve the original constructor config so we can detect explicit overrides
   // during state restoration (R1: constructor config takes priority over stale state)
@@ -506,6 +511,43 @@ export class WorkerDaemon extends EventEmitter {
     this.writePidFile();
     this.emit('started', { pid: process.pid, startedAt: this.startedAt });
 
+    // ADR-0059 Phase 4: Start IPC server for hook<->daemon communication
+    try {
+      this.ipcServer = new DaemonIPCServer({
+        socketPath: getDaemonSocketPath(this.projectRoot),
+        projectRoot: this.projectRoot,
+      });
+      // Register memory method handlers
+      this.ipcServer.registerMethod('memory.store', async (params) => {
+        const { bridgeStoreEntry } = await import('../memory/memory-bridge.js');
+        return bridgeStoreEntry(params as any);
+      });
+      this.ipcServer.registerMethod('memory.search', async (params) => {
+        const { bridgeSearchEntries } = await import('../memory/memory-bridge.js');
+        return bridgeSearchEntries(params as any);
+      });
+      this.ipcServer.registerMethod('memory.count', async (params) => {
+        const { bridgeListEntries } = await import('../memory/memory-bridge.js');
+        const result = await bridgeListEntries(params as any);
+        return result?.total ?? 0;
+      });
+      this.ipcServer.registerMethod('memory.bulkInsert', async (params: any) => {
+        const { bridgeStoreEntry } = await import('../memory/memory-bridge.js');
+        const entries = params.entries || [];
+        let stored = 0;
+        for (const entry of entries) {
+          const r = await bridgeStoreEntry(entry);
+          if (r?.success) stored++;
+        }
+        return { stored, total: entries.length };
+      });
+      await this.ipcServer.start();
+      this.log('info', `IPC server listening on ${this.ipcServer.socketPath}`);
+    } catch (err: any) {
+      this.log('warn', `IPC server failed to start: ${err.message}`);
+      // Non-fatal: daemon still works, hooks fall back to direct RVF
+    }
+
     // Schedule all enabled workers
     for (const workerConfig of this.config.workers) {
       if (workerConfig.enabled) {
@@ -536,6 +578,12 @@ export class WorkerDaemon extends EventEmitter {
     }
     this.timers.clear();
 
+    // ADR-0059 Phase 4: Stop IPC server
+    if (this.ipcServer) {
+      try { await this.ipcServer.stop(); } catch { /* ignore */ }
+      this.ipcServer = null;
+    }
+
     this.running = false;
     this.removePidFile();
     this.saveState();
@@ -553,6 +601,9 @@ export class WorkerDaemon extends EventEmitter {
       startedAt: this.startedAt,
       workers: new Map(this.workers),
       config: this.config,
+      ipc: this.ipcServer
+        ? { running: this.ipcServer.isRunning, socketPath: this.ipcServer.socketPath }
+        : undefined,
     };
   }
 
