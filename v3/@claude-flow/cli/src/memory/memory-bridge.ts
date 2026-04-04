@@ -1224,32 +1224,22 @@ export async function bridgeGenerateEmbedding(
   const registry = await getRegistry(dbPath);
   if (!registry) return null;
 
-  // Primary path: use EnhancedEmbeddingService via bridgeEmbed (reliable, 768-dim)
-  try {
-    const embedResult = await bridgeEmbed(text, dbPath);
-    if (embedResult.success && embedResult.embedding && embedResult.embedding.length > 0) {
-      return {
-        embedding: embedResult.embedding,
-        dimensions: embedResult.dimension || embedResult.embedding.length,
-        model: embedResult.provider || 'enhanced-embedding-service',
-      };
-    }
-  } catch { /* fall through to AgentDB embedder */ }
-
-  // Fallback: try AgentDB embedder directly
   try {
     const agentdb = registry.getAgentDB();
     const embedder = agentdb?.embedder;
     if (!embedder) return null;
 
     const emb = await embedder.embed(text);
-    if (!emb || emb.length === 0) return null;
+    if (!emb) return null;
 
-    let reportedModel = 'agentdb-embedder';
+    // Read expected dimension from config — don't hardcode
+    let expectedDim = 768;
+    let reportedModel = 'unknown';
     try {
       const _m: any = await import('agentdb');
-      if (_m.getEmbeddingConfig) { reportedModel = _m.getEmbeddingConfig().model; }
-    } catch { /* use default */ }
+      if (_m.getEmbeddingConfig) { const _c = _m.getEmbeddingConfig(); expectedDim = _c.dimension; reportedModel = _c.model; }
+    } catch { /* use defaults */ }
+    if (emb.length !== expectedDim) return null;
 
     return {
       embedding: Array.from(emb),
