@@ -315,7 +315,9 @@ function init() {
   }
 
   // Skip rebuild if graph is fresh and store hasn't changed
-  if (graphState && graphState.nodeCount === store.length) {
+  // Compare against unique ID count, not raw store length (store may have duplicates)
+  const uniqueCount = new Set(store.map(e => e.id || e.key)).size;
+  if (graphState && graphState.nodeCount === uniqueCount) {
     const age = Date.now() - (graphState.updatedAt || 0);
     if (age < 60000) {
       return {
@@ -326,23 +328,29 @@ function init() {
     }
   }
 
-  // Build nodes
-  const nodes = {};
+  // Deduplicate store by ID (auto-memory-hook may import duplicates)
+  const seen = new Map();
   for (const entry of store) {
     const id = entry.id || entry.key || `entry-${Math.random().toString(36).slice(2, 8)}`;
-    nodes[id] = {
-      id,
+    entry.id = id;
+    seen.set(id, entry); // last write wins
+  }
+  const deduped = [...seen.values()];
+
+  // Build nodes
+  const nodes = {};
+  for (const entry of deduped) {
+    nodes[entry.id] = {
+      id: entry.id,
       category: entry.namespace || entry.type || 'default',
       confidence: (entry.metadata && entry.metadata.confidence) || 0.5,
       accessCount: (entry.metadata && entry.metadata.accessCount) || 0,
       createdAt: entry.createdAt || Date.now(),
     };
-    // Ensure entry has id for edge building
-    entry.id = id;
   }
 
-  // Build edges
-  const edges = buildEdges(store);
+  // Build edges (from deduplicated store, not raw)
+  const edges = buildEdges(deduped);
 
   // Compute PageRank
   const pageRanks = computePageRank(nodes, edges, 0.85, 30);
