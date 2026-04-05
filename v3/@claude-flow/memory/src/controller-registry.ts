@@ -188,6 +188,18 @@ export interface RuntimeConfig {
   /** CircuitBreaker tuning */
   circuitBreaker?: { failureThreshold?: number; resetTimeoutMs?: number };
 
+  /** Embedding model name (default: 'all-mpnet-base-v2') */
+  embeddingModel?: string;
+
+  /** HNSW M parameter — max bi-directional links per node (default: 23) */
+  hnswM?: number;
+
+  /** HNSW efConstruction — search width during index build (default: 100) */
+  hnswEfConstruction?: number;
+
+  /** HNSW efSearch — search width during query (default: 50) */
+  hnswEfSearch?: number;
+
   /** Max HNSW elements (default: 100000; AgentDB falls back to 10000) */
   maxElements?: number;
 
@@ -643,14 +655,16 @@ export class ControllerRegistry extends EventEmitter {
 
       // ADR-0068 W2-4: Forward full config to AgentDB so it can wire
       // dimension, embedding model, and HNSW params into its own controllers.
+      // All values read from RuntimeConfig (populated by memory-bridge from
+      // embeddings.json). Fallbacks match the unified all-mpnet-base-v2 model.
       this.agentdb = new AgentDBClass({
         dbPath,
         maxElements: config.maxElements || 100000,
         dimension: config.dimension || 768,
-        embeddingModel: 'all-mpnet-base-v2',
-        hnswM: 23,
-        hnswEfConstruction: 100,
-        hnswEfSearch: 50,
+        embeddingModel: config.embeddingModel || 'all-mpnet-base-v2',
+        hnswM: config.hnswM || 23,
+        hnswEfConstruction: config.hnswEfConstruction || 100,
+        hnswEfSearch: config.hnswEfSearch || 50,
       });
 
       // Suppress agentdb's noisy info-level output during init

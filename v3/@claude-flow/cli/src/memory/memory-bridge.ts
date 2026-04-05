@@ -125,6 +125,10 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
             dimension: embJson.dimension ?? 768,
+            embeddingModel: embJson.model ?? 'all-mpnet-base-v2',
+            hnswM: embJson.hnsw?.m ?? 23,
+            hnswEfConstruction: embJson.hnsw?.efConstruction ?? 100,
+            hnswEfSearch: embJson.hnsw?.efSearch ?? 50,
             maxElements: cfgJson.memory?.maxElements ?? 100000,
             memory: {
               learningBridge: cfgJson.memory?.learningBridge,
