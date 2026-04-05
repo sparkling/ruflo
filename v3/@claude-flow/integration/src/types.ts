@@ -459,7 +459,9 @@ export const DEFAULT_ATTENTION_CONFIG: AttentionConfiguration = {
   memoryOptimization: 'moderate',
 };
 
-export const DEFAULT_AGENTDB_CONFIG: AgentDBConfiguration = {
+// ADR-0069: config-chain-aware resolution
+// Sync fallback for callers that cannot await
+export const FALLBACK_AGENTDB_CONFIG: AgentDBConfiguration = {
   dimension: 768, // all-mpnet-base-v2 embedding dimension
   indexType: 'hnsw',
   hnswM: 23,
@@ -470,6 +472,44 @@ export const DEFAULT_AGENTDB_CONFIG: AgentDBConfiguration = {
   cacheSizeMb: 256,
   enableWAL: true,
 };
+
+/**
+ * Resolve AgentDB config from the config chain.
+ * Falls back to FALLBACK_AGENTDB_CONFIG when @claude-flow/agentdb is unavailable.
+ */
+export async function getDefaultAgentDBConfig(): Promise<AgentDBConfiguration> {
+  try {
+    const agentdbModule: any = await import('@claude-flow/agentdb');
+    if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+      const embCfg = agentdbModule.getEmbeddingConfig();
+      const dim = embCfg.dimension || FALLBACK_AGENTDB_CONFIG.dimension;
+      // Try to get deriveHNSWParams from @claude-flow/memory
+      let hnswM = FALLBACK_AGENTDB_CONFIG.hnswM;
+      let hnswEfConstruction = FALLBACK_AGENTDB_CONFIG.hnswEfConstruction;
+      let hnswEfSearch = FALLBACK_AGENTDB_CONFIG.hnswEfSearch;
+      try {
+        const memModule: any = await import('@claude-flow/memory');
+        if (typeof memModule.deriveHNSWParams === 'function') {
+          const hnsw = memModule.deriveHNSWParams(dim);
+          hnswM = hnsw.M;
+          hnswEfConstruction = hnsw.efConstruction;
+          hnswEfSearch = hnsw.efSearch;
+        }
+      } catch { /* @claude-flow/memory not available */ }
+      return {
+        ...FALLBACK_AGENTDB_CONFIG,
+        dimension: dim,
+        hnswM,
+        hnswEfConstruction,
+        hnswEfSearch,
+      };
+    }
+  } catch { /* agentdb not available — use fallback */ }
+  return { ...FALLBACK_AGENTDB_CONFIG };
+}
+
+/** @deprecated Use getDefaultAgentDBConfig() for config-chain resolution. Kept for backward compatibility. */
+export const DEFAULT_AGENTDB_CONFIG: AgentDBConfiguration = FALLBACK_AGENTDB_CONFIG;
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   enableSONA: true,

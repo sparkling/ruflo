@@ -1604,16 +1604,25 @@ export async function loadEmbeddingModel(options?: {
         console.log('Loading agentic-flow ReasoningBank embedding model...');
       }
 
+      // ADR-0069: config-chain-aware resolution for embedding dimension
+      let rbDimensions = 768;
+      try {
+        const agentdbModule: any = await import('@claude-flow/agentdb');
+        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+          rbDimensions = agentdbModule.getEmbeddingConfig().dimension || rbDimensions;
+        }
+      } catch { /* agentdb not available — use fallback */ }
+
       embeddingModelState = {
         loaded: true,
         model: { embed: reasoningBank.computeEmbedding },
         tokenizer: null,
-        dimensions: 768
+        dimensions: rbDimensions
       };
 
       return {
         success: true,
-        dimensions: 768,
+        dimensions: rbDimensions,
         modelName: 'agentic-flow/reasoningbank',
         loadTime: Date.now() - startTime
       };
@@ -1665,16 +1674,25 @@ export async function loadEmbeddingModel(options?: {
         console.log('Loading agentic-flow embedding model...');
       }
 
+      // ADR-0069: config-chain-aware resolution for embedding dimension
+      let afDimensions = 768;
+      try {
+        const agentdbModule: any = await import('@claude-flow/agentdb');
+        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+          afDimensions = agentdbModule.getEmbeddingConfig().dimension || afDimensions;
+        }
+      } catch { /* agentdb not available — use fallback */ }
+
       embeddingModelState = {
         loaded: true,
         model: (agenticFlow as any).embeddings,
         tokenizer: null,
-        dimensions: 768
+        dimensions: afDimensions
       };
 
       return {
         success: true,
-        dimensions: 768,
+        dimensions: afDimensions,
         modelName: 'agentic-flow',
         loadTime: Date.now() - startTime
       };

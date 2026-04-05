@@ -111,9 +111,9 @@ export interface AgentDBBackendConfig {
 }
 
 /**
- * Default configuration
+ * Fallback configuration (used when config chain is unavailable)
  */
-const DEFAULT_CONFIG: Required<
+const FALLBACK_CONFIG: Required<
   Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator'>
 > = {
   namespace: 'default',
@@ -126,6 +126,51 @@ const DEFAULT_CONFIG: Required<
   cacheEnabled: true,
   maxEntries: 1000000,
 };
+
+// ADR-0069: config-chain-aware resolution
+let _backendResolvedDefaults: typeof FALLBACK_CONFIG | null = null;
+let _backendResolvePromise: Promise<typeof FALLBACK_CONFIG> | null = null;
+
+/**
+ * Resolve default config from the config chain:
+ * getEmbeddingConfig() → deriveHNSWParams() → FALLBACK_CONFIG
+ */
+function getDefaultConfig(): typeof FALLBACK_CONFIG {
+  if (_backendResolvedDefaults) return _backendResolvedDefaults;
+  return FALLBACK_CONFIG;
+}
+
+// Kick off async resolution early (non-blocking)
+(async () => {
+  if (_backendResolvePromise) return _backendResolvePromise;
+  _backendResolvePromise = (async () => {
+    try {
+      await ensureAgentDBImport();
+      const agentdbModule: any = await import('@claude-flow/agentdb').catch(() => null);
+      if (agentdbModule && typeof agentdbModule.getEmbeddingConfig === 'function') {
+        const embCfg = agentdbModule.getEmbeddingConfig();
+        const dim = embCfg.dimension || FALLBACK_CONFIG.vectorDimension;
+        const hnsw = deriveHNSWParams(dim);
+        _backendResolvedDefaults = {
+          ...FALLBACK_CONFIG,
+          vectorDimension: dim,
+          hnswM: hnsw.M,
+          hnswEfConstruction: hnsw.efConstruction,
+          hnswEfSearch: hnsw.efSearch,
+        };
+        return _backendResolvedDefaults;
+      }
+    } catch { /* config chain unavailable */ }
+    _backendResolvedDefaults = { ...FALLBACK_CONFIG };
+    return _backendResolvedDefaults;
+  })();
+  return _backendResolvePromise;
+})().catch(() => {});
+
+/**
+ * Default configuration (resolved from config chain or fallback)
+ */
+const DEFAULT_CONFIG = FALLBACK_CONFIG;
 
 // ===== AgentDB Backend Implementation =====
 
@@ -171,7 +216,8 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
 
   constructor(config: AgentDBBackendConfig = {}) {
     super();
-    const merged = { ...DEFAULT_CONFIG, ...config };
+    // ADR-0069: use resolved config-chain defaults when available
+    const merged = { ...getDefaultConfig(), ...config };
     // Derive dimension-aware HNSW defaults; explicit config still overrides
     const derived = deriveHNSWParams(merged.vectorDimension);
     if (config.hnswM === undefined) merged.hnswM = derived.M;

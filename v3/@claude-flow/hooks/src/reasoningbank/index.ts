@@ -111,7 +111,8 @@ export interface ReasoningBankMetrics {
   bruteForceSearchTime: number;
 }
 
-const DEFAULT_CONFIG: ReasoningBankConfig = {
+// ADR-0069: config-chain-aware resolution
+const FALLBACK_CONFIG: ReasoningBankConfig = {
   dimensions: 768, // all-mpnet-base-v2
   hnswM: 23,
   hnswEfConstruction: 100,
@@ -124,6 +125,51 @@ const DEFAULT_CONFIG: ReasoningBankConfig = {
   dbPath: '.claude-flow/memory.db',
   useMockEmbeddings: false,
 };
+
+let _rbResolvedDefaults: ReasoningBankConfig | null = null;
+
+/**
+ * Resolve ReasoningBank defaults from the config chain:
+ * getEmbeddingConfig() → deriveHNSWParams() → FALLBACK_CONFIG
+ */
+async function resolveReasoningBankDefaults(): Promise<ReasoningBankConfig> {
+  if (_rbResolvedDefaults) return _rbResolvedDefaults;
+  try {
+    const agentdbModule: any = await import('@claude-flow/agentdb');
+    if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+      const embCfg = agentdbModule.getEmbeddingConfig();
+      const dim = embCfg.dimension || FALLBACK_CONFIG.dimensions;
+      // Try deriveHNSWParams from @claude-flow/memory
+      let hnswM = FALLBACK_CONFIG.hnswM;
+      let hnswEfConstruction = FALLBACK_CONFIG.hnswEfConstruction;
+      let hnswEfSearch = FALLBACK_CONFIG.hnswEfSearch;
+      try {
+        const memModule: any = await import('@claude-flow/memory');
+        if (typeof memModule.deriveHNSWParams === 'function') {
+          const hnsw = memModule.deriveHNSWParams(dim);
+          hnswM = hnsw.M;
+          hnswEfConstruction = hnsw.efConstruction;
+          hnswEfSearch = hnsw.efSearch;
+        }
+      } catch { /* @claude-flow/memory not available */ }
+      _rbResolvedDefaults = {
+        ...FALLBACK_CONFIG,
+        dimensions: dim,
+        hnswM,
+        hnswEfConstruction,
+        hnswEfSearch,
+      };
+      return _rbResolvedDefaults;
+    }
+  } catch { /* agentdb not available — use fallback */ }
+  _rbResolvedDefaults = { ...FALLBACK_CONFIG };
+  return _rbResolvedDefaults;
+}
+
+// Kick off resolution early (non-blocking)
+resolveReasoningBankDefaults().catch(() => {});
+
+const DEFAULT_CONFIG: ReasoningBankConfig = FALLBACK_CONFIG;
 
 /**
  * Agent mapping for routing
@@ -211,7 +257,9 @@ export class ReasoningBank extends EventEmitter {
 
   constructor(config: Partial<ReasoningBankConfig> = {}) {
     super();
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    // ADR-0069: use resolved config-chain defaults when available
+    const base = _rbResolvedDefaults || FALLBACK_CONFIG;
+    this.config = { ...base, ...config };
     this.embeddingService = new FallbackEmbeddingService(this.config.dimensions);
   }
 
