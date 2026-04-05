@@ -34,7 +34,7 @@ const DEFAULT_CONFIG: Record<string, unknown> = {
     persistPath: './data/memory',
     cacheSize: 1000,
     enableHNSW: true,
-    vectorDimension: 384,
+    vectorDimension: 768,
   },
   mcp: {
     serverHost: 'localhost',

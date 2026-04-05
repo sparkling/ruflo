@@ -866,13 +866,22 @@ export class ControllerRegistry extends EventEmitter {
         return cache;
       }
 
-      case 'hybridSearch':
-        // BM25 hybrid search — placeholder for future implementation
-        return null;
+      case 'hybridSearch': {
+        // BM25 + HNSW reciprocal rank fusion (ADR-0068 W4-3)
+        try {
+          const { HybridSearchController } = await import('./controllers/hybrid-search.js');
+          const backend = this.get('vectorBackend') ?? this.agentdb;
+          return new HybridSearchController(backend);
+        } catch { return null; }
+      }
 
-      case 'agentMemoryScope':
-        // Agent memory scope — placeholder, activated when explicitly enabled
-        return null;
+      case 'agentMemoryScope': {
+        // Agent memory scoping — returns scope config from project settings
+        // AgentMemoryScope is a type ('project'|'local'|'user'), not a class.
+        // The "controller" returns the active scope from config.
+        const scope = this.config?.agentMemoryScope ?? 'project';
+        return { name: 'agentMemoryScope', scope, getScope: () => scope };
+      }
 
       case 'semanticRouter': {
         // SemanticRouter exported from agentdb 3.0.0-alpha.10 (ADR-062)
@@ -944,9 +953,14 @@ export class ControllerRegistry extends EventEmitter {
         }
       }
 
-      case 'federatedSession':
-        // Federated session — placeholder for Phase 4
-        return null;
+      case 'federatedSession': {
+        // Shared session transport with LWW conflict resolution (ADR-0068 W4-3)
+        try {
+          const { FederatedSessionController } = await import('./controllers/federated-session.js');
+          const backend = this.get('vectorBackend') ?? this.agentdb;
+          return new FederatedSessionController(backend);
+        } catch { return null; }
+      }
 
       // ----- AgentDB-internal controllers (via getController) -----
       // ADR-0068 W2-3: Delegate Tier 1 controller construction to AgentDB.
