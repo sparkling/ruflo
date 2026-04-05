@@ -162,5 +162,19 @@ export function getFullConfigTemplate(
       workerTimeoutMs: 300000,
       headless: false,
     },
+    // ADR-0069: embeddings config (also written to embeddings.json by `embeddings init`)
+    embeddings: {
+      model: overrides?.embeddingModel ?? 'Xenova/all-mpnet-base-v2',
+      dimension: overrides?.embeddingDim ?? 768,
+      provider: 'transformers',
+      hnsw: {
+        m: 23,
+        efConstruction: 100,
+        efSearch: 50,
+        maxElements: 100000,
+        metric: 'cosine',
+      },
+      hashFallbackDimension: 128,
+    },
   };
 }

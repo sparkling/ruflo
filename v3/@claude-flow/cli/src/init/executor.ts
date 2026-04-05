@@ -1201,11 +1201,11 @@ async function writeRuntimeConfig(
   const overrides: ConfigOverrides = {
     port: options.mcp?.port,
     maxAgents: options.runtime?.maxAgents,
-    similarityThreshold: undefined,
+    similarityThreshold: options.runtime?.similarityThreshold,
   };
 
-  // Detect full mode via skills.all (set only by FULL_INIT_OPTIONS)
-  const isFull = options.skills?.all === true;
+  // ADR-0069: detect full mode via explicit flag or skills.all proxy
+  const isFull = options.full === true || options.skills?.all === true;
   const template = isFull
     ? getFullConfigTemplate(overrides)
     : getMinimalConfigTemplate(overrides);

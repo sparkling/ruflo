@@ -656,7 +656,7 @@ const initCommand: Command = {
   name: 'init',
   description: 'Initialize embedding subsystem with ONNX model and hyperbolic config',
   options: [
-    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'all-MiniLM-L6-v2' },
+    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'all-mpnet-base-v2' }, // ADR-0069 A12: canonical model
     { name: 'hyperbolic', type: 'boolean', description: 'Enable hyperbolic (Poincaré ball) embeddings', default: 'true' },
     { name: 'curvature', short: 'c', type: 'string', description: 'Poincaré ball curvature (use --curvature=-1 for negative)', default: '-1' },
     { name: 'download', short: 'd', type: 'boolean', description: 'Download model during init', default: 'true' },
@@ -673,7 +673,7 @@ const initCommand: Command = {
     { command: 'claude-flow embeddings init --dimension 768', description: 'Explicit dimension (skip model inference)' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const model = ctx.flags.model as string || 'all-MiniLM-L6-v2';
+    const model = ctx.flags.model as string || 'all-mpnet-base-v2'; // ADR-0069 A12: canonical model
     const hyperbolic = ctx.flags.hyperbolic !== false;
     const download = ctx.flags.download !== false;
     const force = ctx.flags.force === true;
