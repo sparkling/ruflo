@@ -59,6 +59,16 @@ let registryPromise: Promise<any> | null = null;
 let registryInstance: any = null;
 let bridgeAvailable: boolean | null = null;
 
+// ADR-0070: ensure sql.js WASM db is flushed on process exit
+let _exitHookRegistered = false;
+function ensureExitHook(): void {
+  if (_exitHookRegistered) return;
+  _exitHookRegistered = true;
+  process.on('beforeExit', async () => {
+    try { await shutdownBridge(); } catch { /* best effort */ }
+  });
+}
+
 // ADR-0069: config-chain swarmDir
 function getConfigSwarmDir(): string {
   try {
@@ -195,6 +205,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
 
         registryInstance = registry;
         bridgeAvailable = true;
+        ensureExitHook(); // ADR-0070: flush db on process exit
         return registry;
       } catch {
         bridgeAvailable = false;
@@ -643,6 +654,9 @@ export async function bridgeStoreEntry(options: {
       ttl ? now + (ttl * 1000) : null
     );
 
+    // ADR-0070: flush sql.js WASM db to disk (no-op for better-sqlite3)
+    if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
+
     // Phase 2: Write-through to TieredCache
     const safeNs = String(namespace).replace(/:/g, '_');
     const safeKey = String(key).replace(/:/g, '_');
@@ -983,6 +997,8 @@ export async function bridgeGetEntry(options: {
       ctx.db.prepare(
         `UPDATE memory_entries SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`
       ).run(Date.now(), row.id);
+      // ADR-0070: flush sql.js WASM db to disk
+      if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
     } catch {
       // Non-fatal
     }
@@ -1054,6 +1070,8 @@ export async function bridgeDeleteEntry(options: {
         WHERE key = ? AND namespace = ? AND status = 'active'
       `).run(Date.now(), key, namespace);
       changes = result?.changes ?? 0;
+      // ADR-0070: flush sql.js WASM db to disk
+      if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
     } catch {
       return null;
     }
