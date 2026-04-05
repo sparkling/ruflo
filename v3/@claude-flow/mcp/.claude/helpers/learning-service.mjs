@@ -43,9 +43,9 @@ if (!existsSync(DATA_DIR)) {
 const CONFIG = {
   // HNSW parameters
   hnsw: {
-    M: 16,                    // Max connections per layer
-    efConstruction: 200,      // Construction time accuracy
-    efSearch: 100,            // Search time accuracy
+    M: 23,                    // Max connections per layer
+    efConstruction: 100,      // Construction time accuracy
+    efSearch: 50,            // Search time accuracy
     metric: 'cosine',         // Distance metric
   },
 

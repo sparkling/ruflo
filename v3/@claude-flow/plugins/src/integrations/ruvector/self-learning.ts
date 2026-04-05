@@ -1254,9 +1254,9 @@ export class IndexTuner {
     if (tableQueries.length === 0) {
       // Return default balanced parameters
       return {
-        m: 16,
-        efConstruction: 64,
-        efSearch: 40,
+        m: 23,
+        efConstruction: 100,
+        efSearch: 50,
         optimizedFor: 'balanced',
         confidence: 0.5,
         estimatedRecall: 0.95,

@@ -518,11 +518,11 @@ export class AgentDBBridge extends EventEmitter {
   constructor(config?: AgentDBConfig) {
     super();
     this.config = {
-      dimensions: 1536,
+      dimensions: 768,
       indexType: 'hnsw',
-      efConstruction: 200,
-      efSearch: 100,
-      m: 16,
+      efConstruction: 100,
+      efSearch: 50,
+      m: 23,
       ...config,
     };
   }
