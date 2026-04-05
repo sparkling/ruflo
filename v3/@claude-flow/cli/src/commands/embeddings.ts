@@ -660,7 +660,7 @@ const initCommand: Command = {
     { name: 'hyperbolic', type: 'boolean', description: 'Enable hyperbolic (Poincaré ball) embeddings', default: 'true' },
     { name: 'curvature', short: 'c', type: 'string', description: 'Poincaré ball curvature (use --curvature=-1 for negative)', default: '-1' },
     { name: 'download', short: 'd', type: 'boolean', description: 'Download model during init', default: 'true' },
-    { name: 'cache-size', type: 'string', description: 'LRU cache entries', default: '256' },
+    { name: 'cache-size', type: 'string', description: 'LRU cache entries', default: '1000' },
     { name: 'force', short: 'f', type: 'boolean', description: 'Overwrite existing configuration', default: 'false' },
     { name: 'dimension', type: 'number', description: 'Embedding dimension (default: inferred from model)' },
   ],
@@ -683,7 +683,7 @@ const initCommand: Command = {
     const curvature = parseFloat(curvatureRaw);
 
     // Parse cache-size - check both kebab-case and camelCase
-    const cacheSizeRaw = (ctx.flags['cache-size'] || ctx.flags.cacheSize || '256') as string;
+    const cacheSizeRaw = (ctx.flags['cache-size'] || ctx.flags.cacheSize || '1000') as string;
     const cacheSize = parseInt(cacheSizeRaw, 10);
 
     output.writeln();
@@ -739,9 +739,11 @@ const initCommand: Command = {
       // ADR-0069: --dimension flag overrides model inference
       const dimension = ctx.flags.dimension as number
         || (model.includes('mpnet') || model.includes('bge-base') || model.includes('nomic') ? 768 : 384);
+      // Normalize model name to include Xenova/ prefix for consistency with config.json
+      const modelForJson = model.startsWith('Xenova/') ? model : `Xenova/${model}`;
       // ADR-0069: include maxElements in embeddings.json template
       const config = {
-        model,
+        model: modelForJson,
         modelPath: modelDir,
         dimension,
         hashFallbackDimension: 128,

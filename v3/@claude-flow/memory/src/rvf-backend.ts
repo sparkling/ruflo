@@ -149,6 +149,9 @@ export class RvfBackend implements IMemoryBackend {
       this.hnswIndex.add(e.id, e.embedding);
     }
     this.dirty = true;
+    // Persist immediately so data survives process exit (the 30s auto-persist
+    // timer may never fire in short-lived CLI invocations).
+    await this.persistToDisk();
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
@@ -177,6 +180,7 @@ export class RvfBackend implements IMemoryBackend {
     };
     this.entries.set(id, updated);
     this.dirty = true;
+    await this.persistToDisk();
     return updated;
   }
 
@@ -187,6 +191,7 @@ export class RvfBackend implements IMemoryBackend {
     this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
     if (this.hnswIndex) this.hnswIndex.remove(id);
     this.dirty = true;
+    await this.persistToDisk();
     return true;
   }
 
@@ -254,6 +259,7 @@ export class RvfBackend implements IMemoryBackend {
       if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
     }
     this.dirty = true;
+    await this.persistToDisk();
   }
 
   async bulkDelete(ids: string[]): Promise<number> {
@@ -267,7 +273,10 @@ export class RvfBackend implements IMemoryBackend {
         count++;
       }
     }
-    this.dirty = true;
+    if (count > 0) {
+      this.dirty = true;
+      await this.persistToDisk();
+    }
     return count;
   }
 
@@ -297,7 +306,10 @@ export class RvfBackend implements IMemoryBackend {
       this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
       if (this.hnswIndex) this.hnswIndex.remove(id);
     }
-    if (toDelete.length > 0) this.dirty = true;
+    if (toDelete.length > 0) {
+      this.dirty = true;
+      await this.persistToDisk();
+    }
     return toDelete.length;
   }
 
