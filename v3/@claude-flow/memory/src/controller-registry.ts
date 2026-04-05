@@ -203,6 +203,9 @@ export interface RuntimeConfig {
   /** Max HNSW elements (default: 100000; AgentDB falls back to 10000) */
   maxElements?: number;
 
+  /** Max SQLite memory entries (default: 1000000) — ADR-0069: config-chain capacity */
+  maxEntries?: number;
+
   /** Backend instance to use (if pre-created) */
   backend?: IMemoryBackend;
 
@@ -660,6 +663,7 @@ export class ControllerRegistry extends EventEmitter {
       this.agentdb = new AgentDBClass({
         dbPath,
         maxElements: config.maxElements || 100000,
+        maxEntries: config.maxEntries || 1000000, // ADR-0069: config-chain capacity
         dimension: config.dimension || 768,
         embeddingModel: config.embeddingModel || 'all-mpnet-base-v2',
         hnswM: config.hnswM || 23,

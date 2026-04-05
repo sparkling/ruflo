@@ -130,6 +130,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             hnswEfConstruction: embJson.hnsw?.efConstruction ?? 100,
             hnswEfSearch: embJson.hnsw?.efSearch ?? 50,
             maxElements: cfgJson.memory?.maxElements ?? 100000,
+            maxEntries: cfgJson.memory?.storage?.maxEntries ?? 1000000, // ADR-0069: config-chain capacity
             memory: {
               learningBridge: cfgJson.memory?.learningBridge,
               memoryGraph: cfgJson.memory?.memoryGraph,
