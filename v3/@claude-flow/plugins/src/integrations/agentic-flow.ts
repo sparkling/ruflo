@@ -671,12 +671,12 @@ export class AgentDBBridge extends EventEmitter {
     indexType: string;
     memoryUsage: number;
   } {
-    const vectorSize = (this.config.dimensions ?? 1536) * 4; // 4 bytes per float32
+    const vectorSize = (this.config.dimensions ?? 768) * 4; // 4 bytes per float32
     const memoryUsage = this.vectors.size * vectorSize;
 
     return {
       vectorCount: this.vectors.size,
-      dimensions: this.config.dimensions ?? 1536,
+      dimensions: this.config.dimensions ?? 768,
       indexType: this.config.indexType ?? 'hnsw',
       memoryUsage,
     };

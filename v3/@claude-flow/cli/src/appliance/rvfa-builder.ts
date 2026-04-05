@@ -260,7 +260,7 @@ export class RvfaBuilder {
     // Empty RVF database header (matches rvf-backend.ts RVF\0 magic)
     const rvfMagic = Buffer.from([0x52, 0x56, 0x46, 0x00]);
     const hdrJson = Buffer.from(JSON.stringify({
-      magic: 'RVF\0', version: 1, dimensions: 1536, metric: 'cosine',
+      magic: 'RVF\0', version: 1, dimensions: 768, metric: 'cosine',
       quantization: 'fp32', entryCount: 0, createdAt: Date.now(), updatedAt: Date.now(),
     }), 'utf-8');
     const hdrLen = Buffer.alloc(4);
