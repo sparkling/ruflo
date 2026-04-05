@@ -7,12 +7,25 @@
  * @module v3/memory/application/queries
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { MemoryEntry, MemoryType, MemoryStatus } from '../../domain/entities/memory-entry.js';
 import {
   IMemoryRepository,
   VectorSearchResult,
   MemoryQueryOptions,
 } from '../../domain/repositories/memory-repository.interface.js';
+
+// ADR-0069: wire similarityThreshold consumer — read from config chain at module level
+function getConfigSimilarityThreshold(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.memory?.similarityThreshold === 'number') {
+      return cfg.memory.similarityThreshold;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
 
 /**
  * Search Memory Query Input
@@ -86,8 +99,8 @@ export class SearchMemoryQueryHandler {
       vector: input.vector!,
       namespace: input.namespace,
       limit: limit + offset, // Get extra for pagination
-      // ADR-0069 A7: align search threshold with config chain default
-      threshold: input.similarityThreshold ?? 0.7,
+      // ADR-0069: wire similarityThreshold consumer — config chain → input → fallback
+      threshold: input.similarityThreshold ?? getConfigSimilarityThreshold(0.7),
       type: input.type,
     });
 

@@ -190,6 +190,10 @@ export interface RuntimeConfig {
   /** RateLimiter tuning */
   rateLimiter?: { maxRequests?: number; windowMs?: number };
 
+  // ADR-0069: wire rateLimiter presets consumer
+  /** Per-endpoint rate-limiter presets (auth, tools, memory, files, etc.) */
+  rateLimiterPresets?: Record<string, { maxRequests?: number; windowMs?: number }> | null;
+
   /** QuantizedVectorStore tuning (ADR-0065 P2) */
   quantizedVectorStore?: { type?: string };
 
@@ -213,6 +217,12 @@ export interface RuntimeConfig {
 
   /** Max SQLite memory entries (default: 1000000) — ADR-0069: config-chain capacity */
   maxEntries?: number;
+
+  /** ADR-0069: wire similarityThreshold consumer — vector search threshold (default: 0.7) */
+  similarityThreshold?: number;
+
+  /** Swarm data directory relative to project root (default: '.swarm') — ADR-0069: config-chain swarmDir */
+  swarmDir?: string;
 
   /** Backend instance to use (if pre-created) */
   backend?: IMemoryBackend;
@@ -265,6 +275,16 @@ export interface RuntimeConfig {
     autoRerank?: boolean;
     /** Minimum feedback count before adaptation kicks in (default: 10) */
     minFeedbackCount?: number;
+  };
+
+  // ADR-0069: wire ports consumer — forward config.json ports so consumers
+  // (MCP server, health endpoint, QUIC transport, federation) can read them.
+  ports?: {
+    mcp?: number;
+    mcpWebSocket?: number;
+    quic?: number;
+    federation?: number;
+    health?: number;
   };
 
   /** MutationGuard tuning (ADR-0068 W4-1) */
@@ -541,6 +561,14 @@ export class ControllerRegistry extends EventEmitter {
     }
 
     return false;
+  }
+
+  /**
+   * ADR-0069: wire similarityThreshold consumer — expose the stored config value.
+   * Returns the threshold from RuntimeConfig, falling back to 0.7.
+   */
+  getSimilarityThreshold(): number {
+    return this.config.similarityThreshold ?? 0.7;
   }
 
   /**

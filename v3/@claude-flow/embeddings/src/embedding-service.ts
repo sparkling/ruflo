@@ -36,6 +36,18 @@ import { PersistentEmbeddingCache } from './persistent-cache.js';
 import { RvfEmbeddingService } from './rvf-embedding-service.js';
 
 // ============================================================================
+// Config-Chain Default — ADR-0069: wire embeddingCacheSize consumer
+// ============================================================================
+
+const DEFAULT_CACHE_SIZE = (() => {
+  try {
+    const cfg = JSON.parse(require('fs').readFileSync(
+      require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    return cfg?.memory?.embeddingCacheSize ?? 1000;
+  } catch { return 1000; }
+})();
+
+// ============================================================================
 // LRU Cache Implementation
 // ============================================================================
 
@@ -112,7 +124,8 @@ abstract class BaseEmbeddingService extends EventEmitter implements IEmbeddingSe
   constructor(protected readonly config: EmbeddingConfig) {
     super();
     // ADR-0069 A9: consistent default cache size across embedding services
-    const cacheSize = config.cacheSize ?? 1000;
+    // ADR-0069: wire embeddingCacheSize consumer
+    const cacheSize = config.cacheSize ?? DEFAULT_CACHE_SIZE;
     this.cache = new LRUCache(cacheSize);
     this.normalizationType = config.normalization ?? 'none';
 
@@ -484,7 +497,7 @@ export class MockEmbeddingService extends BaseEmbeddingService {
     const fullConfig: MockEmbeddingConfig = {
       provider: 'mock',
       dimensions: config.dimensions ?? 384,
-      cacheSize: config.cacheSize ?? 1000, // ADR-0069 A9: consistent default
+      cacheSize: config.cacheSize ?? DEFAULT_CACHE_SIZE, // ADR-0069: wire embeddingCacheSize consumer
       simulatedLatency: config.simulatedLatency ?? 0,
       enableCache: config.enableCache ?? true,
     };

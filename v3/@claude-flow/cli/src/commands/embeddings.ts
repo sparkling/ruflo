@@ -662,6 +662,7 @@ const initCommand: Command = {
     { name: 'download', short: 'd', type: 'boolean', description: 'Download model during init', default: 'true' },
     { name: 'cache-size', type: 'string', description: 'LRU cache entries', default: '256' },
     { name: 'force', short: 'f', type: 'boolean', description: 'Overwrite existing configuration', default: 'false' },
+    { name: 'dimension', type: 'number', description: 'Embedding dimension (default: inferred from model)' },
   ],
   examples: [
     { command: 'claude-flow embeddings init', description: 'Initialize with defaults' },
@@ -669,6 +670,7 @@ const initCommand: Command = {
     { command: 'claude-flow embeddings init --no-hyperbolic', description: 'Euclidean only' },
     { command: 'claude-flow embeddings init --curvature=-0.5', description: 'Custom curvature (use = for negative)' },
     { command: 'claude-flow embeddings init --force', description: 'Overwrite existing config' },
+    { command: 'claude-flow embeddings init --dimension 768', description: 'Explicit dimension (skip model inference)' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const model = ctx.flags.model as string || 'all-MiniLM-L6-v2';
@@ -734,16 +736,23 @@ const initCommand: Command = {
 
       // Write embeddings config
       spinner.setText('Writing configuration...');
-      const dimension = model.includes('mpnet') ? 768 : 384;
+      // ADR-0069: --dimension flag overrides model inference
+      const dimension = ctx.flags.dimension as number
+        || (model.includes('mpnet') || model.includes('bge-base') || model.includes('nomic') ? 768 : 384);
+      // ADR-0069: include maxElements in embeddings.json template
       const config = {
         model,
         modelPath: modelDir,
         dimension,
+        hashFallbackDimension: 128,
         cacheSize,
+        metric: 'cosine',
+        persistIndex: true,
         hnsw: {
           m: 23,
           efConstruction: 100,
           efSearch: 50,
+          maxElements: 100000,
         },
         hyperbolic: {
           enabled: hyperbolic,

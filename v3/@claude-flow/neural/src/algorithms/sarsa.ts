@@ -18,8 +18,8 @@ import type { Trajectory, RLConfig } from '../types.js';
 function getConfigRLLearningRate(fallback: number): number {
   try {
     const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-    if (typeof cfg?.neural?.learningRates?.qLearning === 'number') {
-      return cfg.neural.learningRates.qLearning;
+    if (typeof cfg?.neural?.learningRates?.sarsa === 'number') { // ADR-0069: fix copy-paste bug (was .qLearning)
+      return cfg.neural.learningRates.sarsa;
     }
   } catch { /* use fallback */ }
   return fallback;

@@ -48,8 +48,14 @@ const FNV_PRIME = 0x01000193;
 /** Default embedding dimensions */
 const DEFAULT_DIMENSIONS = 384;
 
-/** Default in-memory LRU cache size */
-const DEFAULT_CACHE_SIZE = 1000;
+/** Default in-memory LRU cache size — ADR-0069: wire embeddingCacheSize consumer */
+const DEFAULT_CACHE_SIZE = (() => {
+  try {
+    const cfg = JSON.parse(require('fs').readFileSync(
+      require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    return cfg?.memory?.embeddingCacheSize ?? 1000;
+  } catch { return 1000; }
+})();
 
 // ============================================================================
 // LRU Cache (lightweight in-memory)

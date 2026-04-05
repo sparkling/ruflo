@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/embeddings",
-  "version": "3.0.0-alpha.12-patch.95",
+  "version": "3.0.0-alpha.12-patch.97",
   "description": "V3 Embedding Service - OpenAI, Transformers.js, Agentic-Flow (ONNX), Mock providers with hyperbolic embeddings, normalization, and chunking",
   "type": "module",
   "main": "./dist/index.js",
@@ -48,8 +48,8 @@
     "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.77",
-    "agentic-flow": "2.0.2-alpha-patch.87"
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.79",
+    "agentic-flow": "2.0.2-alpha-patch.89"
   },
   "peerDependenciesMeta": {
     "agentic-flow": {

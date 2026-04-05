@@ -196,6 +196,8 @@ export interface RuntimeConfig {
   enableMemoryGraph?: boolean;
   /** Enable AgentMemoryScope (ADR-049) - 3-scope agent memory */
   enableAgentScopes?: boolean;
+  /** ADR-0069: similarity threshold for memory/pattern search */
+  similarityThreshold?: number;
   /** CLAUDE.md template variant */
   claudeMdTemplate?: ClaudeMdTemplate;
 }
@@ -290,6 +292,8 @@ export interface InitOptions {
   sourceBaseDir?: string;
   /** Force overwrite existing files */
   force: boolean;
+  /** Generate full config.json with all ADR-0069 keys */
+  full?: boolean;
   /** Run in interactive mode */
   interactive: boolean;
   /** Components to initialize */
@@ -403,10 +407,11 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     enableLearningBridge: true,
     enableMemoryGraph: true,
     enableAgentScopes: true,
+    similarityThreshold: 0.7,
   },
   embeddings: {
     enabled: true,
-    model: 'all-MiniLM-L6-v2',
+    model: 'all-mpnet-base-v2',
     hyperbolic: true,
     curvature: -1.0,
     predownload: false,  // Don't auto-download to speed up init
@@ -472,10 +477,11 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
     enableLearningBridge: false,
     enableMemoryGraph: false,
     enableAgentScopes: false,
+    similarityThreshold: 0.7,
   },
   embeddings: {
     enabled: false,
-    model: 'all-MiniLM-L6-v2',
+    model: 'all-mpnet-base-v2',
     hyperbolic: false,
     curvature: -1.0,
     predownload: false,
@@ -489,6 +495,7 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
  */
 export const FULL_INIT_OPTIONS: InitOptions = {
   ...DEFAULT_INIT_OPTIONS,
+  full: true,
   components: {
     settings: true,
     skills: true,
@@ -527,7 +534,7 @@ export const FULL_INIT_OPTIONS: InitOptions = {
   },
   embeddings: {
     enabled: true,
-    model: 'all-MiniLM-L6-v2',
+    model: 'all-mpnet-base-v2',
     hyperbolic: true,
     curvature: -1.0,
     predownload: true,  // Pre-download for full init

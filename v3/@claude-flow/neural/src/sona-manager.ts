@@ -68,11 +68,14 @@ function readEwcLambdaBase(fallback: number): number {
 }
 
 // ADR-0069 A8: config-chain learning rate (gradient descent base)
+// ADR-0069: wire neural.learningRates.sona consumer — prefer SONA-specific rate, fall back to default
 function readBaseLearningRate(fallback: number): number {
   try {
     const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
     const raw = readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw);
+    const sonaLR = parsed?.neural?.learningRates?.sona;
+    if (typeof sonaLR === 'number' && sonaLR > 0) return sonaLR;
     const val = parsed?.neural?.defaultLearningRate;
     if (typeof val === 'number' && val > 0) return val;
   } catch {

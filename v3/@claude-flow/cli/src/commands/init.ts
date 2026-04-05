@@ -244,6 +244,23 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
     options.components.runtime = false;
   }
 
+  // ADR-0069: new init flags for deployment-critical config
+  const port = ctx.flags.port as number | undefined;
+  const similarityThreshold = ctx.flags['similarity-threshold']
+    ? parseFloat(ctx.flags['similarity-threshold'] as string)
+    : undefined;
+  const maxAgents = ctx.flags['max-agents'] as number | undefined;
+
+  if (port !== undefined) {
+    options.mcp.port = port;
+  }
+  if (similarityThreshold !== undefined) {
+    options.runtime.similarityThreshold = similarityThreshold;
+  }
+  if (maxAgents !== undefined) {
+    options.runtime.maxAgents = maxAgents;
+  }
+
   // Create spinner
   const spinner = output.createSpinner({ text: 'Initializing...' });
   spinner.start();
@@ -378,7 +395,8 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
 
     // Handle --with-embeddings
     const withEmbeddings = ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings;
-    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || 'all-MiniLM-L6-v2') as string;
+    // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
+    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || 'all-mpnet-base-v2') as string;
 
     if (withEmbeddings) {
       output.writeln();
@@ -599,13 +617,14 @@ const wizardCommand: Command = {
         default: true,
       });
 
-      let embeddingModel = 'all-MiniLM-L6-v2';
+      // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
+      let embeddingModel = 'all-mpnet-base-v2';
       if (enableEmbeddings) {
         embeddingModel = await select({
           message: 'Select embedding model:',
           options: [
-            { value: 'all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, good quality (recommended)' },
-            { value: 'all-mpnet-base-v2', label: 'MPNet Base (768d)', hint: 'Higher quality, more memory' },
+            { value: 'all-mpnet-base-v2', label: 'MPNet Base (768d)', hint: 'Higher quality (recommended)' },
+            { value: 'all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, lower memory' },
           ],
         });
       }
@@ -1059,8 +1078,8 @@ export const initCommand: Command = {
       name: 'embedding-model',
       description: 'ONNX embedding model to use',
       type: 'string',
-      default: 'all-MiniLM-L6-v2',
-      choices: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
+      default: 'all-mpnet-base-v2', // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
+      choices: ['all-mpnet-base-v2', 'all-MiniLM-L6-v2'],
     },
     {
       name: 'codex',
@@ -1074,6 +1093,21 @@ export const initCommand: Command = {
       type: 'boolean',
       default: false,
     },
+    {
+      name: 'port',
+      description: 'MCP server port (default: 3000)',
+      type: 'number',
+    },
+    {
+      name: 'similarity-threshold',
+      description: 'Memory search similarity threshold 0-1 (default: 0.7)',
+      type: 'string', // parsed to float
+    },
+    {
+      name: 'max-agents',
+      description: 'Maximum concurrent swarm agents (default: 15)',
+      type: 'number',
+    },
   ],
   examples: [
     { command: 'claude-flow init', description: 'Initialize with default configuration' },
@@ -1086,7 +1120,7 @@ export const initCommand: Command = {
     { command: 'claude-flow init --skip-claude', description: 'Only create V3 runtime' },
     { command: 'claude-flow init wizard', description: 'Interactive setup wizard' },
     { command: 'claude-flow init --with-embeddings', description: 'Initialize with ONNX embeddings' },
-    { command: 'claude-flow init --with-embeddings --embedding-model all-mpnet-base-v2', description: 'Use larger embedding model' },
+    { command: 'claude-flow init --with-embeddings --embedding-model all-MiniLM-L6-v2', description: 'Use smaller/faster embedding model' },
     { command: 'claude-flow init skills --all', description: 'Install all available skills' },
     { command: 'claude-flow init hooks --minimal', description: 'Create minimal hooks configuration' },
     { command: 'claude-flow init upgrade', description: 'Update helpers while preserving data' },
@@ -1095,6 +1129,9 @@ export const initCommand: Command = {
     { command: 'claude-flow init --codex', description: 'Initialize for OpenAI Codex (AGENTS.md)' },
     { command: 'claude-flow init --codex --full', description: 'Codex init with all 137+ skills' },
     { command: 'claude-flow init --dual', description: 'Initialize for both Claude Code and Codex' },
+    { command: 'claude-flow init --port 8080', description: 'Set MCP server port' },
+    { command: 'claude-flow init --similarity-threshold 0.8', description: 'Set memory search similarity threshold' },
+    { command: 'claude-flow init --max-agents 10', description: 'Limit concurrent swarm agents' },
   ],
   action: initAction,
 };

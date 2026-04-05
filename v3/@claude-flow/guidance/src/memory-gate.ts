@@ -118,6 +118,9 @@ export interface MemoryWriteGateConfig {
   enableContradictionTracking?: boolean;
   /** ADR-0069 A2: rate-limit sliding window size in ms (default: 60000) */
   rateLimitWindowMs?: number;
+  // ADR-0069: wire rateLimiter presets consumer
+  /** Max requests per window — overridden by rateLimiter.memory preset if available */
+  rateLimitMaxRequests?: number;
 }
 
 // ============================================================================
@@ -221,6 +224,8 @@ export class MemoryWriteGate {
   private enableContradictionTracking: boolean;
   // ADR-0069 A2: config-chain rate limits
   private rateLimitWindowMs: number;
+  // ADR-0069: wire rateLimiter presets consumer
+  private rateLimitMaxRequests: number | null;
   private contradictionResolutions: Map<string, string> = new Map();
 
   constructor(config: MemoryWriteGateConfig = {}) {
@@ -229,6 +234,8 @@ export class MemoryWriteGate {
     this.defaultDecayRate = config.defaultDecayRate ?? 0;
     this.enableContradictionTracking = config.enableContradictionTracking ?? true;
     this.rateLimitWindowMs = config.rateLimitWindowMs ?? 60_000;
+    // ADR-0069: wire rateLimiter presets consumer
+    this.rateLimitMaxRequests = config.rateLimitMaxRequests ?? null;
 
     if (config.authorities) {
       for (const authority of config.authorities) {
@@ -425,7 +432,8 @@ export class MemoryWriteGate {
     resetAt: number;
   } {
     const authority = this.authorities.get(agentId);
-    const limit = authority?.maxWritesPerMinute ?? 0;
+    // ADR-0069: wire rateLimiter presets consumer — config preset overrides per-agent default
+    const limit = this.rateLimitMaxRequests ?? authority?.maxWritesPerMinute ?? 0;
     const now = Date.now();
     // ADR-0069 A2: config-chain rate limits
     const windowMs = this.rateLimitWindowMs;
@@ -524,10 +532,13 @@ export class MemoryWriteGate {
     const recentWrites = timestamps.filter((t) => t > windowStart);
     this.writeTimestamps.set(authority.agentId, recentWrites);
 
+    // ADR-0069: wire rateLimiter presets consumer — config preset overrides per-agent default
+    const limit = this.rateLimitMaxRequests ?? authority.maxWritesPerMinute;
+
     return {
-      passed: recentWrites.length < authority.maxWritesPerMinute,
+      passed: recentWrites.length < limit,
       writesInWindow: recentWrites.length,
-      limit: authority.maxWritesPerMinute,
+      limit,
     };
   }
 

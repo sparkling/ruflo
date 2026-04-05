@@ -59,13 +59,23 @@ let registryPromise: Promise<any> | null = null;
 let registryInstance: any = null;
 let bridgeAvailable: boolean | null = null;
 
+// ADR-0069: config-chain swarmDir
+function getConfigSwarmDir(): string {
+  try {
+    const root = findProjectRoot();
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.claude-flow', 'config.json'), 'utf-8'));
+    return cfg?.memory?.swarmDir ?? '.swarm';
+  } catch { return '.swarm'; }
+}
+
 /**
  * Resolve database path with path traversal protection.
  * Only allows paths within or below the project's .swarm directory,
  * or the special ':memory:' path.
  */
 function getDbPath(customPath?: string): string {
-  const swarmDir = path.resolve(process.cwd(), '.swarm');
+  // ADR-0069: config-chain swarmDir
+  const swarmDir = path.resolve(process.cwd(), getConfigSwarmDir());
   if (!customPath) return path.join(swarmDir, 'memory.db');
   if (customPath === ':memory:') return ':memory:';
   const resolved = path.resolve(customPath);
@@ -131,8 +141,10 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             hnswEfSearch: embJson.hnsw?.efSearch ?? 50,
             maxElements: cfgJson.memory?.maxElements ?? 100000,
             maxEntries: cfgJson.memory?.storage?.maxEntries ?? 1000000, // ADR-0069: config-chain capacity
+            similarityThreshold: cfgJson.memory?.similarityThreshold ?? 0.7, // ADR-0069: wire similarityThreshold consumer
+            swarmDir: cfgJson.memory?.swarmDir ?? '.swarm', // ADR-0069: config-chain swarmDir
             // ADR-0069 A1: config-chain SQLite pragmas
-            sqlite: cfgJson.memory?.sqlite ?? { cacheSize: -64000, busyTimeoutMs: 5000 },
+            sqlite: cfgJson.memory?.sqlite ?? { cacheSize: -64000, busyTimeoutMs: 5000, journalMode: 'WAL', synchronous: 'NORMAL' },
             memory: {
               learningBridge: cfgJson.memory?.learningBridge,
               memoryGraph: cfgJson.memory?.memoryGraph,
@@ -141,7 +153,9 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             attentionService: cfgJson.controllers?.attentionService,
             multiHeadAttention: cfgJson.controllers?.multiHeadAttention,
             selfAttention: cfgJson.controllers?.selfAttention,
-            rateLimiter: cfgJson.controllers?.rateLimiter,
+            // ADR-0069: wire rateLimiter presets consumer
+            rateLimiter: cfgJson.rateLimiter?.default ?? cfgJson.controllers?.rateLimiter ?? { maxRequests: 100, windowMs: 60000 },
+            rateLimiterPresets: cfgJson.rateLimiter ?? null,
             circuitBreaker: cfgJson.controllers?.circuitBreaker,
             solverBandit: cfgJson.controllers?.solverBandit,
             // Merge hardcoded defaults with config.json controllers.enabled (ADR-0068 W4-5)
@@ -166,6 +180,14 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             queryOptimizer: cfgJson.controllers?.queryOptimizer,
             selfLearningRvfBackend: cfgJson.controllers?.selfLearningRvfBackend,
             mutationGuard: cfgJson.controllers?.mutationGuard,
+            // ADR-0069: wire ports consumer — forward config.json ports with env-var overrides
+            ports: {
+              mcp: parseInt(process.env.MCP_PORT || '', 10) || (cfgJson.ports?.mcp ?? 3000),
+              mcpWebSocket: parseInt(process.env.MCP_WS_PORT || '', 10) || (cfgJson.ports?.mcpWebSocket ?? 3001),
+              quic: parseInt(process.env.QUIC_PORT || '', 10) || (cfgJson.ports?.quic ?? 4433),
+              federation: parseInt(process.env.FEDERATION_PORT || '', 10) || (cfgJson.ports?.federation ?? 8443),
+              health: parseInt(process.env.HEALTH_PORT || '', 10) || (cfgJson.ports?.health ?? 8080),
+            },
           });
         } finally {
           console.log = origLog;
@@ -204,7 +226,8 @@ async function getRvfStore(): Promise<any | null> {
     rvfStorePromise = (async () => {
       try {
         const { existsSync } = await import('fs');
-        const rvfPath = path.resolve(process.cwd(), '.swarm', 'agentdb-memory.rvf');
+        // ADR-0069: config-chain swarmDir
+        const rvfPath = path.resolve(process.cwd(), getConfigSwarmDir(), 'agentdb-memory.rvf');
         if (!existsSync(rvfPath)) {
           rvfStoreChecked = true;
           return null;
