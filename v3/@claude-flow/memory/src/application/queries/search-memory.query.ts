@@ -86,7 +86,8 @@ export class SearchMemoryQueryHandler {
       vector: input.vector!,
       namespace: input.namespace,
       limit: limit + offset, // Get extra for pagination
-      threshold: input.similarityThreshold ?? 0.5,
+      // ADR-0069 A7: align search threshold with config chain default
+      threshold: input.similarityThreshold ?? 0.7,
       type: input.type,
     });
 

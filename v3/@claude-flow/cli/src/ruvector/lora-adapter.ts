@@ -21,6 +21,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 
+// ADR-0069 A8: read gradient descent learning rate from config chain
+function getConfigDefaultLearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.neural?.defaultLearningRate === 'number') {
+      return cfg.neural.defaultLearningRate;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
+
 // ============================================================================
 // Types & Constants
 // ============================================================================
@@ -120,7 +131,7 @@ const DEFAULT_CONFIG: LoRAConfig = {
   alpha: DEFAULT_ALPHA,
   inputDim: INPUT_DIM,
   outputDim: OUTPUT_DIM,
-  learningRate: 0.001,
+  learningRate: getConfigDefaultLearningRate(0.001), // ADR-0069 A8: gradient descent LR from config chain
   weightsPath: join(process.cwd(), '.swarm', 'lora-weights.json'),
   enableDropout: true,
   dropoutProb: 0.1,

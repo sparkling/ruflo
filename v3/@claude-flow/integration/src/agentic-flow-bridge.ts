@@ -586,7 +586,7 @@ export class AgenticFlowBridge extends EventEmitter {
       sona: {
         mode: 'balanced',
         learningRate: 0.001,
-        similarityThreshold: 0.7,
+        similarityThreshold: 0.7, // ADR-0069 A7: aligns with config chain default
         maxPatterns: 10000,
         enableTrajectoryTracking: true,
         consolidationInterval: 3600000,

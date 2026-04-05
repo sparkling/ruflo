@@ -9,6 +9,8 @@
  * @module v3/memory/memory-graph
  */
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { IMemoryBackend, MemoryEntry, SearchResult } from './types.js';
 
 // ===== Types =====
@@ -57,8 +59,19 @@ export interface GraphStats {
   minPageRank: number;
 }
 
+// ADR-0069 A7: read similarity threshold from config chain
+function getConfigSimilarityThreshold(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.memory?.similarityThreshold === 'number') {
+      return cfg.memory.similarityThreshold;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
+
 const DEFAULT_CONFIG: Required<MemoryGraphConfig> = {
-  similarityThreshold: 0.8,
+  similarityThreshold: getConfigSimilarityThreshold(0.8),
   pageRankDamping: 0.85,
   pageRankIterations: 50,
   pageRankConvergence: 1e-6,

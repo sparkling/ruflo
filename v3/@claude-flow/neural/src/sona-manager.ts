@@ -16,6 +16,8 @@
  * - batch: High-throughput processing
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type {
   SONAMode,
   SONAModeConfig,
@@ -41,71 +43,116 @@ import { EdgeMode } from './modes/edge.js';
 import { BatchMode } from './modes/batch.js';
 import type { ModeImplementation } from './modes/index.js';
 
+// ADR-0069 A5: config-chain EWC lambda
+// Per-mode multipliers preserve current behavior (base=2000):
+//   real-time: 1.0, balanced: 1.0, research: 1.25, edge: 0.75, batch: 1.0
+const EWC_LAMBDA_MULTIPLIERS: Record<SONAMode, number> = {
+  'real-time': 1.0,
+  'balanced': 1.0,
+  'research': 1.25,
+  'edge': 0.75,
+  'batch': 1.0,
+};
+
+function readEwcLambdaBase(fallback: number): number {
+  try {
+    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const val = parsed?.neural?.ewcLambda;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch {
+    // Config not found or unreadable — use fallback
+  }
+  return fallback;
+}
+
+// ADR-0069 A8: config-chain learning rate (gradient descent base)
+function readBaseLearningRate(fallback: number): number {
+  try {
+    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const val = parsed?.neural?.defaultLearningRate;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch {
+    // Config not found or unreadable — use fallback
+  }
+  return fallback;
+}
+
+function buildModeConfigs(): Record<SONAMode, SONAModeConfig> {
+  const base = readEwcLambdaBase(2000);
+  const baseLR = readBaseLearningRate(0.001);
+  return {
+    'real-time': {
+      mode: 'real-time',
+      loraRank: 2,
+      learningRate: baseLR, // ADR-0069 A8: config-chain-aware
+      batchSize: 32,
+      trajectoryCapacity: 1000,
+      patternClusters: 25,
+      qualityThreshold: 0.7,
+      maxLatencyMs: 0.5,
+      memoryBudgetMb: 25,
+      ewcLambda: base * EWC_LAMBDA_MULTIPLIERS['real-time'], // ADR-0069 A5
+    },
+    'balanced': {
+      mode: 'balanced',
+      loraRank: 4,
+      learningRate: baseLR * 2, // ADR-0069 A8: 2x base LR for balanced mode
+      batchSize: 32,
+      trajectoryCapacity: 3000,
+      patternClusters: 50,
+      qualityThreshold: 0.5,
+      maxLatencyMs: 18,
+      memoryBudgetMb: 50,
+      ewcLambda: base * EWC_LAMBDA_MULTIPLIERS['balanced'], // ADR-0069 A5
+    },
+    'research': {
+      mode: 'research',
+      loraRank: 16,
+      learningRate: baseLR * 2, // ADR-0069 A8: 2x base LR for research mode
+      batchSize: 64,
+      trajectoryCapacity: 10000,
+      patternClusters: 100,
+      qualityThreshold: 0.2,
+      maxLatencyMs: 100,
+      memoryBudgetMb: 100,
+      ewcLambda: base * EWC_LAMBDA_MULTIPLIERS['research'], // ADR-0069 A5
+    },
+    'edge': {
+      mode: 'edge',
+      loraRank: 1,
+      learningRate: baseLR, // ADR-0069 A8: config-chain-aware
+      batchSize: 16,
+      trajectoryCapacity: 200,
+      patternClusters: 15,
+      qualityThreshold: 0.8,
+      maxLatencyMs: 1,
+      memoryBudgetMb: 5,
+      ewcLambda: base * EWC_LAMBDA_MULTIPLIERS['edge'], // ADR-0069 A5
+    },
+    'batch': {
+      mode: 'batch',
+      loraRank: 8,
+      learningRate: baseLR * 2, // ADR-0069 A8: 2x base LR for batch mode
+      batchSize: 128,
+      trajectoryCapacity: 5000,
+      patternClusters: 75,
+      qualityThreshold: 0.4,
+      maxLatencyMs: 50,
+      memoryBudgetMb: 75,
+      ewcLambda: base * EWC_LAMBDA_MULTIPLIERS['batch'], // ADR-0069 A5
+    },
+  };
+}
+
 /**
  * Default mode configurations
+ * ADR-0069 A5: EWC lambda loaded from config chain, per-mode multipliers applied
  */
-const MODE_CONFIGS: Record<SONAMode, SONAModeConfig> = {
-  'real-time': {
-    mode: 'real-time',
-    loraRank: 2,
-    learningRate: 0.001,
-    batchSize: 32,
-    trajectoryCapacity: 1000,
-    patternClusters: 25,
-    qualityThreshold: 0.7,
-    maxLatencyMs: 0.5,
-    memoryBudgetMb: 25,
-    ewcLambda: 2000,
-  },
-  'balanced': {
-    mode: 'balanced',
-    loraRank: 4,
-    learningRate: 0.002,
-    batchSize: 32,
-    trajectoryCapacity: 3000,
-    patternClusters: 50,
-    qualityThreshold: 0.5,
-    maxLatencyMs: 18,
-    memoryBudgetMb: 50,
-    ewcLambda: 2000,
-  },
-  'research': {
-    mode: 'research',
-    loraRank: 16,
-    learningRate: 0.002,
-    batchSize: 64,
-    trajectoryCapacity: 10000,
-    patternClusters: 100,
-    qualityThreshold: 0.2,
-    maxLatencyMs: 100,
-    memoryBudgetMb: 100,
-    ewcLambda: 2500,
-  },
-  'edge': {
-    mode: 'edge',
-    loraRank: 1,
-    learningRate: 0.001,
-    batchSize: 16,
-    trajectoryCapacity: 200,
-    patternClusters: 15,
-    qualityThreshold: 0.8,
-    maxLatencyMs: 1,
-    memoryBudgetMb: 5,
-    ewcLambda: 1500,
-  },
-  'batch': {
-    mode: 'batch',
-    loraRank: 8,
-    learningRate: 0.002,
-    batchSize: 128,
-    trajectoryCapacity: 5000,
-    patternClusters: 75,
-    qualityThreshold: 0.4,
-    maxLatencyMs: 50,
-    memoryBudgetMb: 75,
-    ewcLambda: 2000,
-  },
-};
+const MODE_CONFIGS: Record<SONAMode, SONAModeConfig> = buildModeConfigs();
 
 /**
  * Mode-specific optimizations

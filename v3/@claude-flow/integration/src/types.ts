@@ -441,7 +441,7 @@ export type IntegrationErrorCode =
 export const DEFAULT_SONA_CONFIG: SONAConfiguration = {
   mode: 'balanced',
   learningRate: 0.001,
-  similarityThreshold: 0.7,
+  similarityThreshold: 0.7, // ADR-0069 A7: aligns with config chain default memory.similarityThreshold
   maxPatterns: 10000,
   enableTrajectoryTracking: true,
   consolidationInterval: 3600000, // 1 hour
