@@ -133,6 +133,14 @@ export interface RuntimeConfig {
   /** Embedding generator function */
   embeddingGenerator?: EmbeddingGenerator;
 
+  /** SQLite pragma configuration (ADR-0069 A1) */
+  sqlite?: {
+    cacheSize?: number;      // default: -64000 (64MB)
+    busyTimeoutMs?: number;  // default: 5000
+    journalMode?: string;    // default: 'WAL'
+    synchronous?: string;    // default: 'NORMAL'
+  };
+
   /** Memory backend config */
   memory?: {
     learningBridge?: Partial<LearningBridgeConfig>;
@@ -1306,7 +1314,8 @@ export class ControllerRegistry extends EventEmitter {
           if (!RL) return null;
           const rlCfg = this.config.rateLimiter || {};
           const maxTokens = rlCfg.maxRequests || 100;
-          const windowMs = rlCfg.windowMs || 1000;
+          // ADR-0069 A2: config-chain rate limits — was 1000 (1s typo), align with 60s window model
+          const windowMs = rlCfg.windowMs || 60000;
           const refillRate = Math.max(1, Math.round(maxTokens / (windowMs / 1000)));
           return new RL(maxTokens, refillRate);
         } catch { return null; }

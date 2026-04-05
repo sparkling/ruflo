@@ -358,6 +358,8 @@ export interface RateLimitConfig {
   requestsPerMinute: number;
   tokensPerMinute: number;
   tokensPerDay?: number;
+  /** ADR-0069 A2: sliding window size in ms (default: 60000) */
+  windowMs?: number;
 }
 
 export interface CostConfig {

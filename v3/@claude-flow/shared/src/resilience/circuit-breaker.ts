@@ -69,15 +69,19 @@ export interface CircuitBreakerStats {
 }
 
 /**
- * Default options
+ * Default options — canonical source for circuit-breaker defaults.
+ * ADR-0069 A2: exported so consumers use config-chain instead of duplicating.
  */
-const DEFAULT_OPTIONS: Omit<CircuitBreakerOptions, 'name'> = {
+export const CIRCUIT_BREAKER_DEFAULTS: Omit<CircuitBreakerOptions, 'name'> = {
   failureThreshold: 5,
   successThreshold: 3,
   timeout: 30000,
   rollingWindow: 60000,
   volumeThreshold: 10,
 };
+
+/** @internal alias kept for backward compat within this module */
+const DEFAULT_OPTIONS = CIRCUIT_BREAKER_DEFAULTS;
 
 /**
  * Request tracking entry

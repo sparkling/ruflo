@@ -116,6 +116,8 @@ export interface MemoryWriteGateConfig {
   defaultDecayRate?: number;
   /** Whether to run contradiction detection on writes */
   enableContradictionTracking?: boolean;
+  /** ADR-0069 A2: rate-limit sliding window size in ms (default: 60000) */
+  rateLimitWindowMs?: number;
 }
 
 // ============================================================================
@@ -217,6 +219,8 @@ export class MemoryWriteGate {
   private defaultTtlMs: number | null;
   private defaultDecayRate: number;
   private enableContradictionTracking: boolean;
+  // ADR-0069 A2: config-chain rate limits
+  private rateLimitWindowMs: number;
   private contradictionResolutions: Map<string, string> = new Map();
 
   constructor(config: MemoryWriteGateConfig = {}) {
@@ -224,6 +228,7 @@ export class MemoryWriteGate {
     this.defaultTtlMs = config.defaultTtlMs ?? null;
     this.defaultDecayRate = config.defaultDecayRate ?? 0;
     this.enableContradictionTracking = config.enableContradictionTracking ?? true;
+    this.rateLimitWindowMs = config.rateLimitWindowMs ?? 60_000;
 
     if (config.authorities) {
       for (const authority of config.authorities) {
@@ -422,7 +427,8 @@ export class MemoryWriteGate {
     const authority = this.authorities.get(agentId);
     const limit = authority?.maxWritesPerMinute ?? 0;
     const now = Date.now();
-    const windowMs = 60_000;
+    // ADR-0069 A2: config-chain rate limits
+    const windowMs = this.rateLimitWindowMs;
     const windowStart = now - windowMs;
 
     const timestamps = this.writeTimestamps.get(agentId) ?? [];
@@ -509,7 +515,8 @@ export class MemoryWriteGate {
     limit: number;
   } {
     const now = Date.now();
-    const windowMs = 60_000;
+    // ADR-0069 A2: config-chain rate limits
+    const windowMs = this.rateLimitWindowMs;
     const windowStart = now - windowMs;
 
     const timestamps = this.writeTimestamps.get(authority.agentId) ?? [];
