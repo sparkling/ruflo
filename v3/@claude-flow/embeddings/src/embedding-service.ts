@@ -377,7 +377,7 @@ export class TransformersEmbeddingService extends BaseEmbeddingService {
 
   constructor(config: TransformersEmbeddingConfig) {
     super(config);
-    this.modelName = config.model ?? 'Xenova/all-MiniLM-L6-v2';
+    this.modelName = config.model ?? 'Xenova/all-mpnet-base-v2';
   }
 
   private async initialize(): Promise<void> {
@@ -611,8 +611,8 @@ export class AgenticFlowEmbeddingService extends BaseEmbeddingService {
 
   constructor(config: AgenticFlowEmbeddingConfig) {
     super(config);
-    this.modelId = config.modelId ?? 'all-MiniLM-L6-v2';
-    this.dimensions = config.dimensions ?? 384;
+    this.modelId = config.modelId ?? 'all-mpnet-base-v2';
+    this.dimensions = config.dimensions ?? 768;
     this.embedderCacheSize = config.embedderCacheSize ?? 256;
     this.modelDir = config.modelDir;
     this.autoDownload = config.autoDownload ?? false;
@@ -954,8 +954,8 @@ export async function createEmbeddingServiceAsync(
       try {
         const service = new AgenticFlowEmbeddingService({
           provider: 'agentic-flow',
-          modelId: rest.modelId ?? 'all-MiniLM-L6-v2',
-          dimensions: rest.dimensions ?? 384,
+          modelId: rest.modelId ?? 'all-mpnet-base-v2',
+          dimensions: rest.dimensions ?? 768,
           cacheSize: rest.cacheSize,
         });
         // Validate it can initialize
@@ -970,7 +970,7 @@ export async function createEmbeddingServiceAsync(
     try {
       const service = new TransformersEmbeddingService({
         provider: 'transformers',
-        model: rest.model ?? 'Xenova/all-MiniLM-L6-v2',
+        model: rest.model ?? 'Xenova/all-mpnet-base-v2',
         cacheSize: rest.cacheSize,
       });
       // Validate it can initialize
@@ -983,7 +983,7 @@ export async function createEmbeddingServiceAsync(
     // Fallback to mock (always works)
     console.warn('[embeddings] Using mock provider - install agentic-flow or @xenova/transformers for real embeddings');
     return new MockEmbeddingService({
-      dimensions: rest.dimensions ?? 384,
+      dimensions: rest.dimensions ?? 768,
       cacheSize: rest.cacheSize,
     });
   }
@@ -994,14 +994,14 @@ export async function createEmbeddingServiceAsync(
       case 'agentic-flow':
         return new AgenticFlowEmbeddingService({
           provider: 'agentic-flow',
-          modelId: rest.modelId ?? 'all-MiniLM-L6-v2',
-          dimensions: rest.dimensions ?? 384,
+          modelId: rest.modelId ?? 'all-mpnet-base-v2',
+          dimensions: rest.dimensions ?? 768,
           cacheSize: rest.cacheSize,
         });
       case 'transformers':
         return new TransformersEmbeddingService({
           provider: 'transformers',
-          model: rest.model ?? 'Xenova/all-MiniLM-L6-v2',
+          model: rest.model ?? 'Xenova/all-mpnet-base-v2',
           cacheSize: rest.cacheSize,
         });
       case 'openai':

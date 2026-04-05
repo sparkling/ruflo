@@ -33,7 +33,7 @@ import { CacheManager } from './cache-manager.js';
  * Configuration for AgentDB Adapter
  */
 export interface AgentDBAdapterConfig {
-  /** Vector dimensions for embeddings (default: 1536 for OpenAI) */
+  /** Vector dimensions for embeddings (default: 768) */
   dimensions: number;
 
   /** Maximum number of entries */
@@ -71,13 +71,13 @@ export interface AgentDBAdapterConfig {
  * Default configuration values
  */
 const DEFAULT_CONFIG: AgentDBAdapterConfig = {
-  dimensions: 1536,
+  dimensions: 768,
   maxEntries: 1000000,
   cacheEnabled: true,
   cacheSize: 10000,
   cacheTtl: 300000, // 5 minutes
-  hnswM: 16,
-  hnswEfConstruction: 200,
+  hnswM: 23,
+  hnswEfConstruction: 100,
   defaultNamespace: 'default',
   persistenceEnabled: false,
 };

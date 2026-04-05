@@ -149,7 +149,7 @@ const DEFAULT_EWC_CONFIG: EWCConfig = {
   importanceThreshold: 0.3,
   storagePath: path.join(process.cwd(), '.swarm', 'ewc-fisher.json'),
   onlineMode: true,
-  dimensions: 384
+  dimensions: 768
 };
 
 // ============================================================================

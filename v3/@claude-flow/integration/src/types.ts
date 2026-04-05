@@ -460,10 +460,10 @@ export const DEFAULT_ATTENTION_CONFIG: AttentionConfiguration = {
 };
 
 export const DEFAULT_AGENTDB_CONFIG: AgentDBConfiguration = {
-  dimension: 1536, // OpenAI embedding dimension
+  dimension: 768, // all-mpnet-base-v2 embedding dimension
   indexType: 'hnsw',
-  hnswM: 16,
-  hnswEfConstruction: 200,
+  hnswM: 23,
+  hnswEfConstruction: 100,
   hnswEfSearch: 50,
   metric: 'cosine',
   enableCache: true,

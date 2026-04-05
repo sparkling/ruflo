@@ -324,11 +324,11 @@ async function getSemanticRouter() {
     if (router.VectorDb && router.DistanceMetric) {
       // Try to create VectorDb - may fail with lock error in concurrent envs
       const db = new router.VectorDb({
-        dimensions: 384,
+        dimensions: 768,
         distanceMetric: router.DistanceMetric.Cosine,
-        hnswM: 16,
-        hnswEfConstruction: 200,
-        hnswEfSearch: 100,
+        hnswM: 23,
+        hnswEfConstruction: 100,
+        hnswEfSearch: 50,
       });
 
       // Initialize with static + runtime-learned task patterns

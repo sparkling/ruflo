@@ -102,7 +102,7 @@ export class HashEmbeddingProvider implements IEmbeddingProvider {
   private dimensions: number;
   private cache = new Map<string, Float32Array>();
 
-  constructor(dimensions: number = 384) {
+  constructor(dimensions: number = 768) {
     this.dimensions = dimensions;
   }
 

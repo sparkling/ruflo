@@ -17,8 +17,41 @@
  * @module v3/cli/memory-bridge
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+
+// ===== Project config helpers (ADR-0065) =====
+
+function findProjectRoot(): string {
+  let dir = process.cwd();
+  while (dir !== path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, '.claude-flow'))) return dir;
+    dir = path.dirname(dir);
+  }
+  return process.cwd();
+}
+
+function readJsonFile(filePath: string): Record<string, any> {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function getProjectConfig(): { config: Record<string, any>; embeddings: Record<string, any> } {
+  const root = findProjectRoot();
+  return {
+    config: readJsonFile(path.join(root, '.claude-flow', 'config.json')),
+    embeddings: readJsonFile(path.join(root, '.claude-flow', 'embeddings.json')),
+  };
+}
+
+function getEmbeddingModelName(): string {
+  const { embeddings } = getProjectConfig();
+  return embeddings.model ?? 'Xenova/all-mpnet-base-v2';
+}
 
 // ===== Lazy singleton =====
 
@@ -87,17 +120,45 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
         };
 
         try {
+          const { config: cfgJson, embeddings: embJson } = getProjectConfig();
+
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
-            dimension: 384,
+            dimension: embJson.dimension ?? 768,
+            maxElements: cfgJson.memory?.maxElements ?? 100000,
+            memory: {
+              learningBridge: cfgJson.memory?.learningBridge,
+              memoryGraph: cfgJson.memory?.memoryGraph,
+              tieredCache: cfgJson.controllers?.tieredCache,
+            },
+            attentionService: cfgJson.controllers?.attentionService,
+            multiHeadAttention: cfgJson.controllers?.multiHeadAttention,
+            selfAttention: cfgJson.controllers?.selfAttention,
+            rateLimiter: cfgJson.controllers?.rateLimiter,
+            circuitBreaker: cfgJson.controllers?.circuitBreaker,
+            solverBandit: cfgJson.controllers?.solverBandit,
+            // Merge hardcoded defaults with config.json controllers.enabled (ADR-0068 W4-5)
             controllers: {
               reasoningBank: true,
               learningBridge: false,
               tieredCache: true,
               hierarchicalMemory: true,
               memoryConsolidation: true,
-              memoryGraph: true, // issue #1214: enable MemoryGraph for graph-aware ranking
+              memoryGraph: true,
+              mutationGuard: true,
+              attestationLog: true,
+              learningSystem: true,
+              explainableRecall: true,
+              nightlyLearner: true,
+              semanticRouter: true,
+              ...(cfgJson.controllers?.enabled ?? {}),
             },
+            // Forward new tuning sections from config.json (ADR-0068 W4-5)
+            nightlyLearner: cfgJson.controllers?.nightlyLearner,
+            causalRecall: cfgJson.controllers?.causalRecall,
+            queryOptimizer: cfgJson.controllers?.queryOptimizer,
+            selfLearningRvfBackend: cfgJson.controllers?.selfLearningRvfBackend,
+            mutationGuard: cfgJson.controllers?.mutationGuard,
           });
         } finally {
           console.log = origLog;
@@ -150,7 +211,7 @@ async function getRvfStore(): Promise<any | null> {
 
         const backend = new memPkg.RvfBackend({
           databasePath: rvfPath,
-          dimensions: 384,
+          dimensions: registryInstance?.config?.dimension || 768,
           autoPersistInterval: 0, // read-only — never write back
         });
         await backend.initialize();
@@ -521,7 +582,7 @@ export async function bridgeStoreEntry(options: {
           if (emb) {
             embeddingJson = JSON.stringify(Array.from(emb));
             dimensions = emb.length;
-            model = 'Xenova/all-MiniLM-L6-v2';
+            model = getEmbeddingModelName();
           }
         }
       } catch {
@@ -1022,7 +1083,7 @@ export async function bridgeGenerateEmbedding(
     return {
       embedding: Array.from(emb),
       dimensions: emb.length,
-      model: 'Xenova/all-MiniLM-L6-v2',
+      model: getEmbeddingModelName(),
     };
   } catch {
     return null;
@@ -1057,7 +1118,7 @@ export async function bridgeLoadEmbeddingModel(
     return {
       success: true,
       dimensions: test.length,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
+      modelName: getEmbeddingModelName(),
       loadTime: Date.now() - startTime,
     };
   } catch {
@@ -1101,7 +1162,7 @@ export async function bridgeGetHNSWStatus(
       available: true,
       initialized: true,
       entryCount,
-      dimensions: 384,
+      dimensions: registryInstance?.config?.dimension || 768,
     };
   } catch {
     return null;
@@ -1207,10 +1268,10 @@ export async function bridgeAddToHNSW(
         id, key, namespace, content, type,
         embedding, embedding_dimensions, embedding_model,
         created_at, updated_at, status
-      ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, 'Xenova/all-MiniLM-L6-v2', ?, ?, 'active')
+      ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, 'active')
     `).run(
       id, entry.key, entry.namespace, entry.content,
-      embeddingJson, embedding.length,
+      embeddingJson, embedding.length, getEmbeddingModelName(),
       now, now,
     );
     return true;

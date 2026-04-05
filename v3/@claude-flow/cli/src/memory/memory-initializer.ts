@@ -26,6 +26,39 @@ async function getBridge(): Promise<typeof import('./memory-bridge.js') | null> 
   }
 }
 
+// ADR-065: Read embedding dimension & model from project embeddings.json
+// ADR-068 W2-5: Also reads HNSW tuning params (m, efConstruction, efSearch)
+function readEmbeddingsConfig(): {
+  dimension: number;
+  model: string;
+  hnsw: { m: number; efConstruction: number; efSearch: number };
+} {
+  try {
+    let dir = process.cwd();
+    while (dir !== path.dirname(dir)) {
+      const cfgPath = path.join(dir, '.claude-flow', 'embeddings.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        return {
+          dimension: cfg.dimension ?? 768,
+          model: cfg.model ?? 'Xenova/all-mpnet-base-v2',
+          hnsw: {
+            m: cfg.hnsw?.m ?? 23,
+            efConstruction: cfg.hnsw?.efConstruction ?? 100,
+            efSearch: cfg.hnsw?.efSearch ?? 50,
+          },
+        };
+      }
+      dir = path.dirname(dir);
+    }
+  } catch { /* fall through */ }
+  return {
+    dimension: 768,
+    model: 'Xenova/all-mpnet-base-v2',
+    hnsw: { m: 23, efConstruction: 100, efSearch: 50 },
+  };
+}
+
 /**
  * Enhanced schema with pattern confidence, temporal decay, versioning
  * Vector embeddings enabled for semantic search
@@ -352,7 +385,7 @@ export async function getHNSWIndex(options?: {
   dimensions?: number;
   forceRebuild?: boolean;
 }): Promise<HNSWIndex | null> {
-  const dimensions = options?.dimensions ?? 384;
+  const dimensions = options?.dimensions ?? readEmbeddingsConfig().dimension;
 
   // Return existing index if already initialized
   if (hnswIndex?.initialized && !options?.forceRebuild) {
@@ -620,7 +653,7 @@ export function getHNSWStatus(): {
       available: true,
       initialized: true,
       entryCount: hnswIndex?.entries.size ?? 0,
-      dimensions: hnswIndex?.dimensions ?? 384
+      dimensions: hnswIndex?.dimensions ?? readEmbeddingsConfig().dimension
     };
   }
 
@@ -628,7 +661,7 @@ export function getHNSWStatus(): {
     available: hnswIndex !== null,
     initialized: hnswIndex?.initialized ?? false,
     entryCount: hnswIndex?.entries.size ?? 0,
-    dimensions: hnswIndex?.dimensions ?? 384
+    dimensions: hnswIndex?.dimensions ?? readEmbeddingsConfig().dimension
   };
 }
 
@@ -1539,25 +1572,26 @@ export async function loadEmbeddingModel(options?: {
     const transformers = await import('@xenova/transformers').catch(() => null);
 
     if (transformers) {
+      const embCfg = readEmbeddingsConfig();
       if (verbose) {
-        console.log('Loading ONNX embedding model (all-MiniLM-L6-v2)...');
+        console.log(`Loading ONNX embedding model (${embCfg.model})...`);
       }
 
-      // Use small, fast model for local embeddings
+      // Use model from embeddings.json (defaults to all-mpnet-base-v2, 768-dim)
       const { pipeline } = transformers;
-      const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+      const embedder = await pipeline('feature-extraction', embCfg.model);
 
       embeddingModelState = {
         loaded: true,
         model: embedder,
         tokenizer: null,
-        dimensions: 384 // MiniLM-L6 produces 384-dim vectors
+        dimensions: embCfg.dimension
       };
 
       return {
         success: true,
-        dimensions: 384,
-        modelName: 'all-MiniLM-L6-v2',
+        dimensions: embCfg.dimension,
+        modelName: embCfg.model,
         loadTime: Date.now() - startTime
       };
     }

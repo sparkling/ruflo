@@ -740,6 +740,11 @@ const initCommand: Command = {
         modelPath: modelDir,
         dimension,
         cacheSize,
+        hnsw: {
+          m: 23,
+          efConstruction: 100,
+          efSearch: 50,
+        },
         hyperbolic: {
           enabled: hyperbolic,
           curvature,

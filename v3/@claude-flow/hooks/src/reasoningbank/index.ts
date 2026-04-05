@@ -6,7 +6,7 @@
  *
  * Features:
  * - Real HNSW indexing (M=16, efConstruction=200) for 150x+ faster search
- * - ONNX embeddings via @claude-flow/embeddings (MiniLM-L6 384-dim)
+ * - ONNX embeddings via @claude-flow/embeddings (all-mpnet-base-v2 768-dim)
  * - AgentDB backend for persistence
  * - Pattern promotion from short-term to long-term memory
  *
@@ -74,7 +74,7 @@ export interface RoutingResult {
  * ReasoningBank configuration
  */
 export interface ReasoningBankConfig {
-  /** Vector dimensions (384 for MiniLM, 1536 for OpenAI) */
+  /** Vector dimensions (768 for all-mpnet-base-v2, 1536 for OpenAI) */
   dimensions: number;
   /** HNSW M parameter */
   hnswM: number;
@@ -112,10 +112,10 @@ export interface ReasoningBankMetrics {
 }
 
 const DEFAULT_CONFIG: ReasoningBankConfig = {
-  dimensions: 384, // MiniLM-L6
-  hnswM: 16,
-  hnswEfConstruction: 200,
-  hnswEfSearch: 100,
+  dimensions: 768, // all-mpnet-base-v2
+  hnswM: 23,
+  hnswEfConstruction: 100,
+  hnswEfSearch: 50,
   maxShortTerm: 1000,
   maxLongTerm: 5000,
   promotionThreshold: 3,
@@ -923,7 +923,7 @@ class RealEmbeddingService implements IEmbeddingService {
   private dimensions: number;
   private cache: Map<string, Float32Array> = new Map();
 
-  constructor(dimensions: number = 384) {
+  constructor(dimensions: number = 768) {
     this.dimensions = dimensions;
   }
 
@@ -931,7 +931,7 @@ class RealEmbeddingService implements IEmbeddingService {
     if (EmbeddingServiceImpl) {
       this.service = await EmbeddingServiceImpl({
         provider: 'transformers',
-        model: 'Xenova/all-MiniLM-L6-v2',
+        model: 'Xenova/all-mpnet-base-v2',
         dimensions: this.dimensions,
         cacheSize: 1000,
       });
@@ -962,7 +962,7 @@ class FallbackEmbeddingService implements IEmbeddingService {
   private dimensions: number;
   private cache: Map<string, Float32Array> = new Map();
 
-  constructor(dimensions: number = 384) {
+  constructor(dimensions: number = 768) {
     this.dimensions = dimensions;
   }
 

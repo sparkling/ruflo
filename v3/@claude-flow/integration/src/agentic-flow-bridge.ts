@@ -602,10 +602,10 @@ export class AgenticFlowBridge extends EventEmitter {
         memoryOptimization: 'moderate',
       },
       agentdb: {
-        dimension: 1536,
+        dimension: 768,
         indexType: 'hnsw',
-        hnswM: 16,
-        hnswEfConstruction: 200,
+        hnswM: 23,
+        hnswEfConstruction: 100,
         hnswEfSearch: 50,
         metric: 'cosine',
         enableCache: true,
