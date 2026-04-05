@@ -161,6 +161,10 @@ export function getFullConfigTemplate(
       maxConcurrent: 2,
       workerTimeoutMs: 300000,
       headless: false,
+      resourceThresholds: {
+        maxCpuLoad: 28,
+        minFreeMemoryPercent: 5,
+      },
     },
     // ADR-0069: embeddings config (also written to embeddings.json by `embeddings init`)
     embeddings: {
