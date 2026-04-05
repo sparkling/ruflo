@@ -155,7 +155,9 @@ class InMemoryStore {
    */
   startCleanup(): void {
     if (this.cleanupTimer) return;
-    this.cleanupTimer = setInterval(() => this.cleanupExpired(), 60000);
+    // ADR-0069 A13: configurable cleanup interval
+    const cleanupMs = (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); return c?.memory?.cleanupIntervalMs ?? 60000; } catch { return 60000; } })();
+    this.cleanupTimer = setInterval(() => this.cleanupExpired(), cleanupMs);
     this.cleanupTimer.unref();
   }
 

@@ -164,8 +164,8 @@ export class RuVectorProvider extends BaseProvider {
     },
   };
 
-  private baseUrl: string = 'http://localhost:3000'; // ruvLLM default port
-  private ollamaUrl: string = 'http://localhost:11434';
+  private baseUrl: string = process.env.RUVLLM_URL || 'http://localhost:3000'; // ADR-0069 A15
+  private ollamaUrl: string = process.env.OLLAMA_URL || 'http://localhost:11434'; // ADR-0069 A15
   private ruvectorConfig: RuVectorConfig = {};
   private ruvllm: unknown; // Dynamic import of @ruvector/ruvllm
   private useOllamaFallback: boolean = false;
@@ -178,8 +178,8 @@ export class RuVectorProvider extends BaseProvider {
 
   protected async doInitialize(): Promise<void> {
     // Configure URLs from options
-    this.baseUrl = this.config.apiUrl || 'http://localhost:3000';
-    this.ollamaUrl = (this.config.providerOptions as any)?.ollamaUrl || 'http://localhost:11434';
+    this.baseUrl = this.config.apiUrl || process.env.RUVLLM_URL || 'http://localhost:3000'; // ADR-0069 A15
+    this.ollamaUrl = (this.config.providerOptions as any)?.ollamaUrl || process.env.OLLAMA_URL || 'http://localhost:11434'; // ADR-0069 A15
 
     // Try to dynamically import @ruvector/ruvllm native module
     try {

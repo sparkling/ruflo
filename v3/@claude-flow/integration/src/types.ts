@@ -438,9 +438,22 @@ export type IntegrationErrorCode =
 
 // ===== Default Configurations =====
 
+// ADR-0069 A8: config-chain learning rate for DEFAULT_SONA_CONFIG
+function _readDefaultLearningRate(): number {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const cfg = JSON.parse(fs.readFileSync(
+      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const val = cfg?.neural?.defaultLearningRate;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch { /* use fallback */ }
+  return 0.001;
+}
+
 export const DEFAULT_SONA_CONFIG: SONAConfiguration = {
   mode: 'balanced',
-  learningRate: 0.001,
+  learningRate: _readDefaultLearningRate(), // ADR-0069 A8: config-chain aware
   similarityThreshold: 0.7, // ADR-0069 A7: aligns with config chain default memory.similarityThreshold
   maxPatterns: 10000,
   enableTrajectoryTracking: true,

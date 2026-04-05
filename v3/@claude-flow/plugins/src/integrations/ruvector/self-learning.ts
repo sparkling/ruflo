@@ -36,6 +36,16 @@ function readNormalizedEwcLambda(fallback: number): number {
   return fallback;
 }
 
+// ADR-0069 A8: config-chain learning rate
+function readLearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const val = cfg?.neural?.defaultLearningRate;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch { /* use fallback */ }
+  return fallback;
+}
+
 // ============================================================================
 // Query Analysis Types
 // ============================================================================
@@ -620,7 +630,7 @@ export class QueryOptimizer {
       ewcLambda: readNormalizedEwcLambda(0.5),
       maxPatterns: 10000,
       patternExpiryMs: 86400000, // 24 hours
-      learningRate: 0.01,
+      learningRate: readLearningRate(0.01),
       momentum: 0.9,
       ...config,
     };
@@ -1579,7 +1589,7 @@ export class PatternRecognizer {
       ewcLambda: readNormalizedEwcLambda(0.5),
       maxPatterns: 10000,
       patternExpiryMs: 86400000,
-      learningRate: 0.01,
+      learningRate: readLearningRate(0.01),
       momentum: 0.9,
       ...config,
     };
@@ -2055,7 +2065,7 @@ export class LearningLoop {
       ewcLambda: readNormalizedEwcLambda(0.5),
       maxPatterns: 10000,
       patternExpiryMs: 86400000,
-      learningRate: 0.01,
+      learningRate: readLearningRate(0.01),
       momentum: 0.9,
       ...config,
     };
@@ -2362,7 +2372,7 @@ export const DEFAULT_LEARNING_CONFIG: LearningConfig = {
   ewcLambda: readNormalizedEwcLambda(0.5),
   maxPatterns: 10000,
   patternExpiryMs: 86400000,
-  learningRate: 0.01,
+  learningRate: readLearningRate(0.01),
   momentum: 0.9,
 };
 
@@ -2378,7 +2388,7 @@ export const HIGH_PERF_LEARNING_CONFIG: LearningConfig = {
   ewcLambda: 0,
   maxPatterns: 1000,
   patternExpiryMs: 3600000, // 1 hour
-  learningRate: 0.001,
+  learningRate: readLearningRate(0.001),
   momentum: 0.5,
 };
 

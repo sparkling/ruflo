@@ -178,8 +178,9 @@ export class SwarmCommunication extends EventEmitter {
       handoffsCompleted: 0,
     });
 
-    // Start cleanup interval (store reference to clear on shutdown)
-    this.cleanupTimer = setInterval(() => this.cleanup(), 60000);
+    // ADR-0069 A13: configurable cleanup interval
+    const cleanupMs = (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); return c?.memory?.cleanupIntervalMs ?? 60000; } catch { return 60000; } })();
+    this.cleanupTimer = setInterval(() => this.cleanup(), cleanupMs);
 
     // Listen for pattern storage to auto-broadcast
     if (this.config.autoBroadcastPatterns) {

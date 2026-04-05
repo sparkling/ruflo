@@ -149,7 +149,8 @@ const DEFAULT_EWC_CONFIG: EWCConfig = {
   importanceThreshold: 0.3,
   storagePath: path.join(process.cwd(), '.swarm', 'ewc-fisher.json'),
   onlineMode: true,
-  dimensions: 768
+  // ADR-0069: config-chain embedding dimension
+  dimensions: (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'embeddings.json'), 'utf-8')); return c?.dimension ?? 768; } catch { return 768; } })()
 };
 
 // ============================================================================

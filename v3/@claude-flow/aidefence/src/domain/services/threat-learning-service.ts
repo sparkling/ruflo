@@ -175,7 +175,8 @@ export class ThreatLearningService {
       namespace: this.namespace,
       query,
       k: options.k ?? 10,
-      minSimilarity: options.minSimilarity ?? 0.7,
+      // ADR-0069 A7: config-chain similarity threshold
+      minSimilarity: options.minSimilarity ?? (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); return c?.memory?.similarityThreshold; } catch { return undefined; } })() ?? 0.7,
     });
 
     return results.map(r => r.value as LearnedThreatPattern);
