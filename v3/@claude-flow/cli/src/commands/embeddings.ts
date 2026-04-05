@@ -656,7 +656,7 @@ const initCommand: Command = {
   name: 'init',
   description: 'Initialize embedding subsystem with ONNX model and hyperbolic config',
   options: [
-    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'all-mpnet-base-v2' }, // ADR-0069 A12: canonical model
+    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'Xenova/all-mpnet-base-v2' }, // ADR-0069 A12: canonical model
     { name: 'hyperbolic', type: 'boolean', description: 'Enable hyperbolic (Poincaré ball) embeddings', default: 'true' },
     { name: 'curvature', short: 'c', type: 'string', description: 'Poincaré ball curvature (use --curvature=-1 for negative)', default: '-1' },
     { name: 'download', short: 'd', type: 'boolean', description: 'Download model during init', default: 'true' },
@@ -673,7 +673,7 @@ const initCommand: Command = {
     { command: 'claude-flow embeddings init --dimension 768', description: 'Explicit dimension (skip model inference)' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const model = ctx.flags.model as string || 'all-mpnet-base-v2'; // ADR-0069 A12: canonical model
+    const model = ctx.flags.model as string || 'Xenova/all-mpnet-base-v2'; // ADR-0069 A12: canonical model
     const hyperbolic = ctx.flags.hyperbolic !== false;
     const download = ctx.flags.download !== false;
     const force = ctx.flags.force === true;
@@ -739,11 +739,9 @@ const initCommand: Command = {
       // ADR-0069: --dimension flag overrides model inference
       const dimension = ctx.flags.dimension as number
         || (model.includes('mpnet') || model.includes('bge-base') || model.includes('nomic') ? 768 : 384);
-      // Normalize model name to include Xenova/ prefix for consistency with config.json
-      const modelForJson = model.startsWith('Xenova/') ? model : `Xenova/${model}`;
       // ADR-0069: include maxElements in embeddings.json template
       const config = {
-        model: modelForJson,
+        model,
         modelPath: modelDir,
         dimension,
         hashFallbackDimension: 128,
@@ -843,7 +841,7 @@ const providersCommand: Command = {
       data: [
         { provider: 'OpenAI', model: 'text-embedding-3-small', dims: '1536', type: 'Cloud', status: output.success('Ready') },
         { provider: 'OpenAI', model: 'text-embedding-3-large', dims: '3072', type: 'Cloud', status: output.success('Ready') },
-        { provider: 'Transformers.js', model: 'all-MiniLM-L6-v2', dims: '384', type: 'Local', status: output.success('Ready') },
+        { provider: 'Transformers.js', model: 'Xenova/all-MiniLM-L6-v2', dims: '384', type: 'Local', status: output.success('Ready') },
         { provider: 'Agentic Flow', model: 'ONNX optimized', dims: '384', type: 'Local', status: output.success('Ready') },
         { provider: 'Mock', model: 'mock-embedding', dims: '384', type: 'Dev', status: output.dim('Dev only') },
       ],
@@ -1281,8 +1279,8 @@ const modelsCommand: Command = {
 
     // List models
     let models = [
-      { id: 'all-MiniLM-L6-v2', dimension: 384, size: '23MB', quantized: false, downloaded: true },
-      { id: 'all-mpnet-base-v2', dimension: 768, size: '110MB', quantized: false, downloaded: false },
+      { id: 'Xenova/all-MiniLM-L6-v2', dimension: 384, size: '23MB', quantized: false, downloaded: true },
+      { id: 'Xenova/all-mpnet-base-v2', dimension: 768, size: '110MB', quantized: false, downloaded: false },
       { id: 'paraphrase-MiniLM-L3-v2', dimension: 384, size: '17MB', quantized: false, downloaded: false },
     ];
 

@@ -396,7 +396,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
     // Handle --with-embeddings
     const withEmbeddings = ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings;
     // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
-    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || 'all-mpnet-base-v2') as string;
+    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || 'Xenova/all-mpnet-base-v2') as string;
 
     if (withEmbeddings) {
       output.writeln();
@@ -618,13 +618,13 @@ const wizardCommand: Command = {
       });
 
       // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
-      let embeddingModel = 'all-mpnet-base-v2';
+      let embeddingModel = 'Xenova/all-mpnet-base-v2';
       if (enableEmbeddings) {
         embeddingModel = await select({
           message: 'Select embedding model:',
           options: [
-            { value: 'all-mpnet-base-v2', label: 'MPNet Base (768d)', hint: 'Higher quality (recommended)' },
-            { value: 'all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, lower memory' },
+            { value: 'Xenova/all-mpnet-base-v2', label: 'MPNet Base (768d)', hint: 'Higher quality (recommended)' },
+            { value: 'Xenova/all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, lower memory' },
           ],
         });
       }
@@ -1078,8 +1078,8 @@ export const initCommand: Command = {
       name: 'embedding-model',
       description: 'ONNX embedding model to use',
       type: 'string',
-      default: 'all-mpnet-base-v2', // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
-      choices: ['all-mpnet-base-v2', 'all-MiniLM-L6-v2'],
+      default: 'Xenova/all-mpnet-base-v2', // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
+      choices: ['Xenova/all-mpnet-base-v2', 'Xenova/all-MiniLM-L6-v2'],
     },
     {
       name: 'codex',

@@ -145,7 +145,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
             dimension: embJson.dimension ?? 768,
-            embeddingModel: embJson.model ?? 'all-mpnet-base-v2',
+            embeddingModel: embJson.model ?? 'Xenova/all-mpnet-base-v2',
             hnswM: embJson.hnsw?.m ?? 23,
             hnswEfConstruction: embJson.hnsw?.efConstruction ?? 100,
             hnswEfSearch: embJson.hnsw?.efSearch ?? 50,
