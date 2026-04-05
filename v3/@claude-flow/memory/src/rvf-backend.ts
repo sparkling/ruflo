@@ -13,6 +13,7 @@ import type {
   MemoryType,
 } from './types.js';
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
+import { deriveHNSWParams } from './hnsw-utils.js';
 
 /** Validate a file path is safe (no null bytes, no traversal above root) */
 function validatePath(p: string): void {
@@ -48,7 +49,7 @@ interface RvfHeader {
 
 const MAGIC = 'RVF\0';
 const VERSION = 1;
-const DEFAULT_DIMENSIONS = 1536;
+const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_M = 16;
 const DEFAULT_EF_CONSTRUCTION = 200;
 const DEFAULT_MAX_ELEMENTS = 100000;
@@ -72,13 +73,14 @@ export class RvfBackend implements IMemoryBackend {
     if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 10000) {
       throw new Error(`Invalid dimensions: ${dimensions}. Must be an integer between 1 and 10000.`);
     }
+    const derived = deriveHNSWParams(dimensions);
     this.config = {
       databasePath: config.databasePath,
       dimensions,
       metric: config.metric ?? 'cosine',
       quantization: config.quantization ?? 'fp32',
-      hnswM: config.hnswM ?? DEFAULT_M,
-      hnswEfConstruction: config.hnswEfConstruction ?? DEFAULT_EF_CONSTRUCTION,
+      hnswM: config.hnswM ?? derived.M,
+      hnswEfConstruction: config.hnswEfConstruction ?? derived.efConstruction,
       maxElements: config.maxElements ?? DEFAULT_MAX_ELEMENTS,
       verbose: config.verbose ?? false,
       defaultNamespace: config.defaultNamespace ?? 'default',

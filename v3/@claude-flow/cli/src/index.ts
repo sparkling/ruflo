@@ -241,6 +241,12 @@ export class CLI {
         if (result && !result.success) {
           process.exit(result.exitCode || 1);
         }
+
+        // Fix #1428: ONNX worker threads keep the event loop alive after
+        // embedding operations. Force-exit after a short delay to allow
+        // final I/O to flush. This replaces the per-command workaround
+        // that was only applied to `memory init`.
+        setTimeout(() => process.exit(0), 500).unref();
       } else {
         // No action - show command help
         this.showCommandHelp(commandName);

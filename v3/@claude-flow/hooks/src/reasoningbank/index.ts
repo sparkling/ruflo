@@ -152,12 +152,22 @@ async function resolveReasoningBankDefaults(): Promise<ReasoningBankConfig> {
           hnswEfSearch = hnsw.efSearch;
         }
       } catch { /* @claude-flow/memory not available */ }
+      // ADR-0069 A11: config-chain dedup threshold
+      let dedupThreshold = FALLBACK_CONFIG.dedupThreshold;
+      try {
+        const { readFileSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const _cfg = JSON.parse(readFileSync(
+          join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+        dedupThreshold = _cfg.memory?.dedupThreshold ?? dedupThreshold;
+      } catch { /* use fallback */ }
       _rbResolvedDefaults = {
         ...FALLBACK_CONFIG,
         dimensions: dim,
         hnswM,
         hnswEfConstruction,
         hnswEfSearch,
+        dedupThreshold,
       };
       return _rbResolvedDefaults;
     }

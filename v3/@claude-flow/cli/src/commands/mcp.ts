@@ -102,7 +102,8 @@ const startCommand: Command = {
     { command: 'claude-flow mcp start -f', description: 'Force restart (kill existing)' }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const port = (ctx.flags.port as number) ?? 3000;
+    // ADR-0069 A6: config-chain ports
+    const port = (ctx.flags.port as number) ?? parseInt(process.env.MCP_PORT || '', 10) || 3000;
     const host = (ctx.flags.host as string) ?? 'localhost';
     const transport = (ctx.flags.transport as 'stdio' | 'http' | 'websocket') ?? 'stdio';
     const tools = (ctx.flags.tools as string) || 'all';

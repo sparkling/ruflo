@@ -9,6 +9,8 @@
  * @version 1.0.0
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type {
   VectorIndexType,
   DistanceMetric,
@@ -16,6 +18,23 @@ import type {
   QueryStats,
   VectorSearchOptions,
 } from './types.js';
+
+// ADR-0069 A5: config-chain EWC lambda
+// This module uses normalized [0,1] scale, not absolute weight.
+// config.json neural.ewcLambda is absolute (e.g. 2000).
+// Conversion: normalized = absolute / 4000
+function readNormalizedEwcLambda(fallback: number): number {
+  try {
+    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const val = parsed?.neural?.ewcLambda;
+    if (typeof val === 'number' && val > 0) return val / 4000;
+  } catch {
+    // Config not found or unreadable — use fallback
+  }
+  return fallback;
+}
 
 // ============================================================================
 // Query Analysis Types
@@ -597,7 +616,8 @@ export class QueryOptimizer {
       enableBackgroundLearning: true,
       backgroundLearningIntervalMs: 60000,
       enableEWC: true,
-      ewcLambda: 0.5,
+      // ADR-0069 A5: normalized [0,1] scale; absolute config.json value / 4000
+      ewcLambda: readNormalizedEwcLambda(0.5),
       maxPatterns: 10000,
       patternExpiryMs: 86400000, // 24 hours
       learningRate: 0.01,
@@ -1555,7 +1575,8 @@ export class PatternRecognizer {
       enableBackgroundLearning: true,
       backgroundLearningIntervalMs: 60000,
       enableEWC: true,
-      ewcLambda: 0.5,
+      // ADR-0069 A5: normalized [0,1] scale; absolute config.json value / 4000
+      ewcLambda: readNormalizedEwcLambda(0.5),
       maxPatterns: 10000,
       patternExpiryMs: 86400000,
       learningRate: 0.01,
@@ -2030,7 +2051,8 @@ export class LearningLoop {
       enableBackgroundLearning: true,
       backgroundLearningIntervalMs: 60000,
       enableEWC: true,
-      ewcLambda: 0.5,
+      // ADR-0069 A5: normalized [0,1] scale; absolute config.json value / 4000
+      ewcLambda: readNormalizedEwcLambda(0.5),
       maxPatterns: 10000,
       patternExpiryMs: 86400000,
       learningRate: 0.01,
@@ -2336,7 +2358,8 @@ export const DEFAULT_LEARNING_CONFIG: LearningConfig = {
   enableBackgroundLearning: true,
   backgroundLearningIntervalMs: 60000,
   enableEWC: true,
-  ewcLambda: 0.5,
+  // ADR-0069 A5: normalized [0,1] scale; absolute config.json value / 4000
+  ewcLambda: readNormalizedEwcLambda(0.5),
   maxPatterns: 10000,
   patternExpiryMs: 86400000,
   learningRate: 0.01,

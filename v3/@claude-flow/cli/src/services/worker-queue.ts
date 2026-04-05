@@ -118,7 +118,7 @@ export interface WorkerRegistration {
 // ============================================
 
 const DEFAULT_CONFIG: WorkerQueueConfig = {
-  redisUrl: 'redis://localhost:6379',
+  redisUrl: process.env.REDIS_URL || 'redis://localhost:6379', // ADR-0069 A6: config-chain ports
   queuePrefix: 'claude-flow:queue',
   defaultTimeoutMs: 300000, // 5 minutes
   maxRetries: 3,

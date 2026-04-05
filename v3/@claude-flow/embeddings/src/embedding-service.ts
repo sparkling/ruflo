@@ -111,15 +111,18 @@ abstract class BaseEmbeddingService extends EventEmitter implements IEmbeddingSe
 
   constructor(protected readonly config: EmbeddingConfig) {
     super();
-    this.cache = new LRUCache(config.cacheSize ?? 1000);
+    // ADR-0069 A9: consistent default cache size across embedding services
+    const cacheSize = config.cacheSize ?? 1000;
+    this.cache = new LRUCache(cacheSize);
     this.normalizationType = config.normalization ?? 'none';
 
     // Initialize persistent cache if configured
+    // ADR-0069 A9: persistent cache inherits cacheSize unless explicitly overridden
     if (config.persistentCache?.enabled) {
       const pcConfig: PersistentCacheConfig = config.persistentCache;
       this.persistentCache = new PersistentEmbeddingCache({
         dbPath: pcConfig.dbPath ?? '.cache/embeddings.db',
-        maxSize: pcConfig.maxSize ?? 10000,
+        maxSize: pcConfig.maxSize ?? cacheSize,
         ttlMs: pcConfig.ttlMs,
       });
     }
@@ -481,7 +484,7 @@ export class MockEmbeddingService extends BaseEmbeddingService {
     const fullConfig: MockEmbeddingConfig = {
       provider: 'mock',
       dimensions: config.dimensions ?? 384,
-      cacheSize: config.cacheSize ?? 1000,
+      cacheSize: config.cacheSize ?? 1000, // ADR-0069 A9: consistent default
       simulatedLatency: config.simulatedLatency ?? 0,
       enableCache: config.enableCache ?? true,
     };

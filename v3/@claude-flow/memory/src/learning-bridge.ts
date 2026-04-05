@@ -10,6 +10,8 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { IMemoryBackend, MemoryEntry, SONAMode } from './types.js';
 import type { MemoryInsight, InsightCategory } from './auto-memory-bridge.js';
 
@@ -37,6 +39,8 @@ export interface LearningBridgeConfig {
   ewcLambda?: number;
   /** Min active trajectories before consolidation runs (default: 10) */
   consolidationThreshold?: number;
+  /** Embedding dimension (default: 768). Should match the registry/HNSW index dimension. */
+  dimension?: number;
   /** Enable the bridge (default: true). When false all methods are no-ops */
   enabled?: boolean;
   /**
@@ -81,13 +85,27 @@ type ResolvedConfig = Required<Omit<LearningBridgeConfig, 'neuralLoader'>> & {
   neuralLoader?: NeuralLoader;
 };
 
+// ADR-0069 A5: config-chain EWC lambda
+function readEwcLambdaFromConfig(fallback: number): number {
+  try {
+    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const val = parsed?.neural?.ewcLambda;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch {
+    // Config not found or unreadable — use fallback
+  }
+  return fallback;
+}
+
 const DEFAULT_CONFIG: ResolvedConfig = {
   sonaMode: 'balanced',
   confidenceDecayRate: 0.005,
   accessBoostAmount: 0.03,
   maxConfidence: 1.0,
   minConfidence: 0.1,
-  ewcLambda: 2000,
+  ewcLambda: readEwcLambdaFromConfig(2000), // ADR-0069 A5: config-chain EWC lambda
   consolidationThreshold: 10,
   enabled: true,
 };
@@ -422,11 +440,12 @@ export class LearningBridge extends EventEmitter {
    * This is a lightweight stand-in for a real embedding model,
    * suitable for pattern matching within the neural trajectory system.
    */
-  private createHashEmbedding(text: string, dimensions: number = 768): Float32Array {
-    const embedding = new Float32Array(dimensions);
+  private createHashEmbedding(text: string, dimensions?: number): Float32Array {
+    const dim = dimensions ?? this.config?.dimension ?? 768;
+    const embedding = new Float32Array(dim);
     const normalized = text.toLowerCase().trim();
 
-    for (let i = 0; i < dimensions; i++) {
+    for (let i = 0; i < dim; i++) {
       let hash = 0;
       for (let j = 0; j < normalized.length; j++) {
         hash = ((hash << 5) - hash + normalized.charCodeAt(j) * (i + 1)) | 0;
@@ -435,13 +454,13 @@ export class LearningBridge extends EventEmitter {
     }
 
     let norm = 0;
-    for (let i = 0; i < dimensions; i++) {
+    for (let i = 0; i < dim; i++) {
       norm += embedding[i] * embedding[i];
     }
     norm = Math.sqrt(norm);
 
     if (norm > 0) {
-      for (let i = 0; i < dimensions; i++) {
+      for (let i = 0; i < dim; i++) {
         embedding[i] /= norm;
       }
     }

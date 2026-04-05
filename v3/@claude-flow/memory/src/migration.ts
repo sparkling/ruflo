@@ -27,8 +27,10 @@ import { AgentDBAdapter } from './agentdb-adapter.js';
 /**
  * Default migration configuration
  */
+// ADR-0069 A10: aligned batch size with rvf-migration.ts (500 is more efficient
+// for bulk operations). Override via config.json memory.migrationBatchSize.
 const DEFAULT_MIGRATION_CONFIG: Partial<MigrationConfig> = {
-  batchSize: 100,
+  batchSize: 500,
   generateEmbeddings: true,
   validateData: true,
   continueOnError: true,

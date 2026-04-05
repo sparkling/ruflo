@@ -146,10 +146,11 @@ export class RvfEmbeddingService extends EventEmitter implements IEmbeddingServi
     this.normalizationType = config.normalization ?? 'none';
 
     // Initialize persistent RVF cache if a path is provided
+    // ADR-0069 A9: use consistent cache size for both in-memory and persistent caches
     if (config.cachePath) {
       this.persistentCache = new RvfEmbeddingCache({
         cachePath: config.cachePath,
-        maxSize: config.cacheSize ?? 10000,
+        maxSize: config.cacheSize ?? DEFAULT_CACHE_SIZE,
         dimensions: this.dimensions,
       });
     }

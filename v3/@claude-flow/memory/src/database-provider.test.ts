@@ -33,12 +33,8 @@ describe('DatabaseProvider', () => {
       expect(info).toHaveProperty('isLinux');
       expect(info).toHaveProperty('recommendedProvider');
 
-      // Should recommend sql.js on Windows, better-sqlite3 on Unix
-      if (info.isWindows) {
-        expect(info.recommendedProvider).toBe('sql.js');
-      } else {
-        expect(info.recommendedProvider).toBe('better-sqlite3');
-      }
+      // Should always recommend better-sqlite3 (RVF is the cross-platform fallback)
+      expect(info.recommendedProvider).toBe('better-sqlite3');
     });
   });
 
@@ -47,11 +43,10 @@ describe('DatabaseProvider', () => {
       const available = await getAvailableProviders();
 
       expect(available).toHaveProperty('betterSqlite3');
-      expect(available).toHaveProperty('sqlJs');
-      expect(available).toHaveProperty('json');
+      expect(available).toHaveProperty('rvf');
 
-      // JSON backend should always be available
-      expect(available.json).toBe(true);
+      // RVF backend should always be available
+      expect(available.rvf).toBe(true);
     });
   });
 
@@ -85,38 +80,6 @@ describe('DatabaseProvider', () => {
   });
 
   describe('Explicit Provider Selection', () => {
-    it('should create database with sql.js provider', async () => {
-      const available = await getAvailableProviders();
-
-      if (!available.sqlJs) {
-        console.log('sql.js not available, skipping test');
-        return;
-      }
-
-      const db = await createDatabase(':memory:', {
-        provider: 'sql.js',
-        verbose: false,
-      });
-
-      expect(db).toBeDefined();
-
-      // Test basic operations
-      const entry = createDefaultEntry({
-        key: 'sqljs-test',
-        content: 'testing sql.js backend',
-        namespace: 'test',
-      });
-
-      await db.store(entry);
-      await expect(db.count()).resolves.toBe(1);
-
-      const retrieved = await db.get(entry.id);
-      expect(retrieved).toBeDefined();
-      expect(retrieved?.key).toBe('sqljs-test');
-
-      await db.shutdown();
-    });
-
     it('should create database with better-sqlite3 provider', async () => {
       const available = await getAvailableProviders();
 
@@ -149,40 +112,15 @@ describe('DatabaseProvider', () => {
       await db.shutdown();
     });
 
-    it('should create database with JSON provider', async () => {
-      const db = await createDatabase(testDbPath, {
-        provider: 'json',
-        verbose: false,
-      });
-
-      expect(db).toBeDefined();
-
-      // Test basic operations
-      const entry = createDefaultEntry({
-        key: 'json-test',
-        content: 'testing JSON backend',
-        namespace: 'test',
-      });
-
-      await db.store(entry);
-      await expect(db.count()).resolves.toBe(1);
-
-      const retrieved = await db.get(entry.id);
-      expect(retrieved).toBeDefined();
-      expect(retrieved?.key).toBe('json-test');
-
-      await db.shutdown();
-    });
   });
 
   describe('Cross-Platform Functionality', () => {
     it('should handle CRUD operations consistently across providers', async () => {
       const available = await getAvailableProviders();
-      const providers: Array<'better-sqlite3' | 'sql.js' | 'json'> = [];
+      const providers: Array<'better-sqlite3' | 'rvf'> = [];
 
       if (available.betterSqlite3) providers.push('better-sqlite3');
-      if (available.sqlJs) providers.push('sql.js');
-      providers.push('json'); // Always available
+      providers.push('rvf'); // Always available
 
       for (const provider of providers) {
         const db = await createDatabase(':memory:', { provider });

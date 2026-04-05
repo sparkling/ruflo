@@ -15,7 +15,7 @@ export interface RvfMigrationOptions {
   verbose?: boolean;
   /** Entries per batch (default 500). */
   batchSize?: number;
-  /** Embedding dimensions for target RVF file (default 1536). */
+  /** Embedding dimensions for target RVF file (default 768). */
   dimensions?: number;
   onProgress?: (progress: { current: number; total: number; phase: string }) => void;
 }
@@ -147,8 +147,9 @@ async function migrateBatches(
   options: RvfMigrationOptions,
   normalize?: (r: Record<string, unknown>) => Record<string, unknown>,
 ): Promise<{ migrated: number; errors: string[] }> {
+  // ADR-0069 A10: default 500 — aligned with migration.ts DEFAULT_MIGRATION_CONFIG
   const batchSize = options.batchSize ?? 500;
-  const dimensions = options.dimensions ?? 1536;
+  const dimensions = options.dimensions ?? 768;
   const backend = new RvfBackend({ databasePath: rvfPath, dimensions, verbose: options.verbose });
   await backend.initialize();
   let migrated = 0;

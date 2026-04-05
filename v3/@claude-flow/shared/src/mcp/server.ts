@@ -49,7 +49,7 @@ const DEFAULT_CONFIG: Partial<MCPServerConfig> = {
   version: '3.0.0',
   transport: 'stdio',
   host: 'localhost',
-  port: 3000,
+  port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
   enableMetrics: true,
   enableCaching: true,
   cacheTTL: 10000,

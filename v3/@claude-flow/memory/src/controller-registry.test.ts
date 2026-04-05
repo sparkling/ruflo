@@ -229,9 +229,13 @@ describe('ControllerRegistry', () => {
       expect(level3?.controllers).toContain('reflexion');
     });
 
-    it('should include causal controllers in level 4', () => {
+    it('should include causalGraph in level 3 (ADR-0062 P0-1)', () => {
+      const level3 = INIT_LEVELS.find((l) => l.level === 3);
+      expect(level3?.controllers).toContain('causalGraph');
+    });
+
+    it('should include nightlyLearner in level 4 (ADR-0062 P0-1)', () => {
       const level4 = INIT_LEVELS.find((l) => l.level === 4);
-      expect(level4?.controllers).toContain('causalGraph');
       expect(level4?.controllers).toContain('nightlyLearner');
     });
 

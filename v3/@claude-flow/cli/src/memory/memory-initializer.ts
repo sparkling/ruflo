@@ -68,8 +68,8 @@ export const MEMORY_SCHEMA_V3 = `
 -- Version: 3.0.0
 -- Features: Pattern learning, vector embeddings, temporal decay, migration tracking
 
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
+-- ADR-0069 A1: journal_mode and synchronous are now applied at runtime
+-- via the config chain (sqlite-backend / controller-registry), not here.
 PRAGMA foreign_keys = ON;
 
 -- ============================================

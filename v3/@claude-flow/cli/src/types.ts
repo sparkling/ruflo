@@ -114,6 +114,10 @@ export interface MemoryConfig {
   cacheSize: number;
   enableHNSW: boolean;
   vectorDimension: number;
+  tieredCache?: {
+    maxSize?: number;
+    ttl?: number;
+  };
 }
 
 export interface MCPConfig {

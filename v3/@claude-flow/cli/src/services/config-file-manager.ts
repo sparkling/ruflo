@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: Record<string, unknown> = {
   },
   mcp: {
     serverHost: 'localhost',
-    serverPort: 3000,
+    serverPort: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
     autoStart: false,
     transportType: 'stdio',
     tools: [],

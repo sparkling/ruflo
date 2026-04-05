@@ -1143,7 +1143,8 @@ export function createSwarmWorker(projectRoot: string): WorkerHandler {
     }
 
     // Check for queue messages
-    const queuePath = path.join(projectRoot, '.claude-flow', 'swarm', 'queue');
+    // ADR-0069 A4: standardized on .swarm
+    const queuePath = path.join(projectRoot, '.swarm', 'queue');
     let queueCount = 0;
     try {
       const files = await fs.readdir(queuePath);

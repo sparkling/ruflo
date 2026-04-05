@@ -675,7 +675,16 @@ export class SONAAdapter extends EventEmitter {
           patternsArray[j].pattern
         );
 
-        if (similarity > 0.95) {
+        // ADR-0069 A11: config-chain dedup threshold
+        let _sonaDedupThreshold = 0.95;
+        try {
+          const _fs = require('fs');
+          const _path = require('path');
+          const _cfg = JSON.parse(_fs.readFileSync(
+            _path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+          _sonaDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
+        } catch { /* use default */ }
+        if (similarity > _sonaDedupThreshold) { // ADR-0069 A11: was hardcoded 0.95
           // Merge into pattern with higher confidence
           if (patternsArray[i].confidence >= patternsArray[j].confidence) {
             patternsArray[i].usageCount += patternsArray[j].usageCount;

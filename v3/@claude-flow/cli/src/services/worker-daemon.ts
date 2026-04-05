@@ -82,6 +82,7 @@ export interface DaemonConfig {
   stateFile: string;
   maxConcurrent: number;
   workerTimeoutMs: number;
+  headless?: boolean; // Enable headless worker execution (requires claude CLI on PATH)
   resourceThresholds: {
     maxCpuLoad: number;
     minFreeMemoryPercent: number;
@@ -182,10 +183,14 @@ export class WorkerDaemon extends EventEmitter {
     // Initialize worker states
     this.initializeWorkerStates();
 
-    // Initialize headless executor (async, non-blocking)
-    this.initHeadlessExecutor().catch((err) => {
-      this.log('warn', `Headless executor init failed: ${err}`);
-    });
+    // Initialize headless executor only when explicitly opted in via --headless flag.
+    // Without this gate, workers silently spawn full claude processes (~250MB each)
+    // on any machine where claude is installed, even though local fallbacks exist.
+    if (this.config.headless) {
+      this.initHeadlessExecutor().catch((err) => {
+        this.log('warn', `Headless executor init failed: ${err}`);
+      });
+    }
   }
 
   /**
@@ -543,6 +548,19 @@ export class WorkerDaemon extends EventEmitter {
       });
       await this.ipcServer.start();
       this.log('info', `IPC server listening on ${this.ipcServer.socketPath}`);
+
+      // ADR-0064: Pre-warm the memory bridge AND embedder so first IPC call
+      // doesn't pay cold-start penalty. bridgeSearchEntries exercises the full
+      // path: ControllerRegistry + AgentDB + Transformers.js init + first
+      // embed() call (ONNX/WASM JIT warmup). Without this, the first
+      // memory.search call takes 8-15s, exceeding typical IPC timeouts.
+      try {
+        const { bridgeSearchEntries } = await import('../memory/memory-bridge.js');
+        await bridgeSearchEntries({ query: 'warmup', limit: 1 });
+        this.log('info', 'Memory bridge pre-warmed (including embedder)');
+      } catch {
+        this.log('info', 'Memory bridge pre-warm skipped (non-fatal)');
+      }
     } catch (err: any) {
       this.log('warn', `IPC server failed to start: ${err.message}`);
       // Non-fatal: daemon still works, hooks fall back to direct RVF

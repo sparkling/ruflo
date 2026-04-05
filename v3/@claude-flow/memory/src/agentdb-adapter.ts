@@ -102,6 +102,7 @@ async function resolveEmbeddingDefaults(): Promise<AgentDBAdapterConfig> {
         const embCfg = agentdbModule.getEmbeddingConfig();
         const dim = embCfg.dimension || FALLBACK_CONFIG.dimensions;
         const hnsw = deriveHNSWParams(dim);
+        // ADR-0069: config-chain capacity — resolve maxElements into HNSW params
         _resolvedDefaults = {
           ...FALLBACK_CONFIG,
           dimensions: dim,
@@ -556,7 +557,7 @@ export class AgentDBAdapter extends EventEmitter implements IMemoryBackend {
   /**
    * Bulk delete entries (OPTIMIZED: parallel deletion)
    */
-  async bulkDelete(ids: string[]): Promise<number> {
+  async bulkDelete(ids: string[], options?: { batchSize?: number }): Promise<number> {
     const startTime = performance.now();
     let deleted = 0;
 
@@ -567,8 +568,8 @@ export class AgentDBAdapter extends EventEmitter implements IMemoryBackend {
       }
     }
 
-    // Process deletions in parallel batches
-    const batchSize = 100;
+    // ADR-0069 A10: respect caller's batchSize (matches bulkInsert at line ~492)
+    const batchSize = options?.batchSize || 100;
     for (let i = 0; i < ids.length; i += batchSize) {
       const batch = ids.slice(i, i + batchSize);
       const results = await Promise.all(batch.map(async (id) => {

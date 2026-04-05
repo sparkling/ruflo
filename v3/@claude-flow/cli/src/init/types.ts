@@ -392,7 +392,7 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     ruvSwarm: false,
     flowNexus: false,
     autoStart: false,
-    port: 3000,
+    port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
   },
   runtime: {
     topology: 'hierarchical-mesh',
@@ -523,7 +523,7 @@ export const FULL_INIT_OPTIONS: InitOptions = {
     ruvSwarm: true,
     flowNexus: true,
     autoStart: false,
-    port: 3000,
+    port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
   },
   embeddings: {
     enabled: true,
