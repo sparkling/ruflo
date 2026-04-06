@@ -688,10 +688,33 @@ function consolidate() {
     entries: rankedEntries,
   });
 
-  // 8. Persist updated store (deduped or with new insight entries)
-  if (newEntries > 0 || store.length < preDedupCount) writeJSON(STORE_PATH, store);
+  // 8. ADR-0074 Phase 3: Evict stale entries + cap at 2000
+  const MAX_STORE_ENTRIES = 2000;
+  const EVICTION_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+  const now = Date.now();
+  const preEvictCount = store.length;
+  store = store.filter(entry => {
+    const confidence = nodes[entry.id] ? nodes[entry.id].confidence : 0.5;
+    const accessCount = nodes[entry.id] ? nodes[entry.id].accessCount : 0;
+    const age = now - (entry.createdAt || now);
+    // Evict: confidence <= 0.05 AND age > 30 days AND never accessed
+    if (confidence <= 0.05 && age > EVICTION_AGE_MS && accessCount === 0) return false;
+    return true;
+  });
+  // If still over cap, drop lowest-ranked entries
+  if (store.length > MAX_STORE_ENTRIES) {
+    const ranked = store.map(e => ({
+      entry: e,
+      score: 0.6 * (pageRanks[e.id] || 0) + 0.4 * (nodes[e.id] ? nodes[e.id].confidence : 0.5),
+    })).sort((a, b) => b.score - a.score);
+    store = ranked.slice(0, MAX_STORE_ENTRIES).map(r => r.entry);
+  }
+  const evicted = preEvictCount - store.length;
 
-  // 9. Save snapshot for delta tracking
+  // 9. Persist updated store (deduped, evicted, or with new insight entries)
+  if (newEntries > 0 || store.length < preDedupCount || evicted > 0) writeJSON(STORE_PATH, store);
+
+  // 10. Save snapshot for delta tracking
   const updatedGraph = readJSON(GRAPH_PATH);
   const updatedRanked = readJSON(RANKED_PATH);
   saveSnapshot(updatedGraph, updatedRanked);
@@ -700,6 +723,7 @@ function consolidate() {
     entries: store.length,
     edges: edges.length,
     newEntries,
+    evicted,
     message: 'Consolidated',
   };
 }

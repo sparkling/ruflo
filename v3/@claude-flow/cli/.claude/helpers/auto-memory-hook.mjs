@@ -152,15 +152,18 @@ async function loadMemoryPackage() {
     return await import('@claude-flow/memory');
   } catch { /* fall through */ }
 
-  // Strategy 4: Walk up from PROJECT_ROOT looking for @claude-flow/memory in any node_modules
+  // Strategy 4: Walk up from PROJECT_ROOT looking for memory package in any node_modules
+  // ADR-0074 Phase 1a: check @sparkleideas/memory (published scope) AND @claude-flow/memory (dev scope)
   let searchDir = PROJECT_ROOT;
   const { parse } = await import('path');
   while (searchDir !== parse(searchDir).root) {
-    const candidate = join(searchDir, 'node_modules', '@claude-flow', 'memory', 'dist', 'index.js');
-    if (existsSync(candidate)) {
-      try {
-        return await import(`file://${candidate}`);
-      } catch { /* fall through */ }
+    for (const pkg of ['@sparkleideas/memory', '@claude-flow/memory']) {
+      const candidate = join(searchDir, 'node_modules', ...pkg.split('/'), 'dist', 'index.js');
+      if (existsSync(candidate)) {
+        try {
+          return await import(`file://${candidate}`);
+        } catch { /* fall through */ }
+      }
     }
     searchDir = dirname(searchDir);
   }
@@ -432,6 +435,46 @@ async function doSync() {
     success('Curated MEMORY.md index');
   } catch (err) {
     dim(`Sync failed (non-critical): ${err.message}`);
+  }
+
+  // ADR-0074 Phase 2: Drain CJS intelligence data into RvfBackend
+  // The CJS intelligence.cjs writes ranked-context.json with PageRank + confidence scores.
+  // This bridges the CJS/ESM silo by reading that JSON artifact and upserting into the
+  // persistent backend, so memory_search and agentdb_pattern_store can see intelligence data.
+  try {
+    const rankedPath = join(PROJECT_ROOT, '.claude-flow', 'data', 'ranked-context.json');
+    if (existsSync(rankedPath)) {
+      const ranked = JSON.parse(readFileSync(rankedPath, 'utf-8'));
+      const entries = ranked.entries || [];
+      if (entries.length > 0) {
+        const MAX_DRAIN = 500;
+        const toDrain = entries.slice(0, MAX_DRAIN);
+        let drained = 0;
+        for (const entry of toDrain) {
+          if (!entry.content && !entry.summary) continue;
+          try {
+            await backend.store({
+              key: entry.id || `intel-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              value: entry.content || entry.summary,
+              namespace: entry.category || 'intelligence',
+              metadata: {
+                source: 'cjs-intelligence-drain',
+                confidence: entry.confidence,
+                pageRank: entry.pageRank,
+                accessCount: entry.accessCount,
+                drainedAt: Date.now(),
+              },
+            });
+            drained++;
+          } catch { /* skip individual entry failures */ }
+        }
+        if (drained > 0) {
+          success(`Drained ${drained}/${entries.length} intelligence entries to backend (ADR-0074)`);
+        }
+      }
+    }
+  } catch (err) {
+    dim(`Intelligence drain skipped: ${err.message}`);
   }
 
   if (bridge.destroy) bridge.destroy();
