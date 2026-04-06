@@ -344,7 +344,9 @@ export class RvfBackend implements IMemoryBackend {
       if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
       if (entry.embedding && this.nativeDb) {
         const numId = this.assignNativeId(entry.id);
-        try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch {}
+        try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
+          if (this.config.verbose) console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
+        }
       }
       await this.appendToWal(entry);
     }
@@ -374,7 +376,9 @@ export class RvfBackend implements IMemoryBackend {
     }
     if (count > 0) {
       if (this.nativeDb && nativeIds.length > 0) {
-        try { this.nativeDb.delete(nativeIds); } catch {}
+        try { this.nativeDb.delete(nativeIds); } catch (err) {
+          if (this.config.verbose) console.error('[RvfBackend] Native bulk delete failed:', (err as Error).message);
+        }
       }
       this.dirty = true;
       // Truncate WAL BEFORE full rewrite — prevents resurrection on crash
@@ -774,8 +778,19 @@ export class RvfBackend implements IMemoryBackend {
           this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
           if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
           if (entry.embedding && this.nativeDb) {
+            // Remove stale native vector before re-ingest (mirrors HNSW fix above)
+            if (this.entries.has(entry.id)) {
+              const oldNumId = this.nativeIdMap.get(entry.id);
+              if (oldNumId !== undefined) {
+                try { this.nativeDb.delete([oldNumId]); } catch (err) {
+                  if (this.config.verbose) console.error('[RvfBackend] Native delete on WAL replay failed:', (err as Error).message);
+                }
+              }
+            }
             const numId = this.assignNativeId(entry.id);
-            try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch {}
+            try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
+              if (this.config.verbose) console.error('[RvfBackend] Native ingest on WAL replay failed:', (err as Error).message);
+            }
           }
           count++;
         } catch {
@@ -846,7 +861,9 @@ export class RvfBackend implements IMemoryBackend {
         if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
         if (entry.embedding && this.nativeDb) {
           const numId = this.assignNativeId(entry.id);
-          try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch {}
+          try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
+            if (this.config.verbose) console.error('[RvfBackend] Native ingest on load failed:', (err as Error).message);
+          }
         }
       }
     } catch (err) {
