@@ -1258,6 +1258,7 @@ export class ControllerRegistry extends EventEmitter {
           if (this.strictMode) throw err;
           return null;
         }
+      }
 
       case 'hybridSearch': {
         // BM25 + HNSW reciprocal rank fusion (ADR-0068 W4-3)
