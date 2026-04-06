@@ -17,6 +17,9 @@ import { dirname, join } from 'node:path';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
+// Fail-loud: warn once per process when embeddings.json is missing
+let _embeddingsJsonWarned = false;
+
 // ============================================================================
 // Persistence Configuration
 // ============================================================================
@@ -324,7 +327,7 @@ class LocalSonaCoordinator {
       const ewcModule = await import('./ewc-consolidation.js');
       // ADR-0069: pass config-chain embedding dimension to EWC
       let ewcDim = 768;
-      try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'embeddings.json'), 'utf-8')); ewcDim = c?.dimension ?? 768; } catch { console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.'); }
+      try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'embeddings.json'), 'utf-8')); ewcDim = c?.dimension ?? 768; } catch { if (!_embeddingsJsonWarned) { _embeddingsJsonWarned = true; console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.'); } }
       ewcConsolidator = await ewcModule.getEWCConsolidator({
         lambda: this.config.ewcLambda,
         dimensions: ewcDim

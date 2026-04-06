@@ -73,10 +73,17 @@ function findProjectRoot(): string {
   return process.cwd();
 }
 
+// Fail-loud: warn once per process when embeddings.json is missing
+let _embeddingsJsonWarned = false;
+
 function readJsonFile(filePath: string): Record<string, any> {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch {
+    if (!_embeddingsJsonWarned && filePath.endsWith('embeddings.json')) {
+      _embeddingsJsonWarned = true;
+      console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.');
+    }
     return {};
   }
 }

@@ -44,6 +44,9 @@ function getSwarmDir(): string {
 
 // ADR-065: Read embedding dimension & model from project embeddings.json
 // ADR-068 W2-5: Also reads HNSW tuning params (m, efConstruction, efSearch)
+// Fail-loud: warn once per process when embeddings.json is missing
+let _embeddingsJsonWarned = false;
+
 function readEmbeddingsConfig(): {
   dimension: number;
   model: string;
@@ -68,6 +71,10 @@ function readEmbeddingsConfig(): {
       dir = path.dirname(dir);
     }
   } catch { /* fall through */ }
+  if (!_embeddingsJsonWarned) {
+    _embeddingsJsonWarned = true;
+    console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.');
+  }
   return {
     dimension: 768,
     model: 'Xenova/all-mpnet-base-v2',
@@ -1615,7 +1622,12 @@ export async function loadEmbeddingModel(options?: {
                     modelDimensions = embConfig.dimension || 768;
                 }
             }
-        } catch { /* EM-001: embeddings.json may not exist — use defaults */ }
+        } catch {
+          if (!_embeddingsJsonWarned) {
+            _embeddingsJsonWarned = true;
+            console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.');
+          }
+        }
     }
     // EM-002: Set TRANSFORMERS_CACHE to user-writable path to prevent EACCES on global installs
     if (!process.env.TRANSFORMERS_CACHE) {
