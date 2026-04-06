@@ -282,10 +282,10 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
 
   // ADR-0069: new init flags for deployment-critical config
   const port = ctx.flags.port as number | undefined;
-  const similarityThreshold = ctx.flags['similarity-threshold']
-    ? parseFloat(ctx.flags['similarity-threshold'] as string)
+  const similarityThreshold = (ctx.flags.similarityThreshold ?? ctx.flags['similarity-threshold'])
+    ? parseFloat(String(ctx.flags.similarityThreshold ?? ctx.flags['similarity-threshold']))
     : undefined;
-  const maxAgents = ctx.flags['max-agents'] as number | undefined;
+  const maxAgents = (ctx.flags.maxAgents ?? ctx.flags['max-agents']) as number | undefined;
 
   if (port !== undefined) {
     options.mcp.port = port;
