@@ -25,7 +25,6 @@ import { MemoryGraph } from './memory-graph.js';
 import type { MemoryGraphConfig } from './memory-graph.js';
 import { TieredCacheManager } from './cache-manager.js';
 import type { CacheConfig } from './types.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ===== ADR-0049: Fail-Loud Error Classes =====
 
@@ -1899,7 +1898,7 @@ export class ControllerRegistry extends EventEmitter {
       };
     }
     // Use dimension from centralized embedding config (cached in initAgentDB)
-    const dim = this.embeddingDimension || this.config.dimension || EMBEDDING_DIM;
+    const dim = this.embeddingDimension || this.config.dimension || 768;
     // Return a minimal stub — HierarchicalMemory falls back to manualSearch without embeddings
     return {
       embed: async () => new Float32Array(this.resolvedDimension),

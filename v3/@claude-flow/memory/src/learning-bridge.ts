@@ -14,7 +14,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { IMemoryBackend, MemoryEntry, SONAMode } from './types.js';
 import type { MemoryInsight, InsightCategory } from './auto-memory-bridge.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ===== Types =====
 
@@ -112,7 +111,6 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   ewcLambda: readEwcLambdaFromConfig(2000), // ADR-0069 A5: config-chain EWC lambda
   consolidationThreshold: 10,
   enabled: true,
-  embeddingDim: EMBEDDING_DIM,
 };
 
 const MS_PER_HOUR = 3_600_000;

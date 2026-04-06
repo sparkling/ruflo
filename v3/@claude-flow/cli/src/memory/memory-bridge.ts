@@ -249,7 +249,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             // Merge hardcoded defaults with config.json controllers.enabled (ADR-0068 W4-5)
             controllers: {
               reasoningBank: true,
-              learningBridge: _lb.enabled !== false,
+              learningBridge: cfgJson.memory?.learningBridge?.enabled === true,
               tieredCache: true,
               hierarchicalMemory: true,
               memoryConsolidation: true,

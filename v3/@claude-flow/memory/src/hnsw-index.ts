@@ -13,7 +13,6 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 import {
   DistanceMetric,
   HNSWConfig,

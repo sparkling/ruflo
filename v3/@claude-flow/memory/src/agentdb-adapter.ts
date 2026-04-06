@@ -28,7 +28,6 @@ import {
 } from './types.js';
 import { HNSWIndex } from './hnsw-index.js';
 import { CacheManager } from './cache-manager.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 import { deriveHNSWParams } from './hnsw-utils.js';
 
 /**

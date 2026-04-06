@@ -13,7 +13,6 @@ import type {
   MemoryType,
 } from './types.js';
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 import { deriveHNSWParams } from './hnsw-utils.js';
 
 /** Validate a file path is safe (no null bytes, no traversal above root) */

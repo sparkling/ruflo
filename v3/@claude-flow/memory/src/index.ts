@@ -224,7 +224,6 @@ import {
 } from './types.js';
 import { AgentDBAdapter, AgentDBAdapterConfig } from './agentdb-adapter.js';
 import { MemoryMigrator } from './migration.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 
 /**
  * Configuration for UnifiedMemoryService

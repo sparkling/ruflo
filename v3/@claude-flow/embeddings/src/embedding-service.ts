@@ -34,7 +34,6 @@ import type {
 import { normalize } from './normalization.js';
 import { PersistentEmbeddingCache } from './persistent-cache.js';
 import { RvfEmbeddingService } from './rvf-embedding-service.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 
 // ============================================================================
 // Config-Chain Default — ADR-0069: wire embeddingCacheSize consumer
@@ -897,7 +896,7 @@ export function createEmbeddingService(config: EmbeddingConfig): IEmbeddingServi
       return new RvfEmbeddingService(config as RvfEmbeddingConfig);
     default:
       console.warn(`Unknown provider, using mock`);
-      return new MockEmbeddingService({ provider: 'mock', dimensions: EMBEDDING_DIM }); // ADR-0052
+      return new MockEmbeddingService({ provider: 'mock', dimensions: 384 });
   }
 }
 
@@ -952,7 +951,7 @@ export async function createEmbeddingServiceAsync(
     try {
       const service = new RvfEmbeddingService({
         provider: 'rvf',
-        dimensions: rest.dimensions ?? EMBEDDING_DIM, // ADR-0052
+        dimensions: rest.dimensions ?? 384,
         cacheSize: rest.cacheSize,
       });
       await service.embed('test');
@@ -1032,12 +1031,12 @@ export async function createEmbeddingServiceAsync(
       case 'rvf':
         return new RvfEmbeddingService({
           provider: 'rvf',
-          dimensions: rest.dimensions ?? EMBEDDING_DIM, // ADR-0052
+          dimensions: rest.dimensions ?? 384,
           cacheSize: rest.cacheSize,
         });
       case 'mock':
         return new MockEmbeddingService({
-          dimensions: rest.dimensions ?? EMBEDDING_DIM, // ADR-0052
+          dimensions: rest.dimensions ?? 384,
           cacheSize: rest.cacheSize,
         });
       default:
@@ -1072,7 +1071,7 @@ export async function getEmbedding(
 ): Promise<Float32Array | number[]> {
   const service = createEmbeddingService({
     provider: 'mock',
-    dimensions: EMBEDDING_DIM, // ADR-0052: matches embedding config default
+    dimensions: 384,
     ...config,
   } as EmbeddingConfig);
 

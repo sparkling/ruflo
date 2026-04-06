@@ -202,7 +202,7 @@ export const agentdbFeedback: MCPTool = {
 // ===== agentdb_causal_edge — Record causal relationships =====
 
 export const agentdbCausalEdge: MCPTool = {
-  name: 'agentdb_causal_edge',
+  name: 'agentdb_causal-edge',
   description: 'Record a causal edge between two memory entries via CausalMemoryGraph',
   inputSchema: {
     type: 'object',
@@ -941,43 +941,8 @@ export const agentdbCircuitStatus: MCPTool = {
   },
 };
 
-// ===== ADR-0047: agentdb_quantize_status =====
-
-export const agentdbQuantizeStatus: MCPTool = {
-  name: 'agentdb_quantize_status',
-  description: 'Get quantized vector store status including compression type, ratio, and entry count',
-  inputSchema: {
-    type: 'object',
-    properties: {},
-  },
-  handler: async () => {
-    try {
-      const bridge = await getBridge();
-      return await bridge.bridgeQuantizeStatus();
-    } catch (error) {
-      return { success: false, error: sanitizeError(error) };
-    }
-  },
-};
-
-// ===== ADR-0047: agentdb_health_report =====
-
-export const agentdbHealthReport: MCPTool = {
-  name: 'agentdb_health_report',
-  description: 'Get index health assessment with p95 latency, recall estimates, and HNSW parameter recommendations',
-  inputSchema: {
-    type: 'object',
-    properties: {},
-  },
-  handler: async () => {
-    try {
-      const bridge = await getBridge();
-      return await bridge.bridgeHealthReport();
-    } catch (error) {
-      return { success: false, error: sanitizeError(error) };
-    }
-  },
-};
+// agentdb_quantize_status — deferred (bridge not implemented)
+// agentdb_health_report  — deferred (bridge not implemented)
 
 // ===== agentdb_filtered_search — Metadata-filtered semantic search (ADR-0043) =====
 
@@ -1151,35 +1116,7 @@ export const agentdbTelemetrySpans: MCPTool = {
   },
 };
 
-// ===== ADR-0044: agentdb_attention_compute =====
-
-export const agentdbAttentionCompute: MCPTool = {
-  name: 'agentdb_attention_compute',
-  description: 'Compute attention-weighted search results using multi-head attention re-ranking',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'Search query' },
-      namespace: { type: 'string', description: 'Memory namespace' },
-      limit: { type: 'number', description: 'Max results (default 10)' },
-    },
-    required: ['query'],
-  },
-  handler: async (args: Record<string, unknown>) => {
-    try {
-      const bridge = await getBridge();
-      const query = validateString(args.query, 'query');
-      if (!query) return { success: false, error: 'query is required' };
-      return await bridge.bridgeAttentionSearch({
-        query,
-        namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
-        limit: validatePositiveInt(args.limit, 10, MAX_TOP_K),
-      });
-    } catch (error) {
-      return { success: false, error: sanitizeError(error) };
-    }
-  },
-};
+// agentdb_attention_compute — deferred (bridge not implemented)
 
 // ===== ADR-0044: agentdb_attention_benchmark =====
 
@@ -1495,13 +1432,12 @@ export const agentdbTools: MCPTool[] = [
   agentdbCircuitStatus,      // ADR-0042
   agentdbFilteredSearch,     // ADR-0043
   agentdbQueryStats,         // ADR-0043
-  agentdbQuantizeStatus,     // ADR-0047
-  agentdbHealthReport,       // ADR-0047
+  // agentdbQuantizeStatus / agentdbHealthReport — deferred (ADR-0047)
   agentdbEmbed,              // ADR-0045
   agentdbEmbedStatus,        // ADR-0045
   agentdbTelemetryMetrics,   // ADR-0045
   agentdbTelemetrySpans,     // ADR-0045
-  agentdbAttentionCompute,   // ADR-0044
+  // agentdbAttentionCompute — deferred (ADR-0044)
   agentdbAttentionBenchmark, // ADR-0044
   agentdbAttentionConfigure, // ADR-0044
   agentdbAttentionMetrics,   // ADR-0044

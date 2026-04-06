@@ -597,7 +597,7 @@ export const FULL_INIT_OPTIONS: InitOptions = {
     cacheSize: 384,
     sonaMode: 'balanced',
     maxNodes: 10000,
-    similarityThreshold: 0.25,
+    similarityThreshold: 0.7,
     learningBatchSize: 64,
     learningTickInterval: 10000,
     flashAttention: true,

@@ -30,7 +30,6 @@ import {
   CacheStats,
   HNSWStats,
 } from './types.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 import { deriveHNSWParams as deriveHNSWParamsShared } from './hnsw-utils.js';
 
 // ===== AgentDB Optional Import =====

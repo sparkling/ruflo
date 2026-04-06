@@ -9,7 +9,6 @@ import { dirname, resolve } from 'node:path';
 import { RvfBackend } from './rvf-backend.js';
 import type { MemoryEntry, MemoryType, AccessLevel } from './types.js';
 import { generateMemoryId } from './types.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
 
 /** Options for controlling the migration process. */
 export interface RvfMigrationOptions {
