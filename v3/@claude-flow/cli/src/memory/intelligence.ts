@@ -14,6 +14,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+
+// ADR-0076 Phase 2: lazily cache canonical cosineSimilarity at module load
+let _canonicalCosineSim: ((a: number[] | Float32Array, b: number[] | Float32Array) => number) | null = null;
+import('@claude-flow/memory').then(m => { _canonicalCosineSim = m.cosineSimilarity ?? null; }).catch(() => {});
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
@@ -590,12 +594,8 @@ class LocalReasoningBank {
    * Cosine similarity — delegates to canonical EmbeddingPipeline implementation
    */
   private cosineSim(a: number[], b: number[]): number {
-    // ADR-0076 Phase 2: use canonical cosineSimilarity from EmbeddingPipeline
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { cosineSimilarity } = require('@claude-flow/memory');
-      if (cosineSimilarity) return cosineSimilarity(a, b);
-    } catch { /* fall through to inline */ }
+    // ADR-0076 Phase 2: delegate to canonical cosineSimilarity when loaded
+    if (_canonicalCosineSim) return _canonicalCosineSim(a, b);
 
     if (!a || !b || a.length === 0 || b.length === 0) return 0;
 

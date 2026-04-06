@@ -3584,13 +3584,13 @@ export async function bridgeGraphRoPESearch(params: {
 
 // ===== Utility =====
 
+// ADR-0076 Phase 2: lazily cache canonical cosineSimilarity at module load
+let _canonicalCosineSim: ((a: number[] | Float32Array, b: number[] | Float32Array) => number) | null = null;
+import('@claude-flow/memory').then(m => { _canonicalCosineSim = m.cosineSimilarity ?? null; }).catch(() => {});
+
 function cosineSim(a: number[], b: number[]): number {
-  // ADR-0076 Phase 2: delegate to canonical cosineSimilarity when available
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { cosineSimilarity } = require('@claude-flow/memory');
-    if (cosineSimilarity) return cosineSimilarity(a, b);
-  } catch { /* fall through to inline */ }
+  // ADR-0076 Phase 2: delegate to canonical cosineSimilarity when loaded
+  if (_canonicalCosineSim) return _canonicalCosineSim(a, b);
 
   if (!a || !b || a.length === 0 || b.length === 0) return 0;
 

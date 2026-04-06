@@ -26,6 +26,7 @@ import type { MemoryGraphConfig } from './memory-graph.js';
 import { TieredCacheManager } from './cache-manager.js';
 import type { CacheConfig } from './types.js';
 import { getConfig } from './resolve-config.js';
+import { getPipeline } from './embedding-pipeline.js';
 
 // ===== ADR-0049: Fail-Loud Error Classes =====
 
@@ -1913,18 +1914,14 @@ export class ControllerRegistry extends EventEmitter {
     if (this.realEmbedder) return this.realEmbedder;
 
     // ADR-0076 Phase 2: Use EmbeddingPipeline singleton when available
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { getPipeline } = require('@claude-flow/memory');
-      const pipeline = getPipeline?.();
-      if (pipeline) {
-        return {
-          embed: async (text: string) => pipeline.embed(text),
-          embedBatch: async (texts: string[]) => Promise.all(texts.map((t: string) => pipeline.embed(t))),
-          initialize: async () => {},
-        };
-      }
-    } catch { /* pipeline not available */ }
+    const pipeline = getPipeline();
+    if (pipeline) {
+      return {
+        embed: async (text: string) => pipeline.embed(text),
+        embedBatch: async (texts: string[]) => Promise.all(texts.map((t: string) => pipeline.embed(t))),
+        initialize: async () => {},
+      };
+    }
 
     // If user provided an embedding generator, wrap it
     if (this.config.embeddingGenerator) {
