@@ -850,6 +850,22 @@ export const claimsTools: MCPTool[] = [
         }
       }
 
+      // When not a dry run, execute the suggested moves
+      if (!dryRun) {
+        for (const suggestion of suggestions) {
+          const claim = store.claims[suggestion.issueId];
+          if (claim) {
+            const newOwner = parseClaimant(suggestion.to);
+            if (newOwner) {
+              claim.claimant = newOwner;
+              claim.statusChangedAt = new Date().toISOString();
+              store.claims[suggestion.issueId] = claim;
+            }
+          }
+        }
+        saveClaims(store);
+      }
+
       return {
         success: true,
         dryRun,

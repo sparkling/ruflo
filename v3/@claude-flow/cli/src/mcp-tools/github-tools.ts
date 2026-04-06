@@ -9,7 +9,7 @@
  * - For real GitHub operations, use `gh` CLI or GitHub MCP server
  */
 
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -40,7 +40,7 @@ interface GitHubStore {
 }
 
 function getGitHubDir(): string {
-  return join(process.cwd(), STORAGE_DIR, GITHUB_DIR);
+  return join(getProjectCwd(), STORAGE_DIR, GITHUB_DIR);
 }
 
 function getGitHubPath(): string {
@@ -97,32 +97,21 @@ export const githubTools: MCPTool[] = [
         name: repo,
         branch,
         lastAnalyzed: new Date().toISOString(),
-        metrics: {
-          commits: Math.floor(Math.random() * 1000) + 100,
-          branches: Math.floor(Math.random() * 20) + 1,
-          contributors: Math.floor(Math.random() * 50) + 1,
-          openIssues: Math.floor(Math.random() * 30),
-          openPRs: Math.floor(Math.random() * 10),
-        },
       };
 
       store.repos[repoKey] = repoInfo;
       saveGitHubStore(store);
 
       return {
-        success: true,
-        repository: repoKey,
-        branch,
-        metrics: repoInfo.metrics,
-        analysis: {
-          languages: ['TypeScript', 'JavaScript', 'JSON'],
-          mainLanguage: 'TypeScript',
-          codeQuality: 'A',
-          testCoverage: `${Math.floor(Math.random() * 30) + 70}%`,
-          dependencies: Math.floor(Math.random() * 50) + 20,
-          securityIssues: Math.floor(Math.random() * 3),
+        success: false,
+        _stub: true,
+        message: 'GitHub tools are local-only stubs. For real GitHub operations, use the gh CLI or GitHub MCP server directly.',
+        localData: {
+          repository: repoKey,
+          branch,
+          lastAnalyzed: repoInfo.lastAnalyzed,
+          storedRepos: Object.keys(store.repos),
         },
-        lastAnalyzed: repoInfo.lastAnalyzed,
       };
     },
   },
@@ -182,13 +171,11 @@ export const githubTools: MCPTool[] = [
 
       if (action === 'review') {
         return {
-          success: true,
-          action: 'reviewed',
-          prNumber: input.prNumber,
-          review: {
-            status: 'approved',
-            comments: [],
-            suggestion: 'LGTM',
+          success: false,
+          _stub: true,
+          message: 'GitHub tools are local-only stubs. PR review requires actual GitHub API access. Use the gh CLI or GitHub MCP server directly.',
+          localData: {
+            prNumber: input.prNumber,
           },
         };
       }
@@ -330,48 +317,16 @@ export const githubTools: MCPTool[] = [
     handler: async (input) => {
       const action = (input.action as string) || 'list';
 
-      if (action === 'list') {
-        return {
-          success: true,
-          workflows: [
-            { id: 'ci.yml', name: 'CI', status: 'active', lastRun: new Date().toISOString() },
-            { id: 'release.yml', name: 'Release', status: 'active', lastRun: new Date().toISOString() },
-            { id: 'test.yml', name: 'Tests', status: 'active', lastRun: new Date().toISOString() },
-          ],
-        };
-      }
-
-      if (action === 'trigger') {
-        return {
-          success: true,
-          action: 'triggered',
-          workflowId: input.workflowId,
-          ref: input.ref || 'main',
-          runId: `run-${Date.now()}`,
-          triggeredAt: new Date().toISOString(),
-        };
-      }
-
-      if (action === 'status') {
-        return {
-          success: true,
-          workflowId: input.workflowId,
-          status: 'completed',
-          conclusion: 'success',
-          duration: '2m 35s',
-        };
-      }
-
-      if (action === 'cancel') {
-        return {
-          success: true,
-          action: 'cancelled',
-          workflowId: input.workflowId,
-          cancelledAt: new Date().toISOString(),
-        };
-      }
-
-      return { success: false, error: 'Unknown action' };
+      return {
+        success: false,
+        _stub: true,
+        message: 'GitHub tools are local-only stubs. Workflow operations require actual GitHub API access. Use the gh CLI or GitHub MCP server directly.',
+        localData: {
+          requestedAction: action,
+          workflowId: input.workflowId || null,
+          ref: input.ref || null,
+        },
+      };
     },
   },
   {
@@ -388,39 +343,20 @@ export const githubTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const metric = (input.metric as string) || 'all';
-
-      const metrics = {
-        commits: {
-          total: Math.floor(Math.random() * 1000) + 500,
-          lastWeek: Math.floor(Math.random() * 50) + 10,
-          lastMonth: Math.floor(Math.random() * 200) + 50,
-        },
-        contributors: {
-          total: Math.floor(Math.random() * 50) + 5,
-          active: Math.floor(Math.random() * 20) + 3,
-          new: Math.floor(Math.random() * 5),
-        },
-        traffic: {
-          views: Math.floor(Math.random() * 5000) + 1000,
-          uniqueVisitors: Math.floor(Math.random() * 1000) + 200,
-          clones: Math.floor(Math.random() * 500) + 50,
-        },
-        releases: {
-          total: Math.floor(Math.random() * 20) + 5,
-          latest: '3.0.0-alpha.86',
-          downloads: Math.floor(Math.random() * 10000) + 1000,
-        },
-      };
-
-      if (metric === 'all') {
-        return { success: true, metrics };
-      }
+      const store = loadGitHubStore();
 
       return {
-        success: true,
-        metric,
-        data: metrics[metric as keyof typeof metrics],
+        success: false,
+        _stub: true,
+        message: 'GitHub tools are local-only stubs. Repository metrics require actual GitHub API access. Use the gh CLI or GitHub MCP server directly.',
+        localData: {
+          owner: (input.owner as string) || 'owner',
+          repo: (input.repo as string) || 'repo',
+          requestedMetric: (input.metric as string) || 'all',
+          storedRepos: Object.keys(store.repos),
+          localIssueCount: Object.keys(store.issues).length,
+          localPrCount: Object.keys(store.prs).length,
+        },
       };
     },
   },

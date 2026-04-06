@@ -72,7 +72,7 @@ const MIGRATIONS: Migration[] = [
       CREATE TABLE IF NOT EXISTS {{schema}}.query_cache (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         query_hash VARCHAR(64) NOT NULL UNIQUE,
-        query_embedding vector(1536),
+        query_embedding {{vector_type}}(1536),
         result_ids UUID[],
         result_scores FLOAT[],
         hit_count INTEGER DEFAULT 1,
@@ -121,8 +121,8 @@ const MIGRATIONS: Migration[] = [
       CREATE TABLE IF NOT EXISTS {{schema}}.neural_patterns (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         pattern_type VARCHAR(64) NOT NULL,
-        input_embedding vector(1536),
-        output_embedding vector(1536),
+        input_embedding {{vector_type}}(1536),
+        output_embedding {{vector_type}}(1536),
         weight_matrix JSONB,
         activation VARCHAR(32) DEFAULT 'relu',
         accuracy FLOAT,
@@ -136,7 +136,7 @@ const MIGRATIONS: Migration[] = [
 
       CREATE INDEX IF NOT EXISTS idx_neural_patterns_input_hnsw
       ON {{schema}}.neural_patterns
-      USING hnsw (input_embedding vector_cosine_ops)
+      USING hnsw (input_embedding {{cosine_ops}})
       WITH (m = 16, ef_construction = 64);
     `,
     down: `
@@ -308,6 +308,17 @@ export const migrateCommand: Command = {
       await client.connect();
       spinner.succeed('Connected to PostgreSQL');
 
+      // Detect vector extension type: prefer ruvector, fall back to pgvector
+      let vectorTypeName = 'vector';
+      let cosineOps = 'vector_cosine_ops';
+      const ruvectorCheck = await client.query(`
+        SELECT extname FROM pg_extension WHERE extname = 'ruvector'
+      `);
+      if (ruvectorCheck.rows.length > 0) {
+        vectorTypeName = 'ruvector';
+        cosineOps = 'ruvector_cosine_ops';
+      }
+
       // Check if schema and migrations table exist
       spinner.setText('Checking migration status...'); spinner.start();
 
@@ -423,7 +434,10 @@ export const migrateCommand: Command = {
       if (dryRun) {
         for (const migration of migrationsToRun) {
           const sql = direction === 'up' ? migration.up : migration.down;
-          const resolvedSql = sql.replace(/\{\{schema\}\}/g, config.schema);
+          const resolvedSql = sql
+            .replace(/\{\{schema\}\}/g, config.schema)
+            .replace(/\{\{vector_type\}\}/g, vectorTypeName)
+            .replace(/\{\{cosine_ops\}\}/g, cosineOps);
 
           output.writeln(output.bold(`-- Migration ${migration.version}: ${migration.name}`));
           output.writeln(output.dim('-- Direction: ' + direction.toUpperCase()));
@@ -456,7 +470,10 @@ export const migrateCommand: Command = {
 
         try {
           const sql = direction === 'up' ? migration.up : migration.down;
-          const resolvedSql = sql.replace(/\{\{schema\}\}/g, config.schema);
+          const resolvedSql = sql
+            .replace(/\{\{schema\}\}/g, config.schema)
+            .replace(/\{\{vector_type\}\}/g, vectorTypeName)
+            .replace(/\{\{cosine_ops\}\}/g, cosineOps);
 
           await client.query('BEGIN');
 

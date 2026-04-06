@@ -3,7 +3,7 @@
  * Management commands for RuVector PostgreSQL integration
  *
  * Features:
- * - pgvector integration for vector operations
+ * - ruvector/pgvector integration for vector operations
  * - Attention mechanism embeddings
  * - Graph Neural Network support
  * - Hyperbolic embeddings (Poincare ball)
@@ -98,7 +98,7 @@ export const ruvectorCommand: Command = {
     output.printBox([
       'RuVector provides PostgreSQL integration for Claude Flow with:',
       '',
-      '  - pgvector extension for vector operations',
+      '  - ruvector/pgvector extension for vector operations',
       '  - Attention mechanism embeddings',
       '  - Graph Neural Network (GNN) support',
       '  - Hyperbolic embeddings (Poincare ball model)',

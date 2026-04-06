@@ -252,41 +252,75 @@ const monitorCommand: Command = {
     const watch = ctx.flags?.watch === true;
     const alerts = ctx.flags?.alerts !== false;
 
-    // Default monitoring data (updated by real process stats when available)
+    // Gather real system metrics where possible
+    const os = await import('node:os');
+    const memUsage = process.memoryUsage();
+    const loadAvg = os.loadavg();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMemMB = Math.round((totalMem - freeMem) / 1024 / 1024);
+    const totalMemMB = Math.round(totalMem / 1024 / 1024);
+
+    // Try to read agent and task counts from local store files
+    let agentCount = 0;
+    let taskCounts = { running: 0, queued: 0, completed: 0, failed: 0 };
+    try {
+      const agentStorePath = resolve('.claude-flow/agents/store.json');
+      if (existsSync(agentStorePath)) {
+        const agentStore = JSON.parse(readFileSync(agentStorePath, 'utf-8'));
+        const agents = Array.isArray(agentStore) ? agentStore : Object.values(agentStore.agents || agentStore || {});
+        agentCount = agents.length;
+      }
+    } catch { /* no agent store */ }
+    try {
+      const taskStorePath = resolve('.claude-flow/tasks/store.json');
+      if (existsSync(taskStorePath)) {
+        const taskStore = JSON.parse(readFileSync(taskStorePath, 'utf-8'));
+        const tasks = Array.isArray(taskStore) ? taskStore : Object.values(taskStore.tasks || taskStore || {});
+        for (const t of tasks as Array<{ status?: string }>) {
+          if (t.status === 'running') taskCounts.running++;
+          else if (t.status === 'queued' || t.status === 'pending') taskCounts.queued++;
+          else if (t.status === 'completed' || t.status === 'done') taskCounts.completed++;
+          else if (t.status === 'failed' || t.status === 'error') taskCounts.failed++;
+        }
+      }
+    } catch { /* no task store */ }
+
     const metrics = {
       timestamp: new Date().toISOString(),
       system: {
-        cpuUsage: Math.random() * 30 + 5,
-        memoryUsed: Math.floor(Math.random() * 500) + 100,
-        memoryTotal: 2048,
-        uptime: Math.floor(Math.random() * 86400),
+        cpuLoadAvg1m: loadAvg[0] !== undefined ? parseFloat(loadAvg[0].toFixed(2)) : null,
+        cpuLoadAvg5m: loadAvg[1] !== undefined ? parseFloat(loadAvg[1].toFixed(2)) : null,
+        cpuCount: os.cpus().length,
+        memoryUsedMB: usedMemMB,
+        memoryTotalMB: totalMemMB,
+        processRssMB: Math.round(memUsage.rss / 1024 / 1024),
+        processHeapMB: Math.round(memUsage.heapUsed / 1024 / 1024),
+        uptime: Math.floor(process.uptime()),
       },
       agents: {
-        active: Math.floor(Math.random() * 5),
-        idle: Math.floor(Math.random() * 3),
-        total: 0,
-        poolSize: 10,
+        total: agentCount,
+        _note: agentCount === 0 ? 'No agent store found at .claude-flow/agents/store.json' : null,
       },
       tasks: {
-        running: Math.floor(Math.random() * 3),
-        queued: Math.floor(Math.random() * 5),
-        completed: Math.floor(Math.random() * 100) + 50,
-        failed: Math.floor(Math.random() * 5),
+        ...taskCounts,
+        _note: (taskCounts.running + taskCounts.queued + taskCounts.completed + taskCounts.failed) === 0
+          ? 'No task store found at .claude-flow/tasks/store.json' : null,
       },
       memory: {
-        vectorCount: Math.floor(Math.random() * 10000) + 1000,
-        indexSize: Math.floor(Math.random() * 50) + 10,
-        cacheHitRate: Math.random() * 0.3 + 0.65,
-        avgSearchTime: Math.random() * 5 + 1,
+        vectorCount: null as number | null,
+        indexSize: null as number | null,
+        cacheHitRate: null as number | null,
+        avgSearchTime: null as number | null,
+        _note: 'Memory service metrics not available from process monitor. Use "memory stats" command.',
       },
       network: {
-        mcpConnections: Math.floor(Math.random() * 3) + 1,
-        requestsPerMin: Math.floor(Math.random() * 100) + 20,
-        avgLatency: Math.random() * 50 + 10,
+        mcpConnections: null as number | null,
+        requestsPerMin: null as number | null,
+        avgLatency: null as number | null,
+        _note: 'Network metrics not available from process monitor. Use "mcp status" command.',
       },
     };
-
-    metrics.agents.total = metrics.agents.active + metrics.agents.idle;
 
     if (format === 'json') {
       console.log(JSON.stringify(metrics, null, 2));
@@ -295,9 +329,9 @@ const monitorCommand: Command = {
 
     if (format === 'compact') {
       console.log('\n📊 Process Monitor (compact)\n');
-      console.log(`CPU: ${metrics.system.cpuUsage.toFixed(1)}% | Memory: ${metrics.system.memoryUsed}MB/${metrics.system.memoryTotal}MB`);
-      console.log(`Agents: ${metrics.agents.active}/${metrics.agents.total} active | Tasks: ${metrics.tasks.running} running, ${metrics.tasks.queued} queued`);
-      console.log(`Memory: ${metrics.memory.vectorCount} vectors | Cache: ${(metrics.memory.cacheHitRate * 100).toFixed(1)}%`);
+      const loadStr = metrics.system.cpuLoadAvg1m !== null ? `load ${metrics.system.cpuLoadAvg1m.toFixed(2)}` : 'n/a';
+      console.log(`CPU: ${loadStr} (${metrics.system.cpuCount} cores) | Memory: ${metrics.system.memoryUsedMB}MB/${metrics.system.memoryTotalMB}MB`);
+      console.log(`Agents: ${metrics.agents.total} total | Tasks: ${metrics.tasks.running} running, ${metrics.tasks.queued} queued`);
       return { success: true, data: metrics };
     }
 
@@ -308,17 +342,19 @@ const monitorCommand: Command = {
 
     // System metrics
     console.log('║  SYSTEM                                                      ║');
-    const cpuBar = '█'.repeat(Math.floor(metrics.system.cpuUsage / 5)) + '░'.repeat(20 - Math.floor(metrics.system.cpuUsage / 5));
-    const memPercent = (metrics.system.memoryUsed / metrics.system.memoryTotal) * 100;
+    const cpuDisplay = metrics.system.cpuLoadAvg1m !== null ? metrics.system.cpuLoadAvg1m : 0;
+    const cpuPercent = Math.min(100, (cpuDisplay / (metrics.system.cpuCount || 1)) * 100);
+    const cpuBar = '█'.repeat(Math.floor(cpuPercent / 5)) + '░'.repeat(20 - Math.floor(cpuPercent / 5));
+    const memPercent = (metrics.system.memoryUsedMB / metrics.system.memoryTotalMB) * 100;
     const memBar = '█'.repeat(Math.floor(memPercent / 5)) + '░'.repeat(20 - Math.floor(memPercent / 5));
-    console.log(`║  CPU:    [${cpuBar}] ${metrics.system.cpuUsage.toFixed(1).padStart(5)}%            ║`);
-    console.log(`║  Memory: [${memBar}] ${metrics.system.memoryUsed}MB/${metrics.system.memoryTotal}MB      ║`);
+    console.log(`║  CPU:    [${cpuBar}] load ${cpuDisplay.toFixed(2).padStart(5)}          ║`);
+    console.log(`║  Memory: [${memBar}] ${metrics.system.memoryUsedMB}MB/${metrics.system.memoryTotalMB}MB      ║`);
 
     console.log('╠══════════════════════════════════════════════════════════════╣');
 
     // Agents
     console.log('║  AGENTS                                                      ║');
-    console.log(`║  Active: ${metrics.agents.active.toString().padEnd(3)} Idle: ${metrics.agents.idle.toString().padEnd(3)} Pool: ${metrics.agents.poolSize.toString().padEnd(3)}                     ║`);
+    console.log(`║  Total: ${metrics.agents.total.toString().padEnd(5)}                                              ║`);
 
     console.log('╠══════════════════════════════════════════════════════════════╣');
 
@@ -330,22 +366,20 @@ const monitorCommand: Command = {
 
     // Memory service
     console.log('║  MEMORY SERVICE                                              ║');
-    console.log(`║  Vectors: ${metrics.memory.vectorCount.toString().padEnd(7)} Index: ${metrics.memory.indexSize}MB                          ║`);
-    console.log(`║  Cache Hit: ${(metrics.memory.cacheHitRate * 100).toFixed(1)}%  Avg Search: ${metrics.memory.avgSearchTime.toFixed(2)}ms                   ║`);
+    console.log('║  Metrics not available. Use "memory stats" command.          ║');
 
     console.log('╠══════════════════════════════════════════════════════════════╣');
 
     // Network
     console.log('║  NETWORK                                                     ║');
-    console.log(`║  MCP Connections: ${metrics.network.mcpConnections}  Requests/min: ${metrics.network.requestsPerMin.toString().padEnd(5)}             ║`);
-    console.log(`║  Avg Latency: ${metrics.network.avgLatency.toFixed(1)}ms                                        ║`);
+    console.log('║  Metrics not available. Use "mcp status" command.            ║');
 
     console.log('╚══════════════════════════════════════════════════════════════╝');
 
     if (alerts) {
       console.log('\n📢 Alerts:');
-      if (metrics.system.cpuUsage > 80) {
-        console.log('  ⚠️  High CPU usage detected');
+      if (cpuPercent > 80) {
+        console.log('  ⚠️  High CPU load detected');
       }
       if (memPercent > 80) {
         console.log('  ⚠️  High memory usage detected');
@@ -353,10 +387,7 @@ const monitorCommand: Command = {
       if (metrics.tasks.failed > 10) {
         console.log('  ⚠️  Elevated task failure rate');
       }
-      if (metrics.memory.cacheHitRate < 0.5) {
-        console.log('  ⚠️  Low cache hit rate');
-      }
-      if (metrics.system.cpuUsage <= 80 && memPercent <= 80 && metrics.tasks.failed <= 10 && metrics.memory.cacheHitRate >= 0.5) {
+      if (cpuPercent <= 80 && memPercent <= 80 && metrics.tasks.failed <= 10) {
         console.log('  ✅ All systems nominal');
       }
     }
@@ -604,42 +635,55 @@ const logsCommand: Command = {
     console.log(`  Level: ${level}+ | Lines: ${tail}${since ? ` | Since: ${since}` : ''}${grep ? ` | Filter: ${grep}` : ''}`);
     console.log('─'.repeat(70));
 
-    // Default log entries (loaded from actual logs when available)
-    const levels = ['debug', 'info', 'warn', 'error'];
+    // Read actual log files from .claude-flow/logs/ if they exist
+    const logsDir = resolve('.claude-flow/logs');
+    let logEntries: string[] = [];
+
     const levelIcons: Record<string, string> = {
       debug: '🔍',
       info: 'ℹ️ ',
       warn: '⚠️ ',
       error: '❌',
     };
-    const sources = ['daemon', 'worker-task', 'worker-memory', 'coordinator'];
-    const messages = [
-      'Processing task queue...',
-      'Agent spawned successfully',
-      'Memory index optimized',
-      'Configuration reloaded',
-      'MCP connection established',
-      'Task completed: 42ms',
-      'Cache hit rate: 87%',
-      'Swarm topology updated',
-      'Health check passed',
-      'Neural pattern learned',
-    ];
-
+    const levels = ['debug', 'info', 'warn', 'error'];
     const minLevelIdx = levels.indexOf(level);
-    const now = Date.now();
 
-    for (let i = 0; i < Math.min(tail, 15); i++) {
-      const logLevel = levels[Math.floor(Math.random() * (levels.length - minLevelIdx)) + minLevelIdx];
-      const logSource = sources[Math.floor(Math.random() * sources.length)];
-      const message = messages[Math.floor(Math.random() * messages.length)];
-      const timestamp = new Date(now - (tail - i) * 1000 * 60).toISOString().substring(11, 23);
+    if (existsSync(logsDir)) {
+      try {
+        const { readdirSync } = await import('node:fs');
+        const logFiles = readdirSync(logsDir)
+          .filter(f => f.endsWith('.log'))
+          .filter(f => source === 'all' || f.includes(source));
 
-      if (grep && !message.toLowerCase().includes(grep.toLowerCase())) {
-        continue;
+        for (const file of logFiles) {
+          try {
+            const content = readFileSync(resolve(logsDir, file), 'utf-8');
+            const lines = content.split('\n').filter(l => l.trim());
+            for (const line of lines) {
+              // Filter by log level if detectable
+              const lineLower = line.toLowerCase();
+              const lineLevel = levels.find(l => lineLower.includes(`[${l}]`) || lineLower.includes(l));
+              if (lineLevel && levels.indexOf(lineLevel) < minLevelIdx) continue;
+              if (grep && !lineLower.includes(grep.toLowerCase())) continue;
+              logEntries.push(line);
+            }
+          } catch { /* skip unreadable files */ }
+        }
+      } catch { /* skip if dir unreadable */ }
+    }
+
+    if (logEntries.length === 0) {
+      console.log('  No log entries found.');
+      console.log(`  Log directory: ${logsDir}`);
+      if (!existsSync(logsDir)) {
+        console.log('  (directory does not exist)');
       }
-
-      console.log(`${timestamp} ${levelIcons[logLevel]} [${logSource.padEnd(14)}] ${message}`);
+    } else {
+      // Show the last N entries
+      const entriesToShow = logEntries.slice(-tail);
+      for (const entry of entriesToShow) {
+        console.log(entry);
+      }
     }
 
     console.log('─'.repeat(70));

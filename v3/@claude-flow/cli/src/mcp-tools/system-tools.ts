@@ -9,7 +9,7 @@
  * - os module for system information
  */
 
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,7 +47,7 @@ interface SystemMetrics {
 }
 
 function getSystemDir(): string {
-  return join(process.cwd(), STORAGE_DIR, SYSTEM_DIR);
+  return join(getProjectCwd(), STORAGE_DIR, SYSTEM_DIR);
 }
 
 function getMetricsPath(): string {
@@ -75,8 +75,8 @@ function loadMetrics(): SystemMetrics {
     lastCheck: new Date().toISOString(),
     uptime: 0,
     health: 1.0,
-    cpu: 25,
-    memory: { used: 256, total: 1024 },
+    cpu: os.loadavg()[0] * 100 / os.cpus().length,
+    memory: { used: Math.round((os.totalmem() - os.freemem()) / 1024 / 1024), total: Math.round(os.totalmem() / 1024 / 1024) },
     agents: { active: 0, total: 0 },
     tasks: { pending: 0, completed: 0, failed: 0 },
     requests: { total: 0, success: 0, errors: 0 },
@@ -112,9 +112,9 @@ export const systemTools: MCPTool[] = [
         version: PKG_VERSION,
         components: {
           swarm: { status: 'running', health: metrics.health },
-          memory: { status: 'running', health: 0.95 },
-          neural: { status: 'running', health: 0.90 },
-          mcp: { status: 'running', health: 1.0 },
+          memory: { status: 'unknown', _note: 'Health not measured — use system_health for real checks' },
+          neural: { status: 'unknown', _note: 'Health not measured — use system_health for real checks' },
+          mcp: { status: 'unknown', _note: 'Health not measured — use system_health for real checks' },
         },
         lastCheck: new Date().toISOString(),
       };
@@ -157,6 +157,73 @@ export const systemTools: MCPTool[] = [
       const totalMem = os.totalmem();
       const freeMem = os.freemem();
 
+      // Read real agent/task counts — try AgentDB first, fallback to JSON stores
+      let agentCounts = { active: 0, total: 0 };
+      let taskCounts = { pending: 0, completed: 0, failed: 0 };
+      let _metricsSource: 'agentdb' | 'json-store' | 'none' = 'none';
+
+      // Primary: AgentDB (sql.js + HNSW)
+      try {
+        const bridge = await import('../memory/memory-bridge.js');
+        const agentResults = await bridge.bridgeListEntries({ namespace: 'agents', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
+        const agentEntries = agentResults?.entries;
+        if (agentEntries && agentEntries.length > 0) {
+          let active = 0;
+          for (const a of agentEntries) {
+            try {
+              const meta = a.metadata ? JSON.parse(a.metadata) : (a.value ? JSON.parse(a.value) : {});
+              if (meta.status === 'active' || meta.status === 'running') active++;
+            } catch { /* skip unparseable */ }
+          }
+          agentCounts = { total: agentEntries.length, active };
+          _metricsSource = 'agentdb';
+        }
+        const taskResults = await bridge.bridgeListEntries({ namespace: 'tasks', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
+        const taskEntries = taskResults?.entries;
+        if (taskEntries && taskEntries.length > 0) {
+          let pending = 0, completed = 0, failed = 0;
+          for (const t of taskEntries) {
+            try {
+              const meta = t.metadata ? JSON.parse(t.metadata) : (t.value ? JSON.parse(t.value) : {});
+              if (meta.status === 'pending' || meta.status === 'assigned') pending++;
+              else if (meta.status === 'completed') completed++;
+              else if (meta.status === 'failed') failed++;
+            } catch { /* skip */ }
+          }
+          taskCounts = { pending, completed, failed };
+          _metricsSource = 'agentdb';
+        }
+      } catch { /* AgentDB not available, try JSON fallback */ }
+
+      // Fallback: JSON store files (backward compatibility)
+      if (_metricsSource === 'none') {
+        try {
+          const agentStorePath = join(getProjectCwd(), STORAGE_DIR, 'agents', 'store.json');
+          if (existsSync(agentStorePath)) {
+            const agentStore = JSON.parse(readFileSync(agentStorePath, 'utf-8'));
+            const agents = Object.values(agentStore.agents || {}) as Array<{ status: string }>;
+            agentCounts = {
+              total: agents.length,
+              active: agents.filter(a => a.status === 'active' || a.status === 'running').length,
+            };
+            _metricsSource = 'json-store';
+          }
+        } catch { /* agent store not available */ }
+        try {
+          const taskStorePath = join(getProjectCwd(), STORAGE_DIR, 'tasks', 'store.json');
+          if (existsSync(taskStorePath)) {
+            const taskStore = JSON.parse(readFileSync(taskStorePath, 'utf-8'));
+            const tasks = Object.values(taskStore.tasks || {}) as Array<{ status: string }>;
+            taskCounts = {
+              pending: tasks.filter(t => t.status === 'pending' || t.status === 'assigned').length,
+              completed: tasks.filter(t => t.status === 'completed').length,
+              failed: tasks.filter(t => t.status === 'failed').length,
+            };
+            _metricsSource = 'json-store';
+          }
+        } catch { /* task store not available */ }
+      }
+
       const currentMetrics: SystemMetrics = {
         ...store,
         cpu: loadAvg[0] * 100 / cpus.length, // Real CPU load percentage
@@ -164,6 +231,9 @@ export const systemTools: MCPTool[] = [
           used: Math.round((totalMem - freeMem) / 1024 / 1024), // Real MB used
           total: Math.round(totalMem / 1024 / 1024), // Real total MB
         },
+        agents: agentCounts,
+        tasks: taskCounts,
+        // requests: no MCP request tracking infrastructure yet — stays at stored value
         uptime: Date.now() - new Date(store.startTime).getTime(),
         lastCheck: new Date().toISOString(),
       };
@@ -173,7 +243,8 @@ export const systemTools: MCPTool[] = [
       if (category === 'all') {
         return {
           ...currentMetrics,
-          _real: true, // Flag indicating real metrics
+          _real: true,
+          _metricsSource,
           heap: {
             used: Math.round(memUsage.heapUsed / 1024 / 1024),
             total: Math.round(memUsage.heapTotal / 1024 / 1024),
@@ -221,51 +292,98 @@ export const systemTools: MCPTool[] = [
     },
     handler: async (input) => {
       const metrics = loadMetrics();
-      const checks: Array<{ name: string; status: string; latency: number; message?: string }> = [];
+      const checks: Array<{ name: string; status: string; latency?: number; message?: string }> = [];
+      const projectCwd = getProjectCwd();
 
-      // Core checks
+      // Memory DB check — verify the store file exists
+      {
+        const t0 = performance.now();
+        const memoryDbPath = join(projectCwd, '.claude-flow', 'memory', 'store.json');
+        const memoryExists = existsSync(memoryDbPath);
+        const elapsed = performance.now() - t0;
+        checks.push({
+          name: 'memory',
+          status: memoryExists ? 'healthy' : 'degraded',
+          latency: Math.round(elapsed * 100) / 100,
+          message: memoryExists ? undefined : 'Memory store not found — run memory init',
+        });
+      }
+
+      // Config check — verify config file exists
+      {
+        const t0 = performance.now();
+        const configPath = join(projectCwd, '.claude-flow', 'config.json');
+        const altConfigPath = join(projectCwd, 'claude-flow.config.json');
+        const configExists = existsSync(configPath) || existsSync(altConfigPath);
+        const elapsed = performance.now() - t0;
+        checks.push({
+          name: 'config',
+          status: configExists ? 'healthy' : 'degraded',
+          latency: Math.round(elapsed * 100) / 100,
+          message: configExists ? undefined : 'Config file not found — run init',
+        });
+      }
+
+      // MCP check — this process is the MCP server if stdin is piped
+      {
+        const isStdio = !process.stdin.isTTY;
+        checks.push({
+          name: 'mcp',
+          status: isStdio ? 'healthy' : 'unknown',
+          message: isStdio ? 'MCP stdio server running (this process)' : 'Not running as MCP server',
+        });
+      }
+
+      // Swarm — cannot verify real connectivity, report unknown
       checks.push({
         name: 'swarm',
-        status: 'healthy',
-        latency: 5 + Math.random() * 10,
+        status: 'unknown',
+        message: 'Swarm connectivity not monitored — check coordination store manually',
       });
 
-      checks.push({
-        name: 'memory',
-        status: 'healthy',
-        latency: 2 + Math.random() * 5,
-      });
-
-      checks.push({
-        name: 'mcp',
-        status: 'healthy',
-        latency: 1 + Math.random() * 3,
-      });
-
+      // Neural — cannot verify, report unknown
       checks.push({
         name: 'neural',
-        status: metrics.health >= 0.7 ? 'healthy' : 'degraded',
-        latency: 10 + Math.random() * 20,
+        status: 'unknown',
+        message: 'Neural network health not monitored',
       });
 
       if (input.deep) {
-        checks.push({
-          name: 'disk',
-          status: 'healthy',
-          latency: 50 + Math.random() * 100,
-        });
+        // Disk check — real free space check via os module
+        {
+          const t0 = performance.now();
+          const freeMem = os.freemem();
+          const totalMem = os.totalmem();
+          const elapsed = performance.now() - t0;
+          // Use memory as a proxy; real disk check would need statvfs
+          checks.push({
+            name: 'disk',
+            status: 'unknown',
+            latency: Math.round(elapsed * 100) / 100,
+            message: 'Disk space check not implemented — use os-level tools',
+          });
+        }
 
+        // Network — cannot verify without making a request
         checks.push({
           name: 'network',
-          status: 'healthy',
-          latency: 20 + Math.random() * 30,
+          status: 'unknown',
+          message: 'Network connectivity not monitored',
         });
 
-        checks.push({
-          name: 'database',
-          status: 'healthy',
-          latency: 15 + Math.random() * 25,
-        });
+        // Database — check if coordination store exists
+        {
+          const t0 = performance.now();
+          const coordPath = join(projectCwd, '.claude-flow', 'coordination', 'store.json');
+          const dbExists = existsSync(coordPath);
+          const elapsed = performance.now() - t0;
+          checks.push({
+            name: 'database',
+            status: dbExists ? 'healthy' : 'unknown',
+            latency: Math.round(elapsed * 100) / 100,
+            message: dbExists ? undefined : 'Coordination store not found',
+          });
+        }
       }
 
       const healthy = checks.filter(c => c.status === 'healthy').length;
@@ -308,7 +426,7 @@ export const systemTools: MCPTool[] = [
         platform: process.platform,
         arch: process.arch,
         pid: process.pid,
-        cwd: process.cwd(),
+        cwd: getProjectCwd(),
         env: process.env.NODE_ENV || 'development',
         features: {
           swarm: true,
@@ -351,8 +469,8 @@ export const systemTools: MCPTool[] = [
         lastCheck: new Date().toISOString(),
         uptime: 0,
         health: 1.0,
-        cpu: 25,
-        memory: { used: 256, total: 1024 },
+        cpu: os.loadavg()[0] * 100 / os.cpus().length,
+        memory: { used: Math.round((os.totalmem() - os.freemem()) / 1024 / 1024), total: Math.round(os.totalmem() / 1024 / 1024) },
         agents: { active: 0, total: 0 },
         tasks: { pending: 0, completed: 0, failed: 0 },
         requests: { total: 0, success: 0, errors: 0 },
@@ -437,7 +555,7 @@ export const systemTools: MCPTool[] = [
     },
     handler: async () => {
       // Read from the task store file
-      const storePath = join(process.cwd(), '.claude-flow', 'tasks', 'store.json');
+      const storePath = join(getProjectCwd(), '.claude-flow', 'tasks', 'store.json');
       let tasks: Array<{ status: string }> = [];
       try {
         if (existsSync(storePath)) {

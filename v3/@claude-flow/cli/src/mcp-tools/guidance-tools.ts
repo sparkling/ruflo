@@ -7,7 +7,7 @@
  * @module @claude-flow/cli/mcp-tools/guidance
  */
 
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,8 +22,8 @@ const CLI_ROOT = join(__dirname, '../../..');
  */
 function findProjectRoot(): string {
   // Strategy 1: CWD (most reliable when invoked by user)
-  if (existsSync(join(process.cwd(), '.claude'))) {
-    return process.cwd();
+  if (existsSync(join(getProjectCwd(), '.claude'))) {
+    return getProjectCwd();
   }
 
   // Strategy 2: Walk up from CLI package location
@@ -34,7 +34,7 @@ function findProjectRoot(): string {
   }
 
   // Strategy 3: Walk up from CWD
-  let dir = process.cwd();
+  let dir = getProjectCwd();
   for (let i = 0; i < 10; i++) {
     if (existsSync(join(dir, '.claude'))) return dir;
     const parent = dirname(dir);
@@ -43,7 +43,7 @@ function findProjectRoot(): string {
   }
 
   // Fallback: CWD
-  return process.cwd();
+  return getProjectCwd();
 }
 
 const PROJECT_ROOT = findProjectRoot();

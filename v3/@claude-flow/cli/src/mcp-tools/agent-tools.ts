@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -37,7 +37,7 @@ interface AgentStore {
 }
 
 function getAgentDir(): string {
-  return join(process.cwd(), STORAGE_DIR, AGENT_DIR);
+  return join(getProjectCwd(), STORAGE_DIR, AGENT_DIR);
 }
 
 function getAgentPath(): string {
@@ -526,8 +526,6 @@ export const agentTools: MCPTool[] = [
       const degradedAgents = agents.filter(a => a.health >= 0.3 && a.health < threshold);
       const unhealthyAgents = agents.filter(a => a.health < 0.3);
       const avgHealth = agents.length > 0 ? agents.reduce((sum, a) => sum + a.health, 0) / agents.length : 1;
-      const avgCpu = agents.length > 0 ? 35 + Math.random() * 30 : 0; // Simulated CPU
-      const avgMemory = avgHealth * 0.6; // Correlated with health
 
       return {
         // CLI expected fields
@@ -538,19 +536,17 @@ export const agentTools: MCPTool[] = [
             type: a.agentType,
             health: a.health >= threshold ? 'healthy' : (a.health >= 0.3 ? 'degraded' : 'unhealthy'),
             uptime,
-            memory: { used: Math.floor(256 * (1 - a.health * 0.3)), limit: 512 },
-            cpu: 20 + Math.floor(a.health * 40),
             tasks: { active: a.taskCount > 0 ? 1 : 0, queued: 0, completed: a.taskCount, failed: 0 },
-            latency: { avg: 50 + Math.floor((1 - a.health) * 100), p99: 150 + Math.floor((1 - a.health) * 200) },
-            errors: { count: a.health < threshold ? 1 : 0 },
+            _note: 'Per-agent OS metrics not available — use system_metrics for real CPU/memory',
           };
         }),
         overall: {
           healthy: healthyAgents.length,
           degraded: degradedAgents.length,
           unhealthy: unhealthyAgents.length,
-          avgCpu,
-          avgMemory,
+          cpu: null,
+          memory: null,
+          _note: 'Per-agent CPU/memory not available — use system_metrics for real OS-level stats',
           score: Math.round(avgHealth * 100),
           issues: unhealthyAgents.length,
         },

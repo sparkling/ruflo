@@ -6,7 +6,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -34,7 +34,7 @@ const DEFAULT_CONFIG: Record<string, unknown> = {
 };
 
 function getConfigDir(): string {
-  return join(process.cwd(), STORAGE_DIR);
+  return join(getProjectCwd(), STORAGE_DIR);
 }
 
 function getConfigPath(): string {

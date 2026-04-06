@@ -7,7 +7,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 
 // Swarm state persistence
 // ADR-0069 A4: standardized on .swarm (was .claude-flow/swarm)
@@ -32,7 +32,7 @@ interface SwarmStore {
 }
 
 function getSwarmDir(): string {
-  return join(process.cwd(), SWARM_DIR);
+  return join(getProjectCwd(), SWARM_DIR);
 }
 
 function getSwarmStatePath(): string {

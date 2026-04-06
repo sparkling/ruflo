@@ -59,7 +59,6 @@ export const benchmarkCommand: Command = {
     },
     {
       name: 'dimensions',
-      short: 'd',
       description: 'Vector dimensions',
       type: 'number',
       default: 1536,
@@ -121,6 +120,7 @@ export const benchmarkCommand: Command = {
     },
     {
       name: 'database',
+      short: 'd',
       description: 'Database name',
       type: 'string',
     },
@@ -240,6 +240,15 @@ export const benchmarkCommand: Command = {
       await client.connect();
       spinner.succeed('Connected to PostgreSQL');
 
+      // Detect vector extension type: prefer ruvector, fall back to pgvector
+      let vectorTypeName = 'vector';
+      const ruvectorCheck = await client.query(`
+        SELECT extname FROM pg_extension WHERE extname = 'ruvector'
+      `);
+      if (ruvectorCheck.rows.length > 0) {
+        vectorTypeName = 'ruvector';
+      }
+
       // Create benchmark table
       const benchmarkTable = `${config.schema}.benchmark_${Date.now()}`;
       spinner.setText('Creating benchmark table...'); spinner.start();
@@ -247,7 +256,7 @@ export const benchmarkCommand: Command = {
       await client.query(`
         CREATE TABLE ${benchmarkTable} (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          embedding vector(${dimensions}),
+          embedding ${vectorTypeName}(${dimensions}),
           created_at TIMESTAMPTZ DEFAULT NOW()
         )
       `);
@@ -293,8 +302,9 @@ export const benchmarkCommand: Command = {
         spinner.setText(`Creating ${indexType.toUpperCase()} index...`); spinner.start();
         const indexStart = Date.now();
 
-        const metricOp = metric === 'cosine' ? 'vector_cosine_ops' :
-                         metric === 'l2' ? 'vector_l2_ops' : 'vector_ip_ops';
+        const opsPrefix = vectorTypeName === 'ruvector' ? 'ruvector' : 'vector';
+        const metricOp = metric === 'cosine' ? `${opsPrefix}_cosine_ops` :
+                         metric === 'l2' ? `${opsPrefix}_l2_ops` : `${opsPrefix}_ip_ops`;
 
         if (indexType === 'hnsw') {
           await client.query(`

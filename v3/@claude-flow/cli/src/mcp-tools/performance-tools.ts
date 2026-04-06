@@ -12,7 +12,7 @@
  * Note: Some optimization suggestions are illustrative
  */
 
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import * as os from 'node:os';
@@ -52,7 +52,7 @@ interface PerfStore {
 }
 
 function getPerfDir(): string {
-  return join(process.cwd(), STORAGE_DIR, PERF_DIR);
+  return join(getProjectCwd(), STORAGE_DIR, PERF_DIR);
 }
 
 function getPerfPath(): string {
@@ -199,55 +199,12 @@ export const performanceTools: MCPTool[] = [
         deep: { type: 'boolean', description: 'Deep analysis' },
       },
     },
-    handler: async (input) => {
-      const deep = input.deep as boolean;
-
-      const bottlenecks = [
-        {
-          component: 'memory',
-          severity: 'medium',
-          metric: 'heap_usage',
-          current: 78,
-          threshold: 80,
-          impact: 'May cause GC pressure',
-          suggestion: 'Consider increasing heap size or optimizing memory usage',
-        },
-        {
-          component: 'neural',
-          severity: 'low',
-          metric: 'inference_latency',
-          current: 45,
-          threshold: 100,
-          impact: 'Within acceptable range',
-          suggestion: 'Enable Flash Attention for further optimization',
-        },
-      ];
-
-      if (deep) {
-        bottlenecks.push({
-          component: 'database',
-          severity: 'low',
-          metric: 'query_time',
-          current: 15,
-          threshold: 50,
-          impact: 'Queries performing well',
-          suggestion: 'Consider adding indexes for frequently accessed patterns',
-        });
-      }
-
-      const criticalCount = bottlenecks.filter(b => b.severity === 'critical').length;
-      const warningCount = bottlenecks.filter(b => b.severity === 'medium').length;
-
+    handler: async (_input) => {
       return {
-        status: criticalCount > 0 ? 'critical' : warningCount > 0 ? 'warning' : 'healthy',
-        bottlenecks,
-        summary: {
-          total: bottlenecks.length,
-          critical: criticalCount,
-          warning: warningCount,
-          info: bottlenecks.filter(b => b.severity === 'low').length,
-        },
-        analyzedAt: new Date().toISOString(),
+        success: true,
+        _stub: true,
+        message: 'Bottleneck detection not yet implemented. Use system_metrics for real CPU/memory data.',
+        bottlenecks: [],
       };
     },
   },
@@ -395,34 +352,12 @@ export const performanceTools: MCPTool[] = [
         sampleRate: { type: 'number', description: 'Sampling rate' },
       },
     },
-    handler: async (input) => {
-      const target = (input.target as string) || 'all';
-      const duration = (input.duration as number) || 5;
-
-      // Simulate profiling
-      await new Promise(resolve => setTimeout(resolve, 100));
-
+    handler: async (_input) => {
       return {
-        target,
-        duration: `${duration}s`,
-        samples: Math.floor(duration * 100),
-        hotspots: [
-          { function: 'vectorSearch', time: '35%', calls: 1500 },
-          { function: 'embedText', time: '25%', calls: 800 },
-          { function: 'agentCoordinate', time: '15%', calls: 200 },
-          { function: 'memoryStore', time: '10%', calls: 500 },
-          { function: 'other', time: '15%', calls: 3000 },
-        ],
-        memory: {
-          peakHeap: '256MB',
-          avgHeap: '180MB',
-          gcPauses: 5,
-          gcTime: '50ms',
-        },
-        recommendations: [
-          'vectorSearch: Consider batch processing for bulk operations',
-          'embedText: Enable caching for repeated queries',
-        ],
+        success: true,
+        _stub: true,
+        message: 'Profiling not yet implemented. Use performance_benchmark for real micro-benchmarks.',
+        hotspots: [],
       };
     },
   },
@@ -437,51 +372,12 @@ export const performanceTools: MCPTool[] = [
         aggressive: { type: 'boolean', description: 'Apply aggressive optimizations' },
       },
     },
-    handler: async (input) => {
-      const target = (input.target as string) || 'all';
-      const aggressive = input.aggressive as boolean;
-
-      const optimizations: Record<string, string[]> = {
-        memory: [
-          'Enabled Int8 quantization (3.92x compression)',
-          'Activated gradient checkpointing',
-          'Configured memory pooling',
-        ],
-        latency: [
-          'Enabled response caching (95% hit rate)',
-          'Activated batch processing',
-          'Configured connection pooling',
-        ],
-        throughput: [
-          'Enabled parallel processing',
-          'Configured worker pool (4 workers)',
-          'Activated request pipelining',
-        ],
-      };
-
-      const applied: string[] = [];
-      if (target === 'all') {
-        Object.values(optimizations).forEach(opts => applied.push(...opts));
-      } else {
-        applied.push(...(optimizations[target] || []));
-      }
-
-      if (aggressive) {
-        applied.push('Enabled aggressive GC');
-        applied.push('Activated speculative execution');
-      }
-
+    handler: async (_input) => {
       return {
-        target,
-        aggressive,
-        applied,
-        improvements: {
-          memory: '-50%',
-          latency: '-40%',
-          throughput: '+60%',
-        },
-        status: 'optimized',
-        timestamp: new Date().toISOString(),
+        success: true,
+        _stub: true,
+        message: 'Automatic optimization not yet implemented. No changes were made.',
+        optimizations: [],
       };
     },
   },

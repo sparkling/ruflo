@@ -88,6 +88,7 @@ export const optimizeCommand: Command = {
     },
     {
       name: 'database',
+      short: 'd',
       description: 'Database name',
       type: 'string',
     },

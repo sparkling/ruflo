@@ -6,7 +6,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -45,7 +45,7 @@ interface WorkflowStore {
 }
 
 function getWorkflowDir(): string {
-  return join(process.cwd(), STORAGE_DIR, WORKFLOW_DIR);
+  return join(getProjectCwd(), STORAGE_DIR, WORKFLOW_DIR);
 }
 
 function getWorkflowPath(): string {
@@ -271,35 +271,28 @@ export const workflowTools: MCPTool[] = [
       workflow.startedAt = new Date().toISOString();
       workflow.currentStep = (input.startFromStep as number) || 0;
 
-      // Execute steps (in real implementation, this would be async/event-driven)
-      const results: Array<{ stepId: string; status: string }> = [];
+      // Set steps to pending — actual execution requires agent assignment via task tools
+      const results: Array<{ stepId: string; status: string; _note: string }> = [];
       for (let i = workflow.currentStep; i < workflow.steps.length; i++) {
         const step = workflow.steps[i];
-        step.status = 'running';
-        step.startedAt = new Date().toISOString();
+        step.status = 'pending';
 
-        // For now, mark as completed (real implementation would execute actual tasks)
-        step.status = 'completed';
-        step.completedAt = new Date().toISOString();
-        step.result = { executed: true, stepType: step.type };
-
-        results.push({ stepId: step.stepId, status: step.status });
-        workflow.currentStep = i + 1;
+        results.push({
+          stepId: step.stepId,
+          status: step.status,
+          _note: 'Workflow execution tracks state. Actual step execution requires agent assignment via task tools.',
+        });
       }
-
-      workflow.status = 'completed';
-      workflow.completedAt = new Date().toISOString();
 
       saveWorkflowStore(store);
 
       return {
         workflowId,
         status: workflow.status,
-        stepsExecuted: results.length,
+        totalSteps: results.length,
         results,
         startedAt: workflow.startedAt,
-        completedAt: workflow.completedAt,
-        duration: new Date(workflow.completedAt).getTime() - new Date(workflow.startedAt!).getTime(),
+        _note: 'Workflow is now running. Steps are in pending state and must be executed via task tools.',
       };
     },
   },
@@ -463,29 +456,23 @@ export const workflowTools: MCPTool[] = [
       workflow.status = 'running';
       saveWorkflowStore(store);
 
-      // Continue execution from current step
-      const results: Array<{ stepId: string; status: string }> = [];
-      for (let i = workflow.currentStep; i < workflow.steps.length; i++) {
-        const step = workflow.steps[i];
-        step.status = 'running';
-        step.startedAt = new Date().toISOString();
-        step.status = 'completed';
-        step.completedAt = new Date().toISOString();
-        step.result = { executed: true };
-        results.push({ stepId: step.stepId, status: step.status });
-        workflow.currentStep = i + 1;
-      }
+      // Report current step states — do not auto-complete them
+      const stepStates = workflow.steps.map(step => ({
+        stepId: step.stepId,
+        name: step.name,
+        status: step.status,
+      }));
 
-      workflow.status = 'completed';
-      workflow.completedAt = new Date().toISOString();
-      saveWorkflowStore(store);
+      const remainingSteps = workflow.steps.length - workflow.currentStep;
 
       return {
         workflowId,
         status: workflow.status,
         resumed: true,
-        stepsExecuted: results.length,
-        completedAt: workflow.completedAt,
+        currentStep: workflow.currentStep,
+        remainingSteps,
+        steps: stepStates,
+        _note: 'Workflow resumed. Steps remain in their current state and must be executed via task tools.',
       };
     },
   },

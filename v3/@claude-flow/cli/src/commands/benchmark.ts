@@ -310,8 +310,9 @@ const memoryCommand: Command = {
         storeEntry = memory.storeEntry;
         searchEntries = memory.searchEntries;
       } catch {
+        // @claude-flow/memory not available — return null metrics instead of fake numbers
         storeEntry = async () => ({ success: true });
-        searchEntries = async () => ({ results: [], searchTime: 0.5 });
+        searchEntries = async () => ({ results: [], searchTime: 0 }); // 0 = no-op fallback, not a real benchmark
       }
 
       // 1. Store benchmark

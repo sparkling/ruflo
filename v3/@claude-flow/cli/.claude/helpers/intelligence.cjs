@@ -24,8 +24,10 @@ const RANKED_PATH = path.join(DATA_DIR, 'ranked-context.json');
 const PENDING_PATH = path.join(DATA_DIR, 'pending-insights.jsonl');
 const SESSION_DIR = path.join(process.cwd(), '.claude-flow', 'sessions');
 const SESSION_FILE = path.join(SESSION_DIR, 'current.json');
-const SNAPSHOT_BRIDGE_PATH = path.join(process.cwd(), '.claude-flow', 'intelligence-snapshot.json');
-const SIGNALS_PATH = path.join(process.cwd(), '.claude-flow', 'cjs-intelligence-signals.json');
+
+// ── Safety limits (fixes #1530, #1531) ─────────────────────────────────────
+const MAX_DATA_FILE_SIZE = 10 * 1024 * 1024; // 10 MB — skip files larger than this
+const MAX_GRAPH_NODES = 5000;                 // skip PageRank if graph exceeds this
 
 // ── Stop words for trigram matching ──────────────────────────────────────────
 
@@ -48,6 +50,14 @@ function ensureDataDir() {
 }
 
 function readJSON(filePath) {
+  // Safety: skip files exceeding MAX_DATA_FILE_SIZE (#1531)
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > MAX_DATA_FILE_SIZE) {
+      process.stderr.write("[INTELLIGENCE] WARN: Skipping " + path.basename(filePath) + " (" + Math.round(stat.size / 1048576) + "MB exceeds 10MB limit)\n");
+      return null;
+    }
+  } catch { /* file may not exist yet */ }
   try {
     if (fs.existsSync(filePath)) return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
   } catch { /* corrupt file — start fresh */ }
@@ -80,6 +90,22 @@ function jaccardSimilarity(setA, setB) {
   let intersection = 0;
   for (const item of setA) { if (setB.has(item)) intersection++; }
   return intersection / (setA.size + setB.size - intersection);
+}
+
+// ── Deduplication helper (fixes #1518) ──────────────────────────────────────
+
+function deduplicateById(entries) {
+  if (!entries || !Array.isArray(entries)) return entries;
+  const seen = new Map();
+  for (const entry of entries) {
+    const id = entry.id || entry.key;
+    if (id) {
+      seen.set(id, entry);
+    } else {
+      seen.set(`__no_id_${seen.size}`, entry);
+    }
+  }
+  return Array.from(seen.values());
 }
 
 // ── Session state helpers ────────────────────────────────────────────────────
@@ -225,18 +251,29 @@ function bootstrapFromMemoryFiles() {
   const entries = [];
   const cwd = process.cwd();
 
-  // ML-006 fix: scope to current project only (not all 51 project dirs)
-  const projectSlug = cwd.replace(/[/\\]/g, '-').replace(/^-/, '');
+  // Search for auto-memory directories
   const candidates = [
-    // Claude Code auto-memory (current project only)
-    path.join(require('os').homedir(), '.claude', 'projects', projectSlug, 'memory'),
+    // Claude Code auto-memory (project-scoped)
+    path.join(require('os').homedir(), '.claude', 'projects'),
     // Local project memory
     path.join(cwd, '.claude-flow', 'memory'),
     path.join(cwd, '.claude', 'memory'),
   ];
 
+  // Find MEMORY.md in project-scoped dirs
   for (const base of candidates) {
-    if (fs.existsSync(base)) {
+    if (!fs.existsSync(base)) continue;
+
+    // For the projects dir, scope to CURRENT project only (not all 51+ dirs)
+    if (base.endsWith('projects')) {
+      try {
+        const projectSlug = cwd.replace(/^\//, '').replace(/\//g, '-');
+        const memDir = path.join(base, projectSlug, 'memory');
+        if (fs.existsSync(memDir)) {
+          parseMemoryDir(memDir, entries);
+        }
+      } catch { /* skip */ }
+    } else if (fs.existsSync(base)) {
       parseMemoryDir(base, entries);
     }
   }
@@ -254,13 +291,14 @@ function parseMemoryDir(dir, entries) {
 
       // Parse markdown sections as separate entries
       const sections = content.split(/^##?\s+/m).filter(Boolean);
-      for (const section of sections) {
+      for (let sIdx = 0; sIdx < sections.length; sIdx++) {
+        const section = sections[sIdx];
         const lines = section.trim().split('\n');
         const title = lines[0].trim();
         const body = lines.slice(1).join('\n').trim();
         if (!body || body.length < 10) continue;
 
-        const id = `mem-${file.replace('.md', '')}-${title.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 30)}-${entries.length}`;
+        const id = `mem-${file.replace('.md', '')}-${title.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 30)}-${sIdx}`;
         entries.push({
           id,
           key: title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50),
@@ -301,10 +339,15 @@ function init() {
     }
   }
 
+  // Deduplicate store entries by ID (fixes #1518 — 194MB → ~79KB)
+  const deduped = deduplicateById(store);
+  if (deduped.length < store.length) {
+    process.stderr.write(`[INTELLIGENCE] Deduped store: ${store.length} -> ${deduped.length} entries\n`);
+    writeJSON(STORE_PATH, deduped);
+  }
+
   // Skip rebuild if graph is fresh and store hasn't changed
-  // Compare against unique ID count, not raw store length (store may have duplicates)
-  const uniqueCount = new Set(store.map(e => e.id || e.key)).size;
-  if (graphState && graphState.nodeCount === uniqueCount) {
+  if (graphState && graphState.nodeCount === deduped.length) {
     const age = Date.now() - (graphState.updatedAt || 0);
     if (age < 60000) {
       return {
@@ -315,32 +358,33 @@ function init() {
     }
   }
 
-  // Deduplicate store by ID (auto-memory-hook may import duplicates)
-  const seen = new Map();
-  for (const entry of store) {
-    const id = entry.id || entry.key || `entry-${Math.random().toString(36).slice(2, 8)}`;
-    entry.id = id;
-    seen.set(id, entry); // last write wins
-  }
-  const deduped = [...seen.values()];
-
-  // Build nodes
+  // Build nodes from deduped entries
   const nodes = {};
   for (const entry of deduped) {
-    nodes[entry.id] = {
-      id: entry.id,
+    const id = entry.id || entry.key || `entry-${Math.random().toString(36).slice(2, 8)}`;
+    nodes[id] = {
+      id,
       category: entry.namespace || entry.type || 'default',
       confidence: (entry.metadata && entry.metadata.confidence) || 0.5,
       accessCount: (entry.metadata && entry.metadata.accessCount) || 0,
       createdAt: entry.createdAt || Date.now(),
     };
+    // Ensure entry has id for edge building
+    entry.id = id;
   }
 
-  // Build edges (from deduplicated store, not raw)
+  // Build edges
   const edges = buildEdges(deduped);
 
-  // Compute PageRank
-  const pageRanks = computePageRank(nodes, edges, 0.85, 30);
+  // Compute PageRank (skip if graph too large — #1531)
+  const nodeCount = Object.keys(nodes).length;
+  let pageRanks = {};
+  if (nodeCount > MAX_GRAPH_NODES) {
+    process.stderr.write("[INTELLIGENCE] WARN: Graph has " + nodeCount + " nodes (>" + MAX_GRAPH_NODES + "), skipping PageRank\n");
+    for (const id of Object.keys(nodes)) pageRanks[id] = 1 / nodeCount;
+  } else {
+    pageRanks = computePageRank(nodes, edges, 0.85, 30);
+  }
 
   // Write graph state
   const graph = {
@@ -475,9 +519,6 @@ function feedback(success) {
 
   const amount = success ? 0.05 : -0.02;
   boostConfidence(matchedIds, amount);
-
-  // IN-004: Write signal for ESM bridge consumption
-  writeSignals({ type: 'task', task: sessionGet('currentTask') || 'hook', success: !!success });
 }
 
 function boostConfidence(ids, amount) {
@@ -515,10 +556,14 @@ function boostConfidence(ids, amount) {
 function consolidate() {
   ensureDataDir();
 
-  const store = readJSON(STORE_PATH);
+  let store = readJSON(STORE_PATH);
   if (!store || !Array.isArray(store)) {
     return { entries: 0, edges: 0, newEntries: 0, message: 'No store to consolidate' };
   }
+
+  // Deduplicate store entries by ID before processing (fixes #1518)
+  const preDedupCount = store.length;
+  store = deduplicateById(store);
 
   // 1. Process pending insights
   let newEntries = 0;
@@ -595,8 +640,15 @@ function consolidate() {
     };
   }
 
-  // 5. Recompute PageRank
-  const pageRanks = computePageRank(nodes, edges, 0.85, 30);
+  // 5. Recompute PageRank (skip if graph too large — #1531)
+  const nodeCount = Object.keys(nodes).length;
+  let pageRanks = {};
+  if (nodeCount > MAX_GRAPH_NODES) {
+    process.stderr.write("[INTELLIGENCE] WARN: Graph has " + nodeCount + " nodes (>" + MAX_GRAPH_NODES + "), skipping PageRank in consolidate\n");
+    for (const id of Object.keys(nodes)) pageRanks[id] = 1 / nodeCount;
+  } else {
+    pageRanks = computePageRank(nodes, edges, 0.85, 30);
+  }
 
   // 6. Write updated graph
   writeJSON(GRAPH_PATH, {
@@ -609,7 +661,7 @@ function consolidate() {
   });
 
   // 7. Write updated ranked context
-  const rankedEntries = deduped.map(entry => {
+  const rankedEntries = store.map(entry => {
     const id = entry.id;
     const content = entry.content || entry.value || '';
     const summary = entry.summary || entry.key || '';
@@ -636,8 +688,8 @@ function consolidate() {
     entries: rankedEntries,
   });
 
-  // 8. Persist updated store (with new insight entries)
-  if (newEntries > 0) writeJSON(STORE_PATH, store);
+  // 8. Persist updated store (deduped or with new insight entries)
+  if (newEntries > 0 || store.length < preDedupCount) writeJSON(STORE_PATH, store);
 
   // 9. Save snapshot for delta tracking
   const updatedGraph = readJSON(GRAPH_PATH);
@@ -890,102 +942,7 @@ function stats(outputJson) {
   return report;
 }
 
-// ── CJS Signal Writer (ADR-078 / IN-004) ──────────────────────────────────
-
-function writeSignals(event) {
-  try {
-    let signals = readJSON(SIGNALS_PATH);
-    if (!signals || !Array.isArray(signals.taskOutcomes)) {
-      signals = { timestamp: null, taskOutcomes: [], routingDecisions: [] };
-    }
-    signals.timestamp = new Date().toISOString();
-    if (event.type === 'task') {
-      signals.taskOutcomes.push({
-        task: event.task || 'unknown',
-        success: !!event.success,
-        model: event.model || 'unknown',
-        duration: event.duration || 0,
-        timestamp: new Date().toISOString(),
-      });
-    } else if (event.type === 'routing') {
-      signals.routingDecisions.push({
-        input: (event.input || '').slice(0, 100),
-        recommended: event.recommended || 'unknown',
-        actual: event.actual || 'unknown',
-        timestamp: new Date().toISOString(),
-      });
-    }
-    // Cap at 100 entries each to prevent unbounded growth
-    if (signals.taskOutcomes.length > 100) signals.taskOutcomes = signals.taskOutcomes.slice(-100);
-    if (signals.routingDecisions.length > 100) signals.routingDecisions = signals.routingDecisions.slice(-100);
-    writeJSON(SIGNALS_PATH, signals);
-  } catch { /* IN-004: best effort — do not block hook execution */ }
-}
-
-// ── ESM Bridge Snapshot Reader (ADR-078 / IN-003) ──────────────────────────
-
-let _snapshotCache = null;
-let _snapshotCacheTs = 0;
-const SNAPSHOT_TTL = 30000; // 30s cache
-
-function loadSnapshot() {
-  const now = Date.now();
-  if (_snapshotCache && (now - _snapshotCacheTs) < SNAPSHOT_TTL) return _snapshotCache;
-  try {
-    if (fs.existsSync(SNAPSHOT_BRIDGE_PATH)) {
-      const raw = JSON.parse(fs.readFileSync(SNAPSHOT_BRIDGE_PATH, 'utf-8'));
-      // Snapshot may be an array (history) or object (single); use latest
-      _snapshotCache = Array.isArray(raw) ? raw[raw.length - 1] : raw;
-      _snapshotCacheTs = now;
-      return _snapshotCache;
-    }
-  } catch { /* IN-003: corrupt snapshot — continue without */ }
-  return null;
-}
-
-function getModelRecommendation(complexity) {
-  const snap = loadSnapshot();
-  if (!snap) return { model: 'sonnet', reason: 'no snapshot available' };
-
-  // Use routing rules from snapshot if available
-  if (snap.routingRules && Array.isArray(snap.routingRules)) {
-    for (const rule of snap.routingRules) {
-      if (rule.complexity && complexity !== undefined) {
-        const threshold = parseFloat(rule.complexity);
-        if (!isNaN(threshold) && complexity < threshold) {
-          return { model: rule.model || 'haiku', reason: 'snapshot routing rule' };
-        }
-      }
-    }
-  }
-
-  // Fallback: use model stats to pick lowest-latency model for simple tasks
-  if (snap.modelStats && complexity !== undefined && complexity < 0.3) {
-    const haiku = snap.modelStats.haiku;
-    if (haiku && haiku.count > 0) {
-      return { model: 'haiku', reason: 'low complexity + haiku stats available' };
-    }
-  }
-
-  return { model: 'sonnet', reason: 'default fallback' };
-}
-
-function getPatternContext(taskType) {
-  const snap = loadSnapshot();
-  if (!snap || !snap.topPatterns) return null;
-
-  if (!taskType) return snap.topPatterns.slice(0, 5);
-
-  const lowerType = taskType.toLowerCase();
-  const matched = snap.topPatterns.filter(p => {
-    const summary = (p.summary || '').toLowerCase();
-    return summary.includes(lowerType);
-  });
-
-  return matched.length > 0 ? matched : snap.topPatterns.slice(0, 3);
-}
-
-module.exports = { init, getContext, recordEdit, feedback, consolidate, stats, getModelRecommendation, getPatternContext, writeSignals };
+module.exports = { init, getContext, recordEdit, feedback, consolidate, stats };
 
 // ── CLI entrypoint ──────────────────────────────────────────────────────────
 if (require.main === module) {

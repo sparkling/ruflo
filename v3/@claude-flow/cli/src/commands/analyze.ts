@@ -21,6 +21,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { writeFile } from 'fs/promises';
 import { resolve } from 'path';
+import { execSync } from 'child_process';
 
 // Dynamic import for AST analyzer
 async function getASTAnalyzer() {
@@ -314,30 +315,155 @@ const codeCommand: Command = {
     { command: 'claude-flow analyze code --type complexity', description: 'Run complexity analysis' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const path = ctx.flags.path as string || '.';
+    const targetPath = resolve(ctx.flags.path as string || '.');
     const analysisType = ctx.flags.type as string || 'quality';
+    const formatJson = (ctx.flags.format as string) === 'json';
 
     output.writeln();
     output.writeln(output.bold('Code Analysis'));
     output.writeln(output.dim('-'.repeat(50)));
 
-    output.printInfo(`Analyzing ${path} for ${analysisType}...`);
-    output.writeln();
+    const spinner = output.createSpinner({ text: `Analyzing ${targetPath}...`, spinner: 'dots' });
+    spinner.start();
 
-    // Placeholder - would integrate with actual code analysis tools
-    output.printBox(
-      [
-        `Path: ${path}`,
-        `Type: ${analysisType}`,
-        `Status: Feature in development`,
-        ``,
-        `Code analysis capabilities coming soon.`,
-        `Use 'analyze diff' for change analysis.`,
-      ].join('\n'),
-      'Code Analysis'
-    );
+    try {
+      const files = await scanSourceFiles(targetPath);
+      if (files.length === 0) {
+        spinner.stop();
+        output.printWarning('No source files found');
+        return { success: true };
+      }
 
-    return { success: true };
+      const fileStats: Array<{ file: string; loc: number; todos: number; functions: number; imports: number; maxNesting: number; securityIssues: string[] }> = [];
+
+      for (const filePath of files) {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split('\n');
+        const nonEmpty = lines.filter(l => l.trim().length > 0 && !/^\s*(\/\/|\/\*|\*\s|#)/.test(l)).length;
+        const todos = (content.match(/\b(TODO|FIXME|HACK|XXX)\b/gi) || []).length;
+        const fns = (content.match(/(?:export\s+)?(?:async\s+)?function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>/g) || []).length;
+        const imps = (content.match(/^import\s+/gm) || []).length + (content.match(/require\s*\(/g) || []).length;
+
+        let maxNesting = 0;
+        let nesting = 0;
+        for (const line of lines) {
+          nesting += (line.match(/\{/g) || []).length;
+          nesting -= (line.match(/\}/g) || []).length;
+          if (nesting > maxNesting) maxNesting = nesting;
+        }
+
+        const securityIssues: string[] = [];
+        if (/\beval\s*\(/.test(content)) securityIssues.push('eval()');
+        if (/\bexec\s*\(/.test(content)) securityIssues.push('exec()');
+        if (/\.innerHTML\s*=/.test(content)) securityIssues.push('innerHTML');
+        if (/dangerouslySetInnerHTML/.test(content)) securityIssues.push('dangerouslySetInnerHTML');
+        if (/['"](?:password|secret|api[_-]?key|token)\s*[:=]\s*['"][^'"]{3,}['"]/i.test(content)) securityIssues.push('hardcoded secret');
+        if (/new\s+Function\s*\(/.test(content)) securityIssues.push('new Function()');
+
+        fileStats.push({
+          file: filePath,
+          loc: nonEmpty,
+          todos,
+          functions: fns,
+          imports: imps,
+          maxNesting,
+          securityIssues,
+        });
+      }
+
+      spinner.stop();
+
+      const totalLoc = fileStats.reduce((s, f) => s + f.loc, 0);
+      const totalTodos = fileStats.reduce((s, f) => s + f.todos, 0);
+      const totalFunctions = fileStats.reduce((s, f) => s + f.functions, 0);
+      const totalImports = fileStats.reduce((s, f) => s + f.imports, 0);
+      const avgFileSize = Math.round(totalLoc / files.length);
+      const longestFile = fileStats.reduce((a, b) => a.loc > b.loc ? a : b);
+      const avgFnPerFile = (totalFunctions / files.length).toFixed(1);
+      const deepestNesting = fileStats.reduce((a, b) => a.maxNesting > b.maxNesting ? a : b);
+      const allSecurityIssues = fileStats.filter(f => f.securityIssues.length > 0);
+
+      if (formatJson) {
+        const jsonData = { type: analysisType, path: targetPath, files: files.length, totalLoc, totalTodos, totalFunctions, totalImports, avgFileSize, fileStats: fileStats.map(f => ({ relativePath: path.relative(targetPath, f.file), loc: f.loc, todos: f.todos, functions: f.functions, imports: f.imports, maxNesting: f.maxNesting, securityIssues: f.securityIssues })) };
+        output.printJson(jsonData);
+        return { success: true, data: jsonData };
+      }
+
+      if (analysisType === 'quality') {
+        output.printBox(
+          [`Files: ${files.length}`, `Lines of Code: ${totalLoc.toLocaleString()}`, `Avg File Size: ${avgFileSize} LOC`, `TODO/FIXME: ${totalTodos}`, `Functions: ${totalFunctions}`, `Imports: ${totalImports}`].join('\n'),
+          'Quality Summary'
+        );
+        output.writeln();
+        output.writeln(output.bold('Largest Files'));
+        output.writeln(output.dim('-'.repeat(60)));
+        const top10 = [...fileStats].sort((a, b) => b.loc - a.loc).slice(0, 10);
+        output.printTable({
+          columns: [
+            { key: 'file', header: 'File', width: 45 },
+            { key: 'loc', header: 'LOC', width: 8, align: 'right' as const },
+            { key: 'fns', header: 'Fns', width: 6, align: 'right' as const },
+            { key: 'todos', header: 'TODOs', width: 7, align: 'right' as const },
+          ],
+          data: top10.map(f => ({ file: path.relative(targetPath, f.file), loc: f.loc, fns: f.functions, todos: f.todos })),
+        });
+        if (totalTodos > 0) {
+          output.writeln();
+          output.printWarning(`${totalTodos} TODO/FIXME comments found across ${fileStats.filter(f => f.todos > 0).length} files`);
+        }
+      } else if (analysisType === 'complexity') {
+        output.printBox(
+          [`Files: ${files.length}`, `Total Functions: ${totalFunctions}`, `Avg Functions/File: ${avgFnPerFile}`, `Deepest Nesting: ${deepestNesting.maxNesting} levels (${path.relative(targetPath, deepestNesting.file)})`, `Longest File: ${longestFile.loc} LOC (${path.relative(targetPath, longestFile.file)})`].join('\n'),
+          'Complexity Summary'
+        );
+        output.writeln();
+        output.writeln(output.bold('High Complexity Files (nesting > 5)'));
+        output.writeln(output.dim('-'.repeat(60)));
+        const complex = fileStats.filter(f => f.maxNesting > 5).sort((a, b) => b.maxNesting - a.maxNesting);
+        if (complex.length === 0) {
+          output.printSuccess('No files with excessive nesting detected');
+        } else {
+          output.printTable({
+            columns: [
+              { key: 'file', header: 'File', width: 45 },
+              { key: 'nesting', header: 'Max Nest', width: 10, align: 'right' as const },
+              { key: 'fns', header: 'Fns', width: 6, align: 'right' as const },
+              { key: 'loc', header: 'LOC', width: 8, align: 'right' as const },
+            ],
+            data: complex.slice(0, 15).map(f => ({ file: path.relative(targetPath, f.file), nesting: f.maxNesting, fns: f.functions, loc: f.loc })),
+          });
+        }
+      } else if (analysisType === 'security') {
+        output.printBox(
+          [`Files Scanned: ${files.length}`, `Files with Issues: ${allSecurityIssues.length}`, `Total Issues: ${allSecurityIssues.reduce((s, f) => s + f.securityIssues.length, 0)}`].join('\n'),
+          'Security Summary'
+        );
+        if (allSecurityIssues.length === 0) {
+          output.writeln();
+          output.printSuccess('No common security patterns detected');
+        } else {
+          output.writeln();
+          output.writeln(output.bold('Security Concerns'));
+          output.writeln(output.dim('-'.repeat(60)));
+          output.printTable({
+            columns: [
+              { key: 'file', header: 'File', width: 40 },
+              { key: 'issues', header: 'Issues', width: 35 },
+            ],
+            data: allSecurityIssues.map(f => ({ file: path.relative(targetPath, f.file), issues: f.securityIssues.join(', ') })),
+          });
+        }
+      } else {
+        output.printWarning(`Unknown analysis type: ${analysisType}. Use quality, complexity, or security.`);
+      }
+
+      return { success: true };
+    } catch (error) {
+      spinner.stop();
+      const message = error instanceof Error ? error.message : String(error);
+      output.printError(`Code analysis failed: ${message}`);
+      return { success: false, exitCode: 1 };
+    }
   },
 };
 
@@ -1294,28 +1420,132 @@ const depsCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const showOutdated = ctx.flags.outdated as boolean;
     const checkSecurity = ctx.flags.security as boolean;
+    const formatJson = (ctx.flags.format as string) === 'json';
 
     output.writeln();
     output.writeln(output.bold('Dependency Analysis'));
     output.writeln(output.dim('-'.repeat(50)));
 
-    output.printInfo('Analyzing dependencies...');
-    output.writeln();
+    try {
+      const pkgPath = resolve('package.json');
+      let pkgContent: string;
+      try {
+        pkgContent = await fs.readFile(pkgPath, 'utf-8');
+      } catch {
+        output.printError('No package.json found in current directory');
+        return { success: false, exitCode: 1 };
+      }
 
-    // Placeholder - would integrate with npm/yarn audit
-    output.printBox(
-      [
-        `Outdated Check: ${showOutdated ? 'Enabled' : 'Disabled'}`,
-        `Security Check: ${checkSecurity ? 'Enabled' : 'Disabled'}`,
-        `Status: Feature in development`,
-        ``,
-        `Dependency analysis capabilities coming soon.`,
-        `Use 'security scan --type deps' for security scanning.`,
-      ].join('\n'),
-      'Dependency Analysis'
-    );
+      const pkg = JSON.parse(pkgContent);
+      const deps = Object.entries(pkg.dependencies || {}) as [string, string][];
+      const devDeps = Object.entries(pkg.devDependencies || {}) as [string, string][];
+      const optDeps = Object.entries(pkg.optionalDependencies || {}) as [string, string][];
+      const peerDeps = Object.entries(pkg.peerDependencies || {}) as [string, string][];
+      const total = deps.length + devDeps.length + optDeps.length + peerDeps.length;
 
-    return { success: true };
+      if (formatJson && !showOutdated && !checkSecurity) {
+        const jsonData = { name: pkg.name, version: pkg.version, dependencies: deps.length, devDependencies: devDeps.length, optionalDependencies: optDeps.length, peerDependencies: peerDeps.length, total };
+        output.printJson(jsonData);
+        return { success: true, data: jsonData };
+      }
+
+      output.printBox(
+        [`Package: ${pkg.name || 'unknown'} @ ${pkg.version || '0.0.0'}`, `Dependencies: ${deps.length}`, `Dev Dependencies: ${devDeps.length}`, `Optional: ${optDeps.length}`, `Peer: ${peerDeps.length}`, `Total: ${total}`].join('\n'),
+        'Dependency Summary'
+      );
+
+      if (showOutdated) {
+        output.writeln();
+        output.writeln(output.bold('Outdated Check'));
+        output.writeln(output.dim('-'.repeat(60)));
+        const outdated: Array<{ name: string; declared: string; installed: string; category: string }> = [];
+
+        const checkDeps = async (entries: [string, string][], category: string) => {
+          for (const [name, declared] of entries) {
+            try {
+              const installedPkg = resolve('node_modules', name, 'package.json');
+              const raw = await fs.readFile(installedPkg, 'utf-8');
+              const installedContent = JSON.parse(raw) as { version?: string };
+              const installed = installedContent.version || 'unknown';
+              const cleanDeclared = (declared as string).replace(/^[\^~>=<]+/, '');
+              if (installed !== cleanDeclared) {
+                outdated.push({ name, declared: declared as string, installed, category });
+              }
+            } catch {
+              outdated.push({ name, declared: declared as string, installed: 'not installed', category });
+            }
+          }
+        };
+
+        await checkDeps(deps, 'prod');
+        await checkDeps(devDeps, 'dev');
+
+        if (outdated.length === 0) {
+          output.printSuccess('All dependencies match declared versions');
+        } else {
+          output.printTable({
+            columns: [
+              { key: 'name', header: 'Package', width: 30 },
+              { key: 'declared', header: 'Declared', width: 14 },
+              { key: 'installed', header: 'Installed', width: 14 },
+              { key: 'category', header: 'Type', width: 6 },
+            ],
+            data: outdated.slice(0, 30),
+          });
+          if (outdated.length > 30) {
+            output.writeln(output.dim(`  ... and ${outdated.length - 30} more`));
+          }
+        }
+      }
+
+      if (checkSecurity) {
+        output.writeln();
+        output.writeln(output.bold('Security Audit'));
+        output.writeln(output.dim('-'.repeat(60)));
+
+        try {
+          const auditRaw = execSync('npm audit --json 2>/dev/null', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+          const audit = JSON.parse(auditRaw);
+          const vulns = audit.metadata?.vulnerabilities || audit.vulnerabilities || {};
+          const info = vulns.info || 0;
+          const low = vulns.low || 0;
+          const moderate = vulns.moderate || 0;
+          const high = vulns.high || 0;
+          const critical = vulns.critical || 0;
+          const totalVulns = info + low + moderate + high + critical;
+
+          if (totalVulns === 0) {
+            output.printSuccess('No known vulnerabilities found');
+          } else {
+            output.printTable({
+              columns: [
+                { key: 'severity', header: 'Severity', width: 12 },
+                { key: 'count', header: 'Count', width: 8, align: 'right' as const },
+              ],
+              data: [
+                ...(critical > 0 ? [{ severity: 'Critical', count: critical }] : []),
+                ...(high > 0 ? [{ severity: 'High', count: high }] : []),
+                ...(moderate > 0 ? [{ severity: 'Moderate', count: moderate }] : []),
+                ...(low > 0 ? [{ severity: 'Low', count: low }] : []),
+                ...(info > 0 ? [{ severity: 'Info', count: info }] : []),
+                { severity: 'Total', count: totalVulns },
+              ],
+            });
+            if (critical > 0 || high > 0) {
+              output.printWarning(`${critical + high} high/critical vulnerabilities found. Run 'npm audit' for details.`);
+            }
+          }
+        } catch {
+          output.printWarning('npm audit failed. Ensure npm is available and node_modules is installed.');
+        }
+      }
+
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.printError(`Dependency analysis failed: ${message}`);
+      return { success: false, exitCode: 1 };
+    }
   },
 };
 

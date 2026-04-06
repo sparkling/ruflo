@@ -47,6 +47,29 @@ const session = safeRequire(path.join(helpersDir, 'session.js'));
 const memory = safeRequire(path.join(helpersDir, 'memory.js'));
 const intelligence = safeRequire(path.join(helpersDir, 'intelligence.cjs'));
 
+// ── Intelligence timeout protection (fixes #1530, #1531) ───────────────────
+const INTELLIGENCE_TIMEOUT_MS = 3000;
+function runWithTimeout(fn, label) {
+  // For synchronous blocking calls, we use a global safety timer.
+  // The readJSON file-size guard prevents loading huge files, but this
+  // is an additional safety net.
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      process.stderr.write("[WARN] " + label + " timed out after " + INTELLIGENCE_TIMEOUT_MS + "ms, skipping\n");
+      resolve(null);
+    }, INTELLIGENCE_TIMEOUT_MS);
+    try {
+      const result = fn();
+      clearTimeout(timer);
+      resolve(result);
+    } catch (e) {
+      clearTimeout(timer);
+      resolve(null);
+    }
+  });
+}
+
+
 // Get the command from argv
 const [,, command, ...args] = process.argv;
 
@@ -70,6 +93,13 @@ async function readStdin() {
 }
 
 async function main() {
+  // Global safety timeout: hooks must NEVER hang (#1530, #1531)
+  const safetyTimer = setTimeout(() => {
+    process.stderr.write("[WARN] Hook handler global timeout (5s), forcing exit\n");
+    process.exit(0);
+  }, 5000);
+  safetyTimer.unref(); // don't keep process alive just for this timer
+
   let stdinData = '';
   try { stdinData = await readStdin(); } catch (e) { /* ignore stdin errors */ }
 
@@ -78,9 +108,12 @@ async function main() {
     try { hookInput = JSON.parse(stdinData); } catch (e) { /* ignore parse errors */ }
   }
 
+  // Normalize snake_case/camelCase: Claude Code sends tool_input/tool_name (snake_case)
+  const toolInput = hookInput.toolInput || hookInput.tool_input || {};
+  const toolName = hookInput.toolName || hookInput.tool_name || '';
+
   // Merge stdin data into prompt resolution: prefer stdin fields, then env, then argv
-  const prompt = hookInput.prompt || hookInput.command
-    || hookInput.tool_input || hookInput.toolInput
+  const prompt = hookInput.prompt || hookInput.command || toolInput
     || process.env.PROMPT || process.env.TOOL_INPUT_command || args.join(' ') || '';
 
 const handlers = {
@@ -94,39 +127,15 @@ const handlers = {
     }
     if (router && router.routeTask) {
       const result = router.routeTask(prompt);
-      // Format output for Claude Code hook consumption
+      // Format output for Claude Code hook consumption — real data only
       const output = [
         `[INFO] Routing task: ${prompt.substring(0, 80) || '(no prompt)'}`,
-        '',
-        'Routing Method',
-        '  - Method: keyword',
-        '  - Backend: keyword matching',
-        `  - Latency: ${(Math.random() * 0.5 + 0.1).toFixed(3)}ms`,
-        '  - Matched Pattern: keyword-fallback',
-        '',
-        'Semantic Matches:',
-        '  bugfix-task: 15.0%',
-        '  devops-task: 14.0%',
-        '  testing-task: 13.0%',
         '',
         '+------------------- Primary Recommendation -------------------+',
         `| Agent: ${result.agent.padEnd(53)}|`,
         `| Confidence: ${(result.confidence * 100).toFixed(1)}%${' '.repeat(44)}|`,
-        `| Reason: ${result.reason.substring(0, 53).padEnd(53)}|`,
+        `| Reason: ${(result.reason || '').substring(0, 53).padEnd(53)}|`,
         '+--------------------------------------------------------------+',
-        '',
-        'Alternative Agents',
-        '+------------+------------+-------------------------------------+',
-        '| Agent Type | Confidence | Reason                              |',
-        '+------------+------------+-------------------------------------+',
-        '| researcher |      60.0% | Alternative agent for researcher... |',
-        '| tester     |      50.0% | Alternative agent for tester cap... |',
-        '+------------+------------+-------------------------------------+',
-        '',
-        'Estimated Metrics',
-        '  - Success Probability: 70.0%',
-        '  - Estimated Duration: 10-30 min',
-        '  - Complexity: LOW',
       ];
       console.log(output.join('\n'));
     } else {
@@ -155,9 +164,7 @@ const handlers = {
     // Record edit for intelligence consolidation — prefer stdin data from Claude Code
     if (intelligence && intelligence.recordEdit) {
       try {
-        const file = hookInput.file_path
-          || (hookInput.tool_input && hookInput.tool_input.file_path)
-          || (hookInput.toolInput && hookInput.toolInput.file_path)
+        const file = hookInput.file_path || toolInput.file_path
           || process.env.TOOL_INPUT_file_path || args[0] || '';
         intelligence.recordEdit(file);
       } catch (e) { /* non-fatal */ }
@@ -165,7 +172,7 @@ const handlers = {
     console.log('[OK] Edit recorded');
   },
 
-  'session-restore': () => {
+  'session-restore': async () => {
     if (session) {
       // Try restore first, fall back to start
       const existing = session.restore && session.restore();
@@ -189,26 +196,22 @@ const handlers = {
       console.log('| Memory Entries |     0 |');
       console.log('+----------------+-------+');
     }
-    // Initialize intelligence graph after session restore
+    // Initialize intelligence graph after session restore (with timeout — #1530)
     if (intelligence && intelligence.init) {
-      try {
-        const result = intelligence.init();
-        if (result && result.nodes > 0) {
-          console.log(`[INTELLIGENCE] Loaded ${result.nodes} patterns, ${result.edges} edges`);
-        }
-      } catch (e) { /* non-fatal */ }
+      const initResult = await runWithTimeout(() => intelligence.init(), 'intelligence.init()');
+      if (initResult && initResult.nodes > 0) {
+        console.log(`[INTELLIGENCE] Loaded ${initResult.nodes} patterns, ${initResult.edges} edges`);
+      }
     }
   },
 
-  'session-end': () => {
-    // Consolidate intelligence before ending session
+  'session-end': async () => {
+    // Consolidate intelligence before ending session (with timeout — #1530)
     if (intelligence && intelligence.consolidate) {
-      try {
-        const result = intelligence.consolidate();
-        if (result && result.entries > 0) {
-          console.log(`[INTELLIGENCE] Consolidated: ${result.entries} entries, ${result.edges} edges${result.newEntries > 0 ? `, ${result.newEntries} new` : ''}, PageRank recomputed`);
-        }
-      } catch (e) { /* non-fatal */ }
+      const consResult = await runWithTimeout(() => intelligence.consolidate(), 'intelligence.consolidate()');
+      if (consResult && consResult.entries > 0) {
+        console.log(`[INTELLIGENCE] Consolidated: ${consResult.entries} entries, ${consResult.edges} edges${consResult.newEntries > 0 ? `, ${consResult.newEntries} new` : ''}, PageRank recomputed`);
+      }
     }
     if (session && session.end) {
       session.end();
@@ -252,7 +255,7 @@ const handlers = {
   // Execute the handler
   if (command && handlers[command]) {
     try {
-      handlers[command]();
+      await Promise.resolve(handlers[command]());
     } catch (e) {
       // Hooks should never crash Claude Code - fail silently
       console.log(`[WARN] Hook ${command} encountered an error: ${e.message}`);

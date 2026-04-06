@@ -17,11 +17,17 @@ const PENDING_PATH = path.join(DATA_DIR, 'pending-insights.jsonl');
 const SESSION_DIR = path.join(process.cwd(), '.claude-flow', 'sessions');
 const SESSION_FILE = path.join(SESSION_DIR, 'current.json');
 
+// ── Safety limits (fixes #1530, #1531) ─────────────────────────────────────
+var MAX_DATA_FILE_SIZE = 10 * 1024 * 1024; // 10 MB — skip files larger than this
+var MAX_GRAPH_NODES = 5000;                 // skip PageRank if graph exceeds this
+
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 function readJSON(p) {
+  // Safety: skip files exceeding MAX_DATA_FILE_SIZE (#1531)
+  try { var stat = fs.statSync(p); if (stat.size > MAX_DATA_FILE_SIZE) { process.stderr.write("[INTELLIGENCE] WARN: Skipping " + path.basename(p) + " (" + Math.round(stat.size / 1048576) + "MB exceeds 10MB limit)\n"); return null; } } catch(e) { /* file may not exist */ }
   try { return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf-8")) : null; }
   catch { return null; }
 }
@@ -50,10 +56,27 @@ function tokenize(text) {
   return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(function(w) { return w.length > 2; });
 }
 
+// ── Deduplication helper (fixes #1518) ──────────────────────────────────────
+function deduplicateById(entries) {
+  if (!entries || !Array.isArray(entries)) return entries;
+  var seen = new Map();
+  for (var i = 0; i < entries.length; i++) {
+    var id = entries[i].id || entries[i].key;
+    if (id) {
+      seen.set(id, entries[i]);
+    } else {
+      seen.set('__no_id_' + seen.size, entries[i]);
+    }
+  }
+  return Array.from(seen.values());
+}
+
 function bootstrapFromMemoryFiles() {
   var entries = [];
+  // Scope to current project only (not all 51+ project dirs)
+  var projectSlug = process.cwd().replace(/^\//, '').replace(/\//g, '-');
   var candidates = [
-    path.join(os.homedir(), ".claude", "projects"),
+    path.join(os.homedir(), ".claude", "projects", projectSlug, "memory"),
     path.join(process.cwd(), ".claude-flow", "memory"),
     path.join(process.cwd(), ".claude", "memory"),
   ];
@@ -138,7 +161,7 @@ var cachedEntries = null;
 
 module.exports = {
   init: function() {
-    cachedEntries = loadEntries();
+    cachedEntries = deduplicateById(loadEntries());
     var ranked = cachedEntries.map(function(e) {
       return { id: e.id, content: e.content, summary: e.summary, category: e.category, confidence: e.confidence, words: e.words };
     });

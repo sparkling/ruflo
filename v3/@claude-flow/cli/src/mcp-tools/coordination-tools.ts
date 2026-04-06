@@ -9,7 +9,7 @@
  * - Useful for single-machine workflow orchestration
  */
 
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -77,7 +77,7 @@ interface CoordinationStore {
 }
 
 function getCoordDir(): string {
-  return join(process.cwd(), STORAGE_DIR, COORD_DIR);
+  return join(getProjectCwd(), STORAGE_DIR, COORD_DIR);
 }
 
 function getCoordPath(): string {
@@ -746,22 +746,29 @@ export const coordinationTools: MCPTool[] = [
 
       const metrics = {
         latency: {
-          avg: 25 + Math.random() * 20,
-          p50: 20 + Math.random() * 15,
-          p95: 50 + Math.random() * 30,
-          p99: 100 + Math.random() * 50,
+          avg: null,
+          p50: null,
+          p95: null,
+          p99: null,
           unit: 'ms',
+          _note: 'Real-time latency metrics not available — coordination is state-tracking only',
         },
         throughput: {
-          current: Math.floor(Math.random() * 1000) + 500,
-          peak: Math.floor(Math.random() * 2000) + 1000,
-          avg: Math.floor(Math.random() * 800) + 400,
+          current: null,
+          peak: null,
+          avg: null,
           unit: 'ops/s',
+          _note: 'Real-time throughput metrics not available — coordination is state-tracking only',
         },
         availability: {
-          uptime: 99.9 + Math.random() * 0.09,
+          uptime: null,
+          _note: 'Uptime not tracked — coordination store has no persistent start time',
           activeNodes: activeNodes.length,
           totalNodes: nodes.length,
+          syncCount: store.sync.syncCount,
+          lastSync: store.sync.lastSync,
+          conflicts: store.sync.conflicts,
+          pendingChanges: store.sync.pendingChanges,
           syncStatus: store.sync.conflicts === 0 ? 'healthy' : 'conflicts',
         },
       };

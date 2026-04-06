@@ -327,15 +327,16 @@ setup_mcp_server() {
         return 0
     fi
 
-    # Add MCP server
+    # Add MCP server (pass CLAUDE_FLOW_CWD so tools resolve paths correctly
+    # even when the MCP server is spawned with cwd='/')
     if [ "$GLOBAL" = "1" ]; then
-        claude mcp add ruflo -- ruflo mcp start 2>/dev/null && \
+        claude mcp add ruflo -e CLAUDE_FLOW_CWD="$HOME" -- ruflo mcp start 2>/dev/null && \
             print_substep "MCP server configured ✓" || \
-            print_warning "MCP setup failed - run manually: claude mcp add ruflo -- ruflo mcp start"
+            print_warning "MCP setup failed - run manually: claude mcp add ruflo -e CLAUDE_FLOW_CWD=\"\$HOME\" -- ruflo mcp start"
     else
-        claude mcp add ruflo -- npx -y ruflo@${VERSION} mcp start 2>/dev/null && \
+        claude mcp add ruflo -e CLAUDE_FLOW_CWD="$HOME" -- npx -y ruflo@${VERSION} mcp start 2>/dev/null && \
             print_substep "MCP server configured ✓" || \
-            print_warning "MCP setup failed - run manually: claude mcp add ruflo -- npx -y ruflo@latest mcp start"
+            print_warning "MCP setup failed - run manually: claude mcp add ruflo -e CLAUDE_FLOW_CWD=\"\$HOME\" -- npx -y ruflo@latest mcp start"
     fi
     echo ""
 }

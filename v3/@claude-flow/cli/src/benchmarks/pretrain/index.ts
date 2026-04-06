@@ -457,7 +457,7 @@ export async function benchmarkPretrainPipeline(config: BenchmarkConfig): Promis
       id: `pattern-${i}`,
       type: 'code-structure',
       embedding: embeddings[i],
-      confidence: 0.85 + Math.random() * 0.1,
+      confidence: embeddings[i] ? 1.0 : 0, // real: has embedding = confident
     }));
 
     return { files: files.length, patterns: patterns.length };

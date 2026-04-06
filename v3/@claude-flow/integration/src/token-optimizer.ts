@@ -126,10 +126,11 @@ export class TokenOptimizer extends EventEmitter {
 
     const compactPrompt = this.reasoningBank.formatMemoriesForPrompt(memories);
 
-    // Estimate tokens saved (baseline ~1000 tokens for full context)
-    const baseline = 1000;
-    const used = Math.ceil(compactPrompt.length / 4); // ~4 chars per token
-    const saved = Math.max(0, baseline - used);
+    // Estimate tokens saved based on actual content length difference
+    // Rough heuristic: ~4 chars per token, compare full query context vs compact
+    const queryTokenEstimate = Math.ceil(query.length / 4);
+    const compactTokenEstimate = Math.ceil(compactPrompt.length / 4);
+    const saved = Math.max(0, queryTokenEstimate - compactTokenEstimate);
 
     this.stats.totalTokensSaved += saved;
     this.stats.memoriesRetrieved += memories.length;
@@ -153,10 +154,10 @@ export class TokenOptimizer extends EventEmitter {
     language: string
   ): Promise<EditOptimization> {
     if (!this.agentBooster) {
-      // Fallback: return unoptimized result
+      // Fallback: no optimization available
       return {
         speedupFactor: 1,
-        executionMs: 352, // baseline
+        executionMs: 0,
         method: 'traditional',
       };
     }
@@ -168,12 +169,10 @@ export class TokenOptimizer extends EventEmitter {
       language,
     });
 
-    this.stats.editsOptimized++;
-
-    // Each 350ms saved prevents potential timeout/retry
-    // Estimate 50 tokens saved per optimized edit
+    // Track optimized edits (no fabricated token savings — actual savings
+    // come from fewer retries, which we can't measure here)
     if (result.method === 'agent-booster') {
-      this.stats.totalTokensSaved += 50;
+      this.stats.editsOptimized++;
     }
 
     return {
@@ -194,12 +193,15 @@ export class TokenOptimizer extends EventEmitter {
     expectedSuccessRate: number;
   } {
     if (!this.configTuning) {
-      // Anti-drift defaults
+      // Scale defaults based on agent count
+      const batchSize = agentCount <= 4 ? 2 : agentCount <= 8 ? 4 : 6;
+      const cacheSizeMB = Math.min(200, 25 * Math.ceil(agentCount / 2));
+      const topology = agentCount <= 6 ? 'hierarchical' : agentCount <= 12 ? 'hierarchical-mesh' : 'mesh';
       return {
-        batchSize: 4,
-        cacheSizeMB: 50,
-        topology: 'hierarchical',
-        expectedSuccessRate: 0.95,
+        batchSize,
+        cacheSizeMB,
+        topology,
+        expectedSuccessRate: agentCount <= 8 ? 0.95 : 0.90,
       };
     }
 
@@ -224,7 +226,6 @@ export class TokenOptimizer extends EventEmitter {
     const cacheEntry = this.localCache.get(key);
     if (cacheEntry && Date.now() - cacheEntry.timestamp < 300000) { // 5 min TTL
       this.stats.cacheHits++;
-      this.stats.totalTokensSaved += 100;
       return cacheEntry.data as T;
     }
 
@@ -232,7 +233,6 @@ export class TokenOptimizer extends EventEmitter {
       const cached = await this.configTuning.cacheGet(key);
       if (cached) {
         this.stats.cacheHits++;
-        this.stats.totalTokensSaved += 100;
         return cached as T;
       }
     }

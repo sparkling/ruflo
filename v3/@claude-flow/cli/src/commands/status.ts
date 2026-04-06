@@ -180,8 +180,8 @@ async function getSystemStatus(): Promise<{
       performance: {
         cpuUsage: getProcessCpuUsage(),
         memoryUsage: getProcessMemoryUsage(),
-        flashAttention: '2.8x speedup',
-        searchSpeed: '150x faster'
+        flashAttention: 'not measured',
+        searchSpeed: 'not measured'
       }
     };
   } catch (error) {

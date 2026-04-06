@@ -180,25 +180,43 @@ export const statusCommand: Command = {
       const pgVersion = versionResult.rows[0].version;
       (statusData.connection as Record<string, unknown>).pgVersion = pgVersion;
 
-      // Check pgvector extension
-      if (!jsonOutput) spinner.setText('Checking pgvector extension...'); spinner.start();
+      // Check vector extension: prefer ruvector, fall back to pgvector
+      if (!jsonOutput) spinner.setText('Checking vector extension...'); spinner.start();
 
-      const extensionResult = await client.query(`
-        SELECT extversion FROM pg_extension WHERE extname = 'vector'
+      // Check for ruvector first
+      const ruvectorResult = await client.query(`
+        SELECT extname, extversion FROM pg_extension WHERE extname = 'ruvector'
       `);
 
-      if (extensionResult.rows.length === 0) {
-        statusData.pgvector = { installed: false };
-        if (!jsonOutput) {
-          spinner.succeed(output.warning('pgvector extension not installed'));
-        }
-      } else {
+      if (ruvectorResult.rows.length > 0) {
         statusData.pgvector = {
           installed: true,
-          version: extensionResult.rows[0].extversion,
+          extensionName: 'ruvector',
+          version: ruvectorResult.rows[0].extversion,
         };
         if (!jsonOutput) {
-          spinner.succeed(`pgvector v${extensionResult.rows[0].extversion} installed`);
+          spinner.succeed(`ruvector v${ruvectorResult.rows[0].extversion} installed`);
+        }
+      } else {
+        // Fall back to pgvector
+        const pgvectorResult = await client.query(`
+          SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'
+        `);
+
+        if (pgvectorResult.rows.length > 0) {
+          statusData.pgvector = {
+            installed: true,
+            extensionName: 'vector',
+            version: pgvectorResult.rows[0].extversion,
+          };
+          if (!jsonOutput) {
+            spinner.succeed(`pgvector v${pgvectorResult.rows[0].extversion} installed`);
+          }
+        } else {
+          statusData.pgvector = { installed: false };
+          if (!jsonOutput) {
+            spinner.succeed(output.warning('No vector extension installed (ruvector or pgvector)'));
+          }
         }
       }
 
@@ -372,10 +390,14 @@ export const statusCommand: Command = {
         });
         output.writeln();
 
-        // pgvector info
-        output.writeln(output.highlight('pgvector Extension:'));
-        const pgvectorData = statusData.pgvector as { installed: boolean; version?: string };
+        // Vector extension info
+        const pgvectorData = statusData.pgvector as { installed: boolean; extensionName?: string; version?: string };
+        const extDisplayName = pgvectorData.extensionName === 'ruvector' ? 'RuVector' : 'pgvector';
+        output.writeln(output.highlight(`Vector Extension (${extDisplayName}):`));
         output.writeln(`  Status: ${pgvectorData.installed ? output.success('Installed') : output.error('Not Installed')}`);
+        if (pgvectorData.extensionName) {
+          output.writeln(`  Extension: ${pgvectorData.extensionName}`);
+        }
         if (pgvectorData.version) {
           output.writeln(`  Version: ${pgvectorData.version}`);
         }

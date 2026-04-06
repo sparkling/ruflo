@@ -228,26 +228,62 @@ export const initCommand: Command = {
       await client.connect();
       spinner.succeed('Connected to PostgreSQL');
 
-      // Check pgvector extension
-      spinner.setText('Checking pgvector extension...'); spinner.start();
-      const extensionResult = await client.query(`
-        SELECT extversion FROM pg_extension WHERE extname = 'vector'
+      // Detect vector extension: prefer ruvector, fall back to pgvector
+      spinner.setText('Detecting vector extension...'); spinner.start();
+      let vectorExtName = 'vector'; // default pgvector type name
+      let vectorTypeName = 'vector'; // SQL type used in column definitions
+
+      // Check for ruvector extension first (ships with ruvector-postgres image)
+      const ruvectorResult = await client.query(`
+        SELECT extname, extversion FROM pg_extension WHERE extname = 'ruvector'
       `);
 
-      if (extensionResult.rows.length === 0) {
-        spinner.succeed('pgvector not installed, attempting to create...');
-        try {
-          await client.query('CREATE EXTENSION IF NOT EXISTS vector');
-          spinner.succeed('pgvector extension created');
-        } catch (error) {
-          spinner.fail('Failed to create pgvector extension');
-          output.printError('Please install pgvector manually: https://github.com/pgvector/pgvector');
-          await client.end();
-          return { success: false, exitCode: 1 };
-        }
+      if (ruvectorResult.rows.length > 0) {
+        vectorExtName = 'ruvector';
+        vectorTypeName = 'ruvector';
+        spinner.succeed(`ruvector v${ruvectorResult.rows[0].extversion} found`);
       } else {
-        spinner.succeed(`pgvector v${extensionResult.rows[0].extversion} found`);
+        // Fall back to pgvector
+        const pgvectorResult = await client.query(`
+          SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'
+        `);
+
+        if (pgvectorResult.rows.length > 0) {
+          vectorExtName = 'vector';
+          vectorTypeName = 'vector';
+          spinner.succeed(`pgvector v${pgvectorResult.rows[0].extversion} found`);
+        } else {
+          // Neither installed -- try to create ruvector first, then pgvector
+          spinner.succeed('No vector extension found, attempting to create...');
+          let created = false;
+          try {
+            await client.query("CREATE EXTENSION IF NOT EXISTS ruvector");
+            vectorExtName = 'ruvector';
+            vectorTypeName = 'ruvector';
+            spinner.succeed('ruvector extension created');
+            created = true;
+          } catch {
+            // ruvector not available, try pgvector
+          }
+          if (!created) {
+            try {
+              await client.query("CREATE EXTENSION IF NOT EXISTS vector");
+              vectorExtName = 'vector';
+              vectorTypeName = 'vector';
+              spinner.succeed('pgvector extension created');
+            } catch {
+              spinner.fail('Failed to create vector extension');
+              output.printError('Please install ruvector or pgvector manually.');
+              output.printError('  ruvector: https://hub.docker.com/r/ruvnet/ruvector-postgres');
+              output.printError('  pgvector: https://github.com/pgvector/pgvector');
+              await client.end();
+              return { success: false, exitCode: 1 };
+            }
+          }
+        }
       }
+
+      const cosineOps = vectorExtName === 'ruvector' ? 'ruvector_cosine_ops' : 'vector_cosine_ops';
 
       // Drop schema if force mode
       if (force) {
@@ -271,7 +307,7 @@ export const initCommand: Command = {
           key VARCHAR(512) NOT NULL,
           namespace VARCHAR(128) NOT NULL DEFAULT 'default',
           content TEXT,
-          embedding vector(${dimensions}),
+          embedding ${vectorTypeName}(${dimensions}),
           metadata JSONB DEFAULT '{}',
           created_at TIMESTAMPTZ DEFAULT NOW(),
           updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -284,9 +320,9 @@ export const initCommand: Command = {
         CREATE TABLE IF NOT EXISTS ${config.schema}.attention_patterns (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           pattern_name VARCHAR(256) NOT NULL,
-          query_embedding vector(${dimensions}),
-          key_embedding vector(${dimensions}),
-          value_embedding vector(${dimensions}),
+          query_embedding ${vectorTypeName}(${dimensions}),
+          key_embedding ${vectorTypeName}(${dimensions}),
+          value_embedding ${vectorTypeName}(${dimensions}),
           attention_weights JSONB,
           context TEXT,
           created_at TIMESTAMPTZ DEFAULT NOW()
@@ -312,7 +348,7 @@ export const initCommand: Command = {
         CREATE TABLE IF NOT EXISTS ${config.schema}.hyperbolic_embeddings (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           entity_id UUID NOT NULL,
-          embedding vector(${dimensions}),
+          embedding ${vectorTypeName}(${dimensions}),
           curvature FLOAT DEFAULT -1.0,
           hierarchy_level INTEGER DEFAULT 0,
           parent_id UUID,
@@ -368,21 +404,21 @@ export const initCommand: Command = {
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_embeddings_vector_hnsw
           ON ${config.schema}.embeddings
-          USING hnsw (embedding vector_cosine_ops)
+          USING hnsw (embedding ${cosineOps})
           WITH (m = 16, ef_construction = 64)
         `);
 
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_attention_query_hnsw
           ON ${config.schema}.attention_patterns
-          USING hnsw (query_embedding vector_cosine_ops)
+          USING hnsw (query_embedding ${cosineOps})
           WITH (m = 16, ef_construction = 64)
         `);
 
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_hyperbolic_embedding_hnsw
           ON ${config.schema}.hyperbolic_embeddings
-          USING hnsw (embedding vector_cosine_ops)
+          USING hnsw (embedding ${cosineOps})
           WITH (m = 16, ef_construction = 64)
         `);
       } else {
@@ -390,14 +426,14 @@ export const initCommand: Command = {
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_embeddings_vector_ivfflat
           ON ${config.schema}.embeddings
-          USING ivfflat (embedding vector_cosine_ops)
+          USING ivfflat (embedding ${cosineOps})
           WITH (lists = 100)
         `);
 
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_attention_query_ivfflat
           ON ${config.schema}.attention_patterns
-          USING ivfflat (query_embedding vector_cosine_ops)
+          USING ivfflat (query_embedding ${cosineOps})
           WITH (lists = 100)
         `);
       }
