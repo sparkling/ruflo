@@ -74,6 +74,8 @@ export type CLIControllerName =
   | 'crossAttention'
   | 'multiHeadAttention'
   | 'attentionService'
+  | 'flashAttentionService'
+  | 'moeAttentionService'
   | 'nativeAccelerator'
   | 'selfLearningRvfBackend'
   | 'federatedLearningManager'
@@ -333,7 +335,7 @@ export const INIT_LEVELS: InitLevel[] = [
   { level: 2, controllers: [
     'memoryGraph', 'agentMemoryScope', 'vectorBackend', 'mutationGuard', 'gnnService',
     'selfAttention', 'crossAttention', 'multiHeadAttention', 'attentionService',
-    'nativeAccelerator', 'queryOptimizer',
+    'flashAttentionService', 'moeAttentionService', 'nativeAccelerator', 'queryOptimizer',
   ] as ControllerName[] },
   // Level 3: Specialization (causalGraph moved here from L4 — ADR-0062 P0-1: nightlyLearner depends on it)
   { level: 3, controllers: [
@@ -1253,6 +1255,51 @@ export class ControllerRegistry extends EventEmitter {
             useFlash: asCfg.useFlash ?? true,
             useMoE: asCfg.useMoE ?? false,
             useHyperbolic: asCfg.useHyperbolic ?? false,
+          });
+          await svc.initialize();
+          return svc;
+        } catch { return null; }
+      }
+
+      // ----- ADR-0069 F3: Dual AttentionService instances for SONAWithAttention -----
+      // Flash instance: self-attention layers (memory-efficient tiled computation)
+      case 'flashAttentionService': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const AS = agentdbModule.AttentionService;
+          if (!AS) return null;
+          const dim = this.resolvedDimension;
+          const numHeads = this.config.attentionService?.numHeads ?? 8;
+          const svc = new AS({
+            numHeads,
+            headDim: Math.floor(dim / numHeads),
+            embedDim: dim,
+            useFlash: true,
+            useMoE: false,
+            useHyperbolic: false,
+          });
+          await svc.initialize();
+          return svc;
+        } catch { return null; }
+      }
+
+      // MoE instance: expert routing (dynamic expert selection)
+      case 'moeAttentionService': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const AS = agentdbModule.AttentionService;
+          if (!AS) return null;
+          const dim = this.resolvedDimension;
+          const moeCfg = this.config.attentionService || {};
+          const svc = new AS({
+            numHeads: moeCfg.numHeads ?? 4,
+            headDim: Math.floor(dim / (moeCfg.numHeads ?? 4)),
+            embedDim: dim,
+            useFlash: false,
+            useMoE: true,
+            numExperts: 8,
+            topK: 2,
+            useHyperbolic: false,
           });
           await svc.initialize();
           return svc;
