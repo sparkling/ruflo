@@ -174,7 +174,9 @@ export class RvfBackend implements IMemoryBackend {
       const numId = this.assignNativeId(e.id);
       try {
         this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
-      } catch { /* native ingest failure is non-fatal; pure-TS index is primary */ }
+      } catch (err) {
+        if (this.config.verbose) console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+      }
     }
     this.dirty = true;
     // Persist immediately so data survives process exit (the 30s auto-persist
@@ -228,19 +230,21 @@ export class RvfBackend implements IMemoryBackend {
     if (this.nativeDb) {
       const numId = this.nativeIdMap.get(id);
       if (numId !== undefined) {
-        try { this.nativeDb.delete([numId]); } catch {}
+        try { this.nativeDb.delete([numId]); } catch (err) {
+          if (this.config.verbose) console.error('[RvfBackend] Native delete failed:', (err as Error).message);
+        }
         this.nativeIdMap.delete(id);
         this.nativeReverseMap.delete(numId);
       }
     }
     this.dirty = true;
-    // Delete requires full rewrite — WAL is append-only, no tombstones
-    await this.persistToDisk();
-    // WAL is now stale after full rewrite, so reset it
+    // Truncate WAL BEFORE full rewrite — prevents deleted entries from
+    // resurrecting if process crashes between persist and unlink.
     if (this.walPath && this.walEntryCount > 0) {
-      try { await unlink(this.walPath); } catch {}
+      try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
       this.walEntryCount = 0;
     }
+    await this.persistToDisk();
     return true;
   }
 
@@ -296,7 +300,10 @@ export class RvfBackend implements IMemoryBackend {
           if (options.filters?.namespace && entry.namespace !== options.filters.namespace) continue;
           if (options.filters?.tags && !options.filters.tags.every(t => entry.tags.includes(t))) continue;
           if (options.filters?.memoryType && entry.type !== options.filters.memoryType) continue;
-          const score = 1 - r.distance;
+          // Convert distance → similarity score, metric-aware
+          const score = this.config.metric === 'cosine' ? 1 - r.distance
+            : this.config.metric === 'dot' ? r.distance // dot product: higher = more similar
+            : 1 / (1 + r.distance); // euclidean: map [0,∞) → (0,1]
           if (options.threshold && score < options.threshold) continue;
           results.push({ entry, score, distance: r.distance });
         }
@@ -370,11 +377,12 @@ export class RvfBackend implements IMemoryBackend {
         try { this.nativeDb.delete(nativeIds); } catch {}
       }
       this.dirty = true;
-      await this.persistToDisk();
+      // Truncate WAL BEFORE full rewrite — prevents resurrection on crash
       if (this.walPath && this.walEntryCount > 0) {
-        try { await unlink(this.walPath); } catch {}
+        try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
         this.walEntryCount = 0;
       }
+      await this.persistToDisk();
     }
     return count;
   }
@@ -407,11 +415,12 @@ export class RvfBackend implements IMemoryBackend {
     }
     if (toDelete.length > 0) {
       this.dirty = true;
-      await this.persistToDisk();
+      // Truncate WAL BEFORE full rewrite — prevents resurrection on crash
       if (this.walPath && this.walEntryCount > 0) {
-        try { await unlink(this.walPath); } catch {}
+        try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
         this.walEntryCount = 0;
       }
+      await this.persistToDisk();
     }
     return toDelete.length;
   }
@@ -478,12 +487,16 @@ export class RvfBackend implements IMemoryBackend {
     try {
       const rvf = await import('@ruvector/rvf-node' as string);
       const { existsSync: fileExists } = await import('node:fs');
+      // Remap metric names to NAPI format
+      const nativeMetric = this.config.metric === 'euclidean' ? 'l2'
+        : this.config.metric === 'dot' ? 'inner_product'
+        : 'cosine';
       if (fileExists(this.config.databasePath)) {
         this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
       } else {
         this.nativeDb = rvf.RvfDatabase.create(this.config.databasePath, {
           dimension: this.config.dimensions,
-          metric: this.config.metric,
+          metric: nativeMetric,
           m: this.config.hnswM,
           efConstruction: this.config.hnswEfConstruction,
         });
@@ -751,6 +764,12 @@ export class RvfBackend implements IMemoryBackend {
           const parsed = JSON.parse(entryJson);
           if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
           const entry: MemoryEntry = parsed;
+          // Remove stale HNSW edges before re-adding (entry may already be
+          // in the index from loadFromDisk — re-add without remove corrupts
+          // the graph's reverse-edge pointers).
+          if (entry.embedding && this.hnswIndex && this.entries.has(entry.id)) {
+            this.hnswIndex.remove(entry.id);
+          }
           this.entries.set(entry.id, entry);
           this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
           if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
@@ -776,6 +795,7 @@ export class RvfBackend implements IMemoryBackend {
 
   /** Compact WAL: rewrite main .rvf with all entries, then delete WAL */
   private async compactWal(): Promise<void> {
+    if (this.persisting) return; // Another persist is in flight; retry on next trigger
     await this.persistToDisk();
     if (this.walPath) {
       try { await unlink(this.walPath); } catch {}
