@@ -18,7 +18,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { EMBEDDING_DIM } from './embedding-constants.js';
+// ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
+const EMBEDDING_DIM = 768;
 
 // ADR-0069 A8: read MoE learning rate from config chain
 function getConfigMoELearningRate(fallback: number): number {

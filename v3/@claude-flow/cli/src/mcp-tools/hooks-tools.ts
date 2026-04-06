@@ -6,7 +6,8 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import type { MCPTool } from './types.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
+// ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
+const EMBEDDING_DIM = 768;
 
 // Real vector search functions - lazy loaded to avoid circular imports
 let searchEntriesFn: ((options: {

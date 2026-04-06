@@ -23,7 +23,8 @@ export interface VectorDB {
   clear(): void | Promise<void>;
 }
 
-import { EMBEDDING_DIM } from './embedding-constants.js';
+// ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
+const EMBEDDING_DIM = 768;
 
 export interface RuVectorModule {
   createVectorDB(dimensions: number): Promise<VectorDB>;

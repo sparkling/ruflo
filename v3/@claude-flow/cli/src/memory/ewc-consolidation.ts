@@ -23,7 +23,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { EMBEDDING_DIM } from '../embedding-constants.js';
+// ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); not used at runtime (config-chain reads dimension)
 
 // ============================================================================
 // Types
@@ -151,7 +151,7 @@ const DEFAULT_EWC_CONFIG: EWCConfig = {
   storagePath: path.join(process.cwd(), '.swarm', 'ewc-fisher.json'),
   onlineMode: true,
   // ADR-0069: config-chain embedding dimension
-  dimensions: (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'embeddings.json'), 'utf-8')); return c?.dimension ?? 768; } catch { return 768; } })()
+  dimensions: (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'embeddings.json'), 'utf-8')); return c?.dimension ?? 768; } catch { console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.'); return 768; } })()
 };
 
 // ============================================================================
