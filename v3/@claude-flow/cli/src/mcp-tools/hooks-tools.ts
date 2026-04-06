@@ -2158,8 +2158,8 @@ export const hooksIntelligence: MCPTool = {
         },
         embeddings: {
           provider: 'transformers',
-          model: 'Xenova/all-MiniLM-L6-v2',
-          dimension: 384, // MiniLM-L6-v2 is 384-dim
+          model: 'Xenova/all-mpnet-base-v2',
+          dimension: 768, // ADR-0069: canonical model is mpnet 768-dim
           implemented: true,
           note: 'Real ONNX embeddings via Xenova/all-mpnet-base-v2',
         },

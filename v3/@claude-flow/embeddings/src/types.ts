@@ -128,7 +128,7 @@ export interface MockEmbeddingConfig extends EmbeddingBaseConfig {
 export interface AgenticFlowEmbeddingConfig extends EmbeddingBaseConfig {
   provider: 'agentic-flow';
 
-  /** Model ID (default: all-MiniLM-L6-v2) */
+  /** Model ID (default: all-mpnet-base-v2, ADR-0069) */
   modelId?: string;
 
   /** Embedding dimensions (default: 768, ADR-0052) */
