@@ -1912,6 +1912,20 @@ export class ControllerRegistry extends EventEmitter {
     // ADR-0062 P1-1: Reuse AgentDB's real embedder when available
     if (this.realEmbedder) return this.realEmbedder;
 
+    // ADR-0076 Phase 2: Use EmbeddingPipeline singleton when available
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { getPipeline } = require('@claude-flow/memory');
+      const pipeline = getPipeline?.();
+      if (pipeline) {
+        return {
+          embed: async (text: string) => pipeline.embed(text),
+          embedBatch: async (texts: string[]) => Promise.all(texts.map((t: string) => pipeline.embed(t))),
+          initialize: async () => {},
+        };
+      }
+    } catch { /* pipeline not available */ }
+
     // If user provided an embedding generator, wrap it
     if (this.config.embeddingGenerator) {
       return {
@@ -1920,8 +1934,6 @@ export class ControllerRegistry extends EventEmitter {
         initialize: async () => {},
       };
     }
-    // Use dimension from centralized embedding config (cached in initAgentDB)
-    const dim = this.embeddingDimension || this.config.dimension || 768;
     // Return a minimal stub — HierarchicalMemory falls back to manualSearch without embeddings
     return {
       embed: async () => new Float32Array(this.resolvedDimension),

@@ -3585,6 +3585,13 @@ export async function bridgeGraphRoPESearch(params: {
 // ===== Utility =====
 
 function cosineSim(a: number[], b: number[]): number {
+  // ADR-0076 Phase 2: delegate to canonical cosineSimilarity when available
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { cosineSimilarity } = require('@claude-flow/memory');
+    if (cosineSimilarity) return cosineSimilarity(a, b);
+  } catch { /* fall through to inline */ }
+
   if (!a || !b || a.length === 0 || b.length === 0) return 0;
 
   if (a.length !== b.length) {

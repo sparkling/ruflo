@@ -1793,6 +1793,16 @@ export async function generateEmbedding(
   dimensions: number;
   model: string;
 }> {
+  // ADR-0076 Phase 2: route through unified EmbeddingPipeline when available
+  try {
+    const { getPipeline } = await import('@claude-flow/memory');
+    const pipeline = getPipeline?.();
+    if (pipeline) {
+      const vec = await pipeline.embed(text);
+      return { embedding: Array.from(vec), dimensions: vec.length, model: pipeline.getModel() };
+    }
+  } catch { /* pipeline not initialized — fall through to legacy path */ }
+
   // Apply model-specific task prefix via agentdb
   let processedText = text;
   try {
