@@ -166,7 +166,7 @@ export const embeddingsTools: MCPTool[] = [
           type: 'string',
           description: 'ONNX model ID',
           enum: ['Xenova/all-MiniLM-L6-v2', 'Xenova/all-mpnet-base-v2'],
-          default: 'Xenova/all-mpnet-base-v2',
+          default: 'Xenova/all-mpnet-base-v2', // ADR-0069 A12: canonical model
         },
         hyperbolic: {
           type: 'boolean',
@@ -191,7 +191,7 @@ export const embeddingsTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const model = (input.model as string) || 'all-mpnet-base-v2';
+      const model = (input.model as string) || 'Xenova/all-mpnet-base-v2'; // ADR-0069 A12: canonical model
       const hyperbolic = input.hyperbolic !== false;
       const curvature = (input.curvature as number) || -1;
       const cacheSize = (input.cacheSize as number) || 256;
@@ -860,7 +860,7 @@ export const embeddingsTools: MCPTool[] = [
         },
         initializedAt: config.initialized,
         capabilities: {
-          onnxModels: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
+          onnxModels: ['Xenova/all-MiniLM-L6-v2', 'Xenova/all-mpnet-base-v2'],
           geometries: ['euclidean', 'poincare'],
           normalizations: ['L2', 'L1', 'minmax', 'zscore'],
           features: ['semantic search', 'hyperbolic projection', 'neural substrate'],

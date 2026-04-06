@@ -28,6 +28,7 @@ import {
   generateAutoMemoryHook,
 } from './helpers-generator.js';
 import { generateClaudeMd } from './claudemd-generator.js';
+import { getMinimalConfigTemplate, getFullConfigTemplate, type ConfigOverrides } from './config-template.js';
 
 /**
  * Skills to copy based on configuration
@@ -1207,79 +1208,35 @@ async function writeRuntimeConfig(
   options: InitOptions,
   result: InitResult
 ): Promise<void> {
-  // SG-008: Generate config.json (canonical runtime config, replaces config.yaml)
-  const configJsonPath = path.join(targetDir, '.claude-flow', 'config.json');
+  // ADR-0069: init generates config.json (was config.yaml)
+  const configPath = path.join(targetDir, '.claude-flow', 'config.json');
 
-  if (fs.existsSync(configJsonPath) && !options.force) {
+  if (fs.existsSync(configPath) && !options.force) {
     result.skipped.push('.claude-flow/config.json');
     return;
   }
 
-  // SG-008c: Generate valid JSON for config.json
-  const config = JSON.stringify({
-    version: '3.0.0',
-    swarm: {
-      topology: options.runtime.topology || 'hierarchical-mesh',
-      maxAgents: options.runtime.maxAgents || 15,
-      autoScale: options.runtime.autoScale !== false,
-      coordinationStrategy: options.runtime.coordinationStrategy || 'consensus',
-    },
-    memory: {
-      backend: options.runtime.memoryBackend || 'agentdb',
-      enableHNSW: true,
-      cacheSize: options.runtime.cacheSize || 384,
-      learningBridge: {
-        enabled: !!(options.runtime.enableLearningBridge ?? options.runtime.enableNeural),
-        sonaMode: options.runtime.sonaMode || 'balanced',
-        confidenceDecayRate: 0.0008,
-        accessBoostAmount: options.runtime.accessBoostAmount ?? 0.05,
-        consolidationThreshold: 8,
-      },
-      memoryGraph: {
-        enabled: !!(options.runtime.enableMemoryGraph ?? true),
-        pageRankDamping: 0.82,
-        maxNodes: options.runtime.maxNodes || 10000,
-        similarityThreshold: options.runtime.similarityThreshold || 0.25,
-      },
-      agentScopes: {
-        enabled: !!(options.runtime.enableAgentScopes ?? true),
-        defaultScope: options.runtime.defaultScope || 'project',
-      },
-      agentdb: {
-        vectorBackend: options.runtime.vectorBackend || 'rvf',
-        enableLearning: !!(options.runtime.enableLearning ?? true),
-        learningPositiveThreshold: options.runtime.learningPositiveThreshold || 0.7,
-        learningNegativeThreshold: options.runtime.learningNegativeThreshold || 0.3,
-        learningBatchSize: options.runtime.learningBatchSize || 64,
-        learningTickInterval: options.runtime.learningTickInterval || 10000,
-      },
-    },
-    neural: {
-      enabled: !!(options.runtime.enableNeural),
-      modelPath: options.runtime.modelPath || '.claude-flow/neural',
-      flashAttention: options.runtime.flashAttention !== false,
-      maxModels: options.runtime.maxModels || 5,
-    },
-    hooks: {
-      enabled: !!(options.hooks?.enabled ?? options.hooks?.autoExecute ?? true),
-      autoExecute: !!(options.hooks?.autoExecute ?? true),
-    },
-    mcp: {
-      autoStart: !!(options.mcp?.autoStart ?? true),
-      port: options.mcp?.port || 3000,
-    },
-  }, null, 4);
+  const overrides: ConfigOverrides = {
+    port: options.mcp?.port,
+    maxAgents: options.runtime?.maxAgents,
+    similarityThreshold: options.runtime?.similarityThreshold,
+  };
 
-  fs.writeFileSync(configJsonPath, config, 'utf-8');
+  // ADR-0069: detect full mode via explicit flag or skills.all proxy
+  const isFull = options.full === true || options.skills?.all === true;
+  const template = isFull
+    ? getFullConfigTemplate(overrides)
+    : getMinimalConfigTemplate(overrides);
+
+  fs.writeFileSync(configPath, JSON.stringify(template, null, 4) + '\n');
   result.created.files.push('.claude-flow/config.json');
 
   // ADR-0030 S2: Generate embeddings.json for transformer configuration
-  // ADR-0052: resolve defaults from agentdb getEmbeddingConfig() at runtime
   const embeddingsJsonPath = path.join(targetDir, '.claude-flow', 'embeddings.json');
   if (!fs.existsSync(embeddingsJsonPath) || options.force) {
-    // Dynamic import — agentdb may not be available during init
+    // Dynamic import -- agentdb may not be available during init
     let embDefaults = {
-      model: 'nomic-ai/nomic-embed-text-v1.5',
+      model: 'Xenova/all-mpnet-base-v2',
       dimension: 768,
       provider: 'transformers' as string,
       taskPrefixQuery: 'search_query: ',
@@ -1297,10 +1254,10 @@ async function writeRuntimeConfig(
         taskPrefixIndex: cfg.taskPrefixIndex ?? embDefaults.taskPrefixIndex,
       };
     } catch {
-      // agentdb not available — use hardcoded defaults above
+      // agentdb not available -- use hardcoded defaults above
     }
 
-    // ADR-0052: model-dimension lookup for overrides (inline — no agentdb dependency)
+    // ADR-0069: model-dimension lookup for overrides
     const resolvedModel = options.embeddings?.model || embDefaults.model;
     const MODEL_DIMS: Record<string, number> = {
       'all-MiniLM-L6-v2': 384,
@@ -1325,6 +1282,9 @@ async function writeRuntimeConfig(
     fs.writeFileSync(embeddingsJsonPath, embeddingsConfig, 'utf-8');
     result.created.files.push('.claude-flow/embeddings.json');
   }
+
+  // Legacy: config.yaml was generated before ADR-0069. The runtime still reads
+  // config.yaml if config.json is absent, so existing projects are unaffected.
 
   // Write .gitignore
   const gitignorePath = path.join(targetDir, '.claude-flow', '.gitignore');

@@ -15,6 +15,8 @@
  */
 
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import type {
   SONAConfiguration,
   SONALearningMode,
@@ -59,36 +61,52 @@ interface AgenticFlowSONAReference {
   endTrajectory?(params: unknown): Promise<unknown>;
 }
 
+// ADR-0069 A8: config-chain learning rate
+function readBaseLearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const val = cfg?.neural?.defaultLearningRate;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch { /* use fallback */ }
+  return fallback;
+}
+
+const baseLR = readBaseLearningRate(0.001);
+
 /**
  * Mode-specific configurations for SONA learning
+ *
+ * Learning rates are derived as multipliers of baseLR (ADR-0069 A8),
+ * which reads from .claude-flow/config.json neural.defaultLearningRate
+ * and falls back to 0.001.
  */
 const MODE_CONFIGS: Record<SONALearningMode, Partial<SONAConfiguration>> = {
   'real-time': {
-    learningRate: 0.01,
+    learningRate: baseLR * 10,       // default 0.01
     similarityThreshold: 0.8,
     maxPatterns: 5000,
     consolidationInterval: 1800000, // 30 minutes
   },
   'balanced': {
-    learningRate: 0.001,
+    learningRate: baseLR * 1,        // default 0.001
     similarityThreshold: 0.7,
     maxPatterns: 10000,
     consolidationInterval: 3600000, // 1 hour
   },
   'research': {
-    learningRate: 0.0001,
+    learningRate: baseLR * 0.1,      // default 0.0001
     similarityThreshold: 0.6,
     maxPatterns: 50000,
     consolidationInterval: 7200000, // 2 hours
   },
   'edge': {
-    learningRate: 0.005,
+    learningRate: baseLR * 5,        // default 0.005
     similarityThreshold: 0.85,
     maxPatterns: 1000,
     consolidationInterval: 900000, // 15 minutes
   },
   'batch': {
-    learningRate: 0.0005,
+    learningRate: baseLR * 0.5,      // default 0.0005
     similarityThreshold: 0.65,
     maxPatterns: 100000,
     consolidationInterval: 14400000, // 4 hours
@@ -616,7 +634,7 @@ export class SONAAdapter extends EventEmitter {
   private mergeConfig(config: Partial<SONAConfiguration>): SONAConfiguration {
     return {
       mode: config.mode || 'balanced',
-      learningRate: config.learningRate ?? 0.001,
+      learningRate: config.learningRate ?? baseLR,
       similarityThreshold: config.similarityThreshold ?? 0.7,
       maxPatterns: config.maxPatterns ?? 10000,
       enableTrajectoryTracking: config.enableTrajectoryTracking ?? true,
@@ -675,7 +693,16 @@ export class SONAAdapter extends EventEmitter {
           patternsArray[j].pattern
         );
 
-        if (similarity > 0.95) {
+        // ADR-0069 A11: config-chain dedup threshold
+        let _sonaDedupThreshold = 0.95;
+        try {
+          const _fs = require('fs');
+          const _path = require('path');
+          const _cfg = JSON.parse(_fs.readFileSync(
+            _path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+          _sonaDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
+        } catch { /* use default */ }
+        if (similarity > _sonaDedupThreshold) { // ADR-0069 A11: was hardcoded 0.95
           // Merge into pattern with higher confidence
           if (patternsArray[i].confidence >= patternsArray[j].confidence) {
             patternsArray[i].usageCount += patternsArray[j].usageCount;

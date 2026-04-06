@@ -280,6 +280,23 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
     options.components.runtime = false;
   }
 
+  // ADR-0069: new init flags for deployment-critical config
+  const port = ctx.flags.port as number | undefined;
+  const similarityThreshold = ctx.flags['similarity-threshold']
+    ? parseFloat(ctx.flags['similarity-threshold'] as string)
+    : undefined;
+  const maxAgents = ctx.flags['max-agents'] as number | undefined;
+
+  if (port !== undefined) {
+    options.mcp.port = port;
+  }
+  if (similarityThreshold !== undefined) {
+    options.runtime.similarityThreshold = similarityThreshold;
+  }
+  if (maxAgents !== undefined) {
+    options.runtime.maxAgents = maxAgents;
+  }
+
   // Create spinner
   const spinner = output.createSpinner({ text: 'Initializing...' });
   spinner.start();
@@ -430,8 +447,8 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
 
     // Handle --with-embeddings
     const withEmbeddings = ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings;
-    // ADR-0052: read default model from config, not hardcoded
-    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'nomic-ai/nomic-embed-text-v1.5' }));
+    // ADR-0069 A12: canonical model with config fallback
+    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'Xenova/all-mpnet-base-v2' }));
     const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || _cfg.model) as string;
 
     if (withEmbeddings) {
@@ -687,16 +704,16 @@ export const wizardCommand: Command = {
         default: true,
       });
 
-      // ADR-0052: read default model from config, not hardcoded
-      const _wizCfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'nomic-ai/nomic-embed-text-v1.5' }));
+      // ADR-0069 A12: canonical model with config fallback
+      const _wizCfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'Xenova/all-mpnet-base-v2' }));
       let embeddingModel = _wizCfg.model;
       if (enableEmbeddings) {
         embeddingModel = await select({
           message: 'Select embedding model:',
           options: [
-            { value: 'nomic-ai/nomic-embed-text-v1.5', label: 'Nomic Embed v1.5 (768d)', hint: '86% MTEB, 8K context (recommended)' },
-            { value: 'Xenova/all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, good quality' },
-            { value: 'Xenova/all-mpnet-base-v2', label: 'MPNet Base (768d)', hint: 'Higher quality, more memory' },
+            { value: 'Xenova/all-mpnet-base-v2', label: 'MPNet Base (768d)', hint: 'Higher quality (recommended)' },
+            { value: 'nomic-ai/nomic-embed-text-v1.5', label: 'Nomic Embed v1.5 (768d)', hint: '86% MTEB, 8K context' },
+            { value: 'Xenova/all-MiniLM-L6-v2', label: 'MiniLM L6 (384d)', hint: 'Fast, lower memory' },
           ],
         });
       }
@@ -1210,8 +1227,8 @@ export const initCommand: Command = {
       name: 'embedding-model',
       description: 'ONNX embedding model to use',
       type: 'string',
-      default: 'nomic-ai/nomic-embed-text-v1.5',
-      choices: ['nomic-ai/nomic-embed-text-v1.5', 'all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
+      default: 'Xenova/all-mpnet-base-v2', // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
+      choices: ['Xenova/all-mpnet-base-v2', 'Xenova/all-MiniLM-L6-v2'],
     },
     {
       name: 'codex',
@@ -1292,6 +1309,21 @@ export const initCommand: Command = {
       type: 'number',
       default: 30000,
     },
+    {
+      name: 'port',
+      description: 'MCP server port (default: 3000)',
+      type: 'number',
+    },
+    {
+      name: 'similarity-threshold',
+      description: 'Memory search similarity threshold 0-1 (default: 0.7)',
+      type: 'string', // parsed to float
+    },
+    {
+      name: 'max-agents',
+      description: 'Maximum concurrent swarm agents (default: 15)',
+      type: 'number',
+    },
   ],
   examples: [
     { command: 'claude-flow init', description: 'Initialize with default configuration' },
@@ -1309,8 +1341,17 @@ export const initCommand: Command = {
     { command: 'claude-flow init --no-hooks', description: 'Initialize with hooks disabled' },
     { command: 'claude-flow init --bridge-fallback', description: 'Allow hooks degradation on bridge failure' },
     { command: 'claude-flow init --no-agentdb-learning', description: 'Disable AgentDB learning loop' },
+    { command: 'claude-flow init --with-embeddings --embedding-model Xenova/all-MiniLM-L6-v2', description: 'Use smaller/faster embedding model' },
+    { command: 'claude-flow init skills --all', description: 'Install all available skills' },
+    { command: 'claude-flow init hooks --minimal', description: 'Create minimal hooks configuration' },
+    { command: 'claude-flow init upgrade', description: 'Update helpers while preserving data' },
+    { command: 'claude-flow init upgrade --settings', description: 'Update helpers and merge new settings (Agent Teams)' },
+    { command: 'claude-flow init upgrade --verbose', description: 'Show detailed upgrade info' },
     { command: 'claude-flow init --codex', description: 'Initialize for OpenAI Codex (AGENTS.md)' },
     { command: 'claude-flow init --dual', description: 'Initialize for both Claude Code and Codex' },
+    { command: 'claude-flow init --port 8080', description: 'Set MCP server port' },
+    { command: 'claude-flow init --similarity-threshold 0.8', description: 'Set memory search similarity threshold' },
+    { command: 'claude-flow init --max-agents 10', description: 'Limit concurrent swarm agents' },
   ],
   action: initAction,
 };

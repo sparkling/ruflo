@@ -14,7 +14,7 @@ export { retry, RetryError } from './retry.js';
 export type { RetryOptions, RetryResult } from './retry.js';
 
 // Circuit Breaker
-export { CircuitBreaker } from './circuit-breaker.js';
+export { CircuitBreaker, CIRCUIT_BREAKER_DEFAULTS } from './circuit-breaker.js';
 export type { CircuitBreakerOptions, CircuitBreakerStats } from './circuit-breaker.js';
 
 // Rate Limiter

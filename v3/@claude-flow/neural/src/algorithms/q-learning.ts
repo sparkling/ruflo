@@ -11,7 +11,20 @@
  * Performance Target: <1ms per update
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Trajectory, RLConfig } from '../types.js';
+
+// ADR-0069 A8: read RL learning rate from config chain
+function getConfigRLLearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.neural?.learningRates?.qLearning === 'number') {
+      return cfg.neural.learningRates.qLearning;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
 
 /**
  * Q-Learning configuration
@@ -31,7 +44,7 @@ export interface QLearningConfig extends RLConfig {
  */
 export const DEFAULT_QLEARNING_CONFIG: QLearningConfig = {
   algorithm: 'q-learning',
-  learningRate: 0.1,
+  learningRate: getConfigRLLearningRate(0.1), // ADR-0069 A8: RL step size, intentionally higher than gradient LR
   gamma: 0.99,
   entropyCoef: 0,
   valueLossCoef: 1,

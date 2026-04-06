@@ -22,6 +22,20 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { EMBEDDING_DIM } from './embedding-constants.js';
 
+// ADR-0069 A8: read gradient descent learning rate from config chain
+// ADR-0069: wire neural.learningRates.lora consumer — prefer LoRA-specific rate, fall back to default
+function getConfigDefaultLearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const loraLR = cfg?.neural?.learningRates?.lora;
+    if (typeof loraLR === 'number' && loraLR > 0) return loraLR;
+    if (typeof cfg?.neural?.defaultLearningRate === 'number') {
+      return cfg.neural.defaultLearningRate;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
+
 // ============================================================================
 // Types & Constants
 // ============================================================================
@@ -122,7 +136,7 @@ const DEFAULT_CONFIG: LoRAConfig = {
   alpha: DEFAULT_ALPHA,
   inputDim: INPUT_DIM,
   outputDim: OUTPUT_DIM,
-  learningRate: 0.001,
+  learningRate: getConfigDefaultLearningRate(0.001), // ADR-0069 A8: gradient descent LR from config chain
   weightsPath: join(process.cwd(), '.swarm', 'lora-weights.json'),
   enableDropout: true,
   dropoutProb: 0.1,

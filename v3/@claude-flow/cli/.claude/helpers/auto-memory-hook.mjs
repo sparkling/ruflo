@@ -199,6 +199,7 @@ function readConfig() {
       console.error(`[FAIL] auto-memory.readConfig: ${err.message}`);
     }
   }
+  }
 
   // Fallback: read config.yaml for backward compat
   const yamlPath = join(PROJECT_ROOT, '.claude-flow', 'config.yaml');
@@ -232,34 +233,82 @@ function readConfig() {
   return defaults;
 }
 
-// WM-003: Backend factory — AgentDBBackend only (no more HybridBackend dual-write)
+// ADR-0059 Phase 4: Daemon IPC helpers
+async function tryDaemonIPC() {
+  const socketPath = join(PROJECT_ROOT, '.claude-flow', 'daemon.sock');
+  if (!existsSync(socketPath)) return null;
+  try {
+    const net = await import('node:net');
+    return new Promise((resolve) => {
+      const socket = net.createConnection(socketPath, () => {
+        socket.destroy();
+        resolve(socketPath);
+      });
+      socket.on('error', () => resolve(null));
+      const timer = setTimeout(() => { socket.destroy(); resolve(null); }, 50);
+      socket.on('connect', () => clearTimeout(timer));
+      socket.on('error', () => clearTimeout(timer));
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function ipcCall(socketPath, method, params) {
+  const net = await import('node:net');
+  return new Promise((resolve, reject) => {
+    let data = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; socket.destroy(); reject(new Error('IPC timeout')); }
+    }, 500);
+    const req = JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 }) + '\n';
+    const socket = net.createConnection(socketPath, () => { socket.write(req); });
+    socket.on('data', chunk => { data += chunk.toString(); });
+    socket.on('end', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        const line = data.split('\n').find(l => l.trim());
+        if (!line) return reject(new Error('empty IPC response'));
+        const resp = JSON.parse(line);
+        if (resp.error) reject(new Error(resp.error.message));
+        else resolve(resp.result);
+      } catch (e) { reject(e); }
+    });
+    socket.on('error', (err) => {
+      if (!settled) { settled = true; clearTimeout(timer); reject(err); }
+    });
+  });
+}
+
+// ADR-0059: Backend factory — RvfBackend preferred (same package, atomic persist)
 function createBackend(config, memPkg) {
   if (config.backend === 'json') {
     return { backend: new JsonFileBackend(STORE_PATH) };
   }
-  if (!memPkg.AgentDBBackend) {
-    throw new Error(
-      `Memory backend '${config.backend}' requires AgentDBBackend but it is not exported.\n` +
-      `Fix: Run 'npx @claude-flow/cli doctor --install'\n` +
-      `  Or: set "memory.backend": "json" in .claude-flow/config.json`
-    );
-  }
   const swarmDir = join(PROJECT_ROOT, '.swarm');
   if (!existsSync(swarmDir)) mkdirSync(swarmDir, { recursive: true });
-  try {
-    const backend = new memPkg.AgentDBBackend({
-      dbPath: join(swarmDir, 'agentdb-memory.rvf'),
-      vectorBackend: config.agentdb.vectorBackend || 'auto',
-      enableLearning: config.agentdb.enableLearning !== false,
-    });
+  const rvfPath = join(swarmDir, 'agentdb-memory.rvf');
+
+  // Prefer RvfBackend — same package, no cross-package import, atomic persist
+  if (memPkg.RvfBackend) {
+    const backend = new memPkg.RvfBackend({ databasePath: rvfPath });
     return { backend };
-  } catch (err) {
-    throw new Error(
-      `AgentDBBackend failed to initialize: ${err.message}\n` +
-      `Fix: Run 'npx @claude-flow/cli doctor --install'\n` +
-      `  Or: set "memory.backend": "json" in .claude-flow/config.json`
-    );
   }
+  // Fallback: AgentDBBackend (heavier but functional if agentdb is installed)
+  if (memPkg.AgentDBBackend) {
+    try {
+      const backend = new memPkg.AgentDBBackend({ dbPath: rvfPath });
+      return { backend };
+    } catch (err) {
+      dim(`AgentDBBackend init failed: ${err.message} — falling back to JSON`);
+    }
+  }
+  // Last resort: JsonFileBackend
+  dim('RvfBackend and AgentDBBackend unavailable — using JSON file backend');
+  return { backend: new JsonFileBackend(STORE_PATH) };
 }
 
 // ============================================================================
@@ -268,6 +317,12 @@ function createBackend(config, memPkg) {
 
 async function doImport() {
   log('Importing auto memory files into bridge...');
+
+  // ADR-0059 Phase 4: Check daemon IPC availability
+  const ipcSocket = await tryDaemonIPC();
+  if (ipcSocket) {
+    dim('[Phase 4] Daemon IPC available — daemon will handle memory operations');
+  }
 
   const memPkg = await loadMemoryPackage();
   if (!memPkg || !memPkg.AutoMemoryBridge) {
@@ -321,6 +376,12 @@ async function doImport() {
 
 async function doSync() {
   log('Syncing insights to auto memory files...');
+
+  // ADR-0059 Phase 4: Check daemon IPC availability
+  const ipcSocket = await tryDaemonIPC();
+  if (ipcSocket) {
+    dim('[Phase 4] Daemon IPC available for sync');
+  }
 
   const memPkg = await loadMemoryPackage();
   if (!memPkg || !memPkg.AutoMemoryBridge) {
@@ -395,6 +456,9 @@ async function doStatus() {
       console.log(`  Entries:        ${Array.isArray(data) ? data.length : 0}`);
     } catch { /* ignore */ }
   }
+
+  const sockExists = existsSync(join(PROJECT_ROOT, '.claude-flow', 'daemon.sock'));
+  console.log(`  Daemon IPC:     ${sockExists ? '\x1b[32mActive\x1b[0m (daemon.sock)' : '\x1b[2mUnavailable (fallback: direct RVF)\x1b[0m'}`);
 
   console.log('');
 }

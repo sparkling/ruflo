@@ -70,7 +70,7 @@ export interface MCPServerStatus {
 const DEFAULT_OPTIONS: Required<MCPServerOptions> = {
   transport: 'stdio',
   host: 'localhost',
-  port: 3000,
+  port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
   pidFile: path.join(os.tmpdir(), 'claude-flow-mcp.pid'),
   logFile: path.join(os.tmpdir(), 'claude-flow-mcp.log'),
   tools: 'all',

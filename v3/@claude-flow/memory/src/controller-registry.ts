@@ -70,7 +70,9 @@ export type AgentDBControllerName =
   | 'multiHeadAttention'       // A3 - ADR-0044
   | 'attentionService'         // A5
   | 'enhancedEmbeddingService' // A9
-  | 'federatedLearningManager'; // A11
+  | 'federatedLearningManager' // A11
+  | 'queryOptimizer'
+  | 'auditLogger';
 
 /**
  * CLI-layer controllers (from @claude-flow/memory or new)
@@ -91,7 +93,7 @@ export type CLIControllerName =
   | 'mmrDiversityRanker'
   | 'guardedVectorBackend'
   | 'solverBandit'
-  | 'attentionMetrics'           // D2
+  | 'attentionMetrics'
   | 'selfAttention'
   | 'crossAttention'
   | 'multiHeadAttention'
@@ -103,14 +105,15 @@ export type CLIControllerName =
   | 'federatedLearningManager'
   | 'enhancedEmbeddingService'
   | 'quantizedVectorStore'
-  | 'resourceTracker'            // D4
-  | 'rateLimiter'                // D5
+  | 'resourceTracker'
+  | 'rateLimiter'
   | 'circuitBreakerController'   // D6 - registry-level decorator
   | 'metadataFilter'             // B5
   | 'queryOptimizer'             // B6
   | 'indexHealthMonitor'         // B3
   | 'auditLogger'               // D3
-  | 'telemetryManager';          // D1
+  | 'telemetryManager'           // D1
+  | 'circuitBreaker';
 
 /**
  * All controller names
@@ -232,15 +235,22 @@ export interface RuntimeConfig {
   /** Database path for AgentDB */
   dbPath?: string;
 
-  /** Vector dimension — derived from embedding model config. Do NOT hardcode. */
+  /** Vector dimension (default: resolved from getEmbeddingConfig(), fallback 768) */
   dimension?: number;
 
   /** Embedding generator function */
   embeddingGenerator?: EmbeddingGenerator;
 
+  /** SQLite pragma configuration (ADR-0069 A1) */
+  sqlite?: {
+    cacheSize?: number;      // default: -64000 (64MB)
+    busyTimeoutMs?: number;  // default: 5000
+    journalMode?: string;    // default: 'WAL'
+    synchronous?: string;    // default: 'NORMAL'
+  };
+
   /** Memory backend config */
   memory?: {
-    enableHNSW?: boolean;
     learningBridge?: Partial<LearningBridgeConfig>;
     memoryGraph?: Partial<MemoryGraphConfig>;
     tieredCache?: Partial<CacheConfig>;
@@ -255,6 +265,72 @@ export interface RuntimeConfig {
 
   /** Controllers to explicitly enable/disable */
   controllers?: Partial<Record<ControllerName, boolean>>;
+
+  /** AttentionService tuning (ADR-0062 P3-3) */
+  attentionService?: {
+    numHeads?: number;
+    useFlash?: boolean;
+    useMoE?: boolean;
+    useHyperbolic?: boolean;
+  };
+
+  /** MultiHeadAttention tuning (ADR-0062 P3-3) */
+  multiHeadAttention?: {
+    numHeads?: number;
+    topK?: number;
+  };
+
+  /** SelfAttention tuning (ADR-0062 P3-3) */
+  selfAttention?: {
+    topK?: number;
+  };
+
+  /** SolverBandit tuning (ADR-0062 P3-3) */
+  solverBandit?: {
+    costWeight?: number;
+    costDecay?: number;
+    explorationBonus?: number;
+  };
+
+  /** Agent ID for controllers that need one (default: auto-generated) */
+  agentId?: string;
+
+  /** RateLimiter tuning */
+  rateLimiter?: { maxRequests?: number; windowMs?: number };
+
+  // ADR-0069: wire rateLimiter presets consumer
+  /** Per-endpoint rate-limiter presets (auth, tools, memory, files, etc.) */
+  rateLimiterPresets?: Record<string, { maxRequests?: number; windowMs?: number }> | null;
+
+  /** QuantizedVectorStore tuning (ADR-0065 P2) */
+  quantizedVectorStore?: { type?: string };
+
+  /** CircuitBreaker tuning */
+  circuitBreaker?: { failureThreshold?: number; resetTimeoutMs?: number };
+
+  /** Embedding model name (default: 'all-mpnet-base-v2') */
+  embeddingModel?: string;
+
+  /** HNSW M parameter — max bi-directional links per node (default: 23) */
+  hnswM?: number;
+
+  /** HNSW efConstruction — search width during index build (default: 100) */
+  hnswEfConstruction?: number;
+
+  /** HNSW efSearch — search width during query (default: 50) */
+  hnswEfSearch?: number;
+
+  /** Max HNSW elements (default: 100000; AgentDB falls back to 10000) */
+  maxElements?: number;
+
+  /** Max SQLite memory entries (default: 1000000) — ADR-0069: config-chain capacity */
+  maxEntries?: number;
+
+  /** ADR-0069: wire similarityThreshold consumer — vector search threshold (default: 0.7) */
+  similarityThreshold?: number;
+
+  /** Swarm data directory relative to project root (default: '.swarm') — ADR-0069: config-chain swarmDir */
+  swarmDir?: string;
 
   /** Backend instance to use (if pre-created) */
   backend?: IMemoryBackend;
@@ -275,6 +351,78 @@ export interface RuntimeConfig {
   auditFormat?: string;
   /** ADR-0048: Max eager init level (0-1 eager, 2+ deferred). Default: 1 */
   eagerMaxLevel?: number;
+
+  /** NightlyLearner tuning (ADR-0068 W4-1) */
+  nightlyLearner?: {
+    /** Cron expression for scheduling (default: '0 3 * * *') */
+    schedule?: string;
+    /** Maximum patterns to consolidate per run (default: 500) */
+    maxPatternsPerRun?: number;
+    /** Minimum reward threshold to retain a pattern (default: 0.3) */
+    rewardThreshold?: number;
+    /** Enable EWC++ consolidation (default: true) */
+    useEwcConsolidation?: boolean;
+    /** EWC lambda importance weight (default: 0.5) */
+    ewcLambda?: number;
+  };
+
+  /** CausalRecall tuning (ADR-0068 W4-1) */
+  causalRecall?: {
+    /** Maximum causal chain depth (default: 5) */
+    maxDepth?: number;
+    /** Minimum edge weight to follow (default: 0.1) */
+    minEdgeWeight?: number;
+    /** Enable temporal decay on edge weights (default: true) */
+    temporalDecay?: boolean;
+    /** Decay half-life in milliseconds (default: 86400000 = 1 day) */
+    decayHalfLifeMs?: number;
+  };
+
+  /** QueryOptimizer tuning (ADR-0068 W4-1) */
+  queryOptimizer?: {
+    /** Enable query plan caching (default: true) */
+    planCache?: boolean;
+    /** Maximum cached plans (default: 256) */
+    maxCachedPlans?: number;
+    /** Enable automatic index hints (default: true) */
+    autoIndexHints?: boolean;
+    /** Cost model weight for vector vs text search (0-1, default: 0.6) */
+    vectorCostWeight?: number;
+  };
+
+  /** SelfLearningRvfBackend tuning (ADR-0068 W4-1) */
+  selfLearningRvfBackend?: {
+    /** Learning rate for feedback-driven adaptation (default: 0.01) */
+    learningRate?: number;
+    /** Feedback window size for rolling stats (default: 100) */
+    feedbackWindowSize?: number;
+    /** Enable automatic reranking based on feedback (default: true) */
+    autoRerank?: boolean;
+    /** Minimum feedback count before adaptation kicks in (default: 10) */
+    minFeedbackCount?: number;
+  };
+
+  // ADR-0069: wire ports consumer -- forward config.json ports so consumers
+  // (MCP server, health endpoint, QUIC transport, federation) can read them.
+  ports?: {
+    mcp?: number;
+    mcpWebSocket?: number;
+    quic?: number;
+    federation?: number;
+    health?: number;
+  };
+
+  /** MutationGuard tuning (ADR-0068 W4-1) */
+  mutationGuard?: {
+    /** Enable write-ahead log (default: true) */
+    walEnabled?: boolean;
+    /** Maximum mutations per transaction (default: 1000) */
+    maxMutationsPerTx?: number;
+    /** Enable schema validation on write (default: true) */
+    schemaValidation?: boolean;
+    /** Allowed namespaces (empty = all allowed) */
+    allowedNamespaces?: string[];
+  };
 }
 
 /**
@@ -297,18 +445,38 @@ interface ControllerEntry {
  * Each level must complete before the next begins.
  */
 export const INIT_LEVELS: InitLevel[] = [
-  // Level 0: Foundation — infrastructure controllers (must init first)
-  { level: 0, controllers: ['telemetryManager', 'resourceTracker', 'rateLimiter', 'circuitBreakerController'] },
+  // Level 0: Security infrastructure (ADR-0061 Phase 6)
+  { level: 0, controllers: [
+    'resourceTracker', 'rateLimiter', 'circuitBreaker', 'circuitBreakerController', 'telemetryManager',
+  ] as ControllerName[] },
   // Level 1: Core intelligence
-  { level: 1, controllers: ['reasoningBank', 'hierarchicalMemory', 'learningBridge', 'solverBandit', 'tieredCache', 'metadataFilter', 'queryOptimizer'] },
-  // Level 2: Graph, security, composites + ADR-0069 F3 dual attention
-  { level: 2, controllers: ['memoryGraph', 'agentMemoryScope', 'vectorBackend', 'mutationGuard', 'gnnService', 'selfAttention', 'crossAttention', 'multiHeadAttention', 'attentionService', 'flashAttentionService', 'moeAttentionService', 'selfLearningRvfBackend', 'nativeAccelerator', 'quantizedVectorStore'] },
-  // Level 3: Specialization
-  { level: 3, controllers: ['skills', 'explainableRecall', 'reflexion', 'attestationLog', 'batchOperations', 'memoryConsolidation', 'enhancedEmbeddingService', 'auditLogger'] },
-  // Level 4: Causal, routing, health
-  { level: 4, controllers: ['causalGraph', 'causalRecall', 'nightlyLearner', 'learningSystem', 'semanticRouter', 'indexHealthMonitor', 'federatedLearningManager', 'attentionMetrics'] },
+  { level: 1, controllers: [
+    'reasoningBank', 'hierarchicalMemory', 'learningBridge', 'hybridSearch', 'tieredCache',
+    'solverBandit', 'attentionMetrics', 'metadataFilter',
+  ] as ControllerName[] },
+  // Level 2: Graph, security & attention
+  { level: 2, controllers: [
+    'memoryGraph', 'agentMemoryScope', 'vectorBackend', 'mutationGuard', 'gnnService',
+    'selfAttention', 'crossAttention', 'multiHeadAttention', 'attentionService',
+    'flashAttentionService', 'moeAttentionService', 'nativeAccelerator', 'queryOptimizer',
+  ] as ControllerName[] },
+  // Level 3: Specialization (causalGraph moved here from L4 -- ADR-0062 P0-1: nightlyLearner depends on it)
+  { level: 3, controllers: [
+    'skills', 'explainableRecall', 'reflexion', 'attestationLog', 'batchOperations',
+    'memoryConsolidation',
+    'enhancedEmbeddingService', 'auditLogger', 'causalGraph',
+  ] as ControllerName[] },
+  // Level 4: Routing & self-learning
+  { level: 4, controllers: [
+    'causalRecall', 'nightlyLearner', 'learningSystem', 'semanticRouter',
+    'selfLearningRvfBackend', 'federatedLearningManager', 'indexHealthMonitor',
+  ] as ControllerName[] },
   // Level 5: Advanced services
-  { level: 5, controllers: ['sonaTrajectory', 'contextSynthesizer', 'rvfOptimizer', 'mmrDiversityRanker', 'guardedVectorBackend'] },
+  { level: 5, controllers: [
+    'graphTransformer', 'sonaTrajectory', 'contextSynthesizer', 'rvfOptimizer',
+    'mmrDiversityRanker', 'guardedVectorBackend',
+    'quantizedVectorStore',
+  ] as ControllerName[] },
   // Level 6: Session management
   { level: 6, controllers: ['graphAdapter'] },
 ];
@@ -332,7 +500,6 @@ export const INIT_LEVELS: InitLevel[] = [
  *   dbPath: './data/memory.db',
  *   dimension: 768,
  *   memory: {
- *     enableHNSW: true,
  *     learningBridge: { sonaMode: 'balanced' },
  *     memoryGraph: { pageRankDamping: 0.85 },
  *   },
@@ -347,12 +514,15 @@ export const INIT_LEVELS: InitLevel[] = [
 export class ControllerRegistry extends EventEmitter {
   private controllers: Map<ControllerName, ControllerEntry> = new Map();
   private agentdb: any = null;
+  private realEmbedder: any = null;
   private backend: IMemoryBackend | null = null;
   private config: RuntimeConfig = {};
   private initialized = false;
   private initTimeMs = 0;
-  /** Cached embedding dimension from getEmbeddingConfig() — set in initAgentDB */
+  /** Cached embedding dimension from getEmbeddingConfig() -- set in initAgentDB */
   private embeddingDimension = 0;
+  /** ADR-0064: Resolved dimension from config -> getEmbeddingConfig() -> 768 fallback */
+  private resolvedDimension = 768;
   /** ADR-0049: collected init errors for summary reporting */
   private initErrors: ControllerInitError[] = [];
   /** ADR-0049: strict mode flag */
@@ -374,6 +544,26 @@ export class ControllerRegistry extends EventEmitter {
 
     // Step 1: Initialize AgentDB (the core)
     await this.initAgentDB(config);
+
+    // Step 1b: Extract real embedder from AgentDB if available (ADR-0062 P1-1)
+    if (this.agentdb) {
+      try {
+        this.realEmbedder = this.agentdb.getEmbeddingService?.() || null;
+      } catch { /* use stub */ }
+    }
+
+    // Step 1c: Resolve embedding dimension (ADR-0064 P0)
+    // Priority: explicit config → getEmbeddingConfig() → 768 fallback
+    if (config.dimension) {
+      this.resolvedDimension = config.dimension;
+    } else {
+      try {
+        const agentdbModule = await import('@claude-flow/agentdb');
+        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+          this.resolvedDimension = agentdbModule.getEmbeddingConfig().dimension || 768;
+        }
+      } catch { /* agentdb not available — use 768 default */ }
+    }
 
     // Step 2: Set up the backend
     this.backend = config.backend || null;
@@ -569,6 +759,14 @@ export class ControllerRegistry extends EventEmitter {
   }
 
   /**
+   * ADR-0069: wire similarityThreshold consumer — expose the stored config value.
+   * Returns the threshold from RuntimeConfig, falling back to 0.7.
+   */
+  getSimilarityThreshold(): number {
+    return this.config.similarityThreshold ?? 0.7;
+  }
+
+  /**
    * Aggregate health check across all controllers.
    */
   async healthCheck(): Promise<RegistryHealthReport> {
@@ -731,14 +929,19 @@ export class ControllerRegistry extends EventEmitter {
         return;
       }
 
-      // Pass embedding config so AgentDB uses the correct model, not its own default
-      const embCfg = typeof agentdbModule.getEmbeddingConfig === 'function'
-        ? agentdbModule.getEmbeddingConfig()
-        : { model: undefined, dimension: undefined };
+      // ADR-0068 W2-4: Forward full config to AgentDB so it can wire
+      // dimension, embedding model, and HNSW params into its own controllers.
+      // All values read from RuntimeConfig (populated by memory-bridge from
+      // embeddings.json). Fallbacks match the unified all-mpnet-base-v2 model.
       this.agentdb = new AgentDBClass({
         dbPath,
-        embeddingModel: embCfg.model,
-        dimension: embCfg.dimension,
+        maxElements: config.maxElements || 100000,
+        maxEntries: config.maxEntries || 1000000, // ADR-0069: config-chain capacity
+        dimension: config.dimension || 768,
+        embeddingModel: config.embeddingModel || 'all-mpnet-base-v2',
+        hnswM: config.hnswM || 23,
+        hnswEfConstruction: config.hnswEfConstruction || 100,
+        hnswEfSearch: config.hnswEfSearch || 50,
       });
 
       // Suppress agentdb's noisy info-level output during init
@@ -814,50 +1017,53 @@ export class ControllerRegistry extends EventEmitter {
       case 'mmrDiversityRanker':
         return this.agentdb !== null;
 
-      // SemanticRouter — auto-enable if agentdb available (exported since alpha.10)
+      // SemanticRouter — auto-enable if agentdb available
       case 'semanticRouter':
         return this.agentdb !== null;
 
-      // WM-116b: Agent memory scope — enabled when backend available
+      // Pure JS, zero cost -- enabled by default (ADR-0061 Phase 2)
+      case 'solverBandit':
+      case 'attentionMetrics':
+        return true;
+
+      // Attention + optimization -- enabled if agentdb available (ADR-0061 Phase 3-4)
+      case 'selfAttention':
+      case 'crossAttention':
+      case 'multiHeadAttention':
+      case 'attentionService':
+      case 'nativeAccelerator':
+      case 'enhancedEmbeddingService':
+      case 'auditLogger':
+      case 'queryOptimizer':
+      case 'metadataFilter':
+      case 'indexHealthMonitor':
+        return this.agentdb !== null;
+
+      // Advanced controllers -- enabled if agentdb available (ADR-0061 Phase 5)
+      case 'selfLearningRvfBackend':
+      case 'quantizedVectorStore':
+        return this.agentdb !== null;
+
+      // Federated learning -- only useful in multi-agent swarms
+      case 'federatedLearningManager':
+        return false;
+
+      // Security infrastructure -- always enabled (ADR-0061 Phase 6)
+      case 'resourceTracker':
+      case 'rateLimiter':
+      case 'circuitBreaker':
+      case 'circuitBreakerController':
+      case 'telemetryManager':
+        return true;
+
+      // Optional controllers
+      case 'hybridSearch':
       case 'agentMemoryScope':
         return this.agentdb !== null || this.backend !== null;
 
       // Optional controllers
       case 'sonaTrajectory':
         return false; // Require explicit enabling
-
-      // ADR-0041: Level 0 infrastructure — always enabled
-      case 'resourceTracker':
-      case 'rateLimiter':
-      case 'circuitBreakerController':
-      case 'telemetryManager':
-        return true;
-
-      // ADR-0041: Level 1 additions — enabled when AgentDB available
-      case 'metadataFilter':
-      case 'queryOptimizer':
-        return this.agentdb !== null;
-
-      // ADR-0041: Level 2 composites — enabled when AgentDB available
-      case 'selfLearningRvfBackend':
-      case 'nativeAccelerator':
-      case 'quantizedVectorStore':
-      case 'selfAttention':          // A1 - ADR-0044
-      case 'crossAttention':         // A2 - ADR-0044
-      case 'multiHeadAttention':     // A3 - ADR-0044
-      case 'attentionService':
-        return this.agentdb !== null;
-
-      // ADR-0041: Level 3 additions
-      case 'enhancedEmbeddingService':
-      case 'auditLogger':
-        return this.agentdb !== null;
-
-      // ADR-0041: Level 4 additions
-      case 'indexHealthMonitor':
-      case 'federatedLearningManager':
-      case 'attentionMetrics':
-        return this.agentdb !== null;
 
       default:
         return false;
@@ -1053,6 +1259,14 @@ export class ControllerRegistry extends EventEmitter {
           if (this.strictMode) throw err;
           return null;
         }
+
+      case 'hybridSearch': {
+        // BM25 + HNSW reciprocal rank fusion (ADR-0068 W4-3)
+        try {
+          const { HybridSearchController } = await import('./controllers/hybrid-search.js');
+          const backend = this.get('vectorBackend') ?? this.agentdb;
+          return new HybridSearchController(backend);
+        } catch { return null; }
       }
 
       case 'semanticRouter': {
@@ -1075,19 +1289,21 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'sonaTrajectory':
-        // Delegate to AgentDB's SonaTrajectoryService if available
+        // SonaTrajectoryService — delegate to AgentDB, fallback to direct construction (ADR-0061 Bug #7)
         if (this.agentdb && typeof this.agentdb.getController === 'function') {
           try {
-            return this.agentdb.getController('sonaTrajectory');
-          } catch (e) {
-            const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-            this.initErrors.push(err);
-            this.emit('controller:init-error', { name, error: err });
-            if (this.strictMode) throw err;
-            return null;
-          }
+            const ctrl = this.agentdb.getController('sonaTrajectory');
+            if (ctrl) return ctrl;
+          } catch { /* fall through to direct construction */ }
         }
-        return null;
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const STS = agentdbModule.SonaTrajectoryService;
+          if (!STS) return null;
+          const svc = new STS();
+          if (typeof svc.initialize === 'function') await svc.initialize();
+          return svc;
+        } catch { return null; }
 
       case 'hierarchicalMemory': {
         // HierarchicalMemory exported from agentdb 3.0.0-alpha.10 (ADR-066 Phase P2-3)
@@ -1098,7 +1314,8 @@ export class ControllerRegistry extends EventEmitter {
           const HM = agentdbModule.HierarchicalMemory;
           if (!HM) return this.createTieredMemoryStub();
           const embedder = this.createEmbeddingService();
-          const hm = new HM(this.agentdb.database, embedder);
+          const vb = this.get('vectorBackend');
+          const hm = new HM(this.agentdb.database, embedder, vb || undefined);
           await hm.initializeDatabase();
           return hm;
         } catch (e) {
@@ -1136,29 +1353,27 @@ export class ControllerRegistry extends EventEmitter {
         }
       }
 
-      // ----- AgentDB-internal controllers (via getController) -----
-      // AgentDB.getController() only supports: reflexion/memory, skills, causalGraph/causal
-      case 'reasoningBank': {
-        // ReasoningBank is exported directly, not via getController
-        if (!this.agentdb) return null;
+      case 'federatedSession': {
+        // Shared session transport with LWW conflict resolution (ADR-0068 W4-3)
         try {
-          const agentdbModule: any = await import('agentdb');
-          const RB = agentdbModule.ReasoningBank;
-          if (!RB) return null;
-          const embedder = this.createEmbeddingService();
-          return new RB(this.agentdb.database, embedder);
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          const { FederatedSessionController } = await import('./controllers/federated-session.js');
+          const backend = this.get('vectorBackend') ?? this.agentdb;
+          return new FederatedSessionController(backend);
+        } catch { return null; }
       }
 
+      // ----- AgentDB-internal controllers (via getController) -----
+      // ADR-0068 W2-3: Delegate Tier 1 controller construction to AgentDB.
+      // AgentDB manages its own controller lifecycle, embedder wiring, and
+      // dimension configuration — direct `new X(db, ...)` is removed.
+      case 'reasoningBank':
       case 'skills':
       case 'reflexion':
-      case 'causalGraph': {
+      case 'causalGraph':
+      case 'causalRecall':
+      case 'learningSystem':
+      case 'explainableRecall':
+      case 'graphTransformer': {
         if (!this.agentdb || typeof this.agentdb.getController !== 'function') return null;
         try {
           return this.agentdb.getController(name) ?? null;
@@ -1171,80 +1386,34 @@ export class ControllerRegistry extends EventEmitter {
         }
       }
 
-      case 'causalRecall': {
-        // ADR-0040: inject embedder + vectorBackend + optional singletons
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const CR = agentdbModule.CausalRecall;
-          if (!CR) return null;
-          const embedder = this.createEmbeddingService();
-          const vb = this.agentdb.vectorBackend ?? null;
-          const cg = this.get('causalGraph') as any;
-          const er = this.get('explainableRecall') as any;
-          return new CR(this.agentdb.database, embedder, vb, undefined, cg, er);
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'learningSystem': {
-        // ADR-0040: inject embedder
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const LS = agentdbModule.LearningSystem;
-          if (!LS) return null;
-          return new LS(this.agentdb.database, this.createEmbeddingService());
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'explainableRecall': {
-        // ADR-0040: inject embedder (optional per ExplainableRecall constructor)
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const ER = agentdbModule.ExplainableRecall;
-          if (!ER) return null;
-          return new ER(this.agentdb.database, this.createEmbeddingService());
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
       case 'nightlyLearner': {
-        // ADR-0040: inject embedder + pass pre-created singletons to avoid duplicates
+        // ADR-0068 W2-3: Delegate to AgentDB first, fall back to direct construction
+        // only when AgentDB does not yet expose nightlyLearner.
         if (!this.agentdb) return null;
+        if (typeof this.agentdb.getController === 'function') {
+          try {
+            const ctrl = this.agentdb.getController('nightlyLearner');
+            if (ctrl) return ctrl;
+          } catch { /* fall through to direct construction */ }
+        }
+        // Fallback: direct construction (AgentDB < alpha.12 may not expose nightlyLearner)
         try {
           const agentdbModule: any = await import('agentdb');
           const NL = agentdbModule.NightlyLearner;
           if (!NL) return null;
-          const embedder = this.createEmbeddingService();
-          const cg = this.get('causalGraph') as any;
-          const ref = this.get('reflexion') as any;
-          const sk = this.get('skills') as any;
-          return new NL(this.agentdb.database, embedder, undefined, cg, ref, sk);
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          // ADR-0062 P3-4: Enable flash consolidation when AttentionService
+          // was successfully initialized at Level 2
+          const hasAttention = this.controllers.get('attentionService')?.enabled === true;
+          // ADR-0040: pass pre-created singletons to avoid duplicate SQLite objects
+          return new NL(
+            this.agentdb.database,
+            this.createEmbeddingService(),
+            { ENABLE_FLASH_CONSOLIDATION: hasAttention },
+            this.get('causalGraph') || undefined,
+            this.get('reflexion') || undefined,
+            this.get('skills') || undefined,
+          );
+        } catch { return null; }
       }
 
       // ----- Direct-instantiation controllers -----
@@ -1254,7 +1423,8 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const BO = agentdbModule.BatchOperations;
           if (!BO) return null;
-          const embedder = this.config.embeddingGenerator || null;
+          // ADR-0064 P2: Use createEmbeddingService() like all other controllers
+          const embedder = this.createEmbeddingService();
           return new BO(this.agentdb.database, embedder);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
@@ -1280,36 +1450,31 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'mmrDiversityRanker': {
+        // MMRDiversityRanker is static-only — return class reference (ADR-0061 Bug #5)
         try {
           const agentdbModule: any = await import('agentdb');
-          const MMR = agentdbModule.MMRDiversityRanker;
-          if (!MMR) return null;
-          return new MMR();
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          return agentdbModule.MMRDiversityRanker ?? null;
+        } catch { return null; }
       }
 
       case 'mutationGuard': {
-        // MutationGuard exported from agentdb 3.0.0-alpha.10 (ADR-060)
-        // Constructor: (config?) where config.dimension, config.maxElements, config.enableWasmProofs
+        // ADR-0068 W2-3: Delegate to AgentDB; fall back to direct construction
         if (!this.agentdb) return null;
+        if (typeof this.agentdb.getController === 'function') {
+          try {
+            const ctrl = this.agentdb.getController('mutationGuard');
+            if (ctrl) return ctrl;
+          } catch { /* fall through to direct construction */ }
+        }
+        // Fallback: direct construction (AgentDB < alpha.12)
         try {
           const agentdbModule: any = await import('agentdb');
           const MG = agentdbModule.MutationGuard;
           if (!MG) return null;
-          return new MG({ dimension: this.config.dimension || EMBEDDING_DIM });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          const mg = new MG({ dimension: this.resolvedDimension });
+          await mg.initialize();
+          return mg;
+        } catch { return null; }
       }
 
       case 'attestationLog': {
@@ -1336,23 +1501,10 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const GNN = agentdbModule.GNNService;
           if (!GNN) return null;
-          const svc = new GNN({
-            inputDim: this.config.dimension || EMBEDDING_DIM,
-            hiddenDim: 128,
-            outputDim: 64,
-            heads: 8,
-          });
-          if (typeof svc.initialize === 'function') {
-            await svc.initialize();
-          }
-          return svc;
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          const gnn = new GNN({ inputDim: this.resolvedDimension });
+          await gnn.initialize();
+          return gnn;
+        } catch { return null; }
       }
 
       case 'rvfOptimizer': {
@@ -1429,219 +1581,85 @@ export class ControllerRegistry extends EventEmitter {
         return null;
       }
 
-      // ----- ADR-0041: Level 0 Infrastructure -----
-
-      case 'resourceTracker': {
-        // D4: Resource tracking with memory ceiling and query stats (ADR-0042)
-        const resources = new Map<string, { allocated: number; limit: number }>();
-        // Use 75% of system RAM or 4GB floor, whichever is larger
-        const os = await import('os');
-        const CEILING = Math.max(os.totalmem() * 0.75, 4 * 1024 * 1024 * 1024);
-        let currentUsage = 0;
-        let queryCount = 0;
-        const queryWindow: number[] = []; // rolling last 100 query timestamps
-        return {
-          track(name: string, allocated: number, limit: number) {
-            resources.set(name, { allocated, limit });
-          },
-          check(name: string): { allocated: number; limit: number } | null {
-            return resources.get(name) ?? null;
-          },
-          record(bytes: number) { currentUsage += bytes; },
-          recordQuery() {
-            queryCount++;
-            queryWindow.push(Date.now());
-            if (queryWindow.length > 100) queryWindow.shift();
-          },
-          isOverLimit(): boolean { return currentUsage >= CEILING; },
-          isWarning(): boolean { return currentUsage >= CEILING * 0.8; },
-          getStats() {
-            const pct = CEILING > 0 ? currentUsage / CEILING : 0;
-            return {
-              tracked: resources.size,
-              resources: Object.fromEntries(resources),
-              currentUsage, ceiling: CEILING, pct,
-              warning: currentUsage >= CEILING * 0.8,
-              overlimit: currentUsage >= CEILING,
-              queryCount, queries: queryWindow.length,
-            };
-          },
-        };
-      }
-
-      case 'rateLimiter': {
-        // D5: Token-bucket rate limiter with pre-configured buckets (ADR-0042)
-        const buckets = new Map<string, { tokens: number; lastRefill: number; rate: number; max: number }>();
-        const refill = (b: { tokens: number; lastRefill: number; rate: number; max: number }) => {
-          const now = Date.now();
-          b.tokens = Math.min(b.max, b.tokens + ((now - b.lastRefill) / 1000) * b.rate);
-          b.lastRefill = now;
-        };
-        const limiter = {
-          configure(name: string, rate: number, max: number) {
-            buckets.set(name, { tokens: max, lastRefill: Date.now(), rate, max });
-          },
-          tryAcquire(name: string): boolean {
-            const bucket = buckets.get(name);
-            if (!bucket) return true;
-            refill(bucket);
-            if (bucket.tokens >= 1) { bucket.tokens--; return true; }
-            return false;
-          },
-          tryConsume(name: string): boolean { return limiter.tryAcquire(name); },
-          getRetryAfter(name: string): number {
-            const bucket = buckets.get(name);
-            if (!bucket) return 0;
-            refill(bucket);
-            if (bucket.tokens >= 1) return 0;
-            return Math.ceil((1 - bucket.tokens) / bucket.rate * 1000);
-          },
-          getStats() {
-            const details: Record<string, { tokens: number; rate: number; max: number }> = {};
-            for (const [n, b] of buckets) { refill(b); details[n] = { tokens: b.tokens, rate: b.rate, max: b.max }; }
-            return { buckets: buckets.size, names: [...buckets.keys()], details };
-          },
-        };
-        // Pre-configure default buckets per ADR-0042
-        limiter.configure('insert', 1000, 1000);
-        limiter.configure('search', 10000, 10000);
-        limiter.configure('delete', 500, 500);
-        limiter.configure('batch', 100, 100);
-        return limiter;
-      }
-
-      case 'circuitBreakerController': {
-        // D6: Registry-level circuit breaker decorator with events (ADR-0042)
-        const self = this;
-        const breakers = new Map<string, { failures: number; state: 'CLOSED' | 'OPEN' | 'HALF_OPEN'; lastFailure: number }>();
-        const FAILURE_THRESHOLD = 5;
-        const RESET_TIMEOUT_MS = 30_000;
-
-        return {
-          wrap<T>(controllerName: string, fn: () => T): T | null {
-            let breaker = breakers.get(controllerName);
-            if (!breaker) {
-              breaker = { failures: 0, state: 'CLOSED', lastFailure: 0 };
-              breakers.set(controllerName, breaker);
-            }
-            if (breaker.state === 'OPEN') {
-              if (Date.now() - breaker.lastFailure > RESET_TIMEOUT_MS) {
-                breaker.state = 'HALF_OPEN';
-              } else {
-                return null;
-              }
-            }
-            try {
-              const result = fn();
-              if (breaker.state === 'HALF_OPEN') {
-                breaker.state = 'CLOSED';
-                breaker.failures = 0;
-              }
-              return result;
-            } catch (error) {
-              breaker.failures++;
-              breaker.lastFailure = Date.now();
-              if (breaker.failures >= FAILURE_THRESHOLD) {
-                breaker.state = 'OPEN';
-                self.emit('controller:circuit-open', { name: controllerName, error });
-              }
-              return null;
-            }
-          },
-          reset(controllerName: string) {
-            const breaker = breakers.get(controllerName);
-            if (breaker) { breaker.state = 'CLOSED'; breaker.failures = 0; }
-          },
-          getState(controllerName: string): string {
-            return breakers.get(controllerName)?.state ?? 'CLOSED';
-          },
-          getStats() {
-            const stats: Record<string, { state: string; failures: number; lastFailure: number }> = {};
-            for (const [n, b] of breakers) {
-              stats[n] = { state: b.state, failures: b.failures, lastFailure: b.lastFailure };
-            }
-            return { breakers: stats, total: breakers.size };
-          },
-        };
-      }
-
-      case 'telemetryManager': {
-        // D1: OpenTelemetry spans + counters + histograms (ADR-0045)
-        // Level 0: initializes before all other controllers to instrument init times
-        const spans: Array<{ name: string; startTime: number; endTime: number | null; attributes: Record<string, unknown> }> = [];
-        const counters: Record<string, number> = {};
-        const histograms: Record<string, number[]> = {};
-        const exporters: string[] = this.config.telemetryExporters ?? ['console'];
-
-        return {
-          startSpan(name: string, attributes?: Record<string, unknown>) {
-            const span = { name, startTime: performance.now(), endTime: null as number | null, attributes: attributes ?? {} };
-            spans.push(span);
-            return {
-              end() {
-                span.endTime = performance.now();
-                const duration = span.endTime - span.startTime;
-                if (!histograms[name]) histograms[name] = [];
-                histograms[name].push(duration);
-              },
-              setAttribute(key: string, value: unknown) { span.attributes[key] = value; },
-            };
-          },
-          increment(name: string, value = 1) {
-            counters[name] = (counters[name] ?? 0) + value;
-          },
-          recordHistogram(name: string, value: number) {
-            if (!histograms[name]) histograms[name] = [];
-            histograms[name].push(value);
-          },
-          getMetrics() {
-            const percentile = (arr: number[], p: number) => {
-              if (arr.length === 0) return 0;
-              const sorted = [...arr].sort((a, b) => a - b);
-              const idx = Math.ceil(sorted.length * p / 100) - 1;
-              return sorted[Math.max(0, idx)];
-            };
-            const histogramStats: Record<string, { count: number; p50: number; p95: number; p99: number }> = {};
-            for (const [key, values] of Object.entries(histograms)) {
-              histogramStats[key] = {
-                count: values.length,
-                p50: percentile(values, 50),
-                p95: percentile(values, 95),
-                p99: percentile(values, 99),
-              };
-            }
-            return { counters: { ...counters }, histograms: histogramStats, exporters };
-          },
-          getSpans(limit = 100) {
-            return spans.slice(-limit).map(s => ({
-              name: s.name,
-              durationMs: s.endTime !== null ? s.endTime - s.startTime : null,
-              attributes: s.attributes,
-            }));
-          },
-          getStats() {
-            return { spanCount: spans.length, counterCount: Object.keys(counters).length, histogramCount: Object.keys(histograms).length, exporters };
-          },
-        };
-      }
-
-      // ----- ADR-0041: Level 1 Additions -----
-
-      case 'metadataFilter': {
-        // B5: Metadata-based result filtering
-        if (!this.agentdb) return null;
+      // ----- ADR-0061 Phase 2: Pure JS controllers -----
+      case 'solverBandit': {
         try {
           const agentdbModule: any = await import('agentdb');
-          const MF = agentdbModule.MetadataFilter;
-          if (!MF) return null;
-          return new MF();
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          const SB = agentdbModule.SolverBandit;
+          if (!SB) return null;
+          const sbCfg = this.config.solverBandit || {};
+          return new SB({
+            costWeight: sbCfg.costWeight,
+            costDecay: sbCfg.costDecay,
+            explorationBonus: sbCfg.explorationBonus,
+          });
+        } catch { return null; }
+      }
+
+      case 'attentionMetrics': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const AMC = agentdbModule.AttentionMetricsCollector;
+          if (!AMC) return null;
+          return new AMC();
+        } catch { return null; }
+      }
+
+      // ----- ADR-0061 Phase 3: Attention suite -----
+      case 'selfAttention': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const SAC = agentdbModule.SelfAttentionController;
+          if (!SAC) return null;
+          const vb = this.get('vectorBackend');
+          const saCfg = this.config.selfAttention || {};
+          return new SAC(vb || null, { topK: saCfg.topK ?? 10 });
+        } catch { return null; }
+      }
+
+      case 'crossAttention': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const CAC = agentdbModule.CrossAttentionController;
+          if (!CAC) return null;
+          const vb = this.get('vectorBackend');
+          return new CAC(vb || null);
+        } catch { return null; }
+      }
+
+      case 'multiHeadAttention': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const MHA = agentdbModule.MultiHeadAttentionController;
+          if (!MHA) return null;
+          const vb = this.get('vectorBackend');
+          const mhaCfg = this.config.multiHeadAttention || {};
+          return new MHA(vb || null, {
+            numHeads: mhaCfg.numHeads ?? 8,
+            topK: mhaCfg.topK ?? 10,
+          });
+        } catch { return null; }
+      }
+
+      case 'attentionService': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const AS = agentdbModule.AttentionService;
+          if (!AS) return null;
+          const asCfg = this.config.attentionService || {};
+          const dim = this.resolvedDimension;
+          const numHeads = asCfg.numHeads ?? 8;
+          const svc = new AS({
+            numHeads,
+            headDim: Math.floor(dim / numHeads),
+            embedDim: dim,
+            useFlash: asCfg.useFlash ?? true,
+            useMoE: asCfg.useMoE ?? false,
+            useHyperbolic: asCfg.useHyperbolic ?? false,
+          });
+          await svc.initialize();
+          return svc;
+        } catch { return null; }
       }
 
       // ----- ADR-0069 F3: Dual AttentionService instances for SONAWithAttention -----
@@ -1689,208 +1707,27 @@ export class ControllerRegistry extends EventEmitter {
         } catch { return null; }
       }
 
+      // ----- ADR-0061 Phase 4: Optimization -----
       case 'queryOptimizer': {
-        // B6: Query plan optimization
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
           const QO = agentdbModule.QueryOptimizer;
           if (!QO) return null;
-          return new QO();
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          return new QO(this.agentdb.database);
+        } catch { return null; }
       }
-
-      // ----- ADR-0041: Level 2 Composites -----
-
-      case 'nativeAccelerator': {
-        // B4: Shared singleton — used by A6, A5, B2, A7 (ADR-0046)
-        // Uses getAccelerator() for module-level singleton with auto-initialization
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          // Prefer singleton factory (handles init + caching)
-          const getAccel = agentdbModule.getAccelerator;
-          if (typeof getAccel === 'function') {
-            return await getAccel();
-          }
-          // Fallback: direct construction + manual init
-          const NA = agentdbModule.NativeAccelerator;
-          if (!NA) return null;
-          const accel = new NA();
-          if (typeof accel.initialize === 'function') {
-            await accel.initialize();
-          }
-          return accel;
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'selfLearningRvfBackend': {
-        // A6: Composite parent — creates 6 children internally via initComponents()
-        // Children: B1 SemanticQueryRouter, A8 SonaLearningBackend, A7 ContrastiveTrainer,
-        //           B2 TemporalCompressor, FederatedSessionManager, RvfSolver
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const SLRB = agentdbModule.SelfLearningRvfBackend;
-          if (!SLRB) return null;
-          // Private constructor — must use static async create() factory
-          if (typeof SLRB.create !== 'function') return null;
-          return await SLRB.create({
-            dimension: this.config.dimension || EMBEDDING_DIM,
-          });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'quantizedVectorStore': {
-        // B9: Composite parent — creates B7 (Scalar) or B8 (Product) based on config
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const QVS = agentdbModule.QuantizedVectorStore;
-          if (!QVS) return null;
-          return new QVS({
-            type: 'scalar-8bit' as const,
-          });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'selfAttention': {
-        // A1: SelfAttentionController — pure JS, no native deps (ADR-0044)
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const SA = agentdbModule.SelfAttentionController;
-          if (!SA) return null;
-          const vb = this.get('vectorBackend');
-          return new SA({ dimension: this.config.dimension || EMBEDDING_DIM, vectorBackend: vb || undefined });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'crossAttention': {
-        // A2: CrossAttentionController — pure JS, no native deps (ADR-0044)
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const CA = agentdbModule.CrossAttentionController;
-          if (!CA) return null;
-          const vb = this.get('vectorBackend');
-          return new CA({ dimension: this.config.dimension || EMBEDDING_DIM, vectorBackend: vb || undefined });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'multiHeadAttention': {
-        // A3: MultiHeadAttentionController — pure JS, no native deps (ADR-0044)
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const MHA = agentdbModule.MultiHeadAttentionController;
-          if (!MHA) return null;
-          const vb = this.get('vectorBackend');
-          return new MHA({
-            dimension: this.config.dimension || EMBEDDING_DIM,
-            numHeads: 8,
-            vectorBackend: vb || undefined,
-          });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      case 'attentionService': {
-        // A5: AttentionService (Flash, MoE, GraphRoPE enabled by default)
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const AS = agentdbModule.AttentionService;
-          if (!AS) return null;
-          const accel = this.get('nativeAccelerator');
-          return new AS({
-            dimension: this.config.dimension || EMBEDDING_DIM,
-            accelerator: accel || undefined,
-            // A5 mechanism gating: Hyperbolic only when NativeAccelerator reports simdAvailable
-            enableHyperbolic: !!(accel && typeof (accel as any).simdAvailable === 'boolean' && (accel as any).simdAvailable),
-          });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
-      }
-
-      // ----- ADR-0041: Level 3 Additions -----
 
       case 'enhancedEmbeddingService': {
-        // A9: Multi-provider embeddings with LRU cache, semaphore batch, dimension alignment (ADR-0045)
-        // Barrel export must point to services/enhanced-embeddings.ts (full impl),
-        // not controllers/EnhancedEmbeddingService.ts (WASM wrapper).
-        if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
           const EES = agentdbModule.EnhancedEmbeddingService;
           if (!EES) return null;
-          // Read model + dimension from centralized embedding config
-          const embCfg = typeof agentdbModule.getEmbeddingConfig === 'function'
-            ? agentdbModule.getEmbeddingConfig()
-            : { model: 'nomic-ai/nomic-embed-text-v1.5', dimension: 768 };
-          return new EES({
-            model: embCfg.model,
-            dimension: this.config.dimension || embCfg.dimension,
-            cache: { maxSize: this.config.embeddingCacheSize ?? 500_000 },
-            batch: { maxConcurrency: this.config.embeddingBatchConcurrency ?? 24 },
-          });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          return new EES();
+        } catch { return null; }
       }
 
       case 'auditLogger': {
-        // D3: 18 typed security events, file rotation, SOC2/GDPR/HIPAA (ADR-0045)
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
@@ -1900,68 +1737,116 @@ export class ControllerRegistry extends EventEmitter {
             maxFileSize: this.config.auditRotationSize ?? 10 * 1024 * 1024,
             maxFiles: this.config.auditRotationFiles ?? 10,
           });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+        } catch { return null; }
       }
 
-      // ----- ADR-0041: Level 4 Additions -----
+      case 'quantizedVectorStore': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const QVS = agentdbModule.QuantizedVectorStore;
+          if (!QVS) return null;
+          return new QVS({ type: this.config.quantizedVectorStore?.type ?? 'scalar-8bit' });
+        } catch { return null; }
+      }
+
+      // ----- ADR-0061 Phase 5: Self-learning -----
+      case 'nativeAccelerator': {
+        // Singleton pattern (ADR-0061 S9 verified)
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const getAcc = agentdbModule.getAccelerator;
+          if (!getAcc) return null;
+          return await getAcc();
+        } catch { return null; }
+      }
+
+      case 'selfLearningRvfBackend': {
+        // Private constructor -- must use static factory (ADR-0061 Bug #10)
+        if (!this.agentdb) return null;
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const SLRB = agentdbModule.SelfLearningRvfBackend;
+          if (!SLRB) return null;
+          const dbPath = this.config.dbPath || ':memory:';
+          const storagePath = dbPath === ':memory:' ? ':memory:' : dbPath.replace(/\.db$/, '-rvf.sqlite');
+          return await SLRB.create({
+            dimension: this.resolvedDimension,
+            storagePath,
+            learning: true,
+          });
+        } catch { return null; }
+      }
+
+      case 'metadataFilter': {
+        if (!this.agentdb) return null;
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const MF = agentdbModule.MetadataFilter;
+          if (!MF) return null;
+          return new MF();
+        } catch { return null; }
+      }
 
       case 'indexHealthMonitor': {
-        // B3: Eager-loaded in A6 but independently useful for health reporting
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
           const IHM = agentdbModule.IndexHealthMonitor;
           if (!IHM) return null;
           return new IHM();
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+        } catch { return null; }
       }
 
       case 'federatedLearningManager': {
-        // A11: Depends on selfLearningRvfBackend (level 2) being ready
-        if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
           const FLM = agentdbModule.FederatedLearningManager;
           if (!FLM) return null;
-          return new FLM({
-            agentId: 'default',
-          });
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          return new FLM({ agentId: this.config.agentId || `agent-${Date.now().toString(36)}` });
+        } catch { return null; }
       }
 
-      case 'attentionMetrics': {
-        // D2: Metrics collection for A1-A3 + A5 attention controllers (ADR-0044)
-        if (!this.agentdb) return null;
+      // ----- ADR-0061 Phase 6: Security infrastructure -----
+      case 'resourceTracker': {
         try {
           const agentdbModule: any = await import('agentdb');
-          const AM = agentdbModule.AttentionMetricsCollector;
-          if (!AM) return null;
-          return new AM();
-        } catch (e) {
-          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
-          this.initErrors.push(err);
-          this.emit('controller:init-error', { name, error: err });
-          if (this.strictMode) throw err;
-          return null;
-        }
+          const RT = agentdbModule.ResourceTracker;
+          if (!RT) return null;
+          return new RT();
+        } catch { return null; }
+      }
+
+      case 'rateLimiter': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const RL = agentdbModule.RateLimiter;
+          if (!RL) return null;
+          const rlCfg = this.config.rateLimiter || {};
+          const maxTokens = rlCfg.maxRequests || 100;
+          // ADR-0069 A2: config-chain rate limits
+          const windowMs = rlCfg.windowMs || 60000;
+          const refillRate = Math.max(1, Math.round(maxTokens / (windowMs / 1000)));
+          return new RL(maxTokens, refillRate);
+        } catch { return null; }
+      }
+
+      case 'circuitBreaker': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const CB = agentdbModule.CircuitBreaker;
+          if (!CB) return null;
+          const cbCfg = this.config.circuitBreaker || {};
+          return new CB(cbCfg.failureThreshold || 5, cbCfg.resetTimeoutMs || 60000);
+        } catch { return null; }
+      }
+
+      case 'telemetryManager': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const TM = agentdbModule.TelemetryManager;
+          if (!TM) return null;
+          return TM.getInstance();
+        } catch { return null; }
       }
 
       default:
@@ -2002,6 +1887,9 @@ export class ControllerRegistry extends EventEmitter {
    * initAgentDB) instead of hardcoding 768.
    */
   private createEmbeddingService(): any {
+    // ADR-0062 P1-1: Reuse AgentDB's real embedder when available
+    if (this.realEmbedder) return this.realEmbedder;
+
     // If user provided an embedding generator, wrap it
     if (this.config.embeddingGenerator) {
       return {
@@ -2014,8 +1902,8 @@ export class ControllerRegistry extends EventEmitter {
     const dim = this.embeddingDimension || this.config.dimension || EMBEDDING_DIM;
     // Return a minimal stub — HierarchicalMemory falls back to manualSearch without embeddings
     return {
-      embed: async () => new Float32Array(dim),
-      embedBatch: async (texts: string[]) => texts.map(() => new Float32Array(dim)),
+      embed: async () => new Float32Array(this.resolvedDimension),
+      embedBatch: async (texts: string[]) => texts.map(() => new Float32Array(this.resolvedDimension)),
       initialize: async () => {},
     };
   }

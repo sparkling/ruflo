@@ -22,6 +22,7 @@ import {
   type HeadlessWorkerType,
   type HeadlessExecutionResult,
 } from './headless-worker-executor.js';
+import { DaemonIPCServer, getDaemonSocketPath } from './daemon-ipc.js';
 
 // Worker types matching hooks-tools.ts
 export type WorkerType =
@@ -44,6 +45,7 @@ interface WorkerConfig {
   priority: 'low' | 'normal' | 'high' | 'critical';
   description: string;
   enabled: boolean;
+  timeoutMs?: number; // ADR-0069: per-worker timeout from workers.triggers config
 }
 
 interface WorkerState {
@@ -72,6 +74,7 @@ interface DaemonStatus {
   startedAt?: Date;
   workers: Map<WorkerType, WorkerState>;
   config: DaemonConfig;
+  ipc?: { running: boolean; socketPath: string };
 }
 
 export interface DaemonConfig {
@@ -80,6 +83,7 @@ export interface DaemonConfig {
   stateFile: string;
   maxConcurrent: number;
   workerTimeoutMs: number;
+  headless?: boolean; // Enable headless worker execution (requires claude CLI on PATH)
   resourceThresholds: {
     maxCpuLoad: number;
     minFreeMemoryPercent: number;
@@ -128,6 +132,9 @@ export class WorkerDaemon extends EventEmitter {
   // Headless execution support
   private headlessExecutor: HeadlessWorkerExecutor | null = null;
   private headlessAvailable: boolean = false;
+
+  // ADR-0059 Phase 4: IPC server for hook<->daemon communication
+  private ipcServer: DaemonIPCServer | null = null;
 
   // Preserve the original constructor config so we can detect explicit overrides
   // during state restoration (R1: constructor config takes priority over stale state)
@@ -197,6 +204,21 @@ export class WorkerDaemon extends EventEmitter {
       })(),
     };
 
+    // ADR-0069: wire workers.triggers consumer — merge per-worker timeouts and priorities
+    if (fileConfig.workerTriggers) {
+      const validPriorities = new Set(['low', 'normal', 'high', 'critical']);
+      for (const worker of this.config.workers) {
+        const trigger = fileConfig.workerTriggers[worker.type];
+        if (!trigger) continue;
+        if (typeof trigger.timeoutMs === 'number' && trigger.timeoutMs > 0) {
+          worker.timeoutMs = trigger.timeoutMs;
+        }
+        if (typeof trigger.priority === 'string' && validPriorities.has(trigger.priority)) {
+          worker.priority = trigger.priority as WorkerConfig['priority'];
+        }
+      }
+    }
+
     // Setup graceful shutdown handlers
     this.setupShutdownHandlers();
 
@@ -211,10 +233,14 @@ export class WorkerDaemon extends EventEmitter {
     // Initialize worker states
     this.initializeWorkerStates();
 
-    // Initialize headless executor (async, non-blocking)
-    this.initHeadlessExecutor().catch((err) => {
-      this.log('warn', `Headless executor init failed: ${err}`);
-    });
+    // Initialize headless executor only when explicitly opted in via --headless flag.
+    // Without this gate, workers silently spawn full claude processes (~250MB each)
+    // on any machine where claude is installed, even though local fallbacks exist.
+    if (this.config.headless) {
+      this.initHeadlessExecutor().catch((err) => {
+        this.log('warn', `Headless executor init failed: ${err}`);
+      });
+    }
   }
 
   /**
@@ -311,6 +337,7 @@ export class WorkerDaemon extends EventEmitter {
     workerTimeoutMs?: number;
     maxCpuLoad?: number;
     minFreeMemoryPercent?: number;
+    workerTriggers?: Record<string, { timeoutMs?: number; priority?: string }>;
   } {
     const configPath = join(claudeFlowDir, 'config.json');
     if (!existsSync(configPath)) {
@@ -330,12 +357,19 @@ export class WorkerDaemon extends EventEmitter {
       const rawMinMem = cfg['daemon.resourceThresholds.minFreeMemoryPercent'] ?? raw['daemon.resourceThresholds.minFreeMemoryPercent'];
       const rawMaxConcurrent = cfg['daemon.maxConcurrent'] ?? raw['daemon.maxConcurrent'];
       const rawTimeout = cfg['daemon.workerTimeoutMs'] ?? raw['daemon.workerTimeoutMs'];
+      // ADR-0069: read workers.triggers from nested config
+      const rawTriggers = raw?.workers?.triggers ?? cfg?.workers?.triggers;
+      const workerTriggers = (rawTriggers && typeof rawTriggers === 'object' && !Array.isArray(rawTriggers))
+        ? rawTriggers as Record<string, { timeoutMs?: number; priority?: string }>
+        : undefined;
+
       return {
         autoStart: typeof raw['daemon.autoStart'] === 'boolean' ? raw['daemon.autoStart'] : undefined,
         maxConcurrent: (typeof rawMaxConcurrent === 'number' && rawMaxConcurrent > 0) ? rawMaxConcurrent : undefined,
         workerTimeoutMs: (typeof rawTimeout === 'number' && rawTimeout > 0) ? rawTimeout : undefined,
         maxCpuLoad: (typeof rawCpuLoad === 'number' && rawCpuLoad > 0 && rawCpuLoad < 1000) ? rawCpuLoad : undefined,
         minFreeMemoryPercent: (typeof rawMinMem === 'number' && rawMinMem >= 0 && rawMinMem <= 100) ? rawMinMem : undefined,
+        workerTriggers,
       };
     } catch {
       return {};
@@ -540,6 +574,56 @@ export class WorkerDaemon extends EventEmitter {
     this.writePidFile();
     this.emit('started', { pid: process.pid, startedAt: this.startedAt });
 
+    // ADR-0059 Phase 4: Start IPC server for hook<->daemon communication
+    try {
+      this.ipcServer = new DaemonIPCServer({
+        socketPath: getDaemonSocketPath(this.projectRoot),
+        projectRoot: this.projectRoot,
+      });
+      // Register memory method handlers
+      this.ipcServer.registerMethod('memory.store', async (params) => {
+        const { bridgeStoreEntry } = await import('../memory/memory-bridge.js');
+        return bridgeStoreEntry(params as any);
+      });
+      this.ipcServer.registerMethod('memory.search', async (params) => {
+        const { bridgeSearchEntries } = await import('../memory/memory-bridge.js');
+        return bridgeSearchEntries(params as any);
+      });
+      this.ipcServer.registerMethod('memory.count', async (params) => {
+        const { bridgeListEntries } = await import('../memory/memory-bridge.js');
+        const result = await bridgeListEntries(params as any);
+        return result?.total ?? 0;
+      });
+      this.ipcServer.registerMethod('memory.bulkInsert', async (params: any) => {
+        const { bridgeStoreEntry } = await import('../memory/memory-bridge.js');
+        const entries = params.entries || [];
+        let stored = 0;
+        for (const entry of entries) {
+          const r = await bridgeStoreEntry(entry);
+          if (r?.success) stored++;
+        }
+        return { stored, total: entries.length };
+      });
+      await this.ipcServer.start();
+      this.log('info', `IPC server listening on ${this.ipcServer.socketPath}`);
+
+      // ADR-0064: Pre-warm the memory bridge AND embedder so first IPC call
+      // doesn't pay cold-start penalty. bridgeSearchEntries exercises the full
+      // path: ControllerRegistry + AgentDB + Transformers.js init + first
+      // embed() call (ONNX/WASM JIT warmup). Without this, the first
+      // memory.search call takes 8-15s, exceeding typical IPC timeouts.
+      try {
+        const { bridgeSearchEntries } = await import('../memory/memory-bridge.js');
+        await bridgeSearchEntries({ query: 'warmup', limit: 1 });
+        this.log('info', 'Memory bridge pre-warmed (including embedder)');
+      } catch {
+        this.log('info', 'Memory bridge pre-warm skipped (non-fatal)');
+      }
+    } catch (err: any) {
+      this.log('warn', `IPC server failed to start: ${err.message}`);
+      // Non-fatal: daemon still works, hooks fall back to direct RVF
+    }
+
     // Schedule all enabled workers
     for (const workerConfig of this.config.workers) {
       if (workerConfig.enabled) {
@@ -570,6 +654,12 @@ export class WorkerDaemon extends EventEmitter {
     }
     this.timers.clear();
 
+    // ADR-0059 Phase 4: Stop IPC server
+    if (this.ipcServer) {
+      try { await this.ipcServer.stop(); } catch { /* ignore */ }
+      this.ipcServer = null;
+    }
+
     this.running = false;
     // WM-108c: Shut down bridge to close DB connections + clear timers (ADR-073 Gap E)
     try {
@@ -592,6 +682,9 @@ export class WorkerDaemon extends EventEmitter {
       startedAt: this.startedAt,
       workers: new Map(this.workers),
       config: this.config,
+      ipc: this.ipcServer
+        ? { running: this.ipcServer.isRunning, socketPath: this.ipcServer.socketPath }
+        : undefined,
     };
   }
 
@@ -674,10 +767,12 @@ export class WorkerDaemon extends EventEmitter {
     try {
       // Execute worker logic with timeout (P1 fix)
       // Pass cleanup callback to kill orphan child processes on timeout (#1117)
+      // ADR-0069: prefer per-worker timeoutMs from workers.triggers config, fall back to global
+      const effectiveTimeout = workerConfig.timeoutMs ?? this.config.workerTimeoutMs;
       const output = await this.runWithTimeout(
         () => this.runWorkerLogic(workerConfig),
-        this.config.workerTimeoutMs,
-        `Worker ${workerConfig.type} timed out after ${this.config.workerTimeoutMs / 1000}s`,
+        effectiveTimeout,
+        `Worker ${workerConfig.type} timed out after ${effectiveTimeout / 1000}s`,
         () => {
           // On timeout, cancel any headless execution to prevent orphan processes
           if (this.headlessExecutor) {

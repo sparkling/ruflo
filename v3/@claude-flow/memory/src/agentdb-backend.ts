@@ -11,6 +11,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { MEMORY_ENTRIES_DDL, MEMORY_ENTRIES_INDEXES } from './memory-schema.js';
 import {
   IMemoryBackend,
   MemoryEntry,
@@ -30,12 +31,15 @@ import {
   HNSWStats,
 } from './types.js';
 import { EMBEDDING_DIM } from './embedding-constants.js';
+import { deriveHNSWParams as deriveHNSWParamsShared } from './hnsw-utils.js';
 
 // ===== AgentDB Optional Import =====
 
 let AgentDB: any;
 let HNSWIndex: any;
 let isHnswlibAvailable: (() => Promise<boolean>) | undefined;
+
+let deriveHNSWParamsFn: ((dim?: number) => { M: number; efConstruction: number; efSearch: number }) | undefined;
 
 // Dynamically import agentdb (handled at runtime)
 let agentdbImportPromise: Promise<void> | undefined;
@@ -48,12 +52,23 @@ function ensureAgentDBImport(): Promise<void> {
         AgentDB = agentdbModule.AgentDB || agentdbModule.default;
         HNSWIndex = agentdbModule.HNSWIndex;
         isHnswlibAvailable = agentdbModule.isHnswlibAvailable;
+        deriveHNSWParamsFn = agentdbModule.deriveHNSWParams;
       } catch (error) {
         // AgentDB not available - will use fallback
       }
     })();
   }
   return agentdbImportPromise;
+}
+
+/**
+ * Derive optimal HNSW parameters from embedding dimension.
+ * Delegates to agentdb's deriveHNSWParams() if available, otherwise uses
+ * the shared formula from hnsw-utils (ADR-0065 P3-3).
+ */
+function deriveHNSWParams(dimension: number): { M: number; efConstruction: number; efSearch: number } {
+  if (deriveHNSWParamsFn) return deriveHNSWParamsFn(dimension);
+  return deriveHNSWParamsShared(dimension);
 }
 
 // ===== Configuration =====
@@ -74,7 +89,7 @@ export interface AgentDBBackendConfig {
   /** Vector backend: 'auto', 'ruvector', 'hnswlib' */
   vectorBackend?: 'auto' | 'ruvector' | 'hnswlib';
 
-  /** Vector dimensions (default: from embedding config) */
+  /** Vector dimensions (default: 768) */
   vectorDimension?: number;
 
   /** HNSW M parameter */
@@ -97,21 +112,66 @@ export interface AgentDBBackendConfig {
 }
 
 /**
- * Default configuration
+ * Fallback configuration (used when config chain is unavailable)
  */
-const DEFAULT_CONFIG: Required<
+const FALLBACK_CONFIG: Required<
   Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator'>
 > = {
   namespace: 'default',
   forceWasm: false,
   vectorBackend: 'auto',
-  vectorDimension: EMBEDDING_DIM,
-  hnswM: 16,
-  hnswEfConstruction: 200,
-  hnswEfSearch: 100,
+  vectorDimension: 768,
+  hnswM: 23,
+  hnswEfConstruction: 100,
+  hnswEfSearch: 50,
   cacheEnabled: true,
   maxEntries: 1000000,
 };
+
+// ADR-0069: config-chain-aware resolution
+let _backendResolvedDefaults: typeof FALLBACK_CONFIG | null = null;
+let _backendResolvePromise: Promise<typeof FALLBACK_CONFIG> | null = null;
+
+/**
+ * Resolve default config from the config chain:
+ * getEmbeddingConfig() → deriveHNSWParams() → FALLBACK_CONFIG
+ */
+function getDefaultConfig(): typeof FALLBACK_CONFIG {
+  if (_backendResolvedDefaults) return _backendResolvedDefaults;
+  return FALLBACK_CONFIG;
+}
+
+// Kick off async resolution early (non-blocking)
+(async () => {
+  if (_backendResolvePromise) return _backendResolvePromise;
+  _backendResolvePromise = (async () => {
+    try {
+      await ensureAgentDBImport();
+      const agentdbModule: any = await import('@claude-flow/agentdb').catch(() => null);
+      if (agentdbModule && typeof agentdbModule.getEmbeddingConfig === 'function') {
+        const embCfg = agentdbModule.getEmbeddingConfig();
+        const dim = embCfg.dimension || FALLBACK_CONFIG.vectorDimension;
+        const hnsw = deriveHNSWParams(dim);
+        _backendResolvedDefaults = {
+          ...FALLBACK_CONFIG,
+          vectorDimension: dim,
+          hnswM: hnsw.M,
+          hnswEfConstruction: hnsw.efConstruction,
+          hnswEfSearch: hnsw.efSearch,
+        };
+        return _backendResolvedDefaults;
+      }
+    } catch { /* config chain unavailable */ }
+    _backendResolvedDefaults = { ...FALLBACK_CONFIG };
+    return _backendResolvedDefaults;
+  })();
+  return _backendResolvePromise;
+})().catch(() => {});
+
+/**
+ * Default configuration (resolved from config chain or fallback)
+ */
+const DEFAULT_CONFIG = FALLBACK_CONFIG;
 
 // ===== AgentDB Backend Implementation =====
 
@@ -157,7 +217,14 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
 
   constructor(config: AgentDBBackendConfig = {}) {
     super();
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    // ADR-0069: use resolved config-chain defaults when available
+    const merged = { ...getDefaultConfig(), ...config };
+    // Derive dimension-aware HNSW defaults; explicit config still overrides
+    const derived = deriveHNSWParams(merged.vectorDimension);
+    if (config.hnswM === undefined) merged.hnswM = derived.M;
+    if (config.hnswEfConstruction === undefined) merged.hnswEfConstruction = derived.efConstruction;
+    if (config.hnswEfSearch === undefined) merged.hnswEfSearch = derived.efSearch;
+    this.config = merged;
     this.available = false; // Will be set during initialization
   }
 
@@ -586,35 +653,11 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
     }
 
     try {
-    // Create memory_entries table
-    await db.run(`
-      CREATE TABLE IF NOT EXISTS memory_entries (
-        id TEXT PRIMARY KEY,
-        key TEXT NOT NULL,
-        content TEXT NOT NULL,
-        embedding BLOB,
-        type TEXT NOT NULL,
-        namespace TEXT NOT NULL,
-        tags TEXT,
-        metadata TEXT,
-        owner_id TEXT,
-        access_level TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        expires_at INTEGER,
-        version INTEGER NOT NULL,
-        references TEXT,
-        access_count INTEGER DEFAULT 0,
-        last_accessed_at INTEGER
-      )
-    `);
-
-    // Create indexes
-    await db.run(
-      'CREATE INDEX IF NOT EXISTS idx_namespace ON memory_entries(namespace)'
-    );
-    await db.run('CREATE INDEX IF NOT EXISTS idx_key ON memory_entries(key)');
-    await db.run('CREATE INDEX IF NOT EXISTS idx_type ON memory_entries(type)');
+    // Tables and indexes from shared schema (ADR-0065 P3-2)
+    await db.run(MEMORY_ENTRIES_DDL);
+    for (const idx of MEMORY_ENTRIES_INDEXES) {
+      await db.run(idx);
+    }
     } catch {
       // Schema creation failed - using in-memory only
     }

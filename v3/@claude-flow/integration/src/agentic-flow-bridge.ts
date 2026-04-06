@@ -23,6 +23,7 @@ import type {
   FeatureFlags,
   DEFAULT_INTEGRATION_CONFIG,
 } from './types.js';
+import { FALLBACK_AGENTDB_CONFIG } from './types.js';
 import { SONAAdapter } from './sona-adapter.js';
 import { AttentionCoordinator } from './attention-coordinator.js';
 import { SDKBridge } from './sdk-bridge.js';
@@ -585,7 +586,7 @@ export class AgenticFlowBridge extends EventEmitter {
       sona: {
         mode: 'balanced',
         learningRate: 0.001,
-        similarityThreshold: 0.7,
+        similarityThreshold: 0.7, // ADR-0069 A7: aligns with config chain default
         maxPatterns: 10000,
         enableTrajectoryTracking: true,
         consolidationInterval: 3600000,
@@ -601,17 +602,8 @@ export class AgenticFlowBridge extends EventEmitter {
         flashOptLevel: 2,
         memoryOptimization: 'moderate',
       },
-      agentdb: {
-        dimension: 1536,
-        indexType: 'hnsw',
-        hnswM: 16,
-        hnswEfConstruction: 200,
-        hnswEfSearch: 50,
-        metric: 'cosine',
-        enableCache: true,
-        cacheSizeMb: 256,
-        enableWAL: true,
-      },
+      // ADR-0069: config-chain-aware resolution — use shared fallback constant
+      agentdb: { ...FALLBACK_AGENTDB_CONFIG },
       features: {
         enableSONA: true,
         enableFlashAttention: true,

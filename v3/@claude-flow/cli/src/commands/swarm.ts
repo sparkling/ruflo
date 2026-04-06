@@ -10,12 +10,28 @@ import { callMCPTool, MCPClientError } from '../mcp-client.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
+// ADR-0069: config-chain swarmDir
+function getConfigSwarmDir(): string {
+  try {
+    let dir = process.cwd();
+    while (dir !== path.dirname(dir)) {
+      const cfgPath = path.join(dir, '.claude-flow', 'config.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+        return cfg?.memory?.swarmDir ?? '.swarm';
+      }
+      dir = path.dirname(dir);
+    }
+  } catch { /* fall through */ }
+  return '.swarm';
+}
+
 // Get dynamic swarm status from memory/session files
 function getSwarmStatus(swarmId?: string) {
-  const swarmDir = path.join(process.cwd(), '.swarm');
+  const swarmDir = path.join(process.cwd(), getConfigSwarmDir());
   const sessionDir = path.join(process.cwd(), '.claude', 'sessions');
   const memoryPaths = [
-    path.join(process.cwd(), '.swarm', 'memory.db'),
+    path.join(process.cwd(), getConfigSwarmDir(), 'memory.db'),
     path.join(process.cwd(), '.claude', 'memory.db'),
   ];
 
@@ -288,7 +304,8 @@ const initCommand: Command = {
       output.printSuccess('Swarm initialized successfully');
 
       // Save swarm state locally for status command to read
-      const swarmDir = path.join(process.cwd(), '.swarm');
+      // ADR-0069: config-chain swarmDir
+      const swarmDir = path.join(process.cwd(), getConfigSwarmDir());
       try {
         if (!fs.existsSync(swarmDir)) {
           fs.mkdirSync(swarmDir, { recursive: true });
@@ -433,7 +450,8 @@ const startCommand: Command = {
     }
 
     // Persist swarm state to disk so `swarm status` can read it
-    const swarmDir = path.join(process.cwd(), '.swarm');
+    // ADR-0069: config-chain swarmDir
+    const swarmDir = path.join(process.cwd(), getConfigSwarmDir());
     if (!fs.existsSync(swarmDir)) fs.mkdirSync(swarmDir, { recursive: true });
 
     const executionState = {
@@ -597,7 +615,8 @@ const stopCommand: Command = {
     output.printInfo(`Stopping swarm ${swarmId}...`);
 
     // Update persisted swarm state if it exists (#1423)
-    const swarmStateFile = path.join(process.cwd(), '.swarm', 'state.json');
+    // ADR-0069: config-chain swarmDir
+    const swarmStateFile = path.join(process.cwd(), getConfigSwarmDir(), 'state.json');
     if (fs.existsSync(swarmStateFile)) {
       try {
         const state = JSON.parse(fs.readFileSync(swarmStateFile, 'utf-8'));

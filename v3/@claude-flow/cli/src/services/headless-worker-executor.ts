@@ -1166,8 +1166,9 @@ Analyze the above codebase context and provide your response following the forma
       // Resolve model: user env override > config override > default alias
       env.ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || MODEL_IDS[options.model];
 
-      // Spawn claude CLI process
-      const child = spawn('claude', ['--print', prompt], {
+      // Spawn claude CLI process in bare mode — workers don't need MCP servers,
+      // hooks, or plugins. --bare skips all of these, saving ~340 MB per worker.
+      const child = spawn('claude', ['--bare', '--print', prompt], {
         cwd: this.projectRoot,
         env,
         stdio: ['ignore', 'pipe', 'pipe'], // 'ignore' closes stdin at spawn — fixes #1395 where claude --print blocks on EOF

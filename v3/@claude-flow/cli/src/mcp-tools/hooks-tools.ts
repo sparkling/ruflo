@@ -338,13 +338,33 @@ async function getSemanticRouter() {
 
     if (router.VectorDb && router.DistanceMetric) {
       // Try to create VectorDb - may fail with lock error in concurrent envs
-      // ADR-0052: matches embedding config default
+      // ADR-0069: config-chain-aware resolution
+      let vdbDimensions = 768;
+      let vdbHnswM = 23;
+      let vdbEfConstruction = 100;
+      let vdbEfSearch = 50;
+      try {
+        const agentdbModule: any = await import('@claude-flow/agentdb');
+        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+          const embCfg = agentdbModule.getEmbeddingConfig();
+          vdbDimensions = embCfg.dimension || vdbDimensions;
+          try {
+            const memModule: any = await import('@claude-flow/memory');
+            if (typeof memModule.deriveHNSWParams === 'function') {
+              const hnsw = memModule.deriveHNSWParams(vdbDimensions);
+              vdbHnswM = hnsw.M;
+              vdbEfConstruction = hnsw.efConstruction;
+              vdbEfSearch = hnsw.efSearch;
+            }
+          } catch { /* @claude-flow/memory not available */ }
+        }
+      } catch { /* agentdb not available -- use fallback */ }
       const db = new router.VectorDb({
-        dimensions: EMBEDDING_DIM,
+        dimensions: vdbDimensions,
         distanceMetric: router.DistanceMetric.Cosine,
-        hnswM: 16,
-        hnswEfConstruction: 200,
-        hnswEfSearch: 100,
+        hnswM: vdbHnswM,
+        hnswEfConstruction: vdbEfConstruction,
+        hnswEfSearch: vdbEfSearch,
       });
 
       // Initialize with static + runtime-learned task patterns
@@ -2138,7 +2158,7 @@ export const hooksIntelligence: MCPTool = {
         embeddings: {
           provider: 'transformers',
           model: 'Xenova/all-MiniLM-L6-v2',
-          dimension: EMBEDDING_DIM, // ADR-0052: matches embedding config default
+          dimension: 384, // MiniLM-L6-v2 is 384-dim
           implemented: true,
           note: 'Real ONNX embeddings via Xenova/all-mpnet-base-v2',
         },

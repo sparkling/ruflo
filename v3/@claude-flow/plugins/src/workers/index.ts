@@ -6,6 +6,8 @@
  */
 
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import type {
   WorkerDefinition,
   WorkerType,
@@ -15,6 +17,40 @@ import type {
   ILogger,
   IEventBus,
 } from '../types/index.js';
+
+// ADR-0069 A3: config-chain worker timeouts
+// Canonical defaults for factory-created workers.  Overridable via
+// .claude-flow/config.json  workers.factory.<type>.timeout
+const FACTORY_TIMEOUT_DEFAULTS: Record<string, number> = {
+  coder:        60000,
+  reviewer:     30000,
+  tester:       120000,
+  researcher:   60000,
+  planner:      30000,
+  coordinator:  45000,
+  security:     90000,
+  performance:  120000,
+  specialized:  60000,
+  'long-running': 3600000,
+};
+
+/**
+ * ADR-0069 A3: Resolve a factory worker timeout from config chain.
+ * Checks .claude-flow/config.json  workers.factory.<type>.timeout,
+ * then falls back to FACTORY_TIMEOUT_DEFAULTS.
+ */
+function resolveFactoryTimeout(type: string, fallback?: number): number {
+  try {
+    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
+    const raw = readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(raw);
+    const val = config?.workers?.factory?.[type]?.timeout;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch {
+    // Config absent — use defaults
+  }
+  return fallback ?? FACTORY_TIMEOUT_DEFAULTS[type] ?? 60000;
+}
 
 // ============================================================================
 // Worker Events
@@ -530,6 +566,9 @@ export class WorkerPool extends EventEmitter implements IWorkerPool {
  * Factory for creating worker definitions.
  */
 export class WorkerFactory {
+  // ADR-0069 A3: config-chain worker timeouts — all factory methods use
+  // resolveFactoryTimeout() so values can be overridden via config.json
+
   /**
    * Create a coder worker.
    */
@@ -540,7 +579,7 @@ export class WorkerFactory {
       description: 'Code implementation and development worker',
       capabilities: capabilities ?? ['code-generation', 'refactoring', 'debugging'],
       maxConcurrentTasks: 3,
-      timeout: 60000,
+      timeout: resolveFactoryTimeout('coder'),
       priority: 50,
     };
   }
@@ -555,7 +594,7 @@ export class WorkerFactory {
       description: 'Code review and quality analysis worker',
       capabilities: capabilities ?? ['code-review', 'security-audit', 'style-check'],
       maxConcurrentTasks: 5,
-      timeout: 30000,
+      timeout: resolveFactoryTimeout('reviewer'),
       priority: 60,
     };
   }
@@ -570,7 +609,7 @@ export class WorkerFactory {
       description: 'Test generation and execution worker',
       capabilities: capabilities ?? ['test-generation', 'test-execution', 'coverage-analysis'],
       maxConcurrentTasks: 4,
-      timeout: 120000,
+      timeout: resolveFactoryTimeout('tester'),
       priority: 55,
     };
   }
@@ -585,7 +624,7 @@ export class WorkerFactory {
       description: 'Information gathering and analysis worker',
       capabilities: capabilities ?? ['web-search', 'documentation-analysis', 'pattern-recognition'],
       maxConcurrentTasks: 6,
-      timeout: 60000,
+      timeout: resolveFactoryTimeout('researcher'),
       priority: 40,
     };
   }
@@ -600,7 +639,7 @@ export class WorkerFactory {
       description: 'Task planning and decomposition worker',
       capabilities: capabilities ?? ['task-decomposition', 'dependency-analysis', 'scheduling'],
       maxConcurrentTasks: 2,
-      timeout: 30000,
+      timeout: resolveFactoryTimeout('planner'),
       priority: 70,
     };
   }
@@ -615,7 +654,7 @@ export class WorkerFactory {
       description: 'Multi-agent coordination worker',
       capabilities: capabilities ?? ['agent-coordination', 'task-routing', 'consensus-building'],
       maxConcurrentTasks: 1,
-      timeout: 45000,
+      timeout: resolveFactoryTimeout('coordinator'),
       priority: 90,
     };
   }
@@ -630,7 +669,7 @@ export class WorkerFactory {
       description: 'Security analysis and vulnerability detection worker',
       capabilities: capabilities ?? ['vulnerability-scan', 'threat-modeling', 'security-review'],
       maxConcurrentTasks: 3,
-      timeout: 90000,
+      timeout: resolveFactoryTimeout('security'),
       priority: 80,
     };
   }
@@ -645,7 +684,7 @@ export class WorkerFactory {
       description: 'Performance analysis and optimization worker',
       capabilities: capabilities ?? ['profiling', 'bottleneck-detection', 'optimization'],
       maxConcurrentTasks: 2,
-      timeout: 120000,
+      timeout: resolveFactoryTimeout('performance'),
       priority: 65,
     };
   }
@@ -663,7 +702,7 @@ export class WorkerFactory {
       name,
       capabilities,
       maxConcurrentTasks: options?.maxConcurrentTasks ?? 3,
-      timeout: options?.timeout ?? 60000,
+      timeout: options?.timeout ?? resolveFactoryTimeout('specialized'),
       priority: options?.priority ?? 50,
       description: options?.description,
       specialization: options?.specialization,
@@ -684,7 +723,7 @@ export class WorkerFactory {
       name,
       capabilities,
       maxConcurrentTasks: 1,
-      timeout: options?.timeout ?? 3600000, // 1 hour default
+      timeout: options?.timeout ?? resolveFactoryTimeout('long-running'),
       priority: options?.priority ?? 30,
       description: options?.description ?? 'Long-running background worker',
       specialization: options?.specialization,

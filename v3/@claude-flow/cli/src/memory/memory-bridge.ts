@@ -62,11 +62,62 @@ async function _getAdaptiveThreshold(explicit?: number): Promise<number> {
   return THRESHOLDS['onnx-768'];
 }
 
+// ===== Project config helpers (ADR-0065) =====
+
+function findProjectRoot(): string {
+  let dir = process.cwd();
+  while (dir !== path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, '.claude-flow'))) return dir;
+    dir = path.dirname(dir);
+  }
+  return process.cwd();
+}
+
+function readJsonFile(filePath: string): Record<string, any> {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function getProjectConfig(): { config: Record<string, any>; embeddings: Record<string, any> } {
+  const root = findProjectRoot();
+  return {
+    config: readJsonFile(path.join(root, '.claude-flow', 'config.json')),
+    embeddings: readJsonFile(path.join(root, '.claude-flow', 'embeddings.json')),
+  };
+}
+
+function getEmbeddingModelName(): string {
+  const { embeddings } = getProjectConfig();
+  return embeddings.model ?? 'Xenova/all-mpnet-base-v2';
+}
+
 // ===== Lazy singleton =====
 
 let registryPromise: Promise<any> | null = null;
 let registryInstance: any = null;
 let bridgeAvailable: boolean | null = null;
+
+// ADR-0070: ensure sql.js WASM db is flushed on process exit
+let _exitHookRegistered = false;
+function ensureExitHook(): void {
+  if (_exitHookRegistered) return;
+  _exitHookRegistered = true;
+  process.on('beforeExit', async () => {
+    try { await shutdownBridge(); } catch { /* best effort */ }
+  });
+}
+
+// ADR-0069: config-chain swarmDir
+function getConfigSwarmDir(): string {
+  try {
+    const root = findProjectRoot();
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.claude-flow', 'config.json'), 'utf-8'));
+    return cfg?.memory?.swarmDir ?? '.swarm';
+  } catch { return '.swarm'; }
+}
 
 /**
  * Resolve database path with path traversal protection.
@@ -74,7 +125,8 @@ let bridgeAvailable: boolean | null = null;
  * or the special ':memory:' path.
  */
 function getDbPath(customPath?: string): string {
-  const swarmDir = path.resolve(process.cwd(), '.swarm');
+  // ADR-0069: config-chain swarmDir
+  const swarmDir = path.resolve(process.cwd(), getConfigSwarmDir());
   if (!customPath) return path.join(swarmDir, 'memory.db');
   if (customPath === ':memory:') return ':memory:';
   const resolved = path.resolve(customPath);
@@ -91,6 +143,14 @@ function getDbPath(customPath?: string): string {
  */
 function generateId(prefix: string): string {
   return `${prefix}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/**
+ * Composite key for deduplication across stores.
+ * Matches RvfBackend's internal compositeKey format.
+ */
+function contentHash(key: string, namespace: string): string {
+  return `${namespace}\0${key}`;
 }
 
 /**
@@ -148,12 +208,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
         } catch { /* agentdb not available, use default */ }
 
         try {
-          // WM-102b: wire config.json into ControllerRegistry
-          const _cfg = readProjectConfig();
-          const _mem = _cfg.memory || {};
-          const _lb = _mem.learningBridge || {};
-          const _mg = _mem.memoryGraph || {};
-          const _neural = _cfg.neural || {};
+          const { config: cfgJson, embeddings: embJson } = getProjectConfig();
 
           // Listen for deferred init completion to restore console AFTER all
           // controller factories (Levels 2-6) have finished logging.
@@ -167,10 +222,31 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
 
           await registry.initialize({
             dbPath: dbPath || getDbPath(),
-            dimension: _embDimension,
-            enableHNSW: _mem.enableHNSW !== false,
-            cacheSize: _mem.cacheSize || 384,
-            similarityThreshold: _mg.similarityThreshold || 0.25,
+            dimension: embJson.dimension ?? 768,
+            embeddingModel: embJson.model ?? 'Xenova/all-mpnet-base-v2',
+            hnswM: embJson.hnsw?.m ?? 23,
+            hnswEfConstruction: embJson.hnsw?.efConstruction ?? 100,
+            hnswEfSearch: embJson.hnsw?.efSearch ?? 50,
+            maxElements: cfgJson.memory?.maxElements ?? 100000,
+            maxEntries: cfgJson.memory?.storage?.maxEntries ?? 1000000, // ADR-0069: config-chain capacity
+            similarityThreshold: cfgJson.memory?.similarityThreshold ?? 0.7, // ADR-0069: wire similarityThreshold consumer
+            swarmDir: cfgJson.memory?.swarmDir ?? '.swarm', // ADR-0069: config-chain swarmDir
+            // ADR-0069 A1: config-chain SQLite pragmas
+            sqlite: cfgJson.memory?.sqlite ?? { cacheSize: -64000, busyTimeoutMs: 5000, journalMode: 'WAL', synchronous: 'NORMAL' },
+            memory: {
+              learningBridge: cfgJson.memory?.learningBridge,
+              memoryGraph: cfgJson.memory?.memoryGraph,
+              tieredCache: cfgJson.controllers?.tieredCache,
+            },
+            attentionService: cfgJson.controllers?.attentionService,
+            multiHeadAttention: cfgJson.controllers?.multiHeadAttention,
+            selfAttention: cfgJson.controllers?.selfAttention,
+            // ADR-0069: wire rateLimiter presets consumer
+            rateLimiter: cfgJson.rateLimiter?.default ?? cfgJson.controllers?.rateLimiter ?? { maxRequests: 100, windowMs: 60000 },
+            rateLimiterPresets: cfgJson.rateLimiter ?? null,
+            circuitBreaker: cfgJson.controllers?.circuitBreaker,
+            solverBandit: cfgJson.controllers?.solverBandit,
+            // Merge hardcoded defaults with config.json controllers.enabled (ADR-0068 W4-5)
             controllers: {
               reasoningBank: true,
               learningBridge: _lb.enabled !== false,
@@ -178,22 +254,28 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
               hierarchicalMemory: true,
               memoryConsolidation: true,
               enhancedEmbedding: true,  // WM-111: wire EnhancedEmbeddingService
-              memoryGraph: true, // issue #1214: enable MemoryGraph for graph-aware ranking
+              memoryGraph: true,
+              mutationGuard: true,
+              attestationLog: true,
+              learningSystem: true,
+              explainableRecall: true,
+              nightlyLearner: true,
+              semanticRouter: true,
+              ...(cfgJson.controllers?.enabled ?? {}),
             },
-            memory: {
-              enableHNSW: _mem.enableHNSW !== false,
-              cacheSize: _mem.cacheSize || 384,
-              learningBridge: {
-                sonaMode: _lb.sonaMode || 'balanced',
-                confidenceDecayRate: _lb.confidenceDecayRate || 0.0008,
-                accessBoostAmount: _lb.accessBoostAmount || 0.05,
-                consolidationThreshold: _lb.consolidationThreshold || 8,
-              },
-              memoryGraph: {
-                pageRankDamping: _mg.pageRankDamping || 0.82,
-                maxNodes: _mg.maxNodes || 10000,
-                similarityThreshold: _mg.similarityThreshold || 0.25,
-              },
+            // Forward new tuning sections from config.json (ADR-0068 W4-5)
+            nightlyLearner: cfgJson.controllers?.nightlyLearner,
+            causalRecall: cfgJson.controllers?.causalRecall,
+            queryOptimizer: cfgJson.controllers?.queryOptimizer,
+            selfLearningRvfBackend: cfgJson.controllers?.selfLearningRvfBackend,
+            mutationGuard: cfgJson.controllers?.mutationGuard,
+            // ADR-0069: wire ports consumer -- forward config.json ports with env-var overrides
+            ports: {
+              mcp: parseInt(process.env.MCP_PORT || '', 10) || (cfgJson.ports?.mcp ?? 3000),
+              mcpWebSocket: parseInt(process.env.MCP_WS_PORT || '', 10) || (cfgJson.ports?.mcpWebSocket ?? 3001),
+              quic: parseInt(process.env.QUIC_PORT || '', 10) || (cfgJson.ports?.quic ?? 4433),
+              federation: parseInt(process.env.FEDERATION_PORT || '', 10) || (cfgJson.ports?.federation ?? 8443),
+              health: parseInt(process.env.HEALTH_PORT || '', 10) || (cfgJson.ports?.health ?? 8080),
             },
           } as any);
 
@@ -223,8 +305,9 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             registry.register('wasmVectorSearch', wasmSearch);
           }
         } catch {
-          // WM-115: WASMVectorSearch instantiation failed — non-fatal
+          // WM-115: WASMVectorSearch instantiation failed -- non-fatal
         }
+        ensureExitHook(); // ADR-0070: flush db on process exit
         return registry;
       } catch { /* WM-115: bridge may not be loaded — agentdb is an optional dependency */
         bridgeAvailable = false;
@@ -248,6 +331,161 @@ async function wasmComputeSimilarity(vecA: Float32Array, vecB: Float32Array): Pr
     // WM-115: computeSimilarity failed — non-fatal
   }
   return null;
+}
+
+// ===== Phase 3: RVF store access (ADR-0059) =====
+
+let rvfStorePromise: Promise<any> | null = null;
+let rvfStoreInstance: any = null;
+let rvfStoreChecked = false;
+
+/**
+ * Lazily open the hook-written RVF store in read-only mode.
+ * Returns null if the file doesn't exist (fresh project) or RvfBackend unavailable.
+ */
+async function getRvfStore(): Promise<any | null> {
+  if (rvfStoreChecked && !rvfStoreInstance) return null;
+
+  if (rvfStoreInstance) return rvfStoreInstance;
+
+  if (!rvfStorePromise) {
+    rvfStorePromise = (async () => {
+      try {
+        const { existsSync } = await import('fs');
+        // ADR-0069: config-chain swarmDir
+        const rvfPath = path.resolve(process.cwd(), getConfigSwarmDir(), 'agentdb-memory.rvf');
+        if (!existsSync(rvfPath)) {
+          rvfStoreChecked = true;
+          return null;
+        }
+
+        const memPkg = await import('@claude-flow/memory');
+        if (!memPkg.RvfBackend) {
+          rvfStoreChecked = true;
+          return null;
+        }
+
+        const backend = new memPkg.RvfBackend({
+          databasePath: rvfPath,
+          dimensions: registryInstance?.config?.dimension || 768,
+          autoPersistInterval: 0, // read-only — never write back
+        });
+        await backend.initialize();
+
+        rvfStoreInstance = backend;
+        rvfStoreChecked = true;
+        return backend;
+      } catch {
+        rvfStoreChecked = true;
+        rvfStorePromise = null;
+        return null;
+      }
+    })();
+  }
+
+  return rvfStorePromise;
+}
+
+/**
+ * Query the RVF store with the same BM25+cosine hybrid scoring used by bridgeSearchEntries.
+ * Returns scored results tagged with source:'rvf' for deduplication.
+ */
+async function queryRvfStore(options: {
+  query: string;
+  namespace?: string;
+  limit?: number;
+  threshold?: number;
+  queryEmbedding?: number[] | null;
+}): Promise<{
+  id: string;
+  key: string;
+  content: string;
+  score: number;
+  namespace: string;
+  provenance?: string;
+}[]> {
+  const store = await getRvfStore();
+  if (!store) return [];
+
+  try {
+    const { query: queryStr, namespace, threshold = 0.3, queryEmbedding } = options;
+
+    // Retrieve entries from RVF store
+    let entries: any[];
+    try {
+      const queryOpts: any = { limit: 1000 };
+      if (namespace && namespace !== 'all') queryOpts.namespace = namespace;
+      entries = await store.query(queryOpts);
+    } catch {
+      return [];
+    }
+
+    if (!entries || entries.length === 0) return [];
+
+    // Build rows compatible with existing BM25 functions
+    const rows = entries.map((e: any) => ({
+      id: e.id || '',
+      key: e.key || '',
+      namespace: e.namespace || 'default',
+      content: e.content || (typeof e.value === 'string' ? e.value : JSON.stringify(e.value || '')),
+      embedding: e.embedding || null,
+    }));
+
+    const queryTerms = queryStr.toLowerCase().split(/\s+/).filter((t: string) => t.length > 1);
+    const { termDocFreqs, avgDocLength } = computeTermDocFreqs(queryTerms, rows);
+    const docCount = rows.length;
+
+    const results: { id: string; key: string; content: string; score: number; namespace: string; provenance?: string }[] = [];
+
+    for (const row of rows) {
+      let semanticScore = 0;
+      let bm25ScoreVal = 0;
+
+      // Semantic scoring
+      if (queryEmbedding && row.embedding) {
+        try {
+          const emb = row.embedding instanceof Float32Array
+            ? Array.from(row.embedding)
+            : Array.isArray(row.embedding)
+              ? row.embedding
+              : JSON.parse(row.embedding);
+          semanticScore = cosineSim(queryEmbedding, emb);
+        } catch {
+          // Invalid embedding
+        }
+      }
+
+      // BM25 scoring
+      if (queryTerms.length > 0 && row.content) {
+        bm25ScoreVal = bm25Score(queryTerms, row.content, avgDocLength, docCount, termDocFreqs);
+        bm25ScoreVal = Math.min(bm25ScoreVal / 10, 1.0);
+      }
+
+      const score = queryEmbedding
+        ? (0.7 * semanticScore + 0.3 * bm25ScoreVal)
+        : bm25ScoreVal;
+
+      if (score >= threshold) {
+        const provenance = queryEmbedding
+          ? `rvf:semantic:${semanticScore.toFixed(3)}+bm25:${bm25ScoreVal.toFixed(3)}`
+          : `rvf:bm25:${bm25ScoreVal.toFixed(3)}`;
+
+        results.push({
+          id: String(row.id).substring(0, 12),
+          key: row.key || String(row.id).substring(0, 15),
+          content: (row.content || '').substring(0, 60) + ((row.content || '').length > 60 ? '...' : ''),
+          score,
+          namespace: row.namespace || 'default',
+          provenance,
+        });
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score);
+    return results;
+  } catch {
+    return [];
+  }
 }
 
 // ===== Phase 2: BM25 hybrid scoring =====
@@ -639,12 +877,14 @@ export async function bridgeStoreEntry(options: {
 
     if (options.generateEmbeddingFlag !== false && value.length > 0) {
       try {
-        const { generateEmbedding } = await import('./memory-initializer.js');
-        const result = await generateEmbedding(value);
-        if (result && result.embedding) {
-          embeddingJson = JSON.stringify(result.embedding);
-          dimensions = result.dimensions;
-          model = result.model;
+        const embedder = ctx.agentdb.embedder;
+        if (embedder) {
+          const emb = await embedder.embed(value);
+          if (emb) {
+            embeddingJson = JSON.stringify(Array.from(emb));
+            dimensions = emb.length;
+            model = getEmbeddingModelName();
+          }
         }
       } catch {
         // Fallback to AgentDB embedder if memory-initializer unavailable
@@ -727,6 +967,9 @@ export async function bridgeStoreEntry(options: {
       now, now,
       ttl ? now + (ttl * 1000) : null
     );
+
+    // ADR-0070: flush sql.js WASM db to disk (no-op for better-sqlite3)
+    if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
 
     // Phase 2: Write-through to TieredCache
     const safeNs = String(namespace).replace(/:/g, '_');
@@ -922,6 +1165,34 @@ export async function bridgeSearchEntries(options: {
       }
     }
 
+    // --- ADR-0059 Phase 3: Query RVF store and merge ---
+    let rvfCount = 0;
+    try {
+      const rvfResults = await queryRvfStore({
+        query: queryStr,
+        namespace: effectiveNamespace !== 'all' ? effectiveNamespace : undefined,
+        threshold,
+        queryEmbedding,
+      });
+
+      // Dedup: build set of content hashes from SQLite results
+      const seen = new Set<string>();
+      for (const r of results) {
+        seen.add(contentHash(r.key, r.namespace));
+      }
+
+      // Merge RVF results, skipping duplicates
+      for (const r of rvfResults) {
+        const hash = contentHash(r.key, r.namespace);
+        if (seen.has(hash)) continue;
+        seen.add(hash);
+        results.push(r);
+        rvfCount++;
+      }
+    } catch {
+      // RVF query failed — continue with SQLite-only results
+    }
+
     results.sort((a, b) => b.score - a.score);
     const sliced = results.slice(0, limit);
 
@@ -932,7 +1203,7 @@ export async function bridgeSearchEntries(options: {
       success: true,
       results: reranked,
       searchTime: Date.now() - startTime,
-      searchMethod: queryEmbedding ? 'hybrid-bm25-semantic' : 'bm25-only',
+      searchMethod: (queryEmbedding ? 'hybrid-bm25-semantic' : 'bm25-only') + (rvfCount > 0 ? '+rvf' : ''),
     };
   } catch {
     return null;
@@ -1099,6 +1370,8 @@ export async function bridgeGetEntry(options: {
       ctx.db.prepare(
         `UPDATE memory_entries SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`
       ).run(Date.now(), row.id);
+      // ADR-0070: flush sql.js WASM db to disk
+      if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
     } catch {
       // Non-fatal
     }
@@ -1174,6 +1447,8 @@ export async function bridgeDeleteEntry(options: {
         WHERE key = ? AND namespace = ? AND status = 'active'
       `).run(Date.now(), key, namespace);
       changes = result?.changes ?? 0;
+      // ADR-0070: flush sql.js WASM db to disk
+      if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
     } catch {
       return null;
     }
@@ -1244,7 +1519,7 @@ export async function bridgeGenerateEmbedding(
     return {
       embedding: Array.from(emb),
       dimensions: emb.length,
-      model: reportedModel,
+      model: getEmbeddingModelName(),
     };
   } catch {
     return null;
@@ -1279,7 +1554,7 @@ export async function bridgeLoadEmbeddingModel(
     return {
       success: true,
       dimensions: test.length,
-      modelName: await import('agentdb').then((m: any) => m.getEmbeddingConfig?.()?.model || 'unknown').catch(() => 'unknown'),
+      modelName: getEmbeddingModelName(),
       loadTime: Date.now() - startTime,
     };
   } catch {
@@ -1325,7 +1600,7 @@ export async function bridgeGetHNSWStatus(
       available: true,
       initialized: true,
       entryCount,
-      dimensions: dim,
+      dimensions: registryInstance?.config?.dimension || 768,
     };
   } catch {
     return null;
@@ -1442,7 +1717,7 @@ export async function bridgeAddToHNSW(
       ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, 'active')
     `).run(
       id, entry.key, entry.namespace, entry.content,
-      embeddingJson, embedding.length, embeddingModel,
+      embeddingJson, embedding.length, getEmbeddingModelName(),
       now, now,
     );
     return true;

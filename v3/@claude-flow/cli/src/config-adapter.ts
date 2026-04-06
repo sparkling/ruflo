@@ -36,9 +36,12 @@ export function systemConfigToV3Config(systemConfig: SystemConfig): V3Config {
     memory: {
       backend: normalizeMemoryBackend(systemConfig.memory?.type),
       persistPath: systemConfig.memory?.path || './data/memory',
-      cacheSize: systemConfig.memory?.maxSize ?? 100000,
+      cacheSize: systemConfig.memory?.maxSize ?? 1000000,
       enableHNSW: systemConfig.memory?.agentdb?.indexType === 'hnsw',
-      vectorDimension: systemConfig.memory?.agentdb?.dimensions ?? 384, // Match all-MiniLM-L6-v2 output (#1395 Bug 5)
+      vectorDimension: systemConfig.memory?.agentdb?.dimensions ?? 768, // ADR-0069: Match all-mpnet-base-v2 output (768-dim)
+      tieredCache: {
+        maxSize: systemConfig.memory?.maxSize || 10000,
+      },
     },
 
     // MCP configuration
@@ -124,9 +127,9 @@ export function v3ConfigToSystemConfig(v3Config: V3Config): Partial<SystemConfig
       maxSize: v3Config.memory.cacheSize,
       agentdb: {
         dimensions: v3Config.memory.vectorDimension,
-        indexType: v3Config.memory.enableHNSW ? 'hnsw' : 'flat',
-        efConstruction: 200,
-        m: 16,
+        indexType: ((v3Config.memory as Record<string, unknown>).indexType as string) ?? 'hnsw',
+        efConstruction: 100,
+        m: 23,
         quantization: 'none',
       },
     },

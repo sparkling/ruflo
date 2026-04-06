@@ -321,8 +321,12 @@ class LocalSonaCoordinator {
     let ewcConsolidator: import('./ewc-consolidation.js').EWCConsolidator | null = null;
     try {
       const ewcModule = await import('./ewc-consolidation.js');
+      // ADR-0069: pass config-chain embedding dimension to EWC
+      let ewcDim = 768;
+      try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'embeddings.json'), 'utf-8')); ewcDim = c?.dimension ?? 768; } catch { /* use default */ }
       ewcConsolidator = await ewcModule.getEWCConsolidator({
-        lambda: this.config.ewcLambda
+        lambda: this.config.ewcLambda,
+        dimensions: ewcDim
       });
     } catch {
       // EWC not available, proceed without consolidation protection

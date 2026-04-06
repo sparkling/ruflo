@@ -214,7 +214,7 @@ export const DEFAULT_TRANSPORT_CONFIGS = {
 
   http: {
     host: 'localhost',
-    port: 3000,
+    port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
     corsEnabled: true,
     corsOrigins: ['*'],
     maxRequestSize: '10mb',
@@ -223,7 +223,7 @@ export const DEFAULT_TRANSPORT_CONFIGS = {
 
   websocket: {
     host: 'localhost',
-    port: 3001,
+    port: parseInt(process.env.MCP_WS_PORT || '', 10) || 3001, // ADR-0069 A6: config-chain ports
     path: '/ws',
     maxConnections: 100,
     heartbeatInterval: 30000,

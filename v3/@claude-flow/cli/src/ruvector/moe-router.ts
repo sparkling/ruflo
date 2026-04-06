@@ -20,6 +20,17 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { EMBEDDING_DIM } from './embedding-constants.js';
 
+// ADR-0069 A8: read MoE learning rate from config chain
+function getConfigMoELearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.neural?.learningRates?.moe === 'number') {
+      return cfg.neural.learningRates.moe;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
+
 // ============================================================================
 // Types & Constants
 // ============================================================================
@@ -151,7 +162,7 @@ interface PersistedModel {
  */
 const DEFAULT_CONFIG: MoERouterConfig = {
   topK: 2,
-  learningRate: 0.01,
+  learningRate: getConfigMoELearningRate(0.01), // ADR-0069 A8: MoE routing LR, intentionally higher than gradient LR
   temperature: 1.0,
   loadBalanceCoef: 0.01,
   weightsPath: '.swarm/moe-weights.json',

@@ -24,6 +24,7 @@ import {
   MemoryEvent,
   MemoryEventHandler,
 } from './types.js';
+import { deriveHNSWParams } from './hnsw-utils.js';
 
 /**
  * Binary Min Heap for O(log n) priority queue operations
@@ -532,11 +533,13 @@ export class HNSWIndex extends EventEmitter {
   // ===== Private Methods =====
 
   private mergeConfig(config: Partial<HNSWConfig>): HNSWConfig {
+    const dimensions = config.dimensions || 768;
+    const derived = deriveHNSWParams(dimensions);
     return {
-      dimensions: config.dimensions || EMBEDDING_DIM, // ADR-0052: from embedding-constants
-      M: config.M || 16,
-      efConstruction: config.efConstruction || 200,
-      maxElements: config.maxElements || 1000000,
+      dimensions,
+      M: config.M ?? derived.M,
+      efConstruction: config.efConstruction ?? derived.efConstruction,
+      maxElements: config.maxElements || derived.maxElements, // ADR-0069: config-chain capacity
       metric: config.metric || 'cosine',
       quantization: config.quantization,
     };

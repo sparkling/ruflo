@@ -10,6 +10,7 @@
 
 import { EventEmitter } from 'node:events';
 import Database from 'better-sqlite3';
+import { MEMORY_ENTRIES_DDL, MEMORY_ENTRIES_INDEXES, MEMORY_EMBEDDINGS_DDL } from './memory-schema.js';
 import {
   IMemoryBackend,
   MemoryEntry,
@@ -51,6 +52,14 @@ export interface SQLiteBackendConfig {
 
   /** Enable verbose logging */
   verbose: boolean;
+
+  /** ADR-0069 A1: config-chain SQLite pragmas */
+  sqlitePragmas?: {
+    cacheSize?: number;      // default: -64000 (64MB)
+    busyTimeoutMs?: number;  // default: 5000
+    journalMode?: string;    // default: 'WAL'
+    synchronous?: string;    // default: 'NORMAL'
+  };
 }
 
 /**
@@ -104,15 +113,21 @@ export class SQLiteBackend extends EventEmitter implements IMemoryBackend {
       verbose: this.config.verbose ? console.log : undefined,
     });
 
+    // ADR-0069 A1: config-chain SQLite pragmas (values from config, with backward-compat defaults)
+    const pragmas = this.config.sqlitePragmas;
+
     // Enable WAL mode for better concurrency
     if (this.config.walMode) {
-      this.db.pragma('journal_mode = WAL');
+      this.db.pragma(`journal_mode = ${pragmas?.journalMode ?? 'WAL'}`);
     }
+
+    // Prevent SQLITE_BUSY under concurrent CLI+daemon access (ADR-0063 M1)
+    this.db.pragma(`busy_timeout = ${pragmas?.busyTimeoutMs ?? 5000}`);
 
     // Performance optimizations
     if (this.config.optimize) {
-      this.db.pragma('synchronous = NORMAL');
-      this.db.pragma('cache_size = 10000');
+      this.db.pragma(`synchronous = ${pragmas?.synchronous ?? 'NORMAL'}`);
+      this.db.pragma(`cache_size = ${pragmas?.cacheSize ?? -64000}`);
       this.db.pragma('temp_store = MEMORY');
     }
 
@@ -618,42 +633,12 @@ export class SQLiteBackend extends EventEmitter implements IMemoryBackend {
   private createSchema(): void {
     if (!this.db) return;
 
-    // Main entries table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS memory_entries (
-        id TEXT PRIMARY KEY,
-        key TEXT NOT NULL,
-        content TEXT NOT NULL,
-        type TEXT NOT NULL,
-        namespace TEXT NOT NULL,
-        tags TEXT NOT NULL,
-        metadata TEXT NOT NULL,
-        owner_id TEXT,
-        access_level TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        expires_at INTEGER,
-        version INTEGER NOT NULL,
-        "references" TEXT NOT NULL,
-        access_count INTEGER NOT NULL,
-        last_accessed_at INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_namespace ON memory_entries(namespace);
-      CREATE INDEX IF NOT EXISTS idx_key ON memory_entries(key);
-      CREATE INDEX IF NOT EXISTS idx_namespace_key ON memory_entries(namespace, key);
-      CREATE INDEX IF NOT EXISTS idx_type ON memory_entries(type);
-      CREATE INDEX IF NOT EXISTS idx_owner_id ON memory_entries(owner_id);
-      CREATE INDEX IF NOT EXISTS idx_created_at ON memory_entries(created_at);
-      CREATE INDEX IF NOT EXISTS idx_updated_at ON memory_entries(updated_at);
-      CREATE INDEX IF NOT EXISTS idx_expires_at ON memory_entries(expires_at);
-
-      CREATE TABLE IF NOT EXISTS memory_embeddings (
-        entry_id TEXT PRIMARY KEY,
-        embedding BLOB,
-        FOREIGN KEY (entry_id) REFERENCES memory_entries(id) ON DELETE CASCADE
-      );
-    `);
+    // Tables and indexes from shared schema (ADR-0065 P3-2)
+    this.db.exec(`${MEMORY_ENTRIES_DDL};`);
+    for (const idx of MEMORY_ENTRIES_INDEXES) {
+      this.db.exec(`${idx};`);
+    }
+    this.db.exec(`${MEMORY_EMBEDDINGS_DDL};`);
   }
 
   private rowToEntry(row: any): MemoryEntry {

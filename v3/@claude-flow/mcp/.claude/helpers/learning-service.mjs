@@ -43,9 +43,9 @@ if (!existsSync(DATA_DIR)) {
 const CONFIG = {
   // HNSW parameters
   hnsw: {
-    M: 16,                    // Max connections per layer
-    efConstruction: 200,      // Construction time accuracy
-    efSearch: 100,            // Search time accuracy
+    M: 23,                    // Max connections per layer
+    efConstruction: 100,      // Construction time accuracy
+    efSearch: 50,            // Search time accuracy
     metric: 'cosine',         // Distance metric
   },
 
@@ -61,8 +61,8 @@ const CONFIG = {
 
   // Embedding
   embedding: {
-    dimension: 384,           // MiniLM-L6 dimension
-    model: 'all-MiniLM-L6-v2', // ONNX model
+    dimension: 768,           // all-mpnet-base-v2 dimension
+    model: 'all-mpnet-base-v2', // ONNX model
     batchSize: 32,            // Batch size for embedding
   },
 
@@ -466,7 +466,7 @@ class EmbeddingService {
       if (existsSync(agenticFlowPath)) {
         const { getOptimizedEmbedder } = await import(agenticFlowPath);
         this.embedder = getOptimizedEmbedder({
-          modelId: 'all-MiniLM-L6-v2',
+          modelId: 'all-mpnet-base-v2',
           dimension: this.config.embedding.dimension,
           cacheSize: 256,
           autoDownload: false,  // Model should already be downloaded

@@ -469,8 +469,8 @@ export abstract class BaseLLMProvider implements ILLMProvider {
       };
     }
 
-    // Check if window has reset
-    const windowMs = 60000; // 1 minute window
+    // ADR-0069 A2: config-chain rate limits
+    const windowMs = config?.windowMs ?? 60000; // 1 minute window
     const now = new Date();
     if (now.getTime() - this.rateLimitState.windowStart.getTime() > windowMs) {
       this.rateLimitState = {

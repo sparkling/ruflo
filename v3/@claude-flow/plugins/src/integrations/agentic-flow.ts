@@ -518,11 +518,11 @@ export class AgentDBBridge extends EventEmitter {
   constructor(config?: AgentDBConfig) {
     super();
     this.config = {
-      dimensions: 1536,
+      dimensions: 768,
       indexType: 'hnsw',
-      efConstruction: 200,
-      efSearch: 100,
-      m: 16,
+      efConstruction: 100,
+      efSearch: 50,
+      m: 23,
       ...config,
     };
   }
@@ -671,12 +671,12 @@ export class AgentDBBridge extends EventEmitter {
     indexType: string;
     memoryUsage: number;
   } {
-    const vectorSize = (this.config.dimensions ?? 1536) * 4; // 4 bytes per float32
+    const vectorSize = (this.config.dimensions ?? 768) * 4; // 4 bytes per float32
     const memoryUsage = this.vectors.size * vectorSize;
 
     return {
       vectorCount: this.vectors.size,
-      dimensions: this.config.dimensions ?? 1536,
+      dimensions: this.config.dimensions ?? 768,
       indexType: this.config.indexType ?? 'hnsw',
       memoryUsage,
     };

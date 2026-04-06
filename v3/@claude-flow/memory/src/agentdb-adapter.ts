@@ -29,12 +29,13 @@ import {
 import { HNSWIndex } from './hnsw-index.js';
 import { CacheManager } from './cache-manager.js';
 import { EMBEDDING_DIM } from './embedding-constants.js';
+import { deriveHNSWParams } from './hnsw-utils.js';
 
 /**
  * Configuration for AgentDB Adapter
  */
 export interface AgentDBAdapterConfig {
-  /** Vector dimensions for embeddings (default: from embedding config (768 for nomic-embed-text-v1.5)) */
+  /** Vector dimensions for embeddings (default: 768) */
   dimensions: number;
 
   /** Maximum number of entries */
@@ -69,19 +70,62 @@ export interface AgentDBAdapterConfig {
 }
 
 /**
- * Default configuration values
+ * Fallback configuration values (used when config chain is unavailable)
  */
-const DEFAULT_CONFIG: AgentDBAdapterConfig = {
-  dimensions: EMBEDDING_DIM,
+const FALLBACK_CONFIG: AgentDBAdapterConfig = {
+  dimensions: 768,
   maxEntries: 1000000,
   cacheEnabled: true,
   cacheSize: 10000,
   cacheTtl: 300000, // 5 minutes
-  hnswM: 16,
-  hnswEfConstruction: 200,
+  hnswM: 23,
+  hnswEfConstruction: 100,
   defaultNamespace: 'default',
   persistenceEnabled: false,
 };
+
+// ADR-0069: config-chain-aware resolution
+// Lazy-loaded resolved defaults from the config chain
+let _resolvedDefaults: AgentDBAdapterConfig | null = null;
+let _resolvePromise: Promise<AgentDBAdapterConfig> | null = null;
+
+/**
+ * Resolve embedding defaults from the config chain:
+ * getEmbeddingConfig() → deriveHNSWParams() → FALLBACK_CONFIG
+ */
+async function resolveEmbeddingDefaults(): Promise<AgentDBAdapterConfig> {
+  if (_resolvedDefaults) return _resolvedDefaults;
+  if (_resolvePromise) return _resolvePromise;
+  _resolvePromise = (async () => {
+    try {
+      const agentdbModule: any = await import('@claude-flow/agentdb');
+      if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+        const embCfg = agentdbModule.getEmbeddingConfig();
+        const dim = embCfg.dimension || FALLBACK_CONFIG.dimensions;
+        const hnsw = deriveHNSWParams(dim);
+        // ADR-0069: config-chain capacity — resolve maxElements into HNSW params
+        _resolvedDefaults = {
+          ...FALLBACK_CONFIG,
+          dimensions: dim,
+          hnswM: hnsw.M,
+          hnswEfConstruction: hnsw.efConstruction,
+        };
+        return _resolvedDefaults;
+      }
+    } catch { /* agentdb not available — use fallback */ }
+    _resolvedDefaults = { ...FALLBACK_CONFIG };
+    return _resolvedDefaults;
+  })();
+  return _resolvePromise;
+}
+
+// Kick off resolution early (non-blocking)
+resolveEmbeddingDefaults().catch(() => {});
+
+/**
+ * Default configuration values (sync access — returns resolved or fallback)
+ */
+const DEFAULT_CONFIG: AgentDBAdapterConfig = FALLBACK_CONFIG;
 
 /**
  * AgentDB Memory Backend Adapter
@@ -115,7 +159,9 @@ export class AgentDBAdapter extends EventEmitter implements IMemoryBackend {
 
   constructor(config: Partial<AgentDBAdapterConfig> = {}) {
     super();
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    // ADR-0069: merge with resolved config-chain defaults (or fallback if not yet resolved)
+    const base = _resolvedDefaults || FALLBACK_CONFIG;
+    this.config = { ...base, ...config };
 
     // Initialize HNSW index
     this.index = new HNSWIndex({
@@ -512,7 +558,7 @@ export class AgentDBAdapter extends EventEmitter implements IMemoryBackend {
   /**
    * Bulk delete entries (OPTIMIZED: parallel deletion)
    */
-  async bulkDelete(ids: string[]): Promise<number> {
+  async bulkDelete(ids: string[], options?: { batchSize?: number }): Promise<number> {
     const startTime = performance.now();
     let deleted = 0;
 
@@ -523,8 +569,8 @@ export class AgentDBAdapter extends EventEmitter implements IMemoryBackend {
       }
     }
 
-    // Process deletions in parallel batches
-    const batchSize = 100;
+    // ADR-0069 A10: respect caller's batchSize (matches bulkInsert at line ~492)
+    const batchSize = options?.batchSize || 100;
     for (let i = 0; i < ids.length; i += batchSize) {
       const batch = ids.slice(i, i + batchSize);
       const results = await Promise.all(batch.map(async (id) => {

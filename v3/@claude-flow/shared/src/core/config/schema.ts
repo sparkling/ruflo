@@ -92,10 +92,10 @@ export const MemoryConfigSchema = z.object({
     wal: z.boolean().default(true),
   }).optional(),
   agentdb: z.object({
-    dimensions: z.number().int().positive().default(768), // ADR-0052: matches nomic-embed-text-v1.5 default
+    dimensions: z.number().int().positive().default(768),
     indexType: z.enum(['hnsw', 'flat', 'ivf']).default('hnsw'),
-    efConstruction: z.number().int().positive().default(200),
-    m: z.number().int().positive().default(16),
+    efConstruction: z.number().int().positive().default(100),
+    m: z.number().int().positive().default(23),
     quantization: z.enum(['none', 'scalar', 'product']).default('none'),
   }).optional(),
   redis: z.object({

@@ -225,31 +225,18 @@ function bootstrapFromMemoryFiles() {
   const entries = [];
   const cwd = process.cwd();
 
-  // Search for auto-memory directories
+  // ML-006 fix: scope to current project only (not all 51 project dirs)
+  const projectSlug = cwd.replace(/[/\\]/g, '-').replace(/^-/, '');
   const candidates = [
-    // Claude Code auto-memory (project-scoped)
-    path.join(require('os').homedir(), '.claude', 'projects'),
+    // Claude Code auto-memory (current project only)
+    path.join(require('os').homedir(), '.claude', 'projects', projectSlug, 'memory'),
     // Local project memory
     path.join(cwd, '.claude-flow', 'memory'),
     path.join(cwd, '.claude', 'memory'),
   ];
 
-  // Find MEMORY.md in project-scoped dirs
   for (const base of candidates) {
-    if (!fs.existsSync(base)) continue;
-
-    // For the projects dir, scan subdirectories for memory/
-    if (base.endsWith('projects')) {
-      try {
-        const projectDirs = fs.readdirSync(base);
-        for (const pdir of projectDirs) {
-          const memDir = path.join(base, pdir, 'memory');
-          if (fs.existsSync(memDir)) {
-            parseMemoryDir(memDir, entries);
-          }
-        }
-      } catch { /* skip */ }
-    } else if (fs.existsSync(base)) {
+    if (fs.existsSync(base)) {
       parseMemoryDir(base, entries);
     }
   }
@@ -273,7 +260,7 @@ function parseMemoryDir(dir, entries) {
         const body = lines.slice(1).join('\n').trim();
         if (!body || body.length < 10) continue;
 
-        const id = `mem-${file.replace('.md', '')}-${title.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 30)}`;
+        const id = `mem-${file.replace('.md', '')}-${title.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 30)}-${entries.length}`;
         entries.push({
           id,
           key: title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50),
@@ -367,7 +354,7 @@ function init() {
   writeJSON(GRAPH_PATH, graph);
 
   // Build ranked context for fast lookup
-  const rankedEntries = store.map(entry => {
+  const rankedEntries = deduped.map(entry => {
     const id = entry.id;
     const content = entry.content || entry.value || '';
     const summary = entry.summary || entry.key || '';
@@ -622,7 +609,7 @@ function consolidate() {
   });
 
   // 7. Write updated ranked context
-  const rankedEntries = store.map(entry => {
+  const rankedEntries = deduped.map(entry => {
     const id = entry.id;
     const content = entry.content || entry.value || '';
     const summary = entry.summary || entry.key || '';

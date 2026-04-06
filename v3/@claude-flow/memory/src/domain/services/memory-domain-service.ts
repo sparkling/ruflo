@@ -231,7 +231,16 @@ export class MemoryDomainService {
     entries: MemoryEntry[],
     options: ConsolidationOptions
   ): Promise<DeduplicationResult> {
-    const threshold = options.threshold ?? 0.95; // Similarity threshold
+    // ADR-0069 A11: config-chain dedup threshold
+    let _cfgDedupThreshold = 0.95;
+    try {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const _cfg = JSON.parse(fs.readFileSync(
+        path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+      _cfgDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
+    } catch { /* use default */ }
+    const threshold = options.threshold ?? _cfgDedupThreshold; // ADR-0069 A11: config-chain-aware
     const duplicates: string[] = [];
     const processed = new Set<string>();
 

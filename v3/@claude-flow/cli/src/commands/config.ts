@@ -9,6 +9,20 @@ import { select, input } from '../prompt.js';
 import { configManager, parseConfigValue } from '../services/config-file-manager.js';
 import * as path from 'path';
 
+/** Flatten a nested config object into dot-notation key/value pairs */
+function flattenConfig(obj: Record<string, unknown>, prefix = ''): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const fullKey = prefix ? `${prefix}.${k}` : k;
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      Object.assign(result, flattenConfig(v as Record<string, unknown>, fullKey));
+    } else {
+      result[fullKey] = v;
+    }
+  }
+  return result;
+}
+
 // Init configuration
 const initCommand: Command = {
   name: 'init',
@@ -74,61 +88,55 @@ const getCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const key = ctx.flags.key as string || ctx.args[0];
 
-    try {
-      if (!key) {
-        // Show all config
-        const configValues = configManager.getConfig(ctx.cwd);
-        if (ctx.flags.format === 'json') {
-          output.printJson(configValues);
-          return { success: true, data: configValues };
-        }
+    // ADR-0069: read real config (file + defaults), not a hardcoded subset
+    const config = configManager.getConfig(ctx.cwd);
 
-        output.writeln();
-        output.writeln(output.bold('Current Configuration'));
-        output.writeln();
-
-        const flat: Record<string, unknown> = {};
-        const walk = (obj: Record<string, unknown>, prefix = '') => {
-          for (const [k, v] of Object.entries(obj)) {
-            const path = prefix ? `${prefix}.${k}` : k;
-            if (v && typeof v === 'object' && !Array.isArray(v)) {
-              walk(v as Record<string, unknown>, path);
-            } else {
-              flat[path] = v;
-            }
-          }
-        };
-        walk(configValues);
-        output.printTable({
-          columns: [
-            { key: 'key', header: 'Key', width: 25 },
-            { key: 'value', header: 'Value', width: 30 }
-          ],
-          data: Object.entries(flat).map(([k, v]) => ({ key: k, value: String(v) }))
-        });
-
-        return { success: true, data: configValues };
-      }
-
-      const value = configManager.get(ctx.cwd, key);
-
-      if (value === undefined) {
-        output.printError(`Configuration key not found: ${key}`);
-        return { success: false, exitCode: 1 };
-      }
+    if (!key) {
+      // Show all config as flattened dot-notation keys
+      const flat = flattenConfig(config);
 
       if (ctx.flags.format === 'json') {
-        output.printJson({ key, value });
+        output.printJson(config);
+        return { success: true, data: config };
+      }
+
+      output.writeln();
+      output.writeln(output.bold('Current Configuration'));
+      output.writeln();
+
+      output.printTable({
+        columns: [
+          { key: 'key', header: 'Key', width: 35 },
+          { key: 'value', header: 'Value', width: 40 }
+        ],
+        data: Object.entries(flat).map(([k, v]) => ({ key: k, value: String(v) }))
+      });
+
+      return { success: true, data: config };
+    }
+
+    const value = configManager.get(ctx.cwd, key);
+
+    if (value === undefined) {
+      output.printError(`Configuration key not found: ${key}`);
+      return { success: false, exitCode: 1 };
+    }
+
+    if (ctx.flags.format === 'json') {
+      output.printJson({ key, value });
+    } else {
+      if (typeof value === 'object' && value !== null) {
+        // Sub-tree: show all keys under this prefix
+        const flat = flattenConfig(value as Record<string, unknown>, key);
+        for (const [k, v] of Object.entries(flat)) {
+          output.writeln(`${k} = ${v}`);
+        }
       } else {
         output.writeln(`${key} = ${value}`);
       }
-
-      return { success: true, data: { key, value } };
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      output.printError(message);
-      return { success: false, exitCode: 1 };
     }
+
+    return { success: true, data: { key, value } };
   }
 };
 
@@ -349,11 +357,44 @@ const importCommand: Command = {
   }
 };
 
+// List all available configuration keys (from defaults template)
+const listCommand: Command = {
+  name: 'list',
+  description: 'List all available configuration keys and their default values',
+  options: [],
+  examples: [
+    { command: 'claude-flow config list', description: 'Show all config keys with defaults' }
+  ],
+  action: async (ctx: CommandContext): Promise<CommandResult> => {
+    const defaults = configManager.getDefaults();
+    const flat = flattenConfig(defaults);
+
+    if (ctx.flags.format === 'json') {
+      output.printJson(defaults);
+      return { success: true, data: defaults };
+    }
+
+    output.writeln();
+    output.writeln(output.bold('Available Configuration Keys (defaults)'));
+    output.writeln();
+
+    output.printTable({
+      columns: [
+        { key: 'key', header: 'Key', width: 35 },
+        { key: 'value', header: 'Default', width: 40 }
+      ],
+      data: Object.entries(flat).map(([k, v]) => ({ key: k, value: String(v) }))
+    });
+
+    return { success: true, data: defaults };
+  }
+};
+
 // Main config command
 export const configCommand: Command = {
   name: 'config',
   description: 'Configuration management',
-  subcommands: [initCommand, getCommand, setCommand, providersCommand, resetCommand, exportCommand, importCommand],
+  subcommands: [initCommand, getCommand, setCommand, listCommand, providersCommand, resetCommand, exportCommand, importCommand],
   options: [],
   examples: [
     { command: 'claude-flow config init --v3', description: 'Initialize V3 config' },
@@ -371,6 +412,7 @@ export const configCommand: Command = {
       `${output.highlight('init')}       - Initialize configuration`,
       `${output.highlight('get')}        - Get configuration value`,
       `${output.highlight('set')}        - Set configuration value`,
+      `${output.highlight('list')}       - List all available keys and defaults`,
       `${output.highlight('providers')}  - Manage AI providers`,
       `${output.highlight('reset')}      - Reset to defaults`,
       `${output.highlight('export')}     - Export configuration`,

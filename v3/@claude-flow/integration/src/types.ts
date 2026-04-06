@@ -438,10 +438,23 @@ export type IntegrationErrorCode =
 
 // ===== Default Configurations =====
 
+// ADR-0069 A8: config-chain learning rate for DEFAULT_SONA_CONFIG
+function _readDefaultLearningRate(): number {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const cfg = JSON.parse(fs.readFileSync(
+      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const val = cfg?.neural?.defaultLearningRate;
+    if (typeof val === 'number' && val > 0) return val;
+  } catch { /* use fallback */ }
+  return 0.001;
+}
+
 export const DEFAULT_SONA_CONFIG: SONAConfiguration = {
   mode: 'balanced',
-  learningRate: 0.001,
-  similarityThreshold: 0.7,
+  learningRate: _readDefaultLearningRate(), // ADR-0069 A8: config-chain aware
+  similarityThreshold: 0.7, // ADR-0069 A7: aligns with config chain default memory.similarityThreshold
   maxPatterns: 10000,
   enableTrajectoryTracking: true,
   consolidationInterval: 3600000, // 1 hour
@@ -459,17 +472,57 @@ export const DEFAULT_ATTENTION_CONFIG: AttentionConfiguration = {
   memoryOptimization: 'moderate',
 };
 
-export const DEFAULT_AGENTDB_CONFIG: AgentDBConfiguration = {
-  dimension: 1536, // OpenAI embedding dimension
+// ADR-0069: config-chain-aware resolution
+// Sync fallback for callers that cannot await
+export const FALLBACK_AGENTDB_CONFIG: AgentDBConfiguration = {
+  dimension: 768, // all-mpnet-base-v2 embedding dimension
   indexType: 'hnsw',
-  hnswM: 16,
-  hnswEfConstruction: 200,
+  hnswM: 23,
+  hnswEfConstruction: 100,
   hnswEfSearch: 50,
   metric: 'cosine',
   enableCache: true,
   cacheSizeMb: 256,
   enableWAL: true,
 };
+
+/**
+ * Resolve AgentDB config from the config chain.
+ * Falls back to FALLBACK_AGENTDB_CONFIG when @claude-flow/agentdb is unavailable.
+ */
+export async function getDefaultAgentDBConfig(): Promise<AgentDBConfiguration> {
+  try {
+    const agentdbModule: any = await import('@claude-flow/agentdb');
+    if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+      const embCfg = agentdbModule.getEmbeddingConfig();
+      const dim = embCfg.dimension || FALLBACK_AGENTDB_CONFIG.dimension;
+      // Try to get deriveHNSWParams from @claude-flow/memory
+      let hnswM = FALLBACK_AGENTDB_CONFIG.hnswM;
+      let hnswEfConstruction = FALLBACK_AGENTDB_CONFIG.hnswEfConstruction;
+      let hnswEfSearch = FALLBACK_AGENTDB_CONFIG.hnswEfSearch;
+      try {
+        const memModule: any = await import('@claude-flow/memory');
+        if (typeof memModule.deriveHNSWParams === 'function') {
+          const hnsw = memModule.deriveHNSWParams(dim);
+          hnswM = hnsw.M;
+          hnswEfConstruction = hnsw.efConstruction;
+          hnswEfSearch = hnsw.efSearch;
+        }
+      } catch { /* @claude-flow/memory not available */ }
+      return {
+        ...FALLBACK_AGENTDB_CONFIG,
+        dimension: dim,
+        hnswM,
+        hnswEfConstruction,
+        hnswEfSearch,
+      };
+    }
+  } catch { /* agentdb not available — use fallback */ }
+  return { ...FALLBACK_AGENTDB_CONFIG };
+}
+
+/** @deprecated Use getDefaultAgentDBConfig() for config-chain resolution. Kept for backward compatibility. */
+export const DEFAULT_AGENTDB_CONFIG: AgentDBConfiguration = FALLBACK_AGENTDB_CONFIG;
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   enableSONA: true,

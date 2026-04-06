@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import type { MCPTool } from './types.js';
 
 // Swarm state persistence
-const SWARM_DIR = '.claude-flow/swarm';
+// ADR-0069 A4: standardized on .swarm (was .claude-flow/swarm)
+const SWARM_DIR = '.swarm';
 const SWARM_STATE_FILE = 'swarm-state.json';
 
 interface SwarmState {

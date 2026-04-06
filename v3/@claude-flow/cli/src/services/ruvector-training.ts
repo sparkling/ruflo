@@ -307,7 +307,18 @@ export async function initializeTraining(config: TrainingConfig = {}): Promise<{
 }> {
   const features: string[] = [];
   const dim = Math.min(config.dim || 256, 256); // Max 256 for WASM
-  const lr = config.learningRate || 0.01;
+  // ADR-0069 A8: try config chain for learning rate, then caller config, then fallback
+  let lr = config.learningRate || 0.01;
+  if (!config.learningRate) {
+    try {
+      const { readFileSync: rfs } = await import('fs');
+      const { join: pjoin } = await import('path');
+      const cfg = JSON.parse(rfs(pjoin(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+      if (typeof cfg?.neural?.defaultLearningRate === 'number') {
+        lr = cfg.neural.defaultLearningRate;
+      }
+    } catch { /* use fallback */ }
+  }
   const alpha = config.alpha || 0.1;
 
   // --- Attempt WASM backend first ---

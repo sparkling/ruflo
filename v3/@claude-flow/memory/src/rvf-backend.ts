@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
 import { EMBEDDING_DIM } from './embedding-constants.js';
+import { deriveHNSWParams } from './hnsw-utils.js';
 
 /** Validate a file path is safe (no null bytes, no traversal above root) */
 function validatePath(p: string): void {
@@ -49,7 +50,7 @@ interface RvfHeader {
 
 const MAGIC = 'RVF\0';
 const VERSION = 1;
-const DEFAULT_DIMENSIONS = EMBEDDING_DIM;
+const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_M = 16;
 const DEFAULT_EF_CONSTRUCTION = 200;
 const DEFAULT_MAX_ELEMENTS = 100000;
@@ -73,13 +74,14 @@ export class RvfBackend implements IMemoryBackend {
     if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 10000) {
       throw new Error(`Invalid dimensions: ${dimensions}. Must be an integer between 1 and 10000.`);
     }
+    const derived = deriveHNSWParams(dimensions);
     this.config = {
       databasePath: config.databasePath,
       dimensions,
       metric: config.metric ?? 'cosine',
       quantization: config.quantization ?? 'fp32',
-      hnswM: config.hnswM ?? DEFAULT_M,
-      hnswEfConstruction: config.hnswEfConstruction ?? DEFAULT_EF_CONSTRUCTION,
+      hnswM: config.hnswM ?? derived.M,
+      hnswEfConstruction: config.hnswEfConstruction ?? derived.efConstruction,
       maxElements: config.maxElements ?? DEFAULT_MAX_ELEMENTS,
       verbose: config.verbose ?? false,
       defaultNamespace: config.defaultNamespace ?? 'default',
@@ -148,6 +150,9 @@ export class RvfBackend implements IMemoryBackend {
       this.hnswIndex.add(e.id, e.embedding);
     }
     this.dirty = true;
+    // Persist immediately so data survives process exit (the 30s auto-persist
+    // timer may never fire in short-lived CLI invocations).
+    await this.persistToDisk();
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
@@ -176,6 +181,7 @@ export class RvfBackend implements IMemoryBackend {
     };
     this.entries.set(id, updated);
     this.dirty = true;
+    await this.persistToDisk();
     return updated;
   }
 
@@ -186,6 +192,7 @@ export class RvfBackend implements IMemoryBackend {
     this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
     if (this.hnswIndex) this.hnswIndex.remove(id);
     this.dirty = true;
+    await this.persistToDisk();
     return true;
   }
 
@@ -253,6 +260,7 @@ export class RvfBackend implements IMemoryBackend {
       if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
     }
     this.dirty = true;
+    await this.persistToDisk();
   }
 
   async bulkDelete(ids: string[]): Promise<number> {
@@ -266,7 +274,10 @@ export class RvfBackend implements IMemoryBackend {
         count++;
       }
     }
-    this.dirty = true;
+    if (count > 0) {
+      this.dirty = true;
+      await this.persistToDisk();
+    }
     return count;
   }
 
@@ -296,7 +307,10 @@ export class RvfBackend implements IMemoryBackend {
       this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
       if (this.hnswIndex) this.hnswIndex.remove(id);
     }
-    if (toDelete.length > 0) this.dirty = true;
+    if (toDelete.length > 0) {
+      this.dirty = true;
+      await this.persistToDisk();
+    }
     return toDelete.length;
   }
 

@@ -17,6 +17,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 
+// ADR-0069 A8: read RL learning rate from config chain
+function getConfigQLearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.neural?.learningRates?.qLearning === 'number') {
+      return cfg.neural.learningRates.qLearning;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
+
 /**
  * Q-Learning Router Configuration
  */
@@ -126,7 +137,7 @@ interface PersistedModel {
  * Default configuration
  */
 const DEFAULT_CONFIG: QLearningRouterConfig = {
-  learningRate: 0.1,
+  learningRate: getConfigQLearningRate(0.1), // ADR-0069 A8: RL step size, intentionally higher than gradient LR
   gamma: 0.99,
   explorationInitial: 1.0,
   explorationFinal: 0.01,

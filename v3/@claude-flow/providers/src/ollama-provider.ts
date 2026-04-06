@@ -119,14 +119,14 @@ export class OllamaProvider extends BaseProvider {
     },
   };
 
-  private baseUrl: string = 'http://localhost:11434';
+  private baseUrl: string = process.env.OLLAMA_URL || 'http://localhost:11434'; // ADR-0069 A15
 
   constructor(options: BaseProviderOptions) {
     super(options);
   }
 
   protected async doInitialize(): Promise<void> {
-    this.baseUrl = this.config.apiUrl || 'http://localhost:11434';
+    this.baseUrl = this.config.apiUrl || process.env.OLLAMA_URL || 'http://localhost:11434'; // ADR-0069 A15
 
     // Check if Ollama is running
     const health = await this.doHealthCheck();

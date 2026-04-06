@@ -6,7 +6,7 @@
  *
  * Features:
  * - Real HNSW indexing (M=16, efConstruction=200) for 150x+ faster search
- * - ONNX embeddings via @claude-flow/embeddings (MiniLM-L6 384-dim)
+ * - ONNX embeddings via @claude-flow/embeddings (all-mpnet-base-v2 768-dim)
  * - AgentDB backend for persistence
  * - Pattern promotion from short-term to long-term memory
  *
@@ -75,7 +75,7 @@ export interface RoutingResult {
  * ReasoningBank configuration
  */
 export interface ReasoningBankConfig {
-  /** Vector dimensions (384 for MiniLM, 1536 for OpenAI) */
+  /** Vector dimensions (768 for all-mpnet-base-v2, 1536 for OpenAI) */
   dimensions: number;
   /** HNSW M parameter */
   hnswM: number;
@@ -112,11 +112,12 @@ export interface ReasoningBankMetrics {
   bruteForceSearchTime: number;
 }
 
-const DEFAULT_CONFIG: ReasoningBankConfig = {
-  dimensions: EMBEDDING_DIM, // MiniLM-L6
-  hnswM: 16,
-  hnswEfConstruction: 200,
-  hnswEfSearch: 100,
+// ADR-0069: config-chain-aware resolution
+const FALLBACK_CONFIG: ReasoningBankConfig = {
+  dimensions: 768, // all-mpnet-base-v2
+  hnswM: 23,
+  hnswEfConstruction: 100,
+  hnswEfSearch: 50,
   maxShortTerm: 1000,
   maxLongTerm: 5000,
   promotionThreshold: 3,
@@ -125,6 +126,61 @@ const DEFAULT_CONFIG: ReasoningBankConfig = {
   dbPath: '.claude-flow/memory.db',
   useMockEmbeddings: false,
 };
+
+let _rbResolvedDefaults: ReasoningBankConfig | null = null;
+
+/**
+ * Resolve ReasoningBank defaults from the config chain:
+ * getEmbeddingConfig() → deriveHNSWParams() → FALLBACK_CONFIG
+ */
+async function resolveReasoningBankDefaults(): Promise<ReasoningBankConfig> {
+  if (_rbResolvedDefaults) return _rbResolvedDefaults;
+  try {
+    const agentdbModule: any = await import('@claude-flow/agentdb');
+    if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+      const embCfg = agentdbModule.getEmbeddingConfig();
+      const dim = embCfg.dimension || FALLBACK_CONFIG.dimensions;
+      // Try deriveHNSWParams from @claude-flow/memory
+      let hnswM = FALLBACK_CONFIG.hnswM;
+      let hnswEfConstruction = FALLBACK_CONFIG.hnswEfConstruction;
+      let hnswEfSearch = FALLBACK_CONFIG.hnswEfSearch;
+      try {
+        const memModule: any = await import('@claude-flow/memory');
+        if (typeof memModule.deriveHNSWParams === 'function') {
+          const hnsw = memModule.deriveHNSWParams(dim);
+          hnswM = hnsw.M;
+          hnswEfConstruction = hnsw.efConstruction;
+          hnswEfSearch = hnsw.efSearch;
+        }
+      } catch { /* @claude-flow/memory not available */ }
+      // ADR-0069 A11: config-chain dedup threshold
+      let dedupThreshold = FALLBACK_CONFIG.dedupThreshold;
+      try {
+        const { readFileSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const _cfg = JSON.parse(readFileSync(
+          join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+        dedupThreshold = _cfg.memory?.dedupThreshold ?? dedupThreshold;
+      } catch { /* use fallback */ }
+      _rbResolvedDefaults = {
+        ...FALLBACK_CONFIG,
+        dimensions: dim,
+        hnswM,
+        hnswEfConstruction,
+        hnswEfSearch,
+        dedupThreshold,
+      };
+      return _rbResolvedDefaults;
+    }
+  } catch { /* agentdb not available — use fallback */ }
+  _rbResolvedDefaults = { ...FALLBACK_CONFIG };
+  return _rbResolvedDefaults;
+}
+
+// Kick off resolution early (non-blocking)
+resolveReasoningBankDefaults().catch(() => {});
+
+const DEFAULT_CONFIG: ReasoningBankConfig = FALLBACK_CONFIG;
 
 /**
  * Agent mapping for routing
@@ -212,7 +268,9 @@ export class ReasoningBank extends EventEmitter {
 
   constructor(config: Partial<ReasoningBankConfig> = {}) {
     super();
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    // ADR-0069: use resolved config-chain defaults when available
+    const base = _rbResolvedDefaults || FALLBACK_CONFIG;
+    this.config = { ...base, ...config };
     this.embeddingService = new FallbackEmbeddingService(this.config.dimensions);
   }
 
@@ -924,7 +982,7 @@ class RealEmbeddingService implements IEmbeddingService {
   private dimensions: number;
   private cache: Map<string, Float32Array> = new Map();
 
-  constructor(dimensions: number = EMBEDDING_DIM) {
+  constructor(dimensions: number = 768) {
     this.dimensions = dimensions;
   }
 
@@ -932,7 +990,7 @@ class RealEmbeddingService implements IEmbeddingService {
     if (EmbeddingServiceImpl) {
       this.service = await EmbeddingServiceImpl({
         provider: 'transformers',
-        model: 'Xenova/all-MiniLM-L6-v2',
+        model: 'Xenova/all-mpnet-base-v2',
         dimensions: this.dimensions,
         cacheSize: 1000,
       });
@@ -963,7 +1021,7 @@ class FallbackEmbeddingService implements IEmbeddingService {
   private dimensions: number;
   private cache: Map<string, Float32Array> = new Map();
 
-  constructor(dimensions: number = EMBEDDING_DIM) {
+  constructor(dimensions: number = 768) {
     this.dimensions = dimensions;
   }
 

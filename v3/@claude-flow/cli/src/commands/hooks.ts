@@ -1018,8 +1018,8 @@ const pretrainCommand: Command = {
       name: 'embedding-model',
       description: 'ONNX embedding model',
       type: 'string',
-      default: 'nomic-ai/nomic-embed-text-v1.5',
-      choices: ['nomic-ai/nomic-embed-text-v1.5', 'all-MiniLM-L6-v2', 'all-mpnet-base-v2']
+      default: 'Xenova/all-MiniLM-L6-v2',
+      choices: ['Xenova/all-MiniLM-L6-v2', 'Xenova/all-mpnet-base-v2']
     },
     {
       name: 'file-types',
@@ -1038,8 +1038,8 @@ const pretrainCommand: Command = {
     const repoPath = ctx.flags.path as string || '.';
     const depth = ctx.flags.depth as string || 'medium';
     const withEmbeddings = ctx.flags['with-embeddings'] !== false && ctx.flags.withEmbeddings !== false;
-    // ADR-0052: read default model from config, not hardcoded
-    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'nomic-ai/nomic-embed-text-v1.5' }));
+    // ADR-0069 A12: canonical model with config fallback
+    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'Xenova/all-MiniLM-L6-v2' }));
     const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || _cfg.model) as string;
     const fileTypes = (ctx.flags['file-types'] || ctx.flags.fileTypes || 'ts,js,py,md,json') as string;
 

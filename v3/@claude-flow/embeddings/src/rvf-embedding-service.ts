@@ -49,8 +49,14 @@ const FNV_PRIME = 0x01000193;
 /** Default embedding dimensions — ADR-0052: matches embedding config default */
 const DEFAULT_DIMENSIONS = EMBEDDING_DIM;
 
-/** Default in-memory LRU cache size */
-const DEFAULT_CACHE_SIZE = 1000;
+/** Default in-memory LRU cache size — ADR-0069: wire embeddingCacheSize consumer */
+const DEFAULT_CACHE_SIZE = (() => {
+  try {
+    const cfg = JSON.parse(require('fs').readFileSync(
+      require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    return cfg?.memory?.embeddingCacheSize ?? 1000;
+  } catch { return 1000; }
+})();
 
 // ============================================================================
 // LRU Cache (lightweight in-memory)
@@ -147,10 +153,11 @@ export class RvfEmbeddingService extends EventEmitter implements IEmbeddingServi
     this.normalizationType = config.normalization ?? 'none';
 
     // Initialize persistent RVF cache if a path is provided
+    // ADR-0069 A9: use consistent cache size for both in-memory and persistent caches
     if (config.cachePath) {
       this.persistentCache = new RvfEmbeddingCache({
         cachePath: config.cachePath,
-        maxSize: config.cacheSize ?? 10000,
+        maxSize: config.cacheSize ?? DEFAULT_CACHE_SIZE,
         dimensions: this.dimensions,
       });
     }

@@ -118,7 +118,7 @@ export interface WorkerRegistration {
 // ============================================
 
 const DEFAULT_CONFIG: WorkerQueueConfig = {
-  redisUrl: 'redis://localhost:6379',
+  redisUrl: process.env.REDIS_URL || 'redis://localhost:6379', // ADR-0069 A6: config-chain ports
   queuePrefix: 'claude-flow:queue',
   defaultTimeoutMs: 300000, // 5 minutes
   maxRetries: 3,
@@ -155,7 +155,9 @@ class InMemoryStore {
    */
   startCleanup(): void {
     if (this.cleanupTimer) return;
-    this.cleanupTimer = setInterval(() => this.cleanupExpired(), 60000);
+    // ADR-0069 A13: configurable cleanup interval
+    const cleanupMs = (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); return c?.memory?.cleanupIntervalMs ?? 60000; } catch { return 60000; } })();
+    this.cleanupTimer = setInterval(() => this.cleanupExpired(), cleanupMs);
     this.cleanupTimer.unref();
   }
 

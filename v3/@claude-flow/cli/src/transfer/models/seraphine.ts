@@ -321,7 +321,7 @@ export const SERAPHINE_CUSTOM_PATTERNS: CustomPattern[] = [
     type: 'memory-optimization',
     data: {
       pattern: 'vector-search-first',
-      hnswParams: { m: 16, efConstruction: 200 },
+      hnswParams: { m: 23, efConstruction: 100 },
       cacheStrategy: 'lru-with-embedding',
     },
     metadata: {

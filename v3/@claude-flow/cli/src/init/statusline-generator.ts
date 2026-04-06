@@ -298,7 +298,8 @@ function getSwarmStatus() {
   const staleThresholdMs = 5 * 60 * 1000;
   const now = Date.now();
 
-  const swarmStatePath = path.join(CWD, '.claude-flow', 'swarm', 'swarm-state.json');
+  // ADR-0069 A4: standardized on .swarm (was .claude-flow/swarm)
+  const swarmStatePath = path.join(CWD, '.swarm', 'swarm-state.json');
   const swarmState = readJSON(swarmStatePath);
   if (swarmState) {
     const updatedAt = swarmState.updatedAt || swarmState.startedAt;

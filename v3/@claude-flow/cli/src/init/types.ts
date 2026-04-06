@@ -244,7 +244,7 @@ export interface RuntimeConfig {
   agentdbTickInterval?: number;
   /** Max HNSW graph nodes (ADR-0030) */
   maxNodes?: number;
-  /** HNSW similarity threshold (ADR-0030) */
+  /** ADR-0069: similarity threshold for memory/pattern search */
   similarityThreshold?: number;
   /** Enable Flash Attention (ADR-0030) */
   flashAttention?: boolean;
@@ -263,8 +263,8 @@ export type ClaudeMdTemplate = 'minimal' | 'standard' | 'full' | 'security' | 'p
 export interface EmbeddingsConfig {
   /** Enable embedding subsystem */
   enabled: boolean;
-  /** Embedding model ID */
-  model: 'all-MiniLM-L6-v2' | 'all-mpnet-base-v2' | 'bge-small-en-v1.5' | 'nomic-ai/nomic-embed-text-v1.5' | string;
+  /** ONNX model ID (ADR-0069: always use full Xenova/ prefix) */
+  model: 'Xenova/all-MiniLM-L6-v2' | 'Xenova/all-mpnet-base-v2' | 'Xenova/bge-small-en-v1.5' | 'nomic-ai/nomic-embed-text-v1.5' | string;
   /** Embedding provider (transformers or onnx) */
   provider?: 'transformers' | 'onnx' | string;
   /** Enable hyperbolic (Poincaré ball) embeddings */
@@ -346,6 +346,8 @@ export interface InitOptions {
   sourceBaseDir?: string;
   /** Force overwrite existing files */
   force: boolean;
+  /** Generate full config.json with all ADR-0069 keys */
+  full?: boolean;
   /** Run in interactive mode */
   interactive: boolean;
   /** Components to initialize */
@@ -448,7 +450,7 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     ruvSwarm: false,
     flowNexus: false,
     autoStart: true,
-    port: 3000,
+    port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
   },
   runtime: {
     topology: 'hierarchical-mesh',
@@ -459,10 +461,11 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     enableLearningBridge: true,
     enableMemoryGraph: true,
     enableAgentScopes: true,
+    similarityThreshold: 0.7,
   },
   embeddings: {
     enabled: true,
-    model: 'Xenova/all-MiniLM-L6-v2',
+    model: 'Xenova/all-mpnet-base-v2', // ADR-0069 A12: canonical model
     hyperbolic: true,
     curvature: -1.0,
     predownload: false,  // Don't auto-download to speed up init
@@ -526,18 +529,19 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
     all: false,
   },
   runtime: {
-    topology: 'hierarchical-mesh',
-    maxAgents: 15,
-    memoryBackend: 'hybrid',
-    enableHNSW: true,
-    enableNeural: true,
-    enableLearningBridge: true,
-    enableMemoryGraph: true,
-    enableAgentScopes: true,
+    topology: 'mesh',
+    maxAgents: 5,
+    memoryBackend: 'memory',
+    enableHNSW: false,
+    enableNeural: false,
+    enableLearningBridge: false,
+    enableMemoryGraph: false,
+    enableAgentScopes: false,
+    similarityThreshold: 0.7,
   },
   embeddings: {
     enabled: false,
-    model: 'Xenova/all-MiniLM-L6-v2',
+    model: 'Xenova/all-mpnet-base-v2', // ADR-0069 A12: canonical model
     hyperbolic: false,
     curvature: -1.0,
     predownload: false,
@@ -551,6 +555,7 @@ export const MINIMAL_INIT_OPTIONS: InitOptions = {
  */
 export const FULL_INIT_OPTIONS: InitOptions = {
   ...DEFAULT_INIT_OPTIONS,
+  full: true,
   components: {
     settings: true,
     skills: true,
@@ -585,7 +590,7 @@ export const FULL_INIT_OPTIONS: InitOptions = {
     ruvSwarm: true,
     flowNexus: true,
     autoStart: true,
-    port: 3000,
+    port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
   },
   runtime: {
     ...DEFAULT_INIT_OPTIONS.runtime,

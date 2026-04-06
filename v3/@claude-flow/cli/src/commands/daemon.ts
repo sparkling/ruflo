@@ -6,6 +6,7 @@
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { WorkerDaemon, getDaemon, startDaemon, stopDaemon, type WorkerType, type DaemonConfig } from '../services/worker-daemon.js';
+import { getDaemonSocketPath } from '../services/daemon-ipc.js';
 import { spawn, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve, isAbsolute } from 'path';
@@ -483,6 +484,10 @@ const statusCommand: Command = {
       const statusText = isRunning ? output.success('RUNNING') : output.error('STOPPED');
       const mode = bgRunning ? output.dim(' (background)') : status.running ? output.dim(' (foreground)') : '';
 
+      // IPC status
+      const socketPath = getDaemonSocketPath(projectRoot);
+      const socketExists = fs.existsSync(socketPath);
+
       output.printBox(
         [
           `Status: ${statusIcon} ${statusText}${mode}`,
@@ -492,6 +497,8 @@ const statusCommand: Command = {
           `Max Concurrent: ${status.config.maxConcurrent}`,
           `Max CPU Load: ${status.config.resourceThresholds.maxCpuLoad}`,
           `Min Free Memory: ${status.config.resourceThresholds.minFreeMemoryPercent}%`,
+          `IPC Socket:    ${socketExists ? 'LISTENING' : 'inactive'}`,
+          socketExists ? `Socket Path:   ${socketPath}` : '',
         ].filter(Boolean).join('\n'),
         'RuFlo Daemon'
       );

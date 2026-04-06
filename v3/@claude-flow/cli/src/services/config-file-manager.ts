@@ -5,6 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { getFullConfigTemplate } from '../init/config-template.js';
 
 /** Config file search paths in priority order */
 const CONFIG_FILENAMES = [
@@ -12,50 +13,10 @@ const CONFIG_FILENAMES = [
   '.claude-flow/config.json',
 ];
 
-/** Default config values */
-const DEFAULT_CONFIG: Record<string, unknown> = {
-  version: '3.5',
-  agents: {
-    defaultType: 'coder',
-    autoSpawn: false,
-    maxConcurrent: 8,
-    timeout: 300000,
-    providers: [],
-  },
-  swarm: {
-    topology: 'hierarchical',
-    maxAgents: 8,
-    autoScale: false,
-    coordinationStrategy: 'leader',
-    healthCheckInterval: 30000,
-  },
-  memory: {
-    backend: 'hybrid',
-    persistPath: './data/memory',
-    cacheSize: 1000,
-    enableHNSW: true,
-    vectorDimension: 384,
-  },
-  mcp: {
-    serverHost: 'localhost',
-    serverPort: 3000,
-    autoStart: false,
-    transportType: 'stdio',
-    tools: [],
-  },
-  cli: {
-    colorOutput: true,
-    interactive: true,
-    verbosity: 'normal',
-    outputFormat: 'text',
-    progressStyle: 'spinner',
-  },
-  hooks: {
-    enabled: true,
-    autoExecute: true,
-    hooks: [],
-  },
-};
+// ADR-0069: DEFAULT_CONFIG uses the full config template for consistency.
+// This ensures `config get` returns meaningful values for all keys and
+// `config set` merges into a complete schema.
+const DEFAULT_CONFIG: Record<string, unknown> = getFullConfigTemplate();
 
 export class ConfigFileManager {
   private configPath: string | null = null;

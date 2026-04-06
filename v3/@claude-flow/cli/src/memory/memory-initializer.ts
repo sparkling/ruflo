@@ -26,6 +26,55 @@ async function getBridge(): Promise<typeof import('./memory-bridge.js') | null> 
   }
 }
 
+// ADR-0069: config-chain swarmDir
+function getSwarmDir(): string {
+  try {
+    let dir = process.cwd();
+    while (dir !== path.dirname(dir)) {
+      const cfgPath = path.join(dir, '.claude-flow', 'config.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        return cfg?.memory?.swarmDir ?? '.swarm';
+      }
+      dir = path.dirname(dir);
+    }
+  } catch { /* fall through */ }
+  return '.swarm';
+}
+
+// ADR-065: Read embedding dimension & model from project embeddings.json
+// ADR-068 W2-5: Also reads HNSW tuning params (m, efConstruction, efSearch)
+function readEmbeddingsConfig(): {
+  dimension: number;
+  model: string;
+  hnsw: { m: number; efConstruction: number; efSearch: number };
+} {
+  try {
+    let dir = process.cwd();
+    while (dir !== path.dirname(dir)) {
+      const cfgPath = path.join(dir, '.claude-flow', 'embeddings.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        return {
+          dimension: cfg.dimension ?? 768,
+          model: cfg.model ?? 'Xenova/all-mpnet-base-v2',
+          hnsw: {
+            m: cfg.hnsw?.m ?? 23,
+            efConstruction: cfg.hnsw?.efConstruction ?? 100,
+            efSearch: cfg.hnsw?.efSearch ?? 50,
+          },
+        };
+      }
+      dir = path.dirname(dir);
+    }
+  } catch { /* fall through */ }
+  return {
+    dimension: 768,
+    model: 'Xenova/all-mpnet-base-v2',
+    hnsw: { m: 23, efConstruction: 100, efSearch: 50 },
+  };
+}
+
 /**
  * Enhanced schema with pattern confidence, temporal decay, versioning
  * Vector embeddings enabled for semantic search
@@ -35,8 +84,8 @@ export const MEMORY_SCHEMA_V3 = `
 -- Version: 3.0.0
 -- Features: Pattern learning, vector embeddings, temporal decay, migration tracking
 
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
+-- ADR-0069 A1: journal_mode and synchronous are now applied at runtime
+-- via the config chain (sqlite-backend / controller-registry), not here.
 PRAGMA foreign_keys = ON;
 
 -- ============================================
@@ -352,27 +401,7 @@ export async function getHNSWIndex(options?: {
   dimensions?: number;
   forceRebuild?: boolean;
 }): Promise<HNSWIndex | null> {
-  // Read dimension from agentdb embedding config (single source of truth)
-    let dimensions = options?.dimensions;
-    if (!dimensions) {
-        try {
-            const _agentdbMod: any = await import('agentdb');
-            if (_agentdbMod.getEmbeddingConfig) {
-                dimensions = _agentdbMod.getEmbeddingConfig().dimension;
-            }
-        } catch { /* agentdb not available */ }
-        // EM-001: Fall back to embeddings.json
-        if (!dimensions) {
-            try {
-                const embConfigPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json');
-                if (fs.existsSync(embConfigPath)) {
-                    const embConfig = JSON.parse(fs.readFileSync(embConfigPath, 'utf-8'));
-                    dimensions = embConfig.dimension || 768;
-                }
-            } catch { /* EM-001: embeddings.json may not exist — use defaults */ }
-        }
-        dimensions = dimensions || 768;
-    }
+  const dimensions = options?.dimensions ?? readEmbeddingsConfig().dimension;
 
   // Return existing index if already initialized
   if (hnswIndex?.initialized && !options?.forceRebuild) {
@@ -409,7 +438,7 @@ export async function getHNSWIndex(options?: {
     const { VectorDb } = ruvectorCore;
 
     // Persistent storage paths — resolve to absolute to survive CWD changes
-    const swarmDir = path.resolve(process.cwd(), '.swarm');
+    const swarmDir = path.resolve(process.cwd(), getSwarmDir());
     if (!fs.existsSync(swarmDir)) {
       fs.mkdirSync(swarmDir, { recursive: true });
     }
@@ -527,7 +556,7 @@ function saveHNSWMetadata(): void {
   if (!hnswIndex?.entries) return;
 
   try {
-    const swarmDir = path.join(process.cwd(), '.swarm');
+    const swarmDir = path.join(process.cwd(), getSwarmDir());
     const metadataPath = path.join(swarmDir, 'hnsw.metadata.json');
     const metadata = Array.from(hnswIndex.entries.entries());
     fs.writeFileSync(metadataPath, JSON.stringify(metadata));
@@ -649,7 +678,7 @@ export function getHNSWStatus(): {
       available: true,
       initialized: true,
       entryCount: hnswIndex?.entries.size ?? 0,
-      dimensions: hnswIndex?.dimensions ?? 768
+      dimensions: hnswIndex?.dimensions ?? readEmbeddingsConfig().dimension
     };
   }
 
@@ -657,7 +686,7 @@ export function getHNSWStatus(): {
     available: hnswIndex !== null,
     initialized: hnswIndex?.initialized ?? false,
     entryCount: hnswIndex?.entries.size ?? 0,
-    dimensions: hnswIndex?.dimensions ?? 768
+    dimensions: hnswIndex?.dimensions ?? readEmbeddingsConfig().dimension
   };
 }
 
@@ -1195,7 +1224,7 @@ export async function initializeMemoryDatabase(options: {
     migrate = true
   } = options;
 
-  const swarmDir = path.join(process.cwd(), '.swarm');
+  const swarmDir = path.join(process.cwd(), getSwarmDir());
   const dbPath = customPath || path.join(swarmDir, 'memory.db');
   const dbDir = path.dirname(dbPath);
 
@@ -1403,7 +1432,7 @@ export async function checkMemoryInitialization(dbPath?: string): Promise<{
   };
   tables?: string[];
 }> {
-  const swarmDir = path.join(process.cwd(), '.swarm');
+  const swarmDir = path.join(process.cwd(), getSwarmDir());
   const path_ = dbPath || path.join(swarmDir, 'memory.db');
 
   if (!fs.existsSync(path_)) {
@@ -1463,7 +1492,7 @@ export async function applyTemporalDecay(dbPath?: string): Promise<{
   patternsDecayed: number;
   error?: string;
 }> {
-  const swarmDir = path.join(process.cwd(), '.swarm');
+  const swarmDir = path.join(process.cwd(), getSwarmDir());
   const path_ = dbPath || path.join(swarmDir, 'memory.db');
 
   try {
@@ -1597,24 +1626,26 @@ export async function loadEmbeddingModel(options?: {
     // Try to import @xenova/transformers for ONNX embeddings
     const transformers = await import('@xenova/transformers').catch(() => null); /* EM-001: optional dependency */
     if (transformers) {
+      const embCfg = readEmbeddingsConfig();
       if (verbose) {
-        console.log(`Loading ONNX embedding model (${modelName})...`);
+        console.log(`Loading ONNX embedding model (${embCfg.model})...`);
       }
 
+      // Use model from embeddings.json (defaults to all-mpnet-base-v2, 768-dim)
       const { pipeline } = transformers;
-      const embedder = await pipeline('feature-extraction', modelName);
+      const embedder = await pipeline('feature-extraction', embCfg.model);
 
       embeddingModelState = {
         loaded: true,
         model: embedder,
         tokenizer: null,
-        dimensions: modelDimensions
+        dimensions: embCfg.dimension
       };
 
       return {
         success: true,
-        dimensions: modelDimensions,
-        modelName: modelName,
+        dimensions: embCfg.dimension,
+        modelName: embCfg.model,
         loadTime: Date.now() - startTime
       };
     }
@@ -1627,16 +1658,25 @@ export async function loadEmbeddingModel(options?: {
         console.log('Loading agentic-flow ReasoningBank embedding model...');
       }
 
+      // ADR-0069: config-chain-aware resolution for embedding dimension
+      let rbDimensions = 768;
+      try {
+        const agentdbModule: any = await import('@claude-flow/agentdb');
+        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+          rbDimensions = agentdbModule.getEmbeddingConfig().dimension || rbDimensions;
+        }
+      } catch { /* agentdb not available — use fallback */ }
+
       embeddingModelState = {
         loaded: true,
         model: { embed: reasoningBank.computeEmbedding },
         tokenizer: null,
-        dimensions: 768
+        dimensions: rbDimensions
       };
 
       return {
         success: true,
-        dimensions: 768,
+        dimensions: rbDimensions,
         modelName: 'agentic-flow/reasoningbank',
         loadTime: Date.now() - startTime
       };
@@ -1688,16 +1728,25 @@ export async function loadEmbeddingModel(options?: {
         console.log('Loading agentic-flow embedding model...');
       }
 
+      // ADR-0069: config-chain-aware resolution for embedding dimension
+      let afDimensions = 768;
+      try {
+        const agentdbModule: any = await import('@claude-flow/agentdb');
+        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+          afDimensions = agentdbModule.getEmbeddingConfig().dimension || afDimensions;
+        }
+      } catch { /* agentdb not available — use fallback */ }
+
       embeddingModelState = {
         loaded: true,
         model: (agenticFlow as any).embeddings,
         tokenizer: null,
-        dimensions: 768
+        dimensions: afDimensions
       };
 
       return {
         success: true,
-        dimensions: 768,
+        dimensions: afDimensions,
         modelName: 'agentic-flow',
         loadTime: Date.now() - startTime
       };
@@ -2152,7 +2201,7 @@ export async function storeEntry(options: {
     upsert = false
   } = options;
 
-  const swarmDir = path.resolve(process.cwd(), '.swarm');
+  const swarmDir = path.resolve(process.cwd(), getSwarmDir());
   const dbPath = customPath ? path.resolve(customPath) : path.join(swarmDir, 'memory.db');
 
   try {
@@ -2286,7 +2335,7 @@ export async function searchEntries(options: {
   const threshold = await getAdaptiveThreshold(explicitThreshold);
   const effectiveNamespace = namespace || 'all';
 
-  const swarmDir = path.resolve(process.cwd(), '.swarm');
+  const swarmDir = path.resolve(process.cwd(), getSwarmDir());
   const dbPath = customPath ? path.resolve(customPath) : path.join(swarmDir, 'memory.db');
   const startTime = Date.now();
 
@@ -2458,7 +2507,7 @@ export async function listEntries(options: {
     dbPath: customPath
   } = options;
 
-  const swarmDir = path.join(process.cwd(), '.swarm');
+  const swarmDir = path.join(process.cwd(), getSwarmDir());
   const dbPath = customPath || path.join(swarmDir, 'memory.db');
 
   try {
@@ -2586,7 +2635,7 @@ export async function getEntry(options: {
     dbPath: customPath
   } = options;
 
-  const swarmDir = path.join(process.cwd(), '.swarm');
+  const swarmDir = path.join(process.cwd(), getSwarmDir());
   const dbPath = customPath || path.join(swarmDir, 'memory.db');
 
   try {
@@ -2720,7 +2769,7 @@ export async function deleteEntry(options: {
     dbPath: customPath
   } = options;
 
-  const swarmDir = path.join(process.cwd(), '.swarm');
+  const swarmDir = path.join(process.cwd(), getSwarmDir());
   const dbPath = customPath || path.join(swarmDir, 'memory.db');
 
   try {

@@ -79,7 +79,7 @@ export class FlashAttention {
   constructor(config: Partial<FlashAttentionConfig> = {}) {
     this.config = {
       blockSize: config.blockSize ?? 32, // Smaller blocks for CPU L1 cache
-      dimensions: config.dimensions ?? EMBEDDING_DIM, // ADR-0052: matches embedding config default
+      dimensions: config.dimensions ?? 768, // ADR-0069: matches all-mpnet-base-v2 output
       temperature: config.temperature ?? 1.0,
       useStableMode: config.useStableMode ?? true,
       useCPUOptimizations: config.useCPUOptimizations ?? true,
@@ -462,7 +462,7 @@ export class FlashAttention {
    */
   benchmark(
     numVectors: number = 512,
-    dimensions: number = EMBEDDING_DIM, // ADR-0052: matches embedding config default
+    dimensions: number = 768, // ADR-0069: matches all-mpnet-base-v2 output
     iterations: number = 5,
   ): BenchmarkResult {
     // Generate random test data

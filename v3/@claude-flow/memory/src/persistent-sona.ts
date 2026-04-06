@@ -12,6 +12,8 @@
  * @module @claude-flow/memory/persistent-sona
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   RvfLearningStore,
 } from './rvf-learning-store.js';
@@ -39,7 +41,18 @@ export interface PersistentSonaConfig {
 
 // ===== Constants =====
 
-const DEFAULT_PATTERN_THRESHOLD = 0.85;
+// ADR-0069 A7: read pattern threshold from config chain, fall back to 0.85
+function getDefaultPatternThreshold(): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.memory?.similarityThreshold === 'number') {
+      return cfg.memory.similarityThreshold;
+    }
+  } catch { /* use fallback */ }
+  return 0.85;
+}
+
+const DEFAULT_PATTERN_THRESHOLD = getDefaultPatternThreshold();
 const DEFAULT_MAX_TRAJECTORY_BUFFER = 1000;
 const DEFAULT_AUTO_PERSIST_MS = 30_000;
 

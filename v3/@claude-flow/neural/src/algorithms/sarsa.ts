@@ -10,7 +10,20 @@
  * Performance Target: <1ms per update
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Trajectory, RLConfig } from '../types.js';
+
+// ADR-0069 A8: read RL learning rate from config chain
+function getConfigRLLearningRate(fallback: number): number {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    if (typeof cfg?.neural?.learningRates?.sarsa === 'number') { // ADR-0069: fix copy-paste bug (was .qLearning)
+      return cfg.neural.learningRates.sarsa;
+    }
+  } catch { /* use fallback */ }
+  return fallback;
+}
 
 /**
  * SARSA configuration
@@ -31,7 +44,7 @@ export interface SARSAConfig extends RLConfig {
  */
 export const DEFAULT_SARSA_CONFIG: SARSAConfig = {
   algorithm: 'sarsa',
-  learningRate: 0.1,
+  learningRate: getConfigRLLearningRate(0.1), // ADR-0069 A8: RL step size, intentionally higher than gradient LR
   gamma: 0.99,
   entropyCoef: 0,
   valueLossCoef: 1,

@@ -480,9 +480,10 @@ export class HookFactory {
    */
   static createRateLimiter(
     event: HookEvent,
-    options: { maxPerMinute: number; name?: string }
+    options: { maxPerMinute: number; name?: string; windowMs?: number }
   ): HookDefinition {
-    const windowMs = 60000;
+    // ADR-0069 A2: config-chain rate limits
+    const windowMs = options.windowMs ?? 60000;
     const timestamps: number[] = [];
 
     return new HookBuilder(event)

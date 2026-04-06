@@ -94,13 +94,21 @@ export interface ReasoningBankConfig {
 /**
  * Default ReasoningBank configuration
  */
+// ADR-0069 A11: config-chain dedup threshold
+let _configChainDedupThreshold = 0.95;
+try {
+  const _cfg = JSON.parse(require('fs').readFileSync(
+    require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+  _configChainDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
+} catch { /* use default */ }
+
 const DEFAULT_CONFIG: ReasoningBankConfig = {
   maxTrajectories: 5000,
   distillationThreshold: 0.6,
   retrievalK: 3,
   mmrLambda: 0.7,
   maxPatternAgeDays: 30,
-  dedupThreshold: 0.95,
+  dedupThreshold: _configChainDedupThreshold, // ADR-0069 A11: config-chain-aware
   enableContradictionDetection: true,
   dbPath: undefined,
   vectorDimension: EMBEDDING_DIM, // ADR-0052: matches embedding config default

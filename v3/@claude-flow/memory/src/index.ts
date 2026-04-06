@@ -184,8 +184,6 @@ export { AgentDBBackend } from './agentdb-backend.js';
 export type { AgentDBBackendConfig } from './agentdb-backend.js';
 export { SQLiteBackend } from './sqlite-backend.js';
 export type { SQLiteBackendConfig } from './sqlite-backend.js';
-export { SqlJsBackend } from './sqljs-backend.js';
-export type { SqlJsBackendConfig } from './sqljs-backend.js';
 export { HybridBackend } from './hybrid-backend.js';
 export type {
   HybridBackendConfig,
@@ -198,6 +196,8 @@ export type { RvfBackendConfig } from './rvf-backend.js';
 export { HnswLite, cosineSimilarity } from './hnsw-lite.js';
 export type { HnswSearchResult } from './hnsw-lite.js';
 export { HNSWIndex } from './hnsw-index.js';
+export { deriveHNSWParams } from './hnsw-utils.js';
+export type { HNSWParams } from './hnsw-utils.js';
 export { CacheManager, TieredCacheManager } from './cache-manager.js';
 export { QueryBuilder, query, QueryTemplates } from './query-builder.js';
 export type { SortDirection, SortField } from './query-builder.js';
@@ -259,7 +259,7 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
   constructor(config: UnifiedMemoryServiceConfig = {}) {
     super();
     this.config = {
-      dimensions: EMBEDDING_DIM,
+      dimensions: 768,
       cacheEnabled: true,
       autoEmbed: true,
       ...config,
@@ -548,7 +548,7 @@ export function createPersistentService(path: string): UnifiedMemoryService {
  */
 export function createEmbeddingService(
   embeddingGenerator: EmbeddingGenerator,
-  dimensions: number = EMBEDDING_DIM
+  dimensions: number = 768
 ): UnifiedMemoryService {
   return new UnifiedMemoryService({
     embeddingGenerator,
@@ -577,7 +577,7 @@ export function createEmbeddingService(
 export function createHybridService(
   databasePath: string,
   embeddingGenerator: EmbeddingGenerator,
-  dimensions: number = EMBEDDING_DIM
+  dimensions: number = 768
 ): UnifiedMemoryService {
   return new UnifiedMemoryService({
     embeddingGenerator,
