@@ -184,26 +184,35 @@ export { AgentDBBackend } from './agentdb-backend.js';
 export type { AgentDBBackendConfig } from './agentdb-backend.js';
 export { SQLiteBackend } from './sqlite-backend.js';
 export type { SQLiteBackendConfig } from './sqlite-backend.js';
-export { HybridBackend } from './hybrid-backend.js';
-export type {
-  HybridBackendConfig,
-  StructuredQuery,
-  SemanticQuery,
-  HybridQuery,
-} from './hybrid-backend.js';
 export { RvfBackend } from './rvf-backend.js';
 export type { RvfBackendConfig } from './rvf-backend.js';
-export { HnswLite, cosineSimilarity } from './hnsw-lite.js';
+export { HnswLite, cosineSimilarity as hnswCosineSimilarity } from './hnsw-lite.js';
 export type { HnswSearchResult } from './hnsw-lite.js';
 export { HNSWIndex } from './hnsw-index.js';
 export { deriveHNSWParams } from './hnsw-utils.js';
 export type { HNSWParams } from './hnsw-utils.js';
+export { resolveConfig, getConfig, resetConfig } from './resolve-config.js';
+export type { ResolvedConfig, ConfigOverrides } from './resolve-config.js';
+export {
+  EmbeddingPipeline,
+  DimensionMismatchError,
+  cosineSimilarity,
+  getPipeline,
+  initPipeline,
+  resetPipeline,
+} from './embedding-pipeline.js';
+export type { EmbeddingConfig } from './embedding-pipeline.js';
 export { CacheManager, TieredCacheManager } from './cache-manager.js';
 export { QueryBuilder, query, QueryTemplates } from './query-builder.js';
 export type { SortDirection, SortField } from './query-builder.js';
 export { MemoryMigrator, createMigrator, migrateMultipleSources } from './migration.js';
 export { createDatabase, getPlatformInfo, getAvailableProviders } from './database-provider.js';
 export type { DatabaseProvider, DatabaseOptions } from './database-provider.js';
+
+// ===== Storage Abstraction (ADR-0076 Phase 3) =====
+export type { IStorage, IStorageContract } from './storage.js';
+export { createStorage, createStorageFromConfig } from './storage-factory.js';
+export type { StorageConfig } from './storage-factory.js';
 
 // ===== Unified Memory Service =====
 import { EventEmitter } from 'node:events';
@@ -583,8 +592,7 @@ export function createHybridService(
     dimensions,
     autoEmbed: true,
     cacheEnabled: true,
-    // Note: This would require extending UnifiedMemoryService to support HybridBackend
-    // For now, this creates an AgentDB service with persistence
+    // Creates an AgentDB-backed service with persistence
     persistenceEnabled: true,
     persistencePath: databasePath,
   });

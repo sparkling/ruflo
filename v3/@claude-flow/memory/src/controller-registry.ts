@@ -25,6 +25,7 @@ import { MemoryGraph } from './memory-graph.js';
 import type { MemoryGraphConfig } from './memory-graph.js';
 import { TieredCacheManager } from './cache-manager.js';
 import type { CacheConfig } from './types.js';
+import { getConfig } from './resolve-config.js';
 
 // ===== ADR-0049: Fail-Loud Error Classes =====
 
@@ -550,18 +551,9 @@ export class ControllerRegistry extends EventEmitter {
       } catch { /* use stub */ }
     }
 
-    // Step 1c: Resolve embedding dimension (ADR-0064 P0)
-    // Priority: explicit config → getEmbeddingConfig() → 768 fallback
-    if (config.dimension) {
-      this.resolvedDimension = config.dimension;
-    } else {
-      try {
-        const agentdbModule = await import('@claude-flow/agentdb');
-        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
-          this.resolvedDimension = agentdbModule.getEmbeddingConfig().dimension || 768;
-        }
-      } catch { /* agentdb not available — use 768 default */ }
-    }
+    // Step 1c: Resolve embedding dimension (ADR-0076 Phase 1)
+    // Priority: explicit config → resolveConfig() (embeddings.json → agentdb → 768)
+    this.resolvedDimension = config.dimension ?? getConfig().embedding.dimension;
 
     // ADR-0076 A3: Validate stored dimension matches configured dimension
     if (this.backend && typeof (this.backend as any).getStoredDimension === 'function') {
@@ -1369,15 +1361,6 @@ export class ControllerRegistry extends EventEmitter {
           if (this.strictMode) throw err;
           return this.createConsolidationStub();
         }
-      }
-
-      case 'federatedSession': {
-        // Shared session transport with LWW conflict resolution (ADR-0068 W4-3)
-        try {
-          const { FederatedSessionController } = await import('./controllers/federated-session.js');
-          const backend = this.get('vectorBackend') ?? this.agentdb;
-          return new FederatedSessionController(backend);
-        } catch { return null; }
       }
 
       // ----- AgentDB-internal controllers (via getController) -----

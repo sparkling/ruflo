@@ -10,6 +10,20 @@ import type { SystemConfig } from './schema.js';
 import { validateSystemConfig, type ValidationResult } from './validator.js';
 import { defaultSystemConfig, mergeWithDefaults } from './defaults.js';
 
+// ADR-0076: lazy-import resolveConfig to avoid hard dep on @claude-flow/memory
+let _resolveConfig: (() => { embedding: { dimension: number }; hnsw: { M: number; efConstruction: number; efSearch: number } }) | undefined;
+async function getResolvedConfig() {
+  if (!_resolveConfig) {
+    try {
+      const mod = await import('@claude-flow/memory');
+      _resolveConfig = (mod as any).resolveConfig;
+    } catch {
+      // @claude-flow/memory not available in this context
+    }
+  }
+  return _resolveConfig?.();
+}
+
 /**
  * Configuration source type
  */
@@ -211,6 +225,30 @@ export class ConfigLoader {
     if (Object.keys(envConfig).length > 0) {
       config = this.deepMerge(config, envConfig) as SystemConfig;
       source = source === 'default' ? 'env' : 'merged';
+    }
+
+    // ADR-0076: overlay resolveConfig() values into memory.agentdb when
+    // the user didn't provide explicit overrides in their config file.
+    // This ensures embeddings.json and agentdb values propagate here.
+    try {
+      const resolved = await getResolvedConfig();
+      if (resolved && config.memory) {
+        const mem = config.memory as Record<string, unknown>;
+        const agentdbCfg = (mem.agentdb ?? {}) as Record<string, unknown>;
+        // Only override if value still matches the hardcoded default
+        if (agentdbCfg.dimensions === 768) {
+          agentdbCfg.dimensions = resolved.embedding.dimension;
+        }
+        if (agentdbCfg.efConstruction === 100) {
+          agentdbCfg.efConstruction = resolved.hnsw.efConstruction;
+        }
+        if (agentdbCfg.m === 23) {
+          agentdbCfg.m = resolved.hnsw.M;
+        }
+        mem.agentdb = agentdbCfg;
+      }
+    } catch {
+      // resolveConfig unavailable — memory.agentdb keeps its defaults
     }
 
     return {

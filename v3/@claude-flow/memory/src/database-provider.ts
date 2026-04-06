@@ -13,6 +13,7 @@ import {
   IMemoryBackend,
 } from './types.js';
 import { SQLiteBackend, SQLiteBackendConfig } from './sqlite-backend.js';
+import { getConfig } from './resolve-config.js';
 
 /**
  * Available database provider types
@@ -205,29 +206,8 @@ export async function createDatabase(
 
     case 'rvf': {
       const { RvfBackend } = await import('./rvf-backend.js');
-      let rvfDimension = 768;
-      try {
-        // Primary: read dimension from embeddings.json (walk up to project root)
-        const fsModule = await import('node:fs');
-        const pathModule = await import('node:path');
-        let dir = process.cwd();
-        while (dir !== pathModule.dirname(dir)) {
-          const cfgPath = pathModule.join(dir, '.claude-flow', 'embeddings.json');
-          if (fsModule.existsSync(cfgPath)) {
-            const embCfg = JSON.parse(fsModule.readFileSync(cfgPath, 'utf8'));
-            rvfDimension = embCfg.dimension ?? 768;
-            break;
-          }
-          dir = pathModule.dirname(dir);
-        }
-      } catch {
-        // Fallback: try agentdb dynamic import
-        try {
-          const agentdb = await import('@claude-flow/agentdb');
-          const getEmbCfg = (agentdb as any).getEmbeddingConfig;
-          if (getEmbCfg) rvfDimension = getEmbCfg().dimension ?? 768;
-        } catch { /* use default 768 */ }
-      }
+      // ADR-0076: single source of truth for embedding dimension
+      const rvfDimension = getConfig().embedding.dimension;
       backend = new RvfBackend({
         databasePath: path.replace(/\.(db|json)$/, '.rvf'),
         dimensions: rvfDimension,

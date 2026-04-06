@@ -11,6 +11,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { getConfig } from '@claude-flow/memory';
 
 // ADR-053: Lazy import of AgentDB v3 bridge
 let _bridge: typeof import('./memory-bridge.js') | null | undefined;
@@ -1670,14 +1671,8 @@ export async function loadEmbeddingModel(options?: {
         console.log('Loading agentic-flow ReasoningBank embedding model...');
       }
 
-      // ADR-0069: config-chain-aware resolution for embedding dimension
-      let rbDimensions = 768;
-      try {
-        const agentdbModule: any = await import('@claude-flow/agentdb');
-        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
-          rbDimensions = agentdbModule.getEmbeddingConfig().dimension || rbDimensions;
-        }
-      } catch { /* agentdb not available — use fallback */ }
+      // ADR-0076: centralized config resolution for embedding dimension
+      const rbDimensions = getConfig().embedding.dimension;
 
       embeddingModelState = {
         loaded: true,
@@ -1710,18 +1705,20 @@ export async function loadEmbeddingModel(options?: {
           // Probe embed to trigger lazy ONNX init and verify it works
           const probe = await onnxEmb.embed('test');
           if (probe && probe.length > 0 && (Array.isArray(probe) ? probe.some((v: number) => v !== 0) : true)) {
+            // ADR-0076: use centralized config dimension, not probe length
+            const rvDim = getConfig().embedding.dimension;
             if (verbose) {
-              console.log(`Loading ruvector ONNX embedder (all-MiniLM-L6-v2, ${probe.length}d)...`);
+              console.log(`Loading ruvector ONNX embedder (all-MiniLM-L6-v2, ${rvDim}d)...`);
             }
             embeddingModelState = {
               loaded: true,
               model: (text: string) => onnxEmb.embed(text),
               tokenizer: null,
-              dimensions: probe.length || 384
+              dimensions: rvDim
             };
             return {
               success: true,
-              dimensions: probe.length || 384,
+              dimensions: rvDim,
               modelName: 'ruvector/onnx',
               loadTime: Date.now() - startTime
             };
@@ -1740,14 +1737,8 @@ export async function loadEmbeddingModel(options?: {
         console.log('Loading agentic-flow embedding model...');
       }
 
-      // ADR-0069: config-chain-aware resolution for embedding dimension
-      let afDimensions = 768;
-      try {
-        const agentdbModule: any = await import('@claude-flow/agentdb');
-        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
-          afDimensions = agentdbModule.getEmbeddingConfig().dimension || afDimensions;
-        }
-      } catch { /* agentdb not available — use fallback */ }
+      // ADR-0076: centralized config resolution for embedding dimension
+      const afDimensions = getConfig().embedding.dimension;
 
       embeddingModelState = {
         loaded: true,
@@ -1765,16 +1756,18 @@ export async function loadEmbeddingModel(options?: {
     }
 
     // No ONNX model available - use fallback
+    // ADR-0076: centralized config resolution for embedding dimension
+    const fallbackDim = getConfig().embedding.dimension;
     embeddingModelState = {
       loaded: true,
       model: null, // Will use simple hash-based fallback
       tokenizer: null,
-      dimensions: 768 // Match HNSW index dimensions (hash fallback)
+      dimensions: fallbackDim // Match HNSW index dimensions (hash fallback)
     };
 
     return {
       success: true,
-      dimensions: 768,
+      dimensions: fallbackDim,
       modelName: 'hash-fallback',
       loadTime: Date.now() - startTime
     };

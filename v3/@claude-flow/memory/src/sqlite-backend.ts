@@ -393,16 +393,16 @@ export class SQLiteBackend extends EventEmitter implements IMemoryBackend {
 
   /**
    * Semantic vector search (not optimized for SQLite, returns empty)
-   * Use HybridBackend for semantic search with AgentDB
+   * Vector search not optimized in SQLite backend
    */
   async search(
     embedding: Float32Array,
     options: SearchOptions
   ): Promise<SearchResult[]> {
     // SQLite is not optimized for vector search
-    // This method returns empty to encourage use of HybridBackend
+    // SQLite is a structured backend; use RvfBackend for vector search
     console.warn(
-      'SQLiteBackend.search(): Vector search not optimized. Use HybridBackend for semantic search.'
+      'SQLiteBackend.search(): Vector search not optimized. Use RvfBackend for semantic search.'
     );
     return [];
   }

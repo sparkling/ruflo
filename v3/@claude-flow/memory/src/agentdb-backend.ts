@@ -5,7 +5,7 @@
  * - HNSW vector search (150x-12,500x faster than brute-force)
  * - Native or WASM backend support with graceful fallback
  * - Optional dependency handling (works without hnswlib-node)
- * - Seamless integration with HybridBackend
+ * - Seamless integration with storage backends
  *
  * @module v3/memory/agentdb-backend
  */
@@ -185,7 +185,7 @@ const DEFAULT_CONFIG = FALLBACK_CONFIG;
  * - Automatic fallback: native hnswlib → ruvector → WASM
  * - Graceful handling of optional native dependencies
  * - Semantic search with filtering
- * - Compatible with HybridBackend for combined SQLite+AgentDB queries
+ * - Compatible with RvfBackend for combined structured+vector queries
  */
 export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
   private config: Required<
