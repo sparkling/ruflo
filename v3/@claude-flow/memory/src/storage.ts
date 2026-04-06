@@ -19,6 +19,8 @@ import type {
   MemoryQuery,
   SearchOptions,
   SearchResult,
+  BackendStats,
+  HealthCheckResult,
 } from './types.js';
 
 /**
@@ -31,7 +33,7 @@ import type {
 export type IStorage = IMemoryBackend;
 
 /**
- * IStorageContract — the 10 methods controllers actually call.
+ * IStorageContract — all methods controllers call.
  *
  * This is the narrow interface that all future storage implementations
  * must satisfy.  It is a strict subset of IMemoryBackend.
@@ -64,6 +66,24 @@ export interface IStorageContract {
   /** Structured query with filters */
   query(query: MemoryQuery): Promise<MemoryEntry[]>;
 
+  /** Bulk insert entries */
+  bulkInsert(entries: MemoryEntry[]): Promise<void>;
+
+  /** Bulk delete entries by id */
+  bulkDelete(ids: string[]): Promise<number>;
+
   /** Count entries, optionally scoped to a namespace */
   count(namespace?: string): Promise<number>;
+
+  /** List all namespaces */
+  listNamespaces(): Promise<string[]>;
+
+  /** Clear all entries in a namespace */
+  clearNamespace(namespace: string): Promise<number>;
+
+  /** Get backend statistics */
+  getStats(): Promise<BackendStats>;
+
+  /** Perform health check */
+  healthCheck(): Promise<HealthCheckResult>;
 }
