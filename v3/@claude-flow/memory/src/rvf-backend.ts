@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, appendFile, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type {
   IMemoryBackend,
@@ -23,6 +23,8 @@ function validatePath(p: string): void {
   if (resolved.includes('\0')) throw new Error('Resolved path contains null bytes');
 }
 
+const DEFAULT_WAL_COMPACTION_THRESHOLD = 100;
+
 export interface RvfBackendConfig {
   databasePath: string;
   dimensions?: number;
@@ -34,6 +36,7 @@ export interface RvfBackendConfig {
   verbose?: boolean;
   defaultNamespace?: string;
   autoPersistInterval?: number;
+  walCompactionThreshold?: number;
 }
 
 interface RvfHeader {
@@ -68,6 +71,15 @@ export class RvfBackend implements IMemoryBackend {
   private queryTimes: number[] = [];
   private searchTimes: number[] = [];
 
+  // WAL state (Phase 1)
+  private walPath = '';
+  private walEntryCount = 0;
+
+  // Native ID mapping (Phase 3)
+  private nativeIdMap = new Map<string, number>();
+  private nativeReverseMap = new Map<number, string>();
+  private nextNativeId = 1;
+
   constructor(config: RvfBackendConfig) {
     const dimensions = config.dimensions ?? DEFAULT_DIMENSIONS;
     if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 10000) {
@@ -85,8 +97,10 @@ export class RvfBackend implements IMemoryBackend {
       verbose: config.verbose ?? false,
       defaultNamespace: config.defaultNamespace ?? 'default',
       autoPersistInterval: config.autoPersistInterval ?? DEFAULT_PERSIST_INTERVAL,
+      walCompactionThreshold: config.walCompactionThreshold ?? DEFAULT_WAL_COMPACTION_THRESHOLD,
     };
     validatePath(this.config.databasePath);
+    this.walPath = this.config.databasePath === ':memory:' ? '' : this.config.databasePath + '.wal';
   }
 
   async initialize(): Promise<void> {
@@ -105,7 +119,10 @@ export class RvfBackend implements IMemoryBackend {
 
     if (this.config.autoPersistInterval > 0 && this.config.databasePath !== ':memory:') {
       this.persistTimer = setInterval(() => {
-        if (this.dirty && !this.persisting) this.persistToDisk().catch(() => {});
+        if (this.dirty && !this.persisting) {
+          const op = this.walEntryCount > 0 ? this.compactWal() : this.persistToDisk();
+          op.catch(() => {});
+        }
       }, this.config.autoPersistInterval);
       if (this.persistTimer.unref) this.persistTimer.unref();
     }
@@ -126,11 +143,15 @@ export class RvfBackend implements IMemoryBackend {
     }
 
     if (this.dirty) {
-      await this.persistToDisk();
+      if (this.walEntryCount > 0) {
+        await this.compactWal();
+      } else {
+        await this.persistToDisk();
+      }
     }
 
     if (this.nativeDb) {
-      try { await this.nativeDb.close(); } catch {}
+      try { this.nativeDb.close(); } catch {}
       this.nativeDb = null;
     }
 
@@ -148,10 +169,20 @@ export class RvfBackend implements IMemoryBackend {
     if (e.embedding && this.hnswIndex) {
       this.hnswIndex.add(e.id, e.embedding);
     }
+    // Native vector routing: ingest into NAPI backend when available
+    if (e.embedding && this.nativeDb) {
+      const numId = this.assignNativeId(e.id);
+      try {
+        this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
+      } catch { /* native ingest failure is non-fatal; pure-TS index is primary */ }
+    }
     this.dirty = true;
     // Persist immediately so data survives process exit (the 30s auto-persist
     // timer may never fire in short-lived CLI invocations).
-    await this.persistToDisk();
+    await this.appendToWal(e);
+    if (this.walEntryCount >= this.config.walCompactionThreshold) {
+      await this.compactWal();
+    }
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
@@ -180,7 +211,10 @@ export class RvfBackend implements IMemoryBackend {
     };
     this.entries.set(id, updated);
     this.dirty = true;
-    await this.persistToDisk();
+    await this.appendToWal(updated);
+    if (this.walEntryCount >= this.config.walCompactionThreshold) {
+      await this.compactWal();
+    }
     return updated;
   }
 
@@ -190,8 +224,23 @@ export class RvfBackend implements IMemoryBackend {
     this.entries.delete(id);
     this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
     if (this.hnswIndex) this.hnswIndex.remove(id);
+    // Native vector routing: remove from NAPI backend when available
+    if (this.nativeDb) {
+      const numId = this.nativeIdMap.get(id);
+      if (numId !== undefined) {
+        try { this.nativeDb.delete([numId]); } catch {}
+        this.nativeIdMap.delete(id);
+        this.nativeReverseMap.delete(numId);
+      }
+    }
     this.dirty = true;
+    // Delete requires full rewrite — WAL is append-only, no tombstones
     await this.persistToDisk();
+    // WAL is now stale after full rewrite, so reset it
+    if (this.walPath && this.walEntryCount > 0) {
+      try { await unlink(this.walPath); } catch {}
+      this.walEntryCount = 0;
+    }
     return true;
   }
 
@@ -232,9 +281,42 @@ export class RvfBackend implements IMemoryBackend {
     const start = performance.now();
     let results: SearchResult[];
 
+    if (this.nativeDb) {
+      // Native NAPI vector search — fast ANN lookup, then filter metadata
+      try {
+        const raw: Array<{ id: number; distance: number }> = this.nativeDb.query(
+          new Float32Array(embedding), options.k * 2,
+        );
+        results = [];
+        for (const r of raw) {
+          const stringId = this.nativeReverseMap.get(r.id);
+          if (!stringId) continue;
+          const entry = this.entries.get(stringId);
+          if (!entry) continue;
+          if (options.filters?.namespace && entry.namespace !== options.filters.namespace) continue;
+          if (options.filters?.tags && !options.filters.tags.every(t => entry.tags.includes(t))) continue;
+          if (options.filters?.memoryType && entry.type !== options.filters.memoryType) continue;
+          const score = 1 - r.distance;
+          if (options.threshold && score < options.threshold) continue;
+          results.push({ entry, score, distance: r.distance });
+        }
+        results = results.slice(0, options.k);
+      } catch {
+        // Fall through to pure-TS path on native query failure
+        results = this.pureTsSearch(embedding, options);
+      }
+    } else {
+      results = this.pureTsSearch(embedding, options);
+    }
+
+    this.recordTiming(this.searchTimes, start);
+    return results;
+  }
+
+  private pureTsSearch(embedding: Float32Array, options: SearchOptions): SearchResult[] {
     if (this.hnswIndex) {
       const raw = this.hnswIndex.search(embedding, options.k * 2, options.threshold);
-      results = [];
+      const results: SearchResult[] = [];
       for (const r of raw) {
         const entry = this.entries.get(r.id);
         if (!entry) continue;
@@ -243,13 +325,9 @@ export class RvfBackend implements IMemoryBackend {
         if (options.filters?.memoryType && entry.type !== options.filters.memoryType) continue;
         results.push({ entry, score: r.score, distance: 1 - r.score });
       }
-      results = results.slice(0, options.k);
-    } else {
-      results = this.bruteForceSearch(embedding, options);
+      return results.slice(0, options.k);
     }
-
-    this.recordTiming(this.searchTimes, start);
-    return results;
+    return this.bruteForceSearch(embedding, options);
   }
 
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
@@ -257,25 +335,46 @@ export class RvfBackend implements IMemoryBackend {
       this.entries.set(entry.id, entry);
       this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
       if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
+      if (entry.embedding && this.nativeDb) {
+        const numId = this.assignNativeId(entry.id);
+        try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch {}
+      }
+      await this.appendToWal(entry);
     }
     this.dirty = true;
-    await this.persistToDisk();
+    if (this.walEntryCount >= this.config.walCompactionThreshold) {
+      await this.compactWal();
+    }
   }
 
   async bulkDelete(ids: string[]): Promise<number> {
     let count = 0;
+    const nativeIds: number[] = [];
     for (const id of ids) {
       const entry = this.entries.get(id);
       if (entry) {
         this.entries.delete(id);
         this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
         if (this.hnswIndex) this.hnswIndex.remove(id);
+        const numId = this.nativeIdMap.get(id);
+        if (numId !== undefined) {
+          nativeIds.push(numId);
+          this.nativeIdMap.delete(id);
+          this.nativeReverseMap.delete(numId);
+        }
         count++;
       }
     }
     if (count > 0) {
+      if (this.nativeDb && nativeIds.length > 0) {
+        try { this.nativeDb.delete(nativeIds); } catch {}
+      }
       this.dirty = true;
       await this.persistToDisk();
+      if (this.walPath && this.walEntryCount > 0) {
+        try { await unlink(this.walPath); } catch {}
+        this.walEntryCount = 0;
+      }
     }
     return count;
   }
@@ -309,6 +408,10 @@ export class RvfBackend implements IMemoryBackend {
     if (toDelete.length > 0) {
       this.dirty = true;
       await this.persistToDisk();
+      if (this.walPath && this.walEntryCount > 0) {
+        try { await unlink(this.walPath); } catch {}
+        this.walEntryCount = 0;
+      }
     }
     return toDelete.length;
   }
@@ -373,24 +476,28 @@ export class RvfBackend implements IMemoryBackend {
 
   private async tryNativeInit(): Promise<boolean> {
     try {
-      const rvf = await import('@ruvector/rvf' as string);
-      this.nativeDb = new rvf.RvfDatabase({
-        path: this.config.databasePath,
-        dimensions: this.config.dimensions,
-        metric: this.config.metric,
-        quantization: this.config.quantization,
-        hnswM: this.config.hnswM,
-        hnswEfConstruction: this.config.hnswEfConstruction,
-        maxElements: this.config.maxElements,
-      });
-      await this.nativeDb.open();
-      if (this.config.verbose) {
-        console.log('[RvfBackend] Native @ruvector/rvf loaded successfully');
+      const rvf = await import('@ruvector/rvf-node' as string);
+      const { existsSync: fileExists } = await import('node:fs');
+      if (fileExists(this.config.databasePath)) {
+        this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
+      } else {
+        this.nativeDb = rvf.RvfDatabase.create(this.config.databasePath, {
+          dimension: this.config.dimensions,
+          metric: this.config.metric,
+          m: this.config.hnswM,
+          efConstruction: this.config.hnswEfConstruction,
+        });
       }
-      return true;
+      // Native handles vectors only — still need pure-TS index + disk load for
+      // metadata, so we set up hnswIndex and load entries below in initialize().
+      // The native path augments (not replaces) the pure-TS path.
+      if (this.config.verbose) {
+        console.log('[RvfBackend] Native @ruvector/rvf-node loaded successfully');
+      }
+      return false; // return false so initialize() still sets up hnswIndex + loadFromDisk
     } catch {
       if (this.config.verbose) {
-        console.log('[RvfBackend] @ruvector/rvf not available, using pure-TS fallback');
+        console.log('[RvfBackend] @ruvector/rvf-node not available, using pure-TS fallback');
       }
       return false;
     }
@@ -398,6 +505,16 @@ export class RvfBackend implements IMemoryBackend {
 
   private compositeKey(namespace: string, key: string): string {
     return `${namespace}\0${key}`;
+  }
+
+  /** Assign or retrieve a numeric ID for native NAPI backend */
+  private assignNativeId(stringId: string): number {
+    let numId = this.nativeIdMap.get(stringId);
+    if (numId !== undefined) return numId;
+    numId = this.nextNativeId++;
+    this.nativeIdMap.set(stringId, numId);
+    this.nativeReverseMap.set(numId, stringId);
+    return numId;
   }
 
   private bruteForceSearch(embedding: Float32Array, options: SearchOptions): SearchResult[] {
@@ -599,6 +716,73 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
+  // ===== WAL (Write-Ahead Log) methods =====
+
+  /** Append a single entry to the WAL sidecar file (O(1) per write) */
+  private async appendToWal(entry: MemoryEntry): Promise<void> {
+    if (!this.walPath) return; // :memory: mode
+    const serialized = {
+      ...entry,
+      embedding: entry.embedding ? Array.from(entry.embedding) : undefined,
+    };
+    const json = Buffer.from(JSON.stringify(serialized), 'utf-8');
+    const lenBuf = Buffer.alloc(4);
+    lenBuf.writeUInt32LE(json.length, 0);
+    const dir = dirname(this.walPath);
+    if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+    await appendFile(this.walPath, Buffer.concat([lenBuf, json]));
+    this.walEntryCount++;
+  }
+
+  /** Replay WAL entries into in-memory state (called after loadFromDisk) */
+  private async replayWal(): Promise<void> {
+    if (!this.walPath || !existsSync(this.walPath)) return;
+    try {
+      const raw = await readFile(this.walPath);
+      let offset = 0;
+      let count = 0;
+      while (offset + 4 <= raw.length) {
+        const entryLen = raw.readUInt32LE(offset);
+        offset += 4;
+        if (offset + entryLen > raw.length) break; // truncated entry — skip
+        const entryJson = raw.subarray(offset, offset + entryLen).toString('utf-8');
+        offset += entryLen;
+        try {
+          const parsed = JSON.parse(entryJson);
+          if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
+          const entry: MemoryEntry = parsed;
+          this.entries.set(entry.id, entry);
+          this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
+          if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
+          if (entry.embedding && this.nativeDb) {
+            const numId = this.assignNativeId(entry.id);
+            try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch {}
+          }
+          count++;
+        } catch {
+          // Corrupt individual entry — skip and continue
+        }
+      }
+      this.walEntryCount = count;
+      if (this.config.verbose && count > 0) {
+        console.log(`[RvfBackend] Replayed ${count} WAL entries`);
+      }
+    } catch (err) {
+      if (this.config.verbose) {
+        console.error('[RvfBackend] Error replaying WAL:', err);
+      }
+    }
+  }
+
+  /** Compact WAL: rewrite main .rvf with all entries, then delete WAL */
+  private async compactWal(): Promise<void> {
+    await this.persistToDisk();
+    if (this.walPath) {
+      try { await unlink(this.walPath); } catch {}
+    }
+    this.walEntryCount = 0;
+  }
+
   private async loadFromDisk(): Promise<void> {
     if (this.config.databasePath === ':memory:') return;
     if (!existsSync(this.config.databasePath)) return;
@@ -640,12 +824,19 @@ export class RvfBackend implements IMemoryBackend {
         this.entries.set(entry.id, entry);
         this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
         if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
+        if (entry.embedding && this.nativeDb) {
+          const numId = this.assignNativeId(entry.id);
+          try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch {}
+        }
       }
     } catch (err) {
       if (this.config.verbose) {
         console.error('[RvfBackend] Error loading from disk:', err);
       }
     }
+
+    // Replay any WAL entries written after the last compaction
+    await this.replayWal();
   }
 
   private async persistToDisk(): Promise<void> {
