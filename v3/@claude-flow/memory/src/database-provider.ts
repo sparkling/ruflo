@@ -13,7 +13,6 @@ import {
   IMemoryBackend,
 } from './types.js';
 import { SQLiteBackend, SQLiteBackendConfig } from './sqlite-backend.js';
-import { SqlJsBackend, SqlJsBackendConfig } from './sqljs-backend.js';
 
 /**
  * Available database provider types

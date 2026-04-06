@@ -199,7 +199,6 @@ function readConfig() {
       console.error(`[FAIL] auto-memory.readConfig: ${err.message}`);
     }
   }
-  }
 
   // Fallback: read config.yaml for backward compat
   const yamlPath = join(PROJECT_ROOT, '.claude-flow', 'config.yaml');
