@@ -212,6 +212,21 @@ export class RvfBackend implements IMemoryBackend {
       version: entry.version + 1,
     };
     this.entries.set(id, updated);
+    // Re-ingest into native if embedding changed
+    if (updated.embedding && this.nativeDb) {
+      const numId = this.assignNativeId(id);
+      try {
+        this.nativeDb.delete([numId]);
+        this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId]);
+      } catch (err) {
+        if (this.config.verbose) console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
+      }
+    }
+    // Re-index in HNSW if embedding changed
+    if (updated.embedding && this.hnswIndex) {
+      this.hnswIndex.remove(id);
+      this.hnswIndex.add(id, updated.embedding);
+    }
     this.dirty = true;
     await this.appendToWal(updated);
     if (this.walEntryCount >= this.config.walCompactionThreshold) {
@@ -290,6 +305,7 @@ export class RvfBackend implements IMemoryBackend {
       try {
         const raw: Array<{ id: number; distance: number }> = this.nativeDb.query(
           new Float32Array(embedding), options.k * 2,
+          { efSearch: this.config.hnswEfConstruction },
         );
         results = [];
         for (const r of raw) {
@@ -809,11 +825,13 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
-  // TODO(ADR-0073): When nativeDb is active, persistToDisk() writes custom
-  // format to the same path, overwriting the native binary file. On the next
-  // open, RvfDatabase.open() fails (wrong magic) and silently downgrades to
-  // pure-TS. Fix: use ${databasePath}.meta as the persist target when nativeDb
-  // is set. Not urgent — @ruvector/rvf-node is not installed in the fork today.
+  /** Path for the custom-format metadata file. When native is active, metadata
+   *  goes to a `.meta` sidecar to avoid overwriting the native binary file. */
+  private get metadataPath(): string {
+    return this.nativeDb
+      ? this.config.databasePath + '.meta'
+      : this.config.databasePath;
+  }
 
   /** Compact WAL: rewrite main .rvf with all entries, then delete WAL */
   private async compactWal(): Promise<void> {
@@ -827,10 +845,22 @@ export class RvfBackend implements IMemoryBackend {
 
   private async loadFromDisk(): Promise<void> {
     if (this.config.databasePath === ':memory:') return;
-    if (!existsSync(this.config.databasePath)) return;
+
+    // Determine which file to load metadata from:
+    // 1. Try the .meta sidecar (used when native DB owns the main path)
+    // 2. Fall back to the main path (pre-native or native not active)
+    const metaPath = this.config.databasePath + '.meta';
+    let loadPath: string;
+    if (existsSync(metaPath)) {
+      loadPath = metaPath;
+    } else if (existsSync(this.config.databasePath)) {
+      loadPath = this.config.databasePath;
+    } else {
+      return;
+    }
 
     try {
-      const raw = await readFile(this.config.databasePath);
+      const raw = await readFile(loadPath);
       if (raw.length < 8) return;
 
       const magic = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
@@ -889,7 +919,8 @@ export class RvfBackend implements IMemoryBackend {
     this.persisting = true;
 
     try {
-    const dir = dirname(this.config.databasePath);
+    const target = this.metadataPath;
+    const dir = dirname(target);
     if (!existsSync(dir)) await mkdir(dir, { recursive: true });
 
     const entries = Array.from(this.entries.values());
@@ -932,9 +963,9 @@ export class RvfBackend implements IMemoryBackend {
     const output = Buffer.concat([magicBuf, headerLenBuf, headerBuf, ...entryBuffers]);
 
     // Atomic write: write to temp file then rename (crash-safe)
-    const tmpPath = this.config.databasePath + '.tmp';
+    const tmpPath = target + '.tmp';
     await writeFile(tmpPath, output);
-    await rename(tmpPath, this.config.databasePath);
+    await rename(tmpPath, target);
     this.dirty = false;
     } finally {
       this.persisting = false;
