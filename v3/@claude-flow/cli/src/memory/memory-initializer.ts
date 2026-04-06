@@ -2465,18 +2465,19 @@ export async function searchEntries(options: {
 function cosineSim(a: number[], b: number[]): number {
   if (!a || !b || a.length === 0 || b.length === 0) return 0;
 
-  const len = Math.min(a.length, b.length);
+  if (a.length !== b.length) {
+    throw new Error(`Embedding dimension mismatch: expected ${a.length}, got ${b.length}. Re-embed stored vectors or change model.`);
+  }
+
   let dot = 0, normA = 0, normB = 0;
 
-  // Simple loop - V8 optimizes this well
-  for (let i = 0; i < len; i++) {
+  for (let i = 0; i < a.length; i++) {
     const ai = a[i], bi = b[i];
     dot += ai * bi;
     normA += ai * ai;
     normB += bi * bi;
   }
 
-  // Combined sqrt for slightly better performance
   const mag = Math.sqrt(normA * normB);
   return mag === 0 ? 0 : dot / mag;
 }

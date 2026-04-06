@@ -106,7 +106,6 @@ export type CLIControllerName =
   | 'quantizedVectorStore'
   | 'resourceTracker'
   | 'rateLimiter'
-  | 'circuitBreakerController'   // D6 - registry-level decorator
   | 'metadataFilter'             // B5
   | 'queryOptimizer'             // B6
   | 'indexHealthMonitor'         // B3
@@ -446,7 +445,7 @@ interface ControllerEntry {
 export const INIT_LEVELS: InitLevel[] = [
   // Level 0: Security infrastructure (ADR-0061 Phase 6)
   { level: 0, controllers: [
-    'resourceTracker', 'rateLimiter', 'circuitBreaker', 'circuitBreakerController', 'telemetryManager',
+    'resourceTracker', 'rateLimiter', 'circuitBreaker', 'telemetryManager',
   ] as ControllerName[] },
   // Level 1: Core intelligence
   { level: 1, controllers: [
@@ -562,6 +561,26 @@ export class ControllerRegistry extends EventEmitter {
           this.resolvedDimension = agentdbModule.getEmbeddingConfig().dimension || 768;
         }
       } catch { /* agentdb not available — use 768 default */ }
+    }
+
+    // ADR-0076 A3: Validate stored dimension matches configured dimension
+    if (this.backend && typeof (this.backend as any).getStoredDimension === 'function') {
+      try {
+        const storedDim = await (this.backend as any).getStoredDimension();
+        if (storedDim > 0 && storedDim !== this.resolvedDimension) {
+          const err = new Error(
+            `Embedding dimension mismatch: stored vectors are ${storedDim}-dim but configured model produces ${this.resolvedDimension}-dim. ` +
+            `Either change embeddings.model to match stored vectors, or run 'memory migrate --reembed' to regenerate all embeddings.`
+          );
+          err.name = 'EmbeddingDimensionError';
+          this.initErrors.push(new ControllerInitError('dimensionValidation', err));
+          this.emit('controller:init-error', { name: 'dimensionValidation', error: err });
+          if (this.strictMode) throw err;
+        }
+      } catch (e) {
+        // Only re-throw dimension errors, not probe failures
+        if ((e as Error).name === 'EmbeddingDimensionError') throw e;
+      }
     }
 
     // Step 2: Set up the backend
@@ -1051,7 +1070,6 @@ export class ControllerRegistry extends EventEmitter {
       case 'resourceTracker':
       case 'rateLimiter':
       case 'circuitBreaker':
-      case 'circuitBreakerController':
       case 'telemetryManager':
         return true;
 
@@ -1834,10 +1852,31 @@ export class ControllerRegistry extends EventEmitter {
         try {
           const agentdbModule: any = await import('agentdb');
           const CB = agentdbModule.CircuitBreaker;
-          if (!CB) return null;
-          const cbCfg = this.config.circuitBreaker || {};
-          return new CB(cbCfg.failureThreshold || 5, cbCfg.resetTimeoutMs || 60000);
-        } catch { return null; }
+          if (CB) {
+            const cbCfg = this.config.circuitBreaker || {};
+            return new CB(cbCfg.failureThreshold ?? 5, cbCfg.resetTimeoutMs ?? 60000);
+          }
+        } catch { /* agentdb not available — use inline fallback */ }
+        // Level 0 security controller must NEVER return null
+        const cfg = this.config.circuitBreaker || {};
+        const threshold = cfg.failureThreshold ?? 5;
+        const resetMs = cfg.resetTimeoutMs ?? 60000;
+        let failures = 0;
+        let state: 'closed' | 'open' | 'half-open' = 'closed';
+        let openedAt = 0;
+        return {
+          getState: () => state,
+          recordSuccess() { failures = 0; state = 'closed'; },
+          recordFailure() {
+            failures++;
+            if (failures >= threshold) { state = 'open'; openedAt = Date.now(); }
+          },
+          isOpen() {
+            if (state === 'open' && Date.now() - openedAt > resetMs) state = 'half-open';
+            return state === 'open';
+          },
+          getStats: () => ({ state, failures, threshold }),
+        };
       }
 
       case 'telemetryManager': {

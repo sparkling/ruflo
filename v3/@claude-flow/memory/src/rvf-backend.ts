@@ -445,6 +445,30 @@ export class RvfBackend implements IMemoryBackend {
     return toDelete.length;
   }
 
+  /** Read stored vector dimension from the RVF file header, or 0 if empty/absent */
+  async getStoredDimension(): Promise<number> {
+    if (this.config.databasePath === ':memory:') return 0;
+    const metaPath = this.config.databasePath + '.meta';
+    const { existsSync } = await import('node:fs');
+    const { readFile } = await import('node:fs/promises');
+
+    // Try .meta sidecar first, then main file
+    for (const path of [metaPath, this.config.databasePath]) {
+      if (!existsSync(path)) continue;
+      try {
+        const raw = await readFile(path);
+        if (raw.length < 8) continue;
+        const magic = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
+        if (magic !== 'RVF\0') continue;
+        const headerLen = raw.readUInt32LE(4);
+        if (8 + headerLen > raw.length) continue;
+        const header = JSON.parse(raw.subarray(8, 8 + headerLen).toString('utf-8'));
+        if (header.dimensions > 0) return header.dimensions;
+      } catch { continue; }
+    }
+    return 0;
+  }
+
   async getStats(): Promise<BackendStats> {
     const entriesByNamespace: Record<string, number> = {};
     const entriesByType: Record<string, number> = {};
