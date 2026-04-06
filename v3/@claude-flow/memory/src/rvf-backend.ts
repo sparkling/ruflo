@@ -768,25 +768,26 @@ export class RvfBackend implements IMemoryBackend {
           const parsed = JSON.parse(entryJson);
           if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
           const entry: MemoryEntry = parsed;
+          const alreadyLoaded = this.entries.has(entry.id);
           // Remove stale HNSW edges before re-adding (entry may already be
           // in the index from loadFromDisk — re-add without remove corrupts
           // the graph's reverse-edge pointers).
-          if (entry.embedding && this.hnswIndex && this.entries.has(entry.id)) {
+          if (entry.embedding && this.hnswIndex && alreadyLoaded) {
             this.hnswIndex.remove(entry.id);
+          }
+          // Remove stale native vector before re-ingest (same logic)
+          if (entry.embedding && this.nativeDb && alreadyLoaded) {
+            const oldNumId = this.nativeIdMap.get(entry.id);
+            if (oldNumId !== undefined) {
+              try { this.nativeDb.delete([oldNumId]); } catch (err) {
+                if (this.config.verbose) console.error('[RvfBackend] Native delete on WAL replay failed:', (err as Error).message);
+              }
+            }
           }
           this.entries.set(entry.id, entry);
           this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
           if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
           if (entry.embedding && this.nativeDb) {
-            // Remove stale native vector before re-ingest (mirrors HNSW fix above)
-            if (this.entries.has(entry.id)) {
-              const oldNumId = this.nativeIdMap.get(entry.id);
-              if (oldNumId !== undefined) {
-                try { this.nativeDb.delete([oldNumId]); } catch (err) {
-                  if (this.config.verbose) console.error('[RvfBackend] Native delete on WAL replay failed:', (err as Error).message);
-                }
-              }
-            }
             const numId = this.assignNativeId(entry.id);
             try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
               if (this.config.verbose) console.error('[RvfBackend] Native ingest on WAL replay failed:', (err as Error).message);
@@ -807,6 +808,12 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
   }
+
+  // TODO(ADR-0073): When nativeDb is active, persistToDisk() writes custom
+  // format to the same path, overwriting the native binary file. On the next
+  // open, RvfDatabase.open() fails (wrong magic) and silently downgrades to
+  // pure-TS. Fix: use ${databasePath}.meta as the persist target when nativeDb
+  // is set. Not urgent — @ruvector/rvf-node is not installed in the fork today.
 
   /** Compact WAL: rewrite main .rvf with all entries, then delete WAL */
   private async compactWal(): Promise<void> {
