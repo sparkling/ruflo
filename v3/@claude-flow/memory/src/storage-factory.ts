@@ -129,6 +129,7 @@ export async function createStorageFromConfig(
     dimensions: resolved.embedding.dimension,
     hnswM: resolved.hnsw.M,
     hnswEfConstruction: resolved.hnsw.efConstruction,
+    maxElements: resolved.memory.maxEntries,
     defaultNamespace: resolved.memory.defaultNamespace,
     autoPersistInterval: resolved.storage.autoPersistInterval,
     ...overrides,

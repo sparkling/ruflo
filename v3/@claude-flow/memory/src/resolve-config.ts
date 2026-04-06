@@ -118,12 +118,12 @@ function tryAgentdbConfig(): { model?: string; dimension?: number; provider?: st
   return null;
 }
 
-/** Deep-freeze an object and all nested objects. */
+/** Deep-freeze an object and all nested objects (recursive). */
 function deepFreeze<T extends object>(obj: T): Readonly<T> {
   Object.freeze(obj);
   for (const val of Object.values(obj)) {
     if (val && typeof val === 'object' && !Object.isFrozen(val)) {
-      Object.freeze(val);
+      deepFreeze(val);
     }
   }
   return obj;
@@ -146,7 +146,12 @@ let _singleton: ResolvedConfig | null = null;
  * @param overrides  Explicit values (highest priority -- Layer 1).
  */
 export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
-  if (_singleton) return _singleton;
+  if (_singleton && !overrides) return _singleton;
+  if (_singleton && overrides) {
+    // Overrides after singleton is already cached — warn and re-resolve
+    console.warn('[resolve-config] resolveConfig() called with overrides after singleton was cached. Re-resolving.');
+    _singleton = null;
+  }
 
   // Layer 4: start with hardcoded defaults
   let model: string = DEFAULT_MODEL;

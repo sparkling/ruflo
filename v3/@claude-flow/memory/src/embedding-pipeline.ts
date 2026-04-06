@@ -124,7 +124,17 @@ export class EmbeddingPipeline {
    *
    * Validates dimension on a probe embedding to fail loudly at startup.
    */
+  private _initPromise: Promise<void> | null = null;
+
   async initialize(): Promise<void> {
+    if (this.initialized) return;
+    // Serialize concurrent callers behind one initialization attempt
+    if (this._initPromise) return this._initPromise;
+    this._initPromise = this._doInitialize();
+    return this._initPromise;
+  }
+
+  private async _doInitialize(): Promise<void> {
     if (this.initialized) return;
 
     // Set TRANSFORMERS_CACHE to user-writable path (EM-002)
@@ -160,6 +170,7 @@ export class EmbeddingPipeline {
     }
 
     this.initialized = true;
+    this._initPromise = null;
   }
 
   /**
@@ -245,13 +256,23 @@ export function getPipeline(): EmbeddingPipeline | null {
  * Create and initialize the singleton pipeline from config.
  * Returns the existing instance if already initialized.
  */
+let _initPromise: Promise<EmbeddingPipeline> | null = null;
+
 export async function initPipeline(
   config: ResolvedConfig['embedding'],
 ): Promise<EmbeddingPipeline> {
   if (_pipeline) return _pipeline;
-  _pipeline = new EmbeddingPipeline(config);
-  await _pipeline.initialize();
-  return _pipeline;
+  // Serialize concurrent callers behind one initialization
+  if (_initPromise) return _initPromise;
+  _initPromise = (async () => {
+    if (_pipeline) return _pipeline;
+    const p = new EmbeddingPipeline(config);
+    await p.initialize();
+    _pipeline = p;
+    _initPromise = null;
+    return p;
+  })();
+  return _initPromise;
 }
 
 /** Reset the singleton (for testing only). */
