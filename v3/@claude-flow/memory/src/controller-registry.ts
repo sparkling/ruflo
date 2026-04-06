@@ -91,6 +91,18 @@ export type CLIControllerName =
   | 'mmrDiversityRanker'
   | 'guardedVectorBackend'
   | 'solverBandit'
+  | 'attentionMetrics'           // D2
+  | 'selfAttention'
+  | 'crossAttention'
+  | 'multiHeadAttention'
+  | 'attentionService'
+  | 'flashAttentionService'
+  | 'moeAttentionService'
+  | 'nativeAccelerator'
+  | 'selfLearningRvfBackend'
+  | 'federatedLearningManager'
+  | 'enhancedEmbeddingService'
+  | 'quantizedVectorStore'
   | 'resourceTracker'            // D4
   | 'rateLimiter'                // D5
   | 'circuitBreakerController'   // D6 - registry-level decorator
@@ -98,7 +110,6 @@ export type CLIControllerName =
   | 'queryOptimizer'             // B6
   | 'indexHealthMonitor'         // B3
   | 'auditLogger'               // D3
-  | 'attentionMetrics'           // D2
   | 'telemetryManager';          // D1
 
 /**
@@ -290,8 +301,8 @@ export const INIT_LEVELS: InitLevel[] = [
   { level: 0, controllers: ['telemetryManager', 'resourceTracker', 'rateLimiter', 'circuitBreakerController'] },
   // Level 1: Core intelligence
   { level: 1, controllers: ['reasoningBank', 'hierarchicalMemory', 'learningBridge', 'solverBandit', 'tieredCache', 'metadataFilter', 'queryOptimizer'] },
-  // Level 2: Graph, security, composites
-  { level: 2, controllers: ['memoryGraph', 'agentMemoryScope', 'vectorBackend', 'mutationGuard', 'gnnService', 'selfAttention', 'crossAttention', 'multiHeadAttention', 'attentionService', 'selfLearningRvfBackend', 'nativeAccelerator', 'quantizedVectorStore'] },
+  // Level 2: Graph, security, composites + ADR-0069 F3 dual attention
+  { level: 2, controllers: ['memoryGraph', 'agentMemoryScope', 'vectorBackend', 'mutationGuard', 'gnnService', 'selfAttention', 'crossAttention', 'multiHeadAttention', 'attentionService', 'flashAttentionService', 'moeAttentionService', 'selfLearningRvfBackend', 'nativeAccelerator', 'quantizedVectorStore'] },
   // Level 3: Specialization
   { level: 3, controllers: ['skills', 'explainableRecall', 'reflexion', 'attestationLog', 'batchOperations', 'memoryConsolidation', 'enhancedEmbeddingService', 'auditLogger'] },
   // Level 4: Causal, routing, health
@@ -1631,6 +1642,51 @@ export class ControllerRegistry extends EventEmitter {
           if (this.strictMode) throw err;
           return null;
         }
+      }
+
+      // ----- ADR-0069 F3: Dual AttentionService instances for SONAWithAttention -----
+      // Flash instance: self-attention layers (memory-efficient tiled computation)
+      case 'flashAttentionService': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const AS = agentdbModule.AttentionService;
+          if (!AS) return null;
+          const dim = this.resolvedDimension;
+          const numHeads = this.config.attentionService?.numHeads ?? 8;
+          const svc = new AS({
+            numHeads,
+            headDim: Math.floor(dim / numHeads),
+            embedDim: dim,
+            useFlash: true,
+            useMoE: false,
+            useHyperbolic: false,
+          });
+          await svc.initialize();
+          return svc;
+        } catch { return null; }
+      }
+
+      // MoE instance: expert routing (dynamic expert selection)
+      case 'moeAttentionService': {
+        try {
+          const agentdbModule: any = await import('agentdb');
+          const AS = agentdbModule.AttentionService;
+          if (!AS) return null;
+          const dim = this.resolvedDimension;
+          const moeCfg = this.config.attentionService || {};
+          const svc = new AS({
+            numHeads: moeCfg.numHeads ?? 4,
+            headDim: Math.floor(dim / (moeCfg.numHeads ?? 4)),
+            embedDim: dim,
+            useFlash: false,
+            useMoE: true,
+            numExperts: 8,
+            topK: 2,
+            useHyperbolic: false,
+          });
+          await svc.initialize();
+          return svc;
+        } catch { return null; }
       }
 
       case 'queryOptimizer': {
