@@ -1602,19 +1602,8 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       // ----- ADR-0061 Phase 2: Pure JS controllers -----
-      case 'solverBandit': {
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const SB = agentdbModule.SolverBandit;
-          if (!SB) return null;
-          const sbCfg = this.config.solverBandit || {};
-          return getOrCreate(name, () => new SB({
-            costWeight: sbCfg.costWeight,
-            costDecay: sbCfg.costDecay,
-            explorationBonus: sbCfg.explorationBonus,
-          }));
-        } catch { return null; }
-      }
+      // NOTE: case 'solverBandit' handled above (line ~1168) with state restore logic.
+      // Duplicate case removed per ADR-0076 Phase 4 validation.
 
       case 'attentionMetrics': {
         try {
@@ -1789,11 +1778,14 @@ export class ControllerRegistry extends EventEmitter {
           if (!SLRB) return null;
           const dbPath = this.config.dbPath || ':memory:';
           const storagePath = dbPath === ':memory:' ? ':memory:' : dbPath.replace(/\.db$/, '-rvf.sqlite');
-          return getOrCreate(name, () => SLRB.create({
+          // ADR-0076: await the async factory BEFORE passing to getOrCreate
+          // (getOrCreate is sync — passing an async factory stores a Promise, not an instance)
+          const instance = await SLRB.create({
             dimension: this.resolvedDimension,
             storagePath,
             learning: true,
-          }));
+          });
+          return getOrCreate(name, () => instance);
         } catch { return null; }
       }
 
