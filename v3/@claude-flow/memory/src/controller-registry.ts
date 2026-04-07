@@ -27,6 +27,7 @@ import { TieredCacheManager } from './cache-manager.js';
 import type { CacheConfig } from './types.js';
 import { getConfig } from './resolve-config.js';
 import { getPipeline } from './embedding-pipeline.js';
+import { getOrCreate } from './controller-intercept.js';
 
 // ===== ADR-0049: Fail-Loud Error Classes =====
 
@@ -1161,7 +1162,7 @@ export class ControllerRegistry extends EventEmitter {
           consolidationThreshold: config.consolidationThreshold,
           enabled: true,
         });
-        return bridge;
+        return getOrCreate(name, () => bridge);
       }
 
       case 'solverBandit': {
@@ -1181,7 +1182,7 @@ export class ControllerRegistry extends EventEmitter {
               bandit.deserialize(JSON.parse(stateEntry.content));
             }
           } catch { /* cold start — no persisted state */ }
-          return bandit;
+          return getOrCreate(name, () => bandit);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1206,7 +1207,7 @@ export class ControllerRegistry extends EventEmitter {
             // Graph build from backend failed — empty graph is still usable
           }
         }
-        return graph;
+        return getOrCreate(name, () => graph);
       }
 
       case 'tieredCache': {
@@ -1218,7 +1219,7 @@ export class ControllerRegistry extends EventEmitter {
           writeThrough: false,
           ...config,
         });
-        return cache;
+        return getOrCreate(name, () => cache);
       }
 
       case 'agentMemoryScope': {
@@ -1237,7 +1238,7 @@ export class ControllerRegistry extends EventEmitter {
             return scopes.global();
           };
 
-          return {
+          return getOrCreate(name, () => ({
             getScope,
 
             scopeKey(key: string, type: 'agent' | 'session' | 'global', id?: string): string {
@@ -1276,7 +1277,7 @@ export class ControllerRegistry extends EventEmitter {
                 description: '3-scope isolation: agent-local, session-local, global shared',
               };
             },
-          };
+          }));
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1291,7 +1292,7 @@ export class ControllerRegistry extends EventEmitter {
         try {
           const { HybridSearchController } = await import('./controllers/hybrid-search.js');
           const backend = this.get('vectorBackend') ?? this.agentdb;
-          return new HybridSearchController(backend);
+          return getOrCreate(name, () => new HybridSearchController(backend));
         } catch { return null; }
       }
 
@@ -1304,7 +1305,7 @@ export class ControllerRegistry extends EventEmitter {
           if (!SR) return null;
           const router = new SR();
           await router.initialize();
-          return router;
+          return getOrCreate(name, () => router);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1319,7 +1320,7 @@ export class ControllerRegistry extends EventEmitter {
         if (this.agentdb && typeof this.agentdb.getController === 'function') {
           try {
             const ctrl = this.agentdb.getController('sonaTrajectory');
-            if (ctrl) return ctrl;
+            if (ctrl) return getOrCreate(name, () => ctrl);
           } catch { /* fall through to direct construction */ }
         }
         try {
@@ -1328,7 +1329,7 @@ export class ControllerRegistry extends EventEmitter {
           if (!STS) return null;
           const svc = new STS();
           if (typeof svc.initialize === 'function') await svc.initialize();
-          return svc;
+          return getOrCreate(name, () => svc);
         } catch { return null; }
 
       case 'hierarchicalMemory': {
@@ -1343,7 +1344,7 @@ export class ControllerRegistry extends EventEmitter {
           const vb = this.get('vectorBackend');
           const hm = new HM(this.agentdb.database, embedder, vb || undefined);
           await hm.initializeDatabase();
-          return hm;
+          return getOrCreate(name, () => hm);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1369,7 +1370,7 @@ export class ControllerRegistry extends EventEmitter {
           const embedder = this.createEmbeddingService();
           const mc = new MC(this.agentdb.database, hm, embedder);
           await mc.initializeDatabase();
-          return mc;
+          return getOrCreate(name, () => mc);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1393,7 +1394,7 @@ export class ControllerRegistry extends EventEmitter {
       case 'graphTransformer': {
         if (!this.agentdb || typeof this.agentdb.getController !== 'function') return null;
         try {
-          return this.agentdb.getController(name) ?? null;
+          return getOrCreate(name, () => this.agentdb.getController(name) ?? null);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1410,7 +1411,7 @@ export class ControllerRegistry extends EventEmitter {
         if (typeof this.agentdb.getController === 'function') {
           try {
             const ctrl = this.agentdb.getController('nightlyLearner');
-            if (ctrl) return ctrl;
+            if (ctrl) return getOrCreate(name, () => ctrl);
           } catch { /* fall through to direct construction */ }
         }
         // Fallback: direct construction (AgentDB < alpha.12 may not expose nightlyLearner)
@@ -1422,14 +1423,14 @@ export class ControllerRegistry extends EventEmitter {
           // was successfully initialized at Level 2
           const hasAttention = this.controllers.get('attentionService')?.enabled === true;
           // ADR-0040: pass pre-created singletons to avoid duplicate SQLite objects
-          return new NL(
+          return getOrCreate(name, () => new NL(
             this.agentdb.database,
             this.createEmbeddingService(),
             { ENABLE_FLASH_CONSOLIDATION: hasAttention },
             this.get('causalGraph') || undefined,
             this.get('reflexion') || undefined,
             this.get('skills') || undefined,
-          );
+          ));
         } catch { return null; }
       }
 
@@ -1442,7 +1443,7 @@ export class ControllerRegistry extends EventEmitter {
           if (!BO) return null;
           // ADR-0064 P2: Use createEmbeddingService() like all other controllers
           const embedder = this.createEmbeddingService();
-          return new BO(this.agentdb.database, embedder);
+          return getOrCreate(name, () => new BO(this.agentdb.database, embedder));
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1456,7 +1457,8 @@ export class ControllerRegistry extends EventEmitter {
         // ContextSynthesizer.synthesize is static — return the class itself
         try {
           const agentdbModule: any = await import('agentdb');
-          return agentdbModule.ContextSynthesizer ?? null;
+          const cs = agentdbModule.ContextSynthesizer;
+          return cs ? getOrCreate(name, () => cs) : null;
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1470,7 +1472,8 @@ export class ControllerRegistry extends EventEmitter {
         // MMRDiversityRanker is static-only — return class reference (ADR-0061 Bug #5)
         try {
           const agentdbModule: any = await import('agentdb');
-          return agentdbModule.MMRDiversityRanker ?? null;
+          const mmr = agentdbModule.MMRDiversityRanker;
+          return mmr ? getOrCreate(name, () => mmr) : null;
         } catch { return null; }
       }
 
@@ -1480,7 +1483,7 @@ export class ControllerRegistry extends EventEmitter {
         if (typeof this.agentdb.getController === 'function') {
           try {
             const ctrl = this.agentdb.getController('mutationGuard');
-            if (ctrl) return ctrl;
+            if (ctrl) return getOrCreate(name, () => ctrl);
           } catch { /* fall through to direct construction */ }
         }
         // Fallback: direct construction (AgentDB < alpha.12)
@@ -1490,7 +1493,7 @@ export class ControllerRegistry extends EventEmitter {
           if (!MG) return null;
           const mg = new MG({ dimension: this.resolvedDimension });
           await mg.initialize();
-          return mg;
+          return getOrCreate(name, () => mg);
         } catch { return null; }
       }
 
@@ -1502,7 +1505,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const AL = agentdbModule.AttestationLog;
           if (!AL) return null;
-          return new AL(this.agentdb.database);
+          return getOrCreate(name, () => new AL(this.agentdb.database));
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1520,7 +1523,7 @@ export class ControllerRegistry extends EventEmitter {
           if (!GNN) return null;
           const gnn = new GNN({ inputDim: this.resolvedDimension });
           await gnn.initialize();
-          return gnn;
+          return getOrCreate(name, () => gnn);
         } catch { return null; }
       }
 
@@ -1531,7 +1534,7 @@ export class ControllerRegistry extends EventEmitter {
           const _agentdbModule = await import('agentdb');
           const backend = this.backend;
 
-          return {
+          return getOrCreate(name, () => ({
             async optimize() {
               // Run WAL checkpoint + VACUUM on the backend if supported
               if (backend && typeof (backend as any).optimize === 'function') {
@@ -1548,7 +1551,7 @@ export class ControllerRegistry extends EventEmitter {
             isAvailable() {
               return !!backend;
             },
-          };
+          }));
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1571,7 +1574,7 @@ export class ControllerRegistry extends EventEmitter {
           const GVB = agentdbModule.GuardedVectorBackend;
           if (!GVB) return null;
           const log = this.get('attestationLog');
-          return new GVB(vb, guard, log || undefined);
+          return getOrCreate(name, () => new GVB(vb, guard, log || undefined));
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1584,7 +1587,7 @@ export class ControllerRegistry extends EventEmitter {
       case 'vectorBackend': {
         // ADR-0040: vectorBackend is a property on AgentDB, not a controller name
         if (!this.agentdb) return null;
-        return this.agentdb.vectorBackend ?? null;
+        return getOrCreate(name, () => this.agentdb.vectorBackend ?? null);
       }
 
       case 'graphAdapter': {
@@ -1592,7 +1595,7 @@ export class ControllerRegistry extends EventEmitter {
         if (!this.agentdb) return null;
         try {
           if (typeof this.agentdb.getController === 'function') {
-            return this.agentdb.getController('graphAdapter') ?? null;
+            return getOrCreate(name, () => this.agentdb.getController('graphAdapter') ?? null);
           }
         } catch { /* fallthrough */ }
         return null;
@@ -1605,11 +1608,11 @@ export class ControllerRegistry extends EventEmitter {
           const SB = agentdbModule.SolverBandit;
           if (!SB) return null;
           const sbCfg = this.config.solverBandit || {};
-          return new SB({
+          return getOrCreate(name, () => new SB({
             costWeight: sbCfg.costWeight,
             costDecay: sbCfg.costDecay,
             explorationBonus: sbCfg.explorationBonus,
-          });
+          }));
         } catch { return null; }
       }
 
@@ -1618,7 +1621,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const AMC = agentdbModule.AttentionMetricsCollector;
           if (!AMC) return null;
-          return new AMC();
+          return getOrCreate(name, () => new AMC());
         } catch { return null; }
       }
 
@@ -1630,7 +1633,7 @@ export class ControllerRegistry extends EventEmitter {
           if (!SAC) return null;
           const vb = this.get('vectorBackend');
           const saCfg = this.config.selfAttention || {};
-          return new SAC(vb || null, { topK: saCfg.topK ?? 10 });
+          return getOrCreate(name, () => new SAC(vb || null, { topK: saCfg.topK ?? 10 }));
         } catch { return null; }
       }
 
@@ -1640,7 +1643,7 @@ export class ControllerRegistry extends EventEmitter {
           const CAC = agentdbModule.CrossAttentionController;
           if (!CAC) return null;
           const vb = this.get('vectorBackend');
-          return new CAC(vb || null);
+          return getOrCreate(name, () => new CAC(vb || null));
         } catch { return null; }
       }
 
@@ -1651,10 +1654,10 @@ export class ControllerRegistry extends EventEmitter {
           if (!MHA) return null;
           const vb = this.get('vectorBackend');
           const mhaCfg = this.config.multiHeadAttention || {};
-          return new MHA(vb || null, {
+          return getOrCreate(name, () => new MHA(vb || null, {
             numHeads: mhaCfg.numHeads ?? 8,
             topK: mhaCfg.topK ?? 10,
-          });
+          }));
         } catch { return null; }
       }
 
@@ -1675,7 +1678,7 @@ export class ControllerRegistry extends EventEmitter {
             useHyperbolic: asCfg.useHyperbolic ?? false,
           });
           await svc.initialize();
-          return svc;
+          return getOrCreate(name, () => svc);
         } catch { return null; }
       }
 
@@ -1697,7 +1700,7 @@ export class ControllerRegistry extends EventEmitter {
             useHyperbolic: false,
           });
           await svc.initialize();
-          return svc;
+          return getOrCreate(name, () => svc);
         } catch { return null; }
       }
 
@@ -1720,7 +1723,7 @@ export class ControllerRegistry extends EventEmitter {
             useHyperbolic: false,
           });
           await svc.initialize();
-          return svc;
+          return getOrCreate(name, () => svc);
         } catch { return null; }
       }
 
@@ -1731,7 +1734,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const QO = agentdbModule.QueryOptimizer;
           if (!QO) return null;
-          return new QO(this.agentdb.database);
+          return getOrCreate(name, () => new QO(this.agentdb.database));
         } catch { return null; }
       }
 
@@ -1740,7 +1743,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const EES = agentdbModule.EnhancedEmbeddingService;
           if (!EES) return null;
-          return new EES();
+          return getOrCreate(name, () => new EES());
         } catch { return null; }
       }
 
@@ -1750,10 +1753,10 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const AL = agentdbModule.AuditLogger;
           if (!AL) return null;
-          return new AL({
+          return getOrCreate(name, () => new AL({
             maxFileSize: this.config.auditRotationSize ?? 10 * 1024 * 1024,
             maxFiles: this.config.auditRotationFiles ?? 10,
-          });
+          }));
         } catch { return null; }
       }
 
@@ -1762,7 +1765,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const QVS = agentdbModule.QuantizedVectorStore;
           if (!QVS) return null;
-          return new QVS({ type: this.config.quantizedVectorStore?.type ?? 'scalar-8bit' });
+          return getOrCreate(name, () => new QVS({ type: this.config.quantizedVectorStore?.type ?? 'scalar-8bit' }));
         } catch { return null; }
       }
 
@@ -1773,7 +1776,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const getAcc = agentdbModule.getAccelerator;
           if (!getAcc) return null;
-          return await getAcc();
+          return getOrCreate(name, () => getAcc());
         } catch { return null; }
       }
 
@@ -1786,11 +1789,11 @@ export class ControllerRegistry extends EventEmitter {
           if (!SLRB) return null;
           const dbPath = this.config.dbPath || ':memory:';
           const storagePath = dbPath === ':memory:' ? ':memory:' : dbPath.replace(/\.db$/, '-rvf.sqlite');
-          return await SLRB.create({
+          return getOrCreate(name, () => SLRB.create({
             dimension: this.resolvedDimension,
             storagePath,
             learning: true,
-          });
+          }));
         } catch { return null; }
       }
 
@@ -1800,7 +1803,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const MF = agentdbModule.MetadataFilter;
           if (!MF) return null;
-          return new MF();
+          return getOrCreate(name, () => new MF());
         } catch { return null; }
       }
 
@@ -1810,7 +1813,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const IHM = agentdbModule.IndexHealthMonitor;
           if (!IHM) return null;
-          return new IHM();
+          return getOrCreate(name, () => new IHM());
         } catch { return null; }
       }
 
@@ -1819,7 +1822,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const FLM = agentdbModule.FederatedLearningManager;
           if (!FLM) return null;
-          return new FLM({ agentId: this.config.agentId || `agent-${Date.now().toString(36)}` });
+          return getOrCreate(name, () => new FLM({ agentId: this.config.agentId || `agent-${Date.now().toString(36)}` }));
         } catch { return null; }
       }
 
@@ -1829,7 +1832,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const RT = agentdbModule.ResourceTracker;
           if (!RT) return null;
-          return new RT();
+          return getOrCreate(name, () => new RT());
         } catch { return null; }
       }
 
@@ -1843,7 +1846,7 @@ export class ControllerRegistry extends EventEmitter {
           // ADR-0069 A2: config-chain rate limits
           const windowMs = rlCfg.windowMs || 60000;
           const refillRate = Math.max(1, Math.round(maxTokens / (windowMs / 1000)));
-          return new RL(maxTokens, refillRate);
+          return getOrCreate(name, () => new RL(maxTokens, refillRate));
         } catch { return null; }
       }
 
@@ -1853,7 +1856,7 @@ export class ControllerRegistry extends EventEmitter {
           const CB = agentdbModule.CircuitBreaker;
           if (CB) {
             const cbCfg = this.config.circuitBreaker || {};
-            return new CB(cbCfg.failureThreshold ?? 5, cbCfg.resetTimeoutMs ?? 60000);
+            return getOrCreate(name, () => new CB(cbCfg.failureThreshold ?? 5, cbCfg.resetTimeoutMs ?? 60000));
           }
         } catch { /* agentdb not available — use inline fallback */ }
         // Level 0 security controller must NEVER return null
@@ -1863,7 +1866,7 @@ export class ControllerRegistry extends EventEmitter {
         let failures = 0;
         let state: 'closed' | 'open' | 'half-open' = 'closed';
         let openedAt = 0;
-        return {
+        return getOrCreate(name, () => ({
           getState: () => state,
           recordSuccess() { failures = 0; state = 'closed'; },
           recordFailure() {
@@ -1875,7 +1878,7 @@ export class ControllerRegistry extends EventEmitter {
             return state === 'open';
           },
           getStats: () => ({ state, failures, threshold }),
-        };
+        }));
       }
 
       case 'telemetryManager': {
@@ -1883,7 +1886,7 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const TM = agentdbModule.TelemetryManager;
           if (!TM) return null;
-          return TM.getInstance();
+          return getOrCreate(name, () => TM.getInstance());
         } catch { return null; }
       }
 

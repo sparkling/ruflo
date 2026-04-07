@@ -165,6 +165,9 @@ export type {
   TransferResult,
 } from './agent-memory-scope.js';
 
+// ===== Controller Intercept (ADR-0076 Phase 4) =====
+export { getOrCreate, getExisting, has as hasController, listControllers, controllerCount, resetInterceptPool } from './controller-intercept.js';
+
 // ===== Controller Registry (ADR-053) =====
 export { ControllerRegistry, INIT_LEVELS } from './controller-registry.js';
 export type {
