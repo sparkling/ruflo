@@ -556,7 +556,25 @@ export class ControllerRegistry extends EventEmitter {
     // Priority: explicit config → resolveConfig() (embeddings.json → agentdb → 768)
     this.resolvedDimension = config.dimension ?? getConfig().embedding.dimension;
 
-    // ADR-0076 A3: Validate stored dimension matches configured dimension
+    // Step 2: Set up the backend (ADR-0076 Phase 3)
+    // Must happen BEFORE dimension validation (Step 2b) — the validation reads this.backend.
+    // Priority: explicit config.backend > createStorage() factory > null
+    if (config.backend) {
+      this.backend = config.backend;
+    } else {
+      try {
+        const { createStorageFromConfig } = await import('./storage-factory.js');
+        const resolved = getConfig();
+        this.backend = await createStorageFromConfig(resolved, {
+          databasePath: config.dbPath || resolved.storage.databasePath,
+        });
+      } catch {
+        // Storage creation failed — controllers degrade gracefully with null backend
+        this.backend = null;
+      }
+    }
+
+    // Step 2b: ADR-0076 A3 — Validate stored dimension matches configured dimension
     if (this.backend && typeof (this.backend as any).getStoredDimension === 'function') {
       try {
         const storedDim = await (this.backend as any).getStoredDimension();
@@ -573,22 +591,6 @@ export class ControllerRegistry extends EventEmitter {
       } catch (e) {
         // Only re-throw dimension errors, not probe failures
         if ((e as Error).name === 'EmbeddingDimensionError') throw e;
-      }
-    }
-
-    // Step 2: Set up the backend (ADR-0076 Phase 3)
-    // Priority: explicit config.backend > createStorage() factory > null
-    if (config.backend) {
-      this.backend = config.backend;
-    } else {
-      try {
-        const { createStorageFromConfig } = await import('./storage-factory.js');
-        this.backend = await createStorageFromConfig(getConfig(), {
-          databasePath: config.dbPath || getConfig().storage.databasePath,
-        });
-      } catch {
-        // Storage creation failed — controllers degrade gracefully with null backend
-        this.backend = null;
       }
     }
 

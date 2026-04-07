@@ -508,6 +508,7 @@ export async function getHNSWIndex(options?: {
       const storage = await createStorage({
         databasePath: dbPath,
         dimensions,
+        autoPersistInterval: 0, // read-only index build — never write back
       });
       // Query all entries (RVF backend only stores active entries)
       const storageEntries = await storage.query({ type: 'prefix', keyPrefix: '', limit: 10000 });
