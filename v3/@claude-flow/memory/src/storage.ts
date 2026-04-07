@@ -6,7 +6,7 @@
  *   - PureTsStorage  (RvfBackend falling back to HnswLite + JSON)
  *
  * IStorage starts as a type alias for IMemoryBackend so existing call-sites
- * keep compiling.  IStorageContract documents the 10 methods controllers
+ * keep compiling.  IStorageContract documents the 16 methods controllers
  * actually call and will replace IMemoryBackend once all consumers migrate.
  *
  * @module @claude-flow/memory/storage
