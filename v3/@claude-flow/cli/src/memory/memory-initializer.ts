@@ -501,7 +501,38 @@ export async function getHNSWIndex(options?: {
       return hnswIndex;
     }
 
-    if (fs.existsSync(dbPath)) {
+    // ADR-0076 Phase 3: try createStorage() to load entries before sql.js fallback
+    let loadedFromStorage = false;
+    try {
+      const { createStorage } = await import('@claude-flow/memory');
+      const storage = await createStorage({
+        databasePath: dbPath,
+        dimensions,
+      });
+      // Query all entries (RVF backend only stores active entries)
+      const storageEntries = await storage.query({ type: 'prefix', keyPrefix: '', limit: 10000 });
+      for (const entry of storageEntries) {
+        if (entry.embedding) {
+          try {
+            await db.insert({
+              id: entry.id,
+              vector: entry.embedding,
+            });
+            hnswIndex.entries.set(entry.id, {
+              id: entry.id,
+              key: entry.key || entry.id,
+              namespace: entry.namespace || 'default',
+              content: entry.content || '',
+            });
+          } catch {
+            // Skip entries that fail to insert
+          }
+        }
+      }
+      loadedFromStorage = true;
+    } catch { /* createStorage failed — fall through to sql.js */ }
+
+    if (!loadedFromStorage && fs.existsSync(dbPath)) {
       try {
         const initSqlJs = (await import('sql.js')).default;
         const SQL = await initSqlJs();
@@ -1269,6 +1300,63 @@ export async function initializeMemoryDatabase(options: {
         error: 'Database already exists. Use --force to reinitialize.'
       };
     }
+
+    // ADR-0076 Phase 3: try createStorage() before sql.js fallback
+    try {
+      const { createStorage } = await import('@claude-flow/memory');
+      const embCfg = readEmbeddingsConfig();
+      const storage = await createStorage({
+        databasePath: dbPath,
+        dimensions: embCfg.dimension,
+        hnswM: embCfg.hnsw.m,
+        hnswEfConstruction: embCfg.hnsw.efConstruction,
+        verbose,
+      });
+
+      // ADR-053: Activate ControllerRegistry alongside new storage
+      const controllerResult = await activateControllerRegistry(dbPath, verbose);
+
+      return {
+        success: true,
+        backend: 'rvf',
+        dbPath,
+        schemaVersion: '3.0.0',
+        tablesCreated: [
+          'memory_entries',
+          'patterns',
+          'pattern_history',
+          'trajectories',
+          'trajectory_steps',
+          'migration_state',
+          'sessions',
+          'vector_indexes',
+          'metadata'
+        ],
+        indexesCreated: [
+          'idx_memory_namespace',
+          'idx_memory_key',
+          'idx_memory_type',
+          'idx_memory_status',
+          'idx_memory_created',
+          'idx_memory_accessed',
+          'idx_memory_owner',
+          'idx_patterns_type',
+          'idx_patterns_confidence',
+          'idx_patterns_status',
+          'idx_patterns_last_matched',
+          'idx_pattern_history_pattern',
+          'idx_steps_trajectory'
+        ],
+        features: {
+          vectorEmbeddings: true,
+          patternLearning: true,
+          temporalDecay: true,
+          hnswIndexing: true,
+          migrationTracking: true
+        },
+        controllers: controllerResult,
+      };
+    } catch { /* createStorage failed — fall through to sql.js */ }
 
     // Try to use sql.js (WASM SQLite)
     let db: any;

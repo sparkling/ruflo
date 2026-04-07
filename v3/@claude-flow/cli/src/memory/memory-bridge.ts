@@ -366,18 +366,28 @@ async function getRvfStore(): Promise<any | null> {
           return null;
         }
 
+        // ADR-0076 Phase 3: use createStorage factory instead of direct RvfBackend construction
         const memPkg = await import('@claude-flow/memory');
-        if (!memPkg.RvfBackend) {
-          rvfStoreChecked = true;
-          return null;
+        let backend: any;
+        try {
+          backend = await memPkg.createStorage({
+            databasePath: rvfPath,
+            dimensions: registryInstance?.config?.dimension || 768,
+            autoPersistInterval: 0, // read-only — never write back
+          });
+        } catch {
+          // createStorage failed — fall back to direct RvfBackend
+          if (!memPkg.RvfBackend) {
+            rvfStoreChecked = true;
+            return null;
+          }
+          backend = new memPkg.RvfBackend({
+            databasePath: rvfPath,
+            dimensions: registryInstance?.config?.dimension || 768,
+            autoPersistInterval: 0,
+          });
+          await backend.initialize();
         }
-
-        const backend = new memPkg.RvfBackend({
-          databasePath: rvfPath,
-          dimensions: registryInstance?.config?.dimension || 768,
-          autoPersistInterval: 0, // read-only — never write back
-        });
-        await backend.initialize();
 
         rvfStoreInstance = backend;
         rvfStoreChecked = true;

@@ -576,8 +576,21 @@ export class ControllerRegistry extends EventEmitter {
       }
     }
 
-    // Step 2: Set up the backend
-    this.backend = config.backend || null;
+    // Step 2: Set up the backend (ADR-0076 Phase 3)
+    // Priority: explicit config.backend > createStorage() factory > null
+    if (config.backend) {
+      this.backend = config.backend;
+    } else {
+      try {
+        const { createStorageFromConfig } = await import('./storage-factory.js');
+        this.backend = await createStorageFromConfig(getConfig(), {
+          databasePath: config.dbPath || getConfig().storage.databasePath,
+        });
+      } catch {
+        // Storage creation failed — controllers degrade gracefully with null backend
+        this.backend = null;
+      }
+    }
 
     // Step 3: Initialize controllers level by level
     // ADR-0048: Levels 0-1 are eager (fast, <200ms). Levels 2+ are deferred
