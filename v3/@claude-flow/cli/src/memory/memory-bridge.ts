@@ -359,11 +359,34 @@ async function getRvfStore(): Promise<any | null> {
     rvfStorePromise = (async () => {
       try {
         const { existsSync } = await import('fs');
-        // ADR-0069: config-chain swarmDir
-        const rvfPath = path.resolve(process.cwd(), getConfigSwarmDir(), 'agentdb-memory.rvf');
+        // ADR-0080: resolve RVF path from embeddings.json or canonical default
+        // Was hardcoded 'agentdb-memory.rvf' — now tries embeddings.json databasePath first
+        const swarmDir = getConfigSwarmDir();
+        let rvfPath = '';
+        try {
+          const fs = await import('fs');
+          let _d = process.cwd();
+          while (_d !== path.dirname(_d)) {
+            const _c = path.join(_d, '.claude-flow', 'embeddings.json');
+            if (fs.existsSync(_c)) {
+              const cfg = JSON.parse(fs.readFileSync(_c, 'utf-8'));
+              if (cfg.databasePath) { rvfPath = path.resolve(process.cwd(), cfg.databasePath); break; }
+            }
+            _d = path.dirname(_d);
+          }
+        } catch { /* fall through */ }
+        if (!rvfPath) {
+          rvfPath = path.resolve(process.cwd(), swarmDir, 'memory.rvf');
+        }
         if (!existsSync(rvfPath)) {
-          rvfStoreChecked = true;
-          return null;
+          // Fallback: try legacy name
+          const legacyPath = path.resolve(process.cwd(), swarmDir, 'agentdb-memory.rvf');
+          if (existsSync(legacyPath)) {
+            rvfPath = legacyPath;
+          } else {
+            rvfStoreChecked = true;
+            return null;
+          }
         }
 
         // ADR-0076 Phase 3: use createStorage factory instead of direct RvfBackend construction

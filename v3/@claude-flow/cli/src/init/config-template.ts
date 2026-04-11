@@ -92,7 +92,7 @@ export function getFullConfigTemplate(
       },
       memoryGraph: {
         enabled: true,
-        pageRankDamping: 0.82,
+        pageRankDamping: 0.85, // ADR-0080: aligned with settings-generator
         maxNodes: 10000,
         similarityThreshold: 0.25,
       },

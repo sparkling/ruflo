@@ -1430,21 +1430,9 @@ const initMemoryCommand: Command = {
         `View stats: ${output.highlight('claude-flow memory stats')}`
       ]);
 
-      // Also sync to .claude directory
-      const fs = await import('fs');
-      const path = await import('path');
-      const claudeDir = path.join(process.cwd(), '.claude');
-      const claudeDbPath = path.join(claudeDir, 'memory.db');
-
-      if (!fs.existsSync(claudeDir)) {
-        fs.mkdirSync(claudeDir, { recursive: true });
-      }
-
-      if (fs.existsSync(result.dbPath) && (!fs.existsSync(claudeDbPath) || force)) {
-        fs.copyFileSync(result.dbPath, claudeDbPath);
-        output.writeln();
-        output.writeln(output.dim(`Synced to: ${claudeDbPath}`));
-      }
+      // ADR-0080: removed .claude/memory.db copy — it was a dead-weight one-time
+      // copy that never received subsequent writes. Subsystems that probed it
+      // (.swarm/memory.db is the canonical path) now fall through gracefully.
 
       // Fix #1428 now handled centrally in CLI.run() — see index.ts
 
