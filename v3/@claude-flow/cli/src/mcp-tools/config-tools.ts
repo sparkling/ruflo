@@ -24,7 +24,7 @@ const DEFAULT_CONFIG: Record<string, unknown> = {
   'swarm.maxAgents': 10,
   'swarm.autoScale': true,
   'memory.persistInterval': 60000,
-  'memory.maxEntries': 10000,
+  'memory.maxEntries': 100000,
   'session.autoSave': true,
   'session.saveInterval': 300000,
   'logging.level': 'info',

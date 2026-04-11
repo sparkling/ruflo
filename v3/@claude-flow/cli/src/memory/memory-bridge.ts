@@ -235,7 +235,7 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             hnswEfConstruction: embJson.hnsw?.efConstruction ?? 100,
             hnswEfSearch: embJson.hnsw?.efSearch ?? 50,
             maxElements: cfgJson.memory?.maxElements ?? 100000,
-            maxEntries: cfgJson.memory?.storage?.maxEntries ?? 1000000, // ADR-0069: config-chain capacity
+            maxEntries: cfgJson.memory?.maxEntries ?? cfgJson.memory?.storage?.maxEntries ?? 100000, // ADR-0080
             similarityThreshold: cfgJson.memory?.similarityThreshold ?? 0.7, // ADR-0069: wire similarityThreshold consumer
             swarmDir: cfgJson.memory?.swarmDir ?? '.swarm', // ADR-0069: config-chain swarmDir
             // ADR-0069 A1: config-chain SQLite pragmas

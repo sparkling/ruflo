@@ -175,7 +175,7 @@ export async function createDatabase(
     walMode = true,
     optimize = true,
     defaultNamespace = 'default',
-    maxEntries = 1000000, // ADR-0069: config-chain capacity — callers pass from RuntimeConfig.maxEntries
+    maxEntries = 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
     autoPersistInterval = 5000,
   } = options;
 

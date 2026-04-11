@@ -164,9 +164,9 @@ export function getFullConfigTemplate(
     embeddings: {
       model: overrides?.embeddingModel ?? 'Xenova/all-mpnet-base-v2',
       dimension: overrides?.embeddingDim ?? 768,
-      provider: 'transformers',
+      provider: 'transformers.js',
       hnsw: {
-        m: 23,
+        M: 23,
         efConstruction: 100,
         efSearch: 50,
         maxElements: 100000,

@@ -594,7 +594,7 @@ export const FULL_INIT_OPTIONS: InitOptions = {
   },
   runtime: {
     ...DEFAULT_INIT_OPTIONS.runtime,
-    cacheSize: 384,
+    cacheSize: 256,
     sonaMode: 'balanced',
     maxNodes: 10000,
     similarityThreshold: 0.7,

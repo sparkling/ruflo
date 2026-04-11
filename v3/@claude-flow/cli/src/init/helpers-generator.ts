@@ -842,7 +842,7 @@ export function generateIntelligenceStub(): string {
     '            entries.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });',
     '            entries = entries.slice(0, 1000);',
     '          }',
-    '          writeJSON(STORE_PATH, { entries: entries });',
+    '          writeJSON(STORE_PATH, entries);',
     '        }',
     '        fs.writeFileSync(PENDING_PATH, "", "utf-8");',
     '      } catch (e) { /* skip */ }',

@@ -1220,6 +1220,8 @@ async function writeRuntimeConfig(
     port: options.mcp?.port,
     maxAgents: options.runtime?.maxAgents,
     similarityThreshold: options.runtime?.similarityThreshold,
+    embeddingModel: options.embeddings?.model,
+    embeddingDim: options.embeddings?.dimension,
   };
 
   // ADR-0069: detect full mode via explicit flag or skills.all proxy
@@ -1238,7 +1240,7 @@ async function writeRuntimeConfig(
     let embDefaults = {
       model: 'Xenova/all-mpnet-base-v2',
       dimension: 768,
-      provider: 'transformers' as string,
+      provider: 'transformers.js' as string, // ADR-0080: aligned with resolve-config canonical
       taskPrefixQuery: 'search_query: ',
       taskPrefixIndex: 'search_document: ',
     };
@@ -1278,6 +1280,13 @@ async function writeRuntimeConfig(
       cache: '~/.cache/transformers',
       batchSize: 32,
       quantization: 'none',
+      storageProvider: 'rvf',
+      databasePath: '.swarm/memory.rvf', // ADR-0080: aligned with runtime factory default
+      walMode: true,
+      autoPersistInterval: 30000,
+      maxEntries: 100000,
+      defaultNamespace: 'default',
+      dedupThreshold: 0.95,
     }, null, 4);
     fs.writeFileSync(embeddingsJsonPath, embeddingsConfig, 'utf-8');
     result.created.files.push('.claude-flow/embeddings.json');

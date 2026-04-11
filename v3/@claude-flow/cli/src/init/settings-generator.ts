@@ -130,7 +130,7 @@ export function generateSettings(options: InitOptions): object {
       memoryGraph: {
         enabled: options.runtime.enableMemoryGraph ?? true,
         pageRankDamping: 0.85,
-        maxNodes: 10000,
+        maxNodes: options?.runtime?.maxNodes ?? 10000,
         similarityThreshold: 0.7,
       },
       agentScopes: {

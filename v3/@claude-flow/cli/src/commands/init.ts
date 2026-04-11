@@ -508,7 +508,7 @@ export const wizardCommand: Command = {
     { name: 'codex', description: 'Initialize for OpenAI Codex CLI', type: 'boolean', default: false },
     { name: 'dual', description: 'Initialize for both Claude Code and Codex', type: 'boolean', default: false },
     { name: 'with-embeddings', description: 'Initialize ONNX embedding subsystem', type: 'boolean', default: false },
-    { name: 'embedding-model', description: 'ONNX embedding model', type: 'string', default: 'nomic-ai/nomic-embed-text-v1.5', choices: ['nomic-ai/nomic-embed-text-v1.5', 'all-MiniLM-L6-v2', 'all-mpnet-base-v2'] },
+    { name: 'embedding-model', description: 'ONNX embedding model', type: 'string', default: 'Xenova/all-mpnet-base-v2', choices: ['Xenova/all-mpnet-base-v2', 'Xenova/all-MiniLM-L6-v2', 'nomic-ai/nomic-embed-text-v1.5'] },
   ],
   examples: [
     { command: 'claude-flow wizard', description: 'Run interactive setup wizard' },
