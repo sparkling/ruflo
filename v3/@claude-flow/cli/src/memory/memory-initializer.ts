@@ -1069,14 +1069,24 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
 }> {
   const columnsAdded: string[] = [];
 
-  // ADR-0080: create full memory schema if table doesn't exist
+  // ADR-0080: create memory_entries table if it doesn't exist
+  // Uses inline DDL instead of MEMORY_SCHEMA_V3 to avoid index collisions with AgentDB
   try {
     const initSqlJs = (await import('sql.js')).default;
     const SQL = await initSqlJs();
     if (fs.existsSync(dbPath)) {
       const buf = fs.readFileSync(dbPath);
       const sqlDb = new SQL.Database(buf);
-      sqlDb.run(MEMORY_SCHEMA_V3);
+      sqlDb.run(`CREATE TABLE IF NOT EXISTS memory_entries (
+        id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
+        content TEXT NOT NULL, type TEXT DEFAULT 'semantic',
+        embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
+        tags TEXT, metadata TEXT, owner_id TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active', UNIQUE(namespace, key)
+      )`);
       const data = sqlDb.export();
       fs.writeFileSync(dbPath, Buffer.from(data));
       sqlDb.close();
@@ -1340,7 +1350,27 @@ export async function initializeMemoryDatabase(options: {
           const SQL = await initSqlJs();
           const buf = fs.readFileSync(sqlitePath);
           const sqlDb = new SQL.Database(buf);
-          sqlDb.run(MEMORY_SCHEMA_V3);
+          // Only create memory_entries table + indexes — NOT the full MEMORY_SCHEMA_V3
+          // which conflicts with AgentDB's pre-existing tables/indexes
+          sqlDb.run(`
+            CREATE TABLE IF NOT EXISTS memory_entries (
+              id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
+              content TEXT NOT NULL, type TEXT DEFAULT 'semantic',
+              embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
+              tags TEXT, metadata TEXT, owner_id TEXT,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+              expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
+              status TEXT DEFAULT 'active', UNIQUE(namespace, key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_namespace ON memory_entries(namespace);
+            CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(key);
+            CREATE INDEX IF NOT EXISTS idx_memory_type ON memory_entries(type);
+            CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_entries(status);
+            CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_entries(created_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_accessed ON memory_entries(last_accessed_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_entries(owner_id);
+          `);
           const data = sqlDb.export();
           fs.writeFileSync(sqlitePath, Buffer.from(data));
           sqlDb.close();
