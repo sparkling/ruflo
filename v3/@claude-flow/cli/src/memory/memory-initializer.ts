@@ -1746,11 +1746,17 @@ export async function loadEmbeddingModel(options?: {
             modelDimensions = _embCfg.dimension;
         }
     } catch { /* agentdb not available */ }
-    // EM-001: Fall back to embeddings.json
+    // EM-001: Fall back to embeddings.json (ADR-0080: directory walk, not bare cwd)
     if (modelName === 'nomic-ai/nomic-embed-text-v1.5') {
         try {
-            const embConfigPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json');
-            if (fs.existsSync(embConfigPath)) {
+            let _walkDir = process.cwd();
+            let embConfigPath = '';
+            while (_walkDir !== path.dirname(_walkDir)) {
+                const _candidate = path.join(_walkDir, '.claude-flow', 'embeddings.json');
+                if (fs.existsSync(_candidate)) { embConfigPath = _candidate; break; }
+                _walkDir = path.dirname(_walkDir);
+            }
+            if (embConfigPath && fs.existsSync(embConfigPath)) {
                 const embConfig = JSON.parse(fs.readFileSync(embConfigPath, 'utf-8'));
                 if (embConfig.model) {
                     modelName = embConfig.model;

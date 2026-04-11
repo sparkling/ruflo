@@ -11,7 +11,7 @@
  *   node auto-memory-hook.mjs status   # Show bridge status
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -121,7 +121,9 @@ class JsonFileBackend {
 
   _persist() {
     try {
-      writeFileSync(this.filePath, JSON.stringify([...this.entries.values()], null, 2), 'utf-8');
+      const tmp = this.filePath + '.tmp';
+      writeFileSync(tmp, JSON.stringify([...this.entries.values()], null, 2), 'utf-8');
+      renameSync(tmp, this.filePath);
     } catch { /* best effort */ }
   }
 }

@@ -66,7 +66,9 @@ function readJSON(filePath) {
 
 function writeJSON(filePath, data) {
   ensureDataDir();
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  const tmp = filePath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+  fs.renameSync(tmp, filePath);
 }
 
 function tokenize(text) {
@@ -128,7 +130,7 @@ function sessionSet(key, value) {
     if (!session.context) session.context = {};
     session.context[key] = value;
     session.updatedAt = new Date().toISOString();
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2), 'utf-8');
+    writeJSON(SESSION_FILE, session);
   } catch { /* best effort */ }
 }
 
@@ -688,8 +690,8 @@ function consolidate() {
     entries: rankedEntries,
   });
 
-  // 8. ADR-0074 Phase 3: Evict stale entries + cap at 2000
-  const MAX_STORE_ENTRIES = 2000;
+  // 8. ADR-0074 Phase 3: Evict stale entries + cap at 1000
+  const MAX_STORE_ENTRIES = 1000;
   const EVICTION_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
   const now = Date.now();
   const preEvictCount = store.length;
