@@ -328,7 +328,7 @@ export interface RuntimeConfig {
   /** Max HNSW elements (default: 100000; AgentDB falls back to 10000) */
   maxElements?: number;
 
-  /** Max SQLite memory entries (default: 1000000) — ADR-0069: config-chain capacity */
+  /** Max SQLite memory entries (default: 100000) — ADR-0080: aligned with resolve-config */
   maxEntries?: number;
 
   /** ADR-0069: wire similarityThreshold consumer — vector search threshold (default: 0.7) */

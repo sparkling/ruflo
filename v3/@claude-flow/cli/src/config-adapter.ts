@@ -36,7 +36,7 @@ export function systemConfigToV3Config(systemConfig: SystemConfig): V3Config {
     memory: {
       backend: normalizeMemoryBackend(systemConfig.memory?.type),
       persistPath: systemConfig.memory?.path || './data/memory',
-      cacheSize: systemConfig.memory?.maxSize ?? 1000000,
+      cacheSize: systemConfig.memory?.maxSize ?? 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
       enableHNSW: systemConfig.memory?.agentdb?.indexType === 'hnsw',
       vectorDimension: systemConfig.memory?.agentdb?.dimensions ?? 768, // ADR-0069: Match all-mpnet-base-v2 output (768-dim)
       tieredCache: {
