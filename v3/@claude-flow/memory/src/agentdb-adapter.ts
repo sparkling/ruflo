@@ -73,7 +73,7 @@ export interface AgentDBAdapterConfig {
  */
 const FALLBACK_CONFIG: AgentDBAdapterConfig = {
   dimensions: 768,
-  maxEntries: 1000000,
+  maxEntries: 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
   cacheEnabled: true,
   cacheSize: 10000,
   cacheTtl: 300000, // 5 minutes

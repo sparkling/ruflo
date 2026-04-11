@@ -124,7 +124,7 @@ const FALLBACK_CONFIG: Required<
   hnswEfConstruction: 100,
   hnswEfSearch: 50,
   cacheEnabled: true,
-  maxEntries: 1000000,
+  maxEntries: 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
 };
 
 // ADR-0069: config-chain-aware resolution

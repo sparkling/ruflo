@@ -70,7 +70,7 @@ const DEFAULT_CONFIG: SQLiteBackendConfig = {
   walMode: true,
   optimize: true,
   defaultNamespace: 'default',
-  maxEntries: 1000000,
+  maxEntries: 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
   verbose: false,
 };
 

@@ -983,7 +983,7 @@ export class ControllerRegistry extends EventEmitter {
       this.agentdb = new AgentDBClass({
         dbPath,
         maxElements: config.maxElements ?? 100000,
-        maxEntries: config.maxEntries ?? 1000000, // ADR-0069: config-chain capacity
+        maxEntries: config.maxEntries ?? 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
         dimension: config.dimension ?? 768,
         embeddingModel: config.embeddingModel ?? 'all-mpnet-base-v2',
         hnswM: config.hnswM ?? 23,
