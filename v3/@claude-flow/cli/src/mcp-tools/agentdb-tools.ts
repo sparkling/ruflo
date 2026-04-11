@@ -44,14 +44,33 @@ function sanitizeError(error: unknown): string {
   return 'Internal error';
 }
 
-// Lazy-cached bridge module
-let bridgeModule: typeof import('../memory/memory-bridge.js') | null = null;
-async function getBridge() {
-  if (!bridgeModule) {
-    bridgeModule = await import('../memory/memory-bridge.js');
-  }
-  return bridgeModule;
-}
+import {
+  getController,
+  hasController,
+  waitForDeferred,
+  healthCheck,
+  listControllerInfo,
+} from '../memory/memory-router.js';
+
+import {
+  storePattern,
+  searchPatterns,
+  recordFeedback,
+  recordCausalEdge,
+  routeTask,
+  sessionStart,
+  sessionEnd,
+  hierarchicalStore,
+  hierarchicalRecall,
+  contextSynthesize,
+  flashConsolidate,
+  batchOperation,
+  embed,
+  filteredSearch,
+  causalRecall,
+  batchOptimize,
+  batchPrune,
+} from './agentdb-orchestration.js';
 
 // ===== agentdb_health — Controller health check =====
 
@@ -64,10 +83,9 @@ export const agentdbHealth: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
       // Wait for deferred controllers so health count matches controllers count
-      await bridge.bridgeWaitForDeferred?.();
-      const health = await bridge.bridgeHealthCheck();
+      await waitForDeferred();
+      const health = await healthCheck();
       if (!health) return { available: false, error: 'AgentDB bridge not available' };
       return health;
     } catch (error) {
@@ -87,10 +105,9 @@ export const agentdbControllers: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
       // Wait for deferred (Level 2+) controllers to finish background init
-      await bridge.bridgeWaitForDeferred?.();
-      const controllers = await bridge.bridgeListControllers();
+      await waitForDeferred();
+      const controllers = await listControllerInfo();
       if (!controllers) return { available: false, controllers: [], error: 'AgentDB bridge not available — @claude-flow/memory not installed or missing controller-registry. Use memory_store/memory_search tools instead.' };
       return {
         available: true,
@@ -122,13 +139,12 @@ export const agentdbPatternStore: MCPTool = {
     try {
       const pattern = validateString(params.pattern, 'pattern');
       if (!pattern) return { success: false, error: 'pattern is required (non-empty string, max 100KB)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeStorePattern({
+      const result = await storePattern({
         pattern,
         type: validateString(params.type, 'type', 200) ?? 'general',
         confidence: validateScore(params.confidence, 0.8),
       });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -153,8 +169,7 @@ export const agentdbPatternSearch: MCPTool = {
     try {
       const query = validateString(params.query, 'query', 10_000);
       if (!query) return { results: [], error: 'query is required (non-empty string, max 10KB)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeSearchPatterns({
+      const result = await searchPatterns({
         query,
         topK: validatePositiveInt(params.topK, 5, MAX_TOP_K),
         minConfidence: validateScore(params.minConfidence, 0.3),
@@ -185,14 +200,13 @@ export const agentdbFeedback: MCPTool = {
     try {
       const taskId = validateString(params.taskId, 'taskId', 500);
       if (!taskId) return { success: false, error: 'taskId is required (non-empty string, max 500 chars)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeRecordFeedback({
+      const result = await recordFeedback({
         taskId,
         success: params.success === true,
         quality: validateScore(params.quality, 0.85),
         agent: validateString(params.agent, 'agent', 200) ?? undefined,
       });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -222,14 +236,13 @@ export const agentdbCausalEdge: MCPTool = {
       if (!sourceId) return { success: false, error: 'sourceId is required (non-empty string)' };
       if (!targetId) return { success: false, error: 'targetId is required (non-empty string)' };
       if (!relation) return { success: false, error: 'relation is required (non-empty string)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeRecordCausalEdge({
+      const result = await recordCausalEdge({
         sourceId,
         targetId,
         relation,
         weight: typeof params.weight === 'number' ? validateScore(params.weight, 0.5) : undefined,
       });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -253,8 +266,7 @@ export const agentdbRoute: MCPTool = {
     try {
       const task = validateString(params.task, 'task', 10_000);
       if (!task) return { route: 'general', confidence: 0.5, agents: ['coder'], controller: 'error', error: 'task is required (non-empty string)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeRouteTask({
+      const result = await routeTask({
         task,
         context: validateString(params.context, 'context', 10_000) ?? undefined,
       });
@@ -282,12 +294,11 @@ export const agentdbSessionStart: MCPTool = {
     try {
       const sessionId = validateString(params.sessionId, 'sessionId', 500);
       if (!sessionId) return { success: false, error: 'sessionId is required (non-empty string)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeSessionStart({
+      const result = await sessionStart({
         sessionId,
         context: validateString(params.context, 'context', 10_000) ?? undefined,
       });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -312,13 +323,12 @@ export const agentdbSessionEnd: MCPTool = {
     try {
       const sessionId = validateString(params.sessionId, 'sessionId', 500);
       if (!sessionId) return { success: false, error: 'sessionId is required (non-empty string)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeSessionEnd({
+      const result = await sessionEnd({
         sessionId,
         summary: validateString(params.summary, 'summary', 50_000) ?? undefined,
         tasksCompleted: validatePositiveInt(params.tasksCompleted, 0, 10_000),
       });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -354,9 +364,8 @@ export const agentdbHierarchicalStore: MCPTool = {
       if (!['working', 'episodic', 'semantic'].includes(tier)) {
         return { success: false, error: `Invalid tier: ${tier}. Must be working, episodic, or semantic` };
       }
-      const bridge = await getBridge();
-      const result = await bridge.bridgeHierarchicalStore({ key, value, tier });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      const result = await hierarchicalStore({ key, value, tier });
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -385,13 +394,12 @@ export const agentdbHierarchicalRecall: MCPTool = {
       if (tier && !['working', 'episodic', 'semantic'].includes(tier)) {
         return { success: false, results: [], error: `Invalid tier: ${tier}. Must be working, episodic, or semantic` };
       }
-      const bridge = await getBridge();
-      const result = await bridge.bridgeHierarchicalRecall({
+      const result = await hierarchicalRecall({
         query,
         tier: tier ?? undefined,
         topK: validatePositiveInt(params.topK, 5, MAX_TOP_K),
       });
-      return result ?? { results: [], error: 'AgentDB bridge not available. Use memory_search instead.' };
+      return result ?? { results: [], error: 'AgentDB not available. Use memory_search instead.' };
     } catch (error) {
       return { success: false, results: [], error: sanitizeError(error) };
     }
@@ -412,12 +420,15 @@ export const agentdbConsolidate: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const bridge = await getBridge();
-      const result = await bridge.bridgeConsolidate({
-        minAge: typeof params.minAge === 'number' ? Math.max(0, params.minAge) : undefined,
-        maxEntries: validatePositiveInt(params.maxEntries, 1000, 10_000),
-      });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      const ctrl = await getController<any>('memoryConsolidation');
+      if (!ctrl) return { success: false, error: 'Memory consolidation controller not available' };
+      const result = typeof ctrl.consolidate === 'function'
+        ? await ctrl.consolidate({
+            minAge: typeof params.minAge === 'number' ? Math.max(0, params.minAge) : undefined,
+            maxEntries: validatePositiveInt(params.maxEntries, 1000, 10_000),
+          })
+        : null;
+      return result ?? { success: false, error: 'consolidate method not available' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -477,12 +488,11 @@ export const agentdbBatch: MCPTool = {
         const value = validateString((entry as any).value, `entries[${i}].value`);
         validatedEntries.push({ key, value: value ?? undefined });
       }
-      const bridge = await getBridge();
-      const result = await bridge.bridgeBatchOperation({
+      const result = await batchOperation({
         operation,
         entries: validatedEntries,
       });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -506,12 +516,11 @@ export const agentdbContextSynthesize: MCPTool = {
     try {
       const query = validateString(params.query, 'query', 10_000);
       if (!query) return { success: false, error: 'query is required (non-empty string, max 10KB)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeContextSynthesize({
+      const result = await contextSynthesize({
         query,
         maxEntries: validatePositiveInt(params.maxEntries, 10, MAX_TOP_K),
       });
-      return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
+      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -534,9 +543,10 @@ export const agentdbSemanticRoute: MCPTool = {
     try {
       const input = validateString(params.input, 'input', 10_000);
       if (!input) return { success: false, route: null, error: 'input is required (non-empty string, max 10KB)' };
-      const bridge = await getBridge();
-      const result = await bridge.bridgeSemanticRoute({ input });
-      return result ?? { route: null, error: 'AgentDB bridge not available. Use hooks route instead.' };
+      const ctrl = await getController<any>('semanticRouter');
+      if (!ctrl) return { success: false, route: null, error: 'SemanticRouter not available. Use hooks route instead.' };
+      const result = typeof ctrl.route === 'function' ? await ctrl.route(input) : null;
+      return result ?? { route: null, error: 'SemanticRouter.route method not available' };
     } catch (error) {
       return { success: false, route: null, error: sanitizeError(error) };
     }
@@ -560,8 +570,7 @@ export const agentdbReflexionRetrieve: MCPTool = {
     try {
       const task = validateString(params.task, 'task', 10_000);
       if (!task) return { success: false, results: [], error: 'task is required (non-empty string, max 10KB)' };
-      const bridge = await getBridge();
-      const reflexion = await bridge.bridgeGetController('reflexion');
+      const reflexion = await getController<any>('reflexion');
       if (!reflexion || typeof reflexion.retrieve !== 'function') {
         return { success: false, results: [], error: 'ReflexionMemory not available' };
       }
@@ -606,8 +615,7 @@ export const agentdbReflexionStore: MCPTool = {
       const task = validateString(params.task, 'task', 10_000);
       if (!task) return { success: false, error: 'task is required (non-empty string, max 10KB)' };
       const reward = validateScore(params.reward, 0.5);
-      const bridge = await getBridge();
-      const reflexion = await bridge.bridgeGetController('reflexion');
+      const reflexion = await getController<any>('reflexion');
       if (!reflexion || typeof reflexion.store !== 'function') {
         return { success: false, error: 'ReflexionMemory not available' };
       }
@@ -646,8 +654,7 @@ export const agentdbCausalQuery: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const bridge = await getBridge();
-      const causal = await bridge.bridgeGetController('causalGraph');
+      const causal = await getController<any>('causalGraph');
 
       if (!causal) {
         return { success: false, results: [], error: 'CausalMemoryGraph not available' };
@@ -728,8 +735,7 @@ export const agentdbBranch: MCPTool = {
       const action = validateString(params.action, 'action', 20);
       if (!action) return { success: false, error: 'action is required' };
 
-      const bridge = await getBridge();
-      const backend = await bridge.bridgeGetController('vectorBackend');
+      const backend = await getController<any>('vectorBackend');
 
       if (!backend) {
         return { success: false, error: 'Backend not available for branching' };
@@ -821,11 +827,7 @@ export const agentdbCausalRecall: MCPTool = {
     try {
       const query = validateString(params.query, 'query', 10_000);
       if (!query) return { success: false, error: 'query is required (non-empty string, max 10KB)' };
-      const bridge = await getBridge();
-      if (!bridge?.bridgeCausalRecall) {
-        return { success: false, error: 'bridgeCausalRecall not available' };
-      }
-      const result = await bridge.bridgeCausalRecall({
+      const result = await causalRecall({
         query,
         k: validatePositiveInt(params.k, 10, MAX_TOP_K),
         includeEvidence: params.include_evidence === true,
@@ -858,23 +860,15 @@ export const agentdbBatchOptimize: MCPTool = {
       if (!['optimize', 'prune', 'stats'].includes(action)) {
         return { success: false, error: `Unknown action: ${action}. Must be optimize, prune, or stats` };
       }
-      const bridge = await getBridge();
       switch (action) {
-        case 'optimize': {
-          if (!bridge?.bridgeBatchOptimize) return { success: false, error: 'bridgeBatchOptimize not available' };
-          return await bridge.bridgeBatchOptimize();
-        }
-        case 'prune': {
-          if (!bridge?.bridgeBatchPrune) return { success: false, error: 'bridgeBatchPrune not available' };
-          return await bridge.bridgeBatchPrune({
+        case 'optimize':
+        case 'stats':
+          return await batchOptimize();
+        case 'prune':
+          return await batchPrune({
             maxAge: typeof params.max_age === 'number' ? Math.max(0, params.max_age) : undefined,
             minReward: validateScore(params.min_reward, 0),
           });
-        }
-        case 'stats': {
-          if (!bridge?.bridgeBatchOptimize) return { success: false, error: 'bridgeBatchOptimize not available' };
-          return await bridge.bridgeBatchOptimize();
-        }
         default:
           return { success: false, error: `Unknown action: ${action}` };
       }
@@ -895,8 +889,10 @@ export const agentdbRateLimitStatus: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
-      return await bridge.bridgeRateLimitStatus();
+      const ctrl = await getController<any>('rateLimiter');
+      if (!ctrl) return { success: false, error: 'Rate limiter not available' };
+      const stats = typeof ctrl.getStats === 'function' ? ctrl.getStats() : {};
+      return { success: true, ...stats };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -914,8 +910,10 @@ export const agentdbResourceUsage: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
-      return await bridge.bridgeResourceUsage();
+      const ctrl = await getController<any>('resourceTracker');
+      if (!ctrl) return { success: false, error: 'Resource tracker not available' };
+      const stats = typeof ctrl.getStats === 'function' ? ctrl.getStats() : {};
+      return { success: true, ...stats };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -933,8 +931,10 @@ export const agentdbCircuitStatus: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
-      return await bridge.bridgeCircuitStatus();
+      const ctrl = await getController<any>('circuitBreakerController');
+      if (!ctrl) return { success: false, error: 'Circuit breaker not available' };
+      const stats = typeof ctrl.getStats === 'function' ? ctrl.getStats() : {};
+      return { success: true, ...stats };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -963,15 +963,14 @@ const agentdbFilteredSearch: MCPTool = {
   },
   handler: async (input) => {
     try {
-      const { bridgeFilteredSearch } = await import('../memory/memory-bridge.js');
-      const result = await bridgeFilteredSearch({
+      const result = await filteredSearch({
         query: input.query as string,
         filter: input.filter as Record<string, unknown> | undefined,
         namespace: input.namespace as string | undefined,
         limit: input.limit as number | undefined,
         threshold: input.threshold as number | undefined,
       });
-      if (!result) return { success: false, error: 'Bridge not available' };
+      if (!result) return { success: false, error: 'FilteredSearch not available' };
       return result;
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
@@ -991,9 +990,13 @@ const agentdbQueryStats: MCPTool = {
   },
   handler: async () => {
     try {
-      const { bridgeQueryStats } = await import('../memory/memory-bridge.js');
-      const result = await bridgeQueryStats();
-      return result;
+      const ctrl = await getController<any>('queryOptimizer');
+      if (!ctrl) return { success: false, error: 'QueryOptimizer not available' };
+      // getCacheStats() returns cache hit/miss/size; getStats() returns per-query array
+      const stats = typeof ctrl.getCacheStats === 'function'
+        ? ctrl.getCacheStats()
+        : typeof ctrl.getStats === 'function' ? ctrl.getStats() : {};
+      return { success: true, ...stats };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1016,11 +1019,8 @@ export const agentdbEmbed: MCPTool = {
     try {
       const text = validateString(params.text, 'text', MAX_STRING_LENGTH);
       if (!text) return { success: false, error: 'text is required (non-empty string, max 100KB)' };
-      const bridge = await getBridge();
-      // Wait for deferred (Level 2+) controllers so A9 EnhancedEmbeddingService is ready
-      await bridge.bridgeWaitForDeferred?.();
-      const result = await bridge.bridgeEmbed(text);
-      return result ?? { success: false, error: 'Bridge not available' };
+      const result = await embed(text);
+      return result ?? { success: false, error: 'Embedding service not available' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1038,16 +1038,15 @@ export const agentdbEmbedStatus: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
       // D5: Report both enabled (configuration readiness) and initialized
       // (instantiation readiness) to avoid disagreement between health report
       // and embed_status for Level 3+ deferred controllers.
-      const controllers = await bridge.bridgeListControllers();
-      const entry = controllers?.find((c: { name: string }) => c.name === 'enhancedEmbeddingService');
+      const controllers = await listControllerInfo();
+      const entry = (controllers as any[])?.find((c: { name: string }) => c.name === 'enhancedEmbeddingService');
       const enabled = entry?.enabled ?? false;
-      const initialized = await bridge.bridgeHasController('enhancedEmbeddingService');
+      const initialized = await hasController('enhancedEmbeddingService');
       // Try to get status from the controller if instantiated
-      const controller = initialized ? await bridge.bridgeGetController('enhancedEmbeddingService') : null;
+      const controller = initialized ? await getController<any>('enhancedEmbeddingService') : null;
       const status: Record<string, unknown> = { active: initialized, enabled, initialized };
       if (controller && typeof controller === 'object') {
         if (typeof (controller as any).getStats === 'function') {
@@ -1072,14 +1071,15 @@ export const agentdbTelemetryMetrics: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
-      const result = await bridge.bridgeTelemetryMetrics();
-      if (!result) return { success: false, error: 'Bridge not available' };
+      const ctrl = await getController<any>('telemetryManager');
+      if (!ctrl) return { success: false, error: 'TelemetryManager not available' };
+      const result = typeof ctrl.getMetrics === 'function' ? { success: true, metrics: ctrl.getMetrics() } : { success: false, error: 'getMetrics not available' };
+      if (!result.success) return result;
       const metrics = result.metrics;
       const countersEmpty = !metrics?.counters || Object.keys(metrics.counters).length === 0;
       const histogramsEmpty = !metrics?.histograms || Object.keys(metrics.histograms).length === 0;
       const isEmpty = !metrics || (countersEmpty && histogramsEmpty);
-      if (result.success && isEmpty) {
+      if (isEmpty) {
         return { ...result, notice: 'No telemetry instrumentation active. Counters require explicit startSpan/increment calls from controller operations.' };
       }
       return result;
@@ -1103,13 +1103,13 @@ export const agentdbTelemetrySpans: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     try {
       const limit = validatePositiveInt(params.limit, 100, 500);
-      const bridge = await getBridge();
-      const result = await bridge.bridgeTelemetrySpans(limit);
-      if (!result) return { success: false, error: 'Bridge not available' };
-      if (result.success && (!result.spans || result.spans.length === 0)) {
-        return { ...result, notice: 'No span instrumentation wired. Spans require controller operations to call telemetryManager.startSpan().' };
+      const ctrl = await getController<any>('telemetryManager');
+      if (!ctrl) return { success: false, error: 'TelemetryManager not available' };
+      const spans = typeof ctrl.getSpans === 'function' ? ctrl.getSpans(limit) : [];
+      if (!spans || (Array.isArray(spans) && spans.length === 0)) {
+        return { success: true, spans: [], notice: 'No span instrumentation wired. Spans require controller operations to call telemetryManager.startSpan().' };
       }
-      return result;
+      return { success: true, spans };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1133,7 +1133,6 @@ export const agentdbAttentionBenchmark: MCPTool = {
   },
   handler: async (args: Record<string, unknown>) => {
     try {
-      const bridge = await getBridge();
       const count = validatePositiveInt(args.entryCount, 100, 10000);
       const dim = validatePositiveInt(args.dimensions, 64, 4096);
       // Generate synthetic entries for benchmarking
@@ -1142,7 +1141,7 @@ export const agentdbAttentionBenchmark: MCPTool = {
         embedding: Array.from({ length: dim }, () => Math.random()),
       }));
       const start = Date.now();
-      const result = await bridge.bridgeFlashConsolidate({
+      const result = await flashConsolidate({
         entries,
         blockSize: validatePositiveInt(args.blockSize, 256, 1024),
       });
@@ -1165,9 +1164,7 @@ export const agentdbAttentionConfigure: MCPTool = {
   },
   handler: async (args: Record<string, unknown>) => {
     try {
-      const bridge = await getBridge();
-      // Use bridgeGetController to query the attentionService directly
-      const result = await bridge.bridgeGetController('attentionService');
+      const result = await getController<any>('attentionService');
       if (!result) return { success: false, error: 'AttentionService not active' };
       const info = typeof result.getInfo === 'function' ? result.getInfo() : {};
       const stats = typeof result.getStats === 'function' ? result.getStats() : {};
@@ -1190,8 +1187,7 @@ export const agentdbAttentionMetrics: MCPTool = {
   },
   handler: async (args: Record<string, unknown>) => {
     try {
-      const bridge = await getBridge();
-      const metricsCtrl = await bridge.bridgeGetController('attentionMetrics');
+      const metricsCtrl = await getController<any>('attentionMetrics');
       if (!metricsCtrl) return { success: false, error: 'AttentionMetrics (D2) not active' };
       const metrics = typeof metricsCtrl.getAllMetrics === 'function'
         ? Object.fromEntries(metricsCtrl.getAllMetrics())
@@ -1227,8 +1223,7 @@ export const agentdbSkillCreate: MCPTool = {
     try {
       const name = validateString(params.name, 'name', 500);
       if (!name) return { success: false, error: 'name is required (non-empty string, max 500 chars)' };
-      const bridge = await getBridge();
-      const skills = await bridge.bridgeGetController('skills');
+      const skills = await getController<any>('skills');
       if (!skills) return { success: false, error: 'SkillLibrary controller not available' };
       const description = validateString(params.description, 'description', 10_000) ?? '';
       const code = validateString(params.code, 'code', MAX_STRING_LENGTH) ?? '';
@@ -1266,8 +1261,7 @@ export const agentdbSkillSearch: MCPTool = {
       const query = validateString(params.query, 'query', 10_000);
       if (!query) return { success: false, skills: [], error: 'query is required (non-empty string, max 10KB)' };
       const limit = validatePositiveInt(params.limit, 5, MAX_TOP_K);
-      const bridge = await getBridge();
-      const skills = await bridge.bridgeGetController('skills');
+      const skills = await getController<any>('skills');
       if (!skills) return { success: false, skills: [], error: 'SkillLibrary controller not available' };
       if (typeof skills.retrieveSkills === 'function') {
         const results = await skills.retrieveSkills(query, limit);
@@ -1299,8 +1293,7 @@ export const agentdbLearnerRun: MCPTool = {
   },
   handler: async () => {
     try {
-      const bridge = await getBridge();
-      const learner = await bridge.bridgeGetController('nightlyLearner');
+      const learner = await getController<any>('nightlyLearner');
       if (!learner) return { success: false, error: 'NightlyLearner controller not available' };
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('learner-run timeout (10s)')), 10_000),
@@ -1338,8 +1331,7 @@ export const agentdbLearningPredict: MCPTool = {
       const state = validateString(params.state, 'state', 10_000);
       if (!state) return { success: false, error: 'state is required (non-empty string, max 10KB)' };
       const context = validateString(params.context, 'context', 10_000) ?? undefined;
-      const bridge = await getBridge();
-      const learningSystem = await bridge.bridgeGetController('learningSystem');
+      const learningSystem = await getController<any>('learningSystem');
       if (!learningSystem) return { success: false, error: 'LearningSystem controller not available' };
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('learning-predict timeout (2s)')), 2000),
@@ -1383,8 +1375,7 @@ export const agentdbExperienceRecord: MCPTool = {
       const output = validateString(params.output, 'output', MAX_STRING_LENGTH) ?? '';
       const reward = validateScore(params.reward, 0.5);
       const succeeded = params.success === true;
-      const bridge = await getBridge();
-      const reflexion = await bridge.bridgeGetController('reflexion');
+      const reflexion = await getController<any>('reflexion');
       if (!reflexion || typeof reflexion.store !== 'function') {
         return { success: false, error: 'ReflexionMemory controller not available' };
       }

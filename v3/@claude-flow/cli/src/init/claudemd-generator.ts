@@ -88,41 +88,6 @@ npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --
 \`\`\``;
 }
 
-function autoStartProtocol(): string {
-  return `## Swarm Protocols & Routing
-
-### Auto-Start Swarm Protocol
-
-When the user requests a complex task, spawn agents in background and WAIT:
-
-\`\`\`javascript
-// STEP 1: Initialize swarm coordination
-Bash("npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized")
-
-// STEP 2: Spawn ALL agents IN BACKGROUND in a SINGLE message
-Task({prompt: "Research requirements...", subagent_type: "researcher", run_in_background: true})
-Task({prompt: "Design architecture...", subagent_type: "system-architect", run_in_background: true})
-Task({prompt: "Implement solution...", subagent_type: "coder", run_in_background: true})
-Task({prompt: "Write tests...", subagent_type: "tester", run_in_background: true})
-Task({prompt: "Review code quality...", subagent_type: "reviewer", run_in_background: true})
-\`\`\`
-
-### Agent Routing
-
-| Code | Task | Agents |
-|------|------|--------|
-| 1 | Bug Fix | coordinator, researcher, coder, tester |
-| 3 | Feature | coordinator, architect, coder, tester, reviewer |
-| 5 | Refactor | coordinator, architect, coder, reviewer |
-| 7 | Performance | coordinator, perf-engineer, coder |
-| 9 | Security | coordinator, security-architect, auditor |
-
-### Task Complexity Detection
-
-- AUTO-INVOKE SWARM when task involves: 3+ files, new features, cross-module refactoring, API changes, security, or performance work
-- SKIP SWARM for: single file edits, simple bug fixes (1-2 lines), documentation updates, configuration changes`;
-}
-
 function mcpToolDiscovery(): string {
   return `## MCP Tools (Deferred)
 
@@ -165,33 +130,6 @@ function whenToUseWhat(): string {
 | Invoke a registered skill | Skill tool with the skill name (e.g., \`/commit\`) |`;
 }
 
-function cliCommandsTable(): string {
-  return `## V3 CLI Commands
-
-### Core Commands
-
-| Command | Subcommands | Description |
-|---------|-------------|-------------|
-| \`init\` | 4 | Project initialization |
-| \`agent\` | 8 | Agent lifecycle management |
-| \`swarm\` | 6 | Multi-agent swarm coordination |
-| \`memory\` | 11 | AgentDB memory with HNSW search |
-| \`task\` | 6 | Task creation and lifecycle |
-| \`session\` | 7 | Session state management |
-| \`hooks\` | 17 | Self-learning hooks + 12 workers |
-| \`hive-mind\` | 6 | Byzantine fault-tolerant consensus |
-
-### Quick CLI Examples
-
-\`\`\`bash
-npx @claude-flow/cli@latest init --wizard
-npx @claude-flow/cli@latest agent spawn -t coder --name my-coder
-npx @claude-flow/cli@latest swarm init
-npx @claude-flow/cli@latest memory search --query "authentication patterns"
-npx @claude-flow/cli@latest doctor --fix
-\`\`\``;
-}
-
 function agentTypes(): string {
   return `## Available Agents (60+ Types)
 
@@ -209,57 +147,6 @@ function agentTypes(): string {
 
 ### SPARC Methodology
 \`sparc-coord\`, \`sparc-coder\`, \`specification\`, \`pseudocode\`, \`architecture\``;
-}
-
-function hooksSystem(): string {
-  return `## Hooks System (27 Hooks + 12 Workers)
-
-### Essential Hooks
-
-| Hook | Description |
-|------|-------------|
-| \`pre-task\` / \`post-task\` | Task lifecycle with learning |
-| \`pre-edit\` / \`post-edit\` | File editing with neural training |
-| \`session-start\` / \`session-end\` | Session state persistence |
-| \`route\` | Route task to optimal agent |
-| \`intelligence\` | RuVector intelligence system |
-| \`worker\` | Background worker management |
-
-### 12 Background Workers
-
-| Worker | Priority | Description |
-|--------|----------|-------------|
-| \`optimize\` | high | Performance optimization |
-| \`audit\` | critical | Security analysis |
-| \`testgaps\` | normal | Test coverage analysis |
-| \`map\` | normal | Codebase mapping |
-| \`deepdive\` | normal | Deep code analysis |
-| \`document\` | normal | Auto-documentation |
-
-\`\`\`bash
-npx @claude-flow/cli@latest hooks pre-task --description "[task]"
-npx @claude-flow/cli@latest hooks post-task --task-id "[id]" --success true
-npx @claude-flow/cli@latest hooks worker dispatch --trigger audit
-\`\`\``;
-}
-
-function learningProtocol(): string {
-  return `## Auto-Learning Protocol
-
-### Before Starting Any Task
-\`\`\`bash
-npx @claude-flow/cli@latest memory search --query "[task keywords]" --namespace patterns
-npx @claude-flow/cli@latest hooks route --task "[task description]"
-\`\`\`
-
-### After Completing Any Task Successfully
-\`\`\`bash
-npx @claude-flow/cli@latest memory store --namespace patterns --key "[pattern-name]" --value "[what worked]"
-npx @claude-flow/cli@latest hooks post-task --task-id "[id]" --success true --store-results true
-\`\`\`
-
-- ALWAYS check memory before starting new features, debugging, or refactoring
-- ALWAYS store patterns in memory after solving bugs, completing features, or finding optimizations`;
 }
 
 function memoryCommands(): string {
@@ -364,33 +251,6 @@ npx @claude-flow/cli@latest performance metrics --format table
 - Use agent routing code 7 (hierarchical/specialized) for performance tasks`;
 }
 
-function intelligenceSystem(): string {
-  return `## Intelligence System (RuVector)
-
-- **SONA**: Self-Optimizing Neural Architecture (<0.05ms adaptation)
-- **HNSW**: 150x-12,500x faster pattern search
-- **EWC++**: Elastic Weight Consolidation (prevents forgetting)
-- **Flash Attention**: 2.49x-7.47x speedup
-
-The 4-step intelligence pipeline:
-1. **RETRIEVE** - Fetch relevant patterns via HNSW
-2. **JUDGE** - Evaluate with verdicts (success/failure)
-3. **DISTILL** - Extract key learnings via LoRA
-4. **CONSOLIDATE** - Prevent catastrophic forgetting via EWC++`;
-}
-
-function envVars(): string {
-  return `## Environment Variables
-
-\`\`\`bash
-CLAUDE_FLOW_CONFIG=./claude-flow.config.json
-CLAUDE_FLOW_LOG_LEVEL=info
-ANTHROPIC_API_KEY=sk-ant-...
-CLAUDE_FLOW_MEMORY_BACKEND=hybrid
-CLAUDE_FLOW_MEMORY_PATH=./data/memory
-\`\`\``;
-}
-
 function setupAndBoundary(): string {
   return `## Quick Setup
 
@@ -446,8 +306,6 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
-    (_opts) => agentTypes(),
-    (_opts) => memoryCommands(),
     (_opts) => setupAndBoundary(),
   ],
   security: [
@@ -514,7 +372,7 @@ export function generateMinimalClaudeMd(options: InitOptions): string {
 export const CLAUDE_MD_TEMPLATES: Array<{ name: ClaudeMdTemplate; description: string }> = [
   { name: 'minimal', description: 'Quick start — behavioral rules, MCP discovery, hook signals (~60 lines)' },
   { name: 'standard', description: 'Recommended — agent orchestration, MCP discovery, decision tree (~90 lines)' },
-  { name: 'full', description: 'Everything — adds anti-drift config, agent catalog, memory reference (~150 lines)' },
+  { name: 'full', description: 'Everything — adds anti-drift config, setup & support (~120 lines)' },
   { name: 'security', description: 'Security-focused — adds security scanning, audit protocols, CVE checks' },
   { name: 'performance', description: 'Performance-focused — adds benchmarking, profiling, optimization protocols' },
   { name: 'solo', description: 'Solo developer — behavioral rules, MCP discovery, hook signals (~60 lines)' },

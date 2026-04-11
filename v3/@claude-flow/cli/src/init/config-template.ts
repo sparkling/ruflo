@@ -39,10 +39,7 @@ export function getMinimalConfigTemplate(
       enabled: true,
       modelPath: '.claude-flow/neural',
     },
-    mcp: {
-      autoStart: true,
-      transport: { port: overrides?.port ?? 3000 },
-    },
+    mcp: {},
     ports: {
       mcp: overrides?.port ?? 3000,
     },
@@ -72,7 +69,6 @@ export function getFullConfigTemplate(
     },
     memory: {
       backend: 'hybrid',
-      type: 'hybrid',
       maxElements: 100000,
       swarmDir: '.swarm',
       migrationBatchSize: 500,
@@ -106,7 +102,6 @@ export function getFullConfigTemplate(
       modelPath: '.claude-flow/neural',
       ewcLambda: 2000,
       defaultLearningRate: 0.001,
-      qualityThreshold: 0.5,
       learningRates: {
         qLearning: 0.1,
         sarsa: 0.1,
@@ -128,7 +123,6 @@ export function getFullConfigTemplate(
         memoryConsolidation: false,
         hybridSearch: false,
         agentMemoryScope: true,
-        federatedSession: false,
       },
     },
     ports: {

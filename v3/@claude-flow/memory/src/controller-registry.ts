@@ -962,13 +962,13 @@ export class ControllerRegistry extends EventEmitter {
       // embeddings.json). Fallbacks match the unified all-mpnet-base-v2 model.
       this.agentdb = new AgentDBClass({
         dbPath,
-        maxElements: config.maxElements || 100000,
-        maxEntries: config.maxEntries || 1000000, // ADR-0069: config-chain capacity
-        dimension: config.dimension || 768,
-        embeddingModel: config.embeddingModel || 'all-mpnet-base-v2',
-        hnswM: config.hnswM || 23,
-        hnswEfConstruction: config.hnswEfConstruction || 100,
-        hnswEfSearch: config.hnswEfSearch || 50,
+        maxElements: config.maxElements ?? 100000,
+        maxEntries: config.maxEntries ?? 1000000, // ADR-0069: config-chain capacity
+        dimension: config.dimension ?? 768,
+        embeddingModel: config.embeddingModel ?? 'all-mpnet-base-v2',
+        hnswM: config.hnswM ?? 23,
+        hnswEfConstruction: config.hnswEfConstruction ?? 100,
+        hnswEfSearch: config.hnswEfSearch ?? 50,
       });
 
       // Suppress agentdb's noisy info-level output during init
@@ -1170,10 +1170,11 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule = await import('agentdb');
           const SB = (agentdbModule as any).SolverBandit;
           if (!SB) return null;
+          const sbCfg = this.config.solverBandit || {};
           const bandit = new SB({
-            costWeight: 0.01,
-            costDecay: 0.1,
-            explorationBonus: 0.1,
+            costWeight: sbCfg.costWeight ?? 0.01,
+            costDecay: sbCfg.costDecay ?? 0.1,
+            explorationBonus: sbCfg.explorationBonus ?? 0.1,
           });
           // Restore persisted state if available
           try {
