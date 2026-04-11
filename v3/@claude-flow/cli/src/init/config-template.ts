@@ -94,7 +94,7 @@ export function getFullConfigTemplate(
         enabled: true,
         pageRankDamping: 0.85, // ADR-0080: aligned with settings-generator
         maxNodes: 10000,
-        similarityThreshold: 0.25,
+        similarityThreshold: 0.25, // intentionally lower than memory.similarityThreshold (0.7) — graph edges need permissive matching for dense PageRank connectivity
       },
     },
     neural: {

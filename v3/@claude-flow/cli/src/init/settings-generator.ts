@@ -123,9 +123,9 @@ export function generateSettings(options: InitOptions): object {
       },
       learningBridge: {
         enabled: options.runtime.enableLearningBridge ?? true,
-        sonaMode: 'adaptive',
-        confidenceDecayRate: 0.02,
-        accessBoostAmount: 0.1,
+        sonaMode: 'balanced', // ADR-0080: canonical mode (was 'adaptive')
+        confidenceDecayRate: 0.0008, // ADR-0080: ~30 day half-life (was 0.02 / ~1 day)
+        accessBoostAmount: 0.05, // ADR-0080: aligned with config-template (was 0.1)
       },
       memoryGraph: {
         enabled: options.runtime.enableMemoryGraph ?? true,

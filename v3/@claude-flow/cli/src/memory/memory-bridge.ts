@@ -396,7 +396,7 @@ async function getRvfStore(): Promise<any | null> {
           backend = await memPkg.createStorage({
             databasePath: rvfPath,
             dimensions: registryInstance?.config?.dimension || 768,
-            autoPersistInterval: 0, // read-only — never write back
+            autoPersistInterval: 0, // persist on explicit call or shutdown; store() writes to WAL
           });
         } catch {
           // createStorage failed — fall back to direct RvfBackend
@@ -1026,6 +1026,19 @@ export async function bridgeStoreEntry(options: {
     try {
       if (typeof ctx.db.save === 'function') ctx.db.save();
     } catch { /* best-effort flush */ }
+
+    // ADR-0080: dual-write — append to RVF WAL for HNSW acceleration
+    // SQLite is primary (already committed above). RVF is best-effort write-behind.
+    try {
+      const rvfBackend = await getRvfStore();
+      if (rvfBackend && typeof rvfBackend.store === 'function') {
+        await rvfBackend.store({
+          id, key, namespace, content: value,
+          embedding: embeddingJson ? new Float32Array(JSON.parse(embeddingJson)) : undefined,
+          metadata: metadata ? JSON.parse(metadata) : undefined,
+        });
+      }
+    } catch { /* RVF write-behind is best-effort — SQLite already has the data */ }
 
     return {
       success: true,

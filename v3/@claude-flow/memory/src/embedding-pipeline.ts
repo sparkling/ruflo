@@ -150,7 +150,9 @@ export class EmbeddingPipeline {
       const { pipeline } = transformers;
       this.model = await pipeline('feature-extraction', this.embeddingConfig.model);
       this.provider = 'transformers.js';
-    } catch {
+    } catch (e: any) {
+      // ADR-0080: log the actual error instead of silent swallow
+      console.warn(`[embedding-pipeline] transformers.js failed: ${e?.message || e}. Trying ruvector...`);
       // Try 2: ruvector
       try {
         const ruvector = await import('ruvector');
@@ -158,8 +160,9 @@ export class EmbeddingPipeline {
           this.model = ruvector;
           this.provider = 'ruvector';
         }
-      } catch {
-        // falls through to hash-fallback
+      } catch (e2: any) {
+        // ADR-0080: log fallback to hash so users know search quality is degraded
+        console.warn(`[embedding-pipeline] ruvector failed: ${e2?.message || e2}. Using hash-fallback (search quality degraded).`);
       }
     }
 
