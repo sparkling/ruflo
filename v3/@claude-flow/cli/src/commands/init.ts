@@ -507,7 +507,7 @@ export const wizardCommand: Command = {
     { name: 'start-daemon', description: 'Auto-start daemon after init', type: 'boolean', default: false },
     { name: 'codex', description: 'Initialize for OpenAI Codex CLI', type: 'boolean', default: false },
     { name: 'dual', description: 'Initialize for both Claude Code and Codex', type: 'boolean', default: false },
-    { name: 'with-embeddings', description: 'Initialize ONNX embedding subsystem', type: 'boolean', default: false },
+    { name: 'with-embeddings', description: 'Initialize ONNX embedding subsystem', type: 'boolean', default: true },
     { name: 'embedding-model', description: 'ONNX embedding model', type: 'string', default: 'Xenova/all-mpnet-base-v2', choices: ['Xenova/all-mpnet-base-v2', 'Xenova/all-MiniLM-L6-v2', 'nomic-ai/nomic-embed-text-v1.5'] },
   ],
   examples: [
@@ -1221,7 +1221,7 @@ export const initCommand: Command = {
       name: 'with-embeddings',
       description: 'Initialize ONNX embedding subsystem with hyperbolic support',
       type: 'boolean',
-      default: false,
+      default: true, // ADR-0080: embeddings on by default — hash-fallback degrades search quality
     },
     {
       name: 'embedding-model',
