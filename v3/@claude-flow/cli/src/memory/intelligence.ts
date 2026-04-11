@@ -331,7 +331,22 @@ class LocalSonaCoordinator {
       const ewcModule = await import('./ewc-consolidation.js');
       // ADR-0069: pass config-chain embedding dimension to EWC
       let ewcDim = 768;
-      try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'embeddings.json'), 'utf-8')); ewcDim = c?.dimension ?? 768; } catch { if (!_embeddingsJsonWarned) { _embeddingsJsonWarned = true; console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.'); } }
+      try {
+        const _fs = require('fs');
+        const _path = require('path');
+        let _dir = process.cwd();
+        let _embPath = '';
+        // Walk up to find .claude-flow/embeddings.json (same as memory-bridge findProjectRoot)
+        while (_dir !== _path.dirname(_dir)) {
+          const candidate = _path.join(_dir, '.claude-flow', 'embeddings.json');
+          if (_fs.existsSync(candidate)) { _embPath = candidate; break; }
+          _dir = _path.dirname(_dir);
+        }
+        if (_embPath) {
+          const c = JSON.parse(_fs.readFileSync(_embPath, 'utf-8'));
+          ewcDim = c?.dimension ?? 768;
+        }
+      } catch { if (!_embeddingsJsonWarned) { _embeddingsJsonWarned = true; console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.'); } }
       ewcConsolidator = await ewcModule.getEWCConsolidator({
         lambda: this.config.ewcLambda,
         dimensions: ewcDim
