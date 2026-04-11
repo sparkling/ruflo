@@ -273,6 +273,10 @@ export interface RuntimeConfig {
     useFlash?: boolean;
     useMoE?: boolean;
     useHyperbolic?: boolean;
+    /** MoE: number of expert networks (default: 8) — ADR-0066 P2 */
+    numExperts?: number;
+    /** MoE: top-K expert routing (default: 2) — ADR-0066 P2 */
+    topK?: number;
   };
 
   /** MultiHeadAttention tuning (ADR-0062 P3-3) */
@@ -353,7 +357,7 @@ export interface RuntimeConfig {
   /** ADR-0048: Max eager init level (0-1 eager, 2+ deferred). Default: 1 */
   eagerMaxLevel?: number;
 
-  /** NightlyLearner tuning (ADR-0068 W4-1) */
+  /** NightlyLearner tuning (ADR-0068 W4-1, ADR-0066 P2) */
   nightlyLearner?: {
     /** Cron expression for scheduling (default: '0 3 * * *') */
     schedule?: string;
@@ -365,6 +369,18 @@ export interface RuntimeConfig {
     useEwcConsolidation?: boolean;
     /** EWC lambda importance weight (default: 0.5) */
     ewcLambda?: number;
+    /** Min similarity to consider for causal edge (default: 0.7) — ADR-0066 P2 */
+    minSimilarity?: number;
+    /** Min observations for uplift calculation (default: 30) — ADR-0066 P2 */
+    minSampleSize?: number;
+    /** Min confidence to keep edge (default: 0.6) — ADR-0066 P2 */
+    confidenceThreshold?: number;
+    /** Min absolute uplift to consider significant (default: 0.05) — ADR-0066 P2 */
+    upliftThreshold?: number;
+    /** Max age for edges in days (default: 90) — ADR-0066 P2 */
+    edgeMaxAgeDays?: number;
+    /** Max experiments to run concurrently (default: 10) — ADR-0066 P2 */
+    experimentBudget?: number;
   };
 
   /** CausalRecall tuning (ADR-0068 W4-1) */
@@ -379,7 +395,7 @@ export interface RuntimeConfig {
     decayHalfLifeMs?: number;
   };
 
-  /** QueryOptimizer tuning (ADR-0068 W4-1) */
+  /** QueryOptimizer tuning (ADR-0068 W4-1, ADR-0066 P2) */
   queryOptimizer?: {
     /** Enable query plan caching (default: true) */
     planCache?: boolean;
@@ -389,6 +405,10 @@ export interface RuntimeConfig {
     autoIndexHints?: boolean;
     /** Cost model weight for vector vs text search (0-1, default: 0.6) */
     vectorCostWeight?: number;
+    /** Maximum cache size (default: 1000) — ADR-0066 P2 */
+    maxSize?: number;
+    /** Cache TTL in milliseconds (default: 60000) — ADR-0066 P2 */
+    ttl?: number;
   };
 
   /** SelfLearningRvfBackend tuning (ADR-0068 W4-1) */
@@ -989,6 +1009,25 @@ export class ControllerRegistry extends EventEmitter {
         console.log = origLog;
       }
       this.emit('agentdb:initialized');
+
+      // ADR-0066: Startup dimension-mismatch detector
+      try {
+        const db = (this.agentdb as any)?.database;
+        if (db) {
+          const row = db.prepare(
+            "SELECT length(embedding) / 4 as dim FROM memory_entries WHERE embedding IS NOT NULL LIMIT 1"
+          ).get() as { dim: number } | undefined;
+          const configuredDim = config.dimension ?? 768;
+          if (row?.dim && row.dim !== configuredDim) {
+            this.emit('controller:warning', {
+              type: 'dimension-mismatch',
+              message: `Existing vectors are ${row.dim}-dim but configured model produces ${configuredDim}-dim. New entries will use ${configuredDim}-dim. Consider re-embedding with: npx @sparkleideas/cli memory migrate --reembed`,
+              existing: row.dim,
+              configured: configuredDim,
+            });
+          }
+        }
+      } catch { /* dimension check non-fatal */ }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.emit('agentdb:unavailable', { reason: msg.substring(0, 200) });
@@ -1213,12 +1252,13 @@ export class ControllerRegistry extends EventEmitter {
 
       case 'tieredCache': {
         const config = this.config.memory?.tieredCache || {};
+        // ADR-0066 P2: lruEnabled / writeThrough are config-driven with defaults
         const cache = new TieredCacheManager({
+          ...config,
           maxSize: config.maxSize || 10000,
           ttl: config.ttl || 300000,
-          lruEnabled: true,
-          writeThrough: false,
-          ...config,
+          lruEnabled: config.lruEnabled ?? true,
+          writeThrough: config.writeThrough ?? false,
         });
         return getOrCreate(name, () => cache);
       }
@@ -1423,11 +1463,21 @@ export class ControllerRegistry extends EventEmitter {
           // ADR-0062 P3-4: Enable flash consolidation when AttentionService
           // was successfully initialized at Level 2
           const hasAttention = this.controllers.get('attentionService')?.enabled === true;
+          // ADR-0066 P2: Forward config-driven thresholds to NightlyLearner
+          const nlCfg = this.config.nightlyLearner || {};
           // ADR-0040: pass pre-created singletons to avoid duplicate SQLite objects
           return getOrCreate(name, () => new NL(
             this.agentdb.database,
             this.createEmbeddingService(),
-            { ENABLE_FLASH_CONSOLIDATION: hasAttention },
+            {
+              ENABLE_FLASH_CONSOLIDATION: hasAttention,
+              minSimilarity: nlCfg.minSimilarity ?? 0.7,
+              minSampleSize: nlCfg.minSampleSize ?? 30,
+              confidenceThreshold: nlCfg.confidenceThreshold ?? 0.6,
+              upliftThreshold: nlCfg.upliftThreshold ?? 0.05,
+              edgeMaxAgeDays: nlCfg.edgeMaxAgeDays ?? 90,
+              experimentBudget: nlCfg.experimentBudget ?? 10,
+            },
             this.get('causalGraph') || undefined,
             this.get('reflexion') || undefined,
             this.get('skills') || undefined,
@@ -1702,14 +1752,15 @@ export class ControllerRegistry extends EventEmitter {
           if (!AS) return null;
           const dim = this.resolvedDimension;
           const moeCfg = this.config.attentionService || {};
+          // ADR-0066 P2: numExperts / topK are config-driven with defaults
           const svc = new AS({
             numHeads: moeCfg.numHeads ?? 4,
             headDim: Math.floor(dim / (moeCfg.numHeads ?? 4)),
             embedDim: dim,
             useFlash: false,
             useMoE: true,
-            numExperts: 8,
-            topK: 2,
+            numExperts: moeCfg.numExperts ?? 8,
+            topK: moeCfg.topK ?? 2,
             useHyperbolic: false,
           });
           await svc.initialize();
@@ -1724,7 +1775,12 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const QO = agentdbModule.QueryOptimizer;
           if (!QO) return null;
-          return getOrCreate(name, () => new QO(this.agentdb.database));
+          // ADR-0066 P2: Forward config-driven cache params to QueryOptimizer
+          const qoCfg = this.config.queryOptimizer || {};
+          return getOrCreate(name, () => new QO(this.agentdb.database, {
+            maxSize: qoCfg.maxSize ?? 1000,
+            ttl: qoCfg.ttl ?? 60000,
+          }));
         } catch { return null; }
       }
 

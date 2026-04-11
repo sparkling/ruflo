@@ -306,7 +306,6 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
-    (_opts) => setupAndBoundary(),
   ],
   security: [
     behavioralRules,
@@ -372,7 +371,7 @@ export function generateMinimalClaudeMd(options: InitOptions): string {
 export const CLAUDE_MD_TEMPLATES: Array<{ name: ClaudeMdTemplate; description: string }> = [
   { name: 'minimal', description: 'Quick start — behavioral rules, MCP discovery, hook signals (~60 lines)' },
   { name: 'standard', description: 'Recommended — agent orchestration, MCP discovery, decision tree (~90 lines)' },
-  { name: 'full', description: 'Everything — adds anti-drift config, setup & support (~120 lines)' },
+  { name: 'full', description: 'Standard + anti-drift config & swarm tuning (~120 lines)' },
   { name: 'security', description: 'Security-focused — adds security scanning, audit protocols, CVE checks' },
   { name: 'performance', description: 'Performance-focused — adds benchmarking, profiling, optimization protocols' },
   { name: 'solo', description: 'Solo developer — behavioral rules, MCP discovery, hook signals (~60 lines)' },
