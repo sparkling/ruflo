@@ -1251,7 +1251,7 @@ async function writeRuntimeConfig(
       embDefaults = {
         model: cfg.model ?? embDefaults.model,
         dimension: cfg.dimension ?? embDefaults.dimension,
-        provider: cfg.provider ?? embDefaults.provider,
+        provider: (cfg.provider === 'transformers' ? 'transformers.js' : cfg.provider) ?? embDefaults.provider, // ADR-0080: normalize agentdb enum to config convention
         taskPrefixQuery: cfg.taskPrefixQuery ?? embDefaults.taskPrefixQuery,
         taskPrefixIndex: cfg.taskPrefixIndex ?? embDefaults.taskPrefixIndex,
       };
