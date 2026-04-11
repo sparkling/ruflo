@@ -1069,19 +1069,14 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
 }> {
   const columnsAdded: string[] = [];
 
-  // ADR-0080: create table if it doesn't exist (not just columns)
+  // ADR-0080: create full memory schema if table doesn't exist
   try {
     const initSqlJs = (await import('sql.js')).default;
     const SQL = await initSqlJs();
     if (fs.existsSync(dbPath)) {
       const buf = fs.readFileSync(dbPath);
       const sqlDb = new SQL.Database(buf);
-      sqlDb.run(`CREATE TABLE IF NOT EXISTS memory_entries (
-        id TEXT PRIMARY KEY, key TEXT, value TEXT,
-        namespace TEXT DEFAULT 'default', tags TEXT DEFAULT '[]',
-        embedding BLOB, metadata TEXT DEFAULT '{}',
-        created_at TEXT, updated_at TEXT
-      )`);
+      sqlDb.run(MEMORY_SCHEMA_V3);
       const data = sqlDb.export();
       fs.writeFileSync(dbPath, Buffer.from(data));
       sqlDb.close();
@@ -1336,7 +1331,7 @@ export async function initializeMemoryDatabase(options: {
       // ADR-053: Activate ControllerRegistry alongside new storage
       const controllerResult = await activateControllerRegistry(dbPath, verbose);
 
-      // ADR-0080: ensure memory_entries table exists in SQLite alongside RVF
+      // ADR-0080: ensure full memory schema exists in SQLite alongside RVF
       // AgentDB creates memory.db with its own schema but not memory_entries
       try {
         const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
@@ -1345,17 +1340,7 @@ export async function initializeMemoryDatabase(options: {
           const SQL = await initSqlJs();
           const buf = fs.readFileSync(sqlitePath);
           const sqlDb = new SQL.Database(buf);
-          sqlDb.run(`CREATE TABLE IF NOT EXISTS memory_entries (
-            id TEXT PRIMARY KEY,
-            key TEXT,
-            value TEXT,
-            namespace TEXT DEFAULT 'default',
-            tags TEXT DEFAULT '[]',
-            embedding BLOB,
-            metadata TEXT DEFAULT '{}',
-            created_at TEXT,
-            updated_at TEXT
-          )`);
+          sqlDb.run(MEMORY_SCHEMA_V3);
           const data = sqlDb.export();
           fs.writeFileSync(sqlitePath, Buffer.from(data));
           sqlDb.close();
