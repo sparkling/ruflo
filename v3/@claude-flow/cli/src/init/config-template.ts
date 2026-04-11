@@ -76,7 +76,7 @@ export function getFullConfigTemplate(
       dedupThreshold: 0.95,
       embeddingCacheSize: 1000,
       cleanupIntervalMs: 60000,
-      storage: { maxEntries: 1000000 },
+      storage: { maxEntries: 100000 },
       sqlite: {
         cacheSize: -64000,
         busyTimeoutMs: 5000,

@@ -205,15 +205,13 @@ export async function createDatabase(
     }
 
     case 'rvf': {
-      const { RvfBackend } = await import('./rvf-backend.js');
-      // ADR-0076: single source of truth for embedding dimension
-      const rvfDimension = getConfig().embedding.dimension;
-      backend = new RvfBackend({
-        databasePath: path.replace(/\.(db|json)$/, '.rvf'),
-        dimensions: rvfDimension,
-        verbose,
+      const { createStorageFromConfig } = await import('./storage-factory.js');
+      backend = await createStorageFromConfig(getConfig(), {
+        databasePath: path,
         defaultNamespace,
         autoPersistInterval,
+        maxElements: maxEntries,
+        verbose,
       });
       break;
     }
