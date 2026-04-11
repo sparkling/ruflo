@@ -460,13 +460,13 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       try {
         output.writeln(output.dim(`  Model: ${embeddingModel}`));
         output.writeln(output.dim('  Hyperbolic: Enabled (Poincaré ball)'));
-        execSync(`npx @claude-flow/cli@latest embeddings init --model ${embeddingModel} --no-download --force 2>/dev/null`, {
+        output.writeln(output.dim('  Downloading ONNX model (~110 MB, one-time)...'));
+        execSync(`npx @claude-flow/cli@latest embeddings init --model ${embeddingModel} --force 2>/dev/null`, {
           stdio: 'pipe',
           cwd: ctx.cwd,
-          timeout: 30000
+          timeout: 120000 // ADR-0080: allow 2 min for model download
         });
-        output.writeln(output.success('  ✓ Embeddings initialized'));
-        output.writeln(output.dim('    Run "embeddings init --download" to download model'));
+        output.writeln(output.success('  ✓ Embeddings initialized + model downloaded'));
       } catch (err) {
         output.writeln(output.warning('  Embedding initialization skipped (run manually)'));
       }
