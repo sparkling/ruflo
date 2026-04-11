@@ -104,8 +104,8 @@ function readEwcLambdaFromConfig(fallback: number): number {
 
 const DEFAULT_CONFIG: ResolvedConfig = {
   sonaMode: 'balanced',
-  confidenceDecayRate: 0.005,
-  accessBoostAmount: 0.03,
+  confidenceDecayRate: 0.0008, // ADR-0080: ~36 day half-life, aligned with config-template
+  accessBoostAmount: 0.05, // ADR-0080: aligned with config-template
   maxConfidence: 1.0,
   minConfidence: 0.1,
   ewcLambda: readEwcLambdaFromConfig(2000), // ADR-0069 A5: config-chain EWC lambda
