@@ -34,7 +34,7 @@ export async function openDatabase(dbPath: string, options?: { readonly?: boolea
     const Database = mod.default ?? mod;
     if (typeof Database !== 'function') throw new Error('better-sqlite3 loaded but Database is not a constructor');
     const db = new Database(dbPath, {
-      readonly: options?.readonly,
+      readonly: options?.readonly === true,
     });
     return {
       exec: (sql: string) => db.exec(sql),
@@ -43,7 +43,10 @@ export async function openDatabase(dbPath: string, options?: { readonly?: boolea
       close: () => db.close(),
       engine: 'better-sqlite3',
     };
-  } catch { /* better-sqlite3 not available — try sql.js below */ }
+  } catch (e: any) {
+    // Log the actual error so we can diagnose why better-sqlite3 failed
+    console.warn(`[open-database] better-sqlite3 failed: ${e?.message || e}. Falling back to sql.js.`);
+  }
 
   // sql.js fallback — ONLY safe for new files or :memory:
   const fileExists = dbPath !== ':memory:' && fs.existsSync(dbPath);
