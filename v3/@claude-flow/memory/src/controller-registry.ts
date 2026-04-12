@@ -1048,26 +1048,24 @@ export class ControllerRegistry extends EventEmitter {
 
     // Default behavior: enable based on category
     switch (name) {
-      // Core intelligence — enabled by default
+      // Core intelligence + pure JS — enabled by default
       case 'reasoningBank':
       case 'learningBridge':
       case 'solverBandit':
       case 'tieredCache':
       case 'hierarchicalMemory':
+      case 'attentionMetrics':
         return true;
 
       // Graph — enabled if backend available
       case 'memoryGraph':
         return !!(this.config.memory?.memoryGraph || this.backend);
 
-      // Security — enabled if AgentDB available
+      // AgentDB-dependent controllers — enabled if AgentDB available
       case 'mutationGuard':
       case 'attestationLog':
       case 'vectorBackend':
       case 'guardedVectorBackend':
-        return this.agentdb !== null;
-
-      // AgentDB-internal controllers — only if AgentDB available
       case 'skills':
       case 'reflexion':
       case 'causalGraph':
@@ -1082,16 +1080,8 @@ export class ControllerRegistry extends EventEmitter {
       case 'contextSynthesizer':
       case 'rvfOptimizer':
       case 'mmrDiversityRanker':
-        return this.agentdb !== null;
-
-      // SemanticRouter — auto-enable if agentdb available
       case 'semanticRouter':
         return this.agentdb !== null;
-
-      // Pure JS, zero cost -- enabled by default (ADR-0061 Phase 2)
-      case 'solverBandit':
-      case 'attentionMetrics':
-        return true;
 
       // Attention + optimization -- enabled if agentdb available (ADR-0061 Phase 3-4)
       case 'selfAttention':
