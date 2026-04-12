@@ -1276,12 +1276,22 @@ async function writeRuntimeConfig(
     };
     const resolvedDimension = MODEL_DIMS[resolvedModel] ?? embDefaults.dimension;
 
+    // ADR-0068: derive HNSW params from resolved dimension
+    const hnswM = resolvedDimension >= 512 ? 23 : 16;
+    const hnswEfConstruction = resolvedDimension >= 512 ? 100 : 64;
+    const hnswEfSearch = resolvedDimension >= 512 ? 50 : 32;
+
     const embeddingsConfig = JSON.stringify({
       model: resolvedModel,
       dimension: resolvedDimension,
       provider: options.embeddings?.provider || embDefaults.provider,
       taskPrefixQuery: embDefaults.taskPrefixQuery,
       taskPrefixIndex: embDefaults.taskPrefixIndex,
+      hnsw: {
+        m: hnswM,
+        efConstruction: hnswEfConstruction,
+        efSearch: hnswEfSearch,
+      },
       cache: '~/.cache/transformers',
       batchSize: 32,
       quantization: 'none',

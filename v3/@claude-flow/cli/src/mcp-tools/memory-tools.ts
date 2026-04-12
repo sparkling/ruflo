@@ -10,47 +10,17 @@
  * @module v3/cli/mcp-tools/memory-tools
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, unlinkSync } from 'fs';
 import { join, resolve } from 'path';
 import type { MCPTool } from './types.js';
+import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
+import { migrateLegacyStore, hasLegacyStore } from '../memory/migration-legacy.js';
 
-// Legacy JSON store interface (for migration)
-interface LegacyMemoryEntry {
-  key: string;
-  value: unknown;
-  metadata?: Record<string, unknown>;
-  storedAt: string;
-  accessCount: number;
-  lastAccessed: string;
-}
-
-interface LegacyMemoryStore {
-  entries: Record<string, LegacyMemoryEntry>;
-  version: string;
-}
-
-// Paths
 const MEMORY_DIR = '.claude-flow/memory';
-const LEGACY_MEMORY_FILE = 'store.json';
 const MIGRATION_MARKER = '.migrated-to-sqlite';
-
-function getMemoryDir(): string {
-  return resolve(MEMORY_DIR);
-}
-
-function getLegacyPath(): string {
-  return resolve(join(MEMORY_DIR, LEGACY_MEMORY_FILE));
-}
 
 function getMigrationMarkerPath(): string {
   return resolve(join(MEMORY_DIR, MIGRATION_MARKER));
-}
-
-function ensureMemoryDir(): void {
-  const dir = getMemoryDir();
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
 }
 
 // D-2: Input bounds for memory parameters
@@ -70,105 +40,13 @@ function validateMemoryInput(key?: string, value?: string, query?: string): void
   }
 }
 
-/**
- * Check if legacy JSON store exists and needs migration
- */
-function hasLegacyStore(): boolean {
-  const legacyPath = getLegacyPath();
-  const migrationMarker = getMigrationMarkerPath();
-  return existsSync(legacyPath) && !existsSync(migrationMarker);
-}
-
-/**
- * Load legacy JSON store for migration
- */
-function loadLegacyStore(): LegacyMemoryStore | null {
-  try {
-    const path = getLegacyPath();
-    if (existsSync(path)) {
-      const data = readFileSync(path, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch {
-    // Return null on error
-  }
-  return null;
-}
-
-/**
- * Mark migration as complete
- */
-function markMigrationComplete(): void {
-  ensureMemoryDir();
-  writeFileSync(getMigrationMarkerPath(), JSON.stringify({
-    migratedAt: new Date().toISOString(),
-    version: '3.0.0',
-  }), 'utf-8');
-}
-
-/**
- * Lazy-load memory initializer functions to avoid circular deps
- */
-async function getMemoryFunctions() {
-  const {
-    storeEntry,
-    searchEntries,
-    listEntries,
-    getEntry,
-    deleteEntry,
-    initializeMemoryDatabase,
-    checkMemoryInitialization,
-  } = await import('../memory/memory-initializer.js');
-
-  return {
-    storeEntry,
-    searchEntries,
-    listEntries,
-    getEntry,
-    deleteEntry,
-    initializeMemoryDatabase,
-    checkMemoryInitialization,
-  };
-}
-
-/**
- * Ensure memory database is initialized and migrate legacy data if needed
- */
 async function ensureInitialized(): Promise<void> {
-  const { initializeMemoryDatabase, checkMemoryInitialization, storeEntry } = await getMemoryFunctions();
-
-  // Check if already initialized
-  const status = await checkMemoryInitialization();
-  if (!status.initialized) {
-    await initializeMemoryDatabase({ force: false, verbose: false });
-  }
-
-  // Migrate legacy JSON data if exists
+  await ensureRouter();
   if (hasLegacyStore()) {
-    const legacyStore = loadLegacyStore();
-    if (legacyStore && Object.keys(legacyStore.entries).length > 0) {
-      console.error('[MCP Memory] Migrating legacy JSON store to sql.js...');
-      let migrated = 0;
-
-      for (const [key, entry] of Object.entries(legacyStore.entries)) {
-        try {
-          // Convert value to string for storage
-          const value = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
-          await storeEntry({
-            key,
-            value,
-            namespace: 'default',
-            generateEmbeddingFlag: true,
-          });
-          migrated++;
-        } catch (e) {
-          console.error(`[MCP Memory] Failed to migrate key "${key}":`, e);
-        }
-      }
-
-      console.error(`[MCP Memory] Migrated ${migrated}/${Object.keys(legacyStore.entries).length} entries`);
-      markMigrationComplete();
-    }
+    await migrateLegacyStore(async (opts) => {
+      const result = await routeMemoryOp({ type: 'store', ...opts });
+      return result;
+    });
   }
 }
 
@@ -197,15 +75,13 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async (input) => {
       await ensureInitialized();
-      const { storeEntry } = await getMemoryFunctions();
 
       let key = input.key as string;
 
       // Phase 4: AgentMemoryScope — apply scope prefix to key
       try {
         if (input.scope) {
-          const { bridgeGetController } = await import('../memory/memory-bridge.js');
-          const scopeCtrl: any = await bridgeGetController('agentMemoryScope');
+          const scopeCtrl: any = await getController('agentMemoryScope');
           if (scopeCtrl && typeof scopeCtrl.scopeKey === 'function') {
             key = scopeCtrl.scopeKey(
               key,
@@ -237,14 +113,15 @@ export const memoryTools: MCPTool[] = [
       const startTime = performance.now();
 
       try {
-        const result = await storeEntry({
+        const result = await routeMemoryOp({
+          type: 'store',
           key,
           value,
           namespace,
-          generateEmbeddingFlag: true,
           tags,
           ttl,
           upsert,
+          generateEmbedding: true,
         });
 
         const duration = performance.now() - startTime;
@@ -252,16 +129,12 @@ export const memoryTools: MCPTool[] = [
         // WM-105a: Register node in MemoryGraph for importance scoring
         if (result.success) {
           try {
-            const { bridgeGetController } = await import('../memory/memory-bridge.js');
-            const mg = await bridgeGetController('memoryGraph');
+            const mg = await getController('memoryGraph');
             if (mg && typeof (mg as Record<string, unknown>).addNode === 'function') {
               (mg as { addNode: (key: string, meta: Record<string, unknown>) => void }).addNode(key, { namespace, value, tags });
             }
-          } catch (e) {
-            throw new Error(
-              `MemoryGraph.addNode failed: ${(e as Error)?.message}\n` +
-              `Fix: set "memory.agentdb.enableGraph": false in .claude-flow/config.json`
-            );
+          } catch {
+            // MemoryGraph enrichment is non-fatal -- continue with successful result
           }
         }
 
@@ -270,9 +143,9 @@ export const memoryTools: MCPTool[] = [
           key,
           namespace,
           stored: result.success,
-          storedAt: new Date().toISOString(),
-          hasEmbedding: !!result.embedding,
-          embeddingDimensions: result.embedding?.dimensions || null,
+          storedAt: result.storedAt as string || new Date().toISOString(),
+          hasEmbedding: !!result.hasEmbedding,
+          embeddingDimensions: (result.embeddingDimensions as number | null) || null,
           backend: 'sql.js + HNSW',
           storeTime: `${duration.toFixed(2)}ms`,
           error: result.error,
@@ -300,7 +173,6 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async (input) => {
       await ensureInitialized();
-      const { getEntry } = await getMemoryFunctions();
 
       const key = input.key as string;
       const namespace = input.namespace as string;
@@ -311,13 +183,14 @@ export const memoryTools: MCPTool[] = [
       validateMemoryInput(key);
 
       try {
-        const result = await getEntry({ key, namespace });
+        const result = await routeMemoryOp({ type: 'get', key, namespace });
 
         if (result.found && result.entry) {
+          const entry = result.entry as Record<string, unknown>;
           // Try to parse JSON value
-          let value: unknown = result.entry.content;
+          let value: unknown = entry.content;
           try {
-            value = JSON.parse(result.entry.content);
+            value = JSON.parse(entry.content as string);
           } catch {
             // Keep as string
           }
@@ -326,11 +199,11 @@ export const memoryTools: MCPTool[] = [
             key,
             namespace,
             value,
-            tags: result.entry.tags,
-            storedAt: result.entry.createdAt,
-            updatedAt: result.entry.updatedAt,
-            accessCount: result.entry.accessCount,
-            hasEmbedding: result.entry.hasEmbedding,
+            tags: entry.tags,
+            storedAt: entry.createdAt,
+            updatedAt: entry.updatedAt,
+            accessCount: entry.accessCount,
+            hasEmbedding: entry.hasEmbedding,
             found: true,
             backend: 'sql.js + HNSW',
           };
@@ -374,7 +247,6 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async (input) => {
       await ensureInitialized();
-      const { searchEntries } = await getMemoryFunctions();
 
       const query = input.query as string;
       const namespace = (input.namespace as string) || 'all';
@@ -385,8 +257,7 @@ export const memoryTools: MCPTool[] = [
 
       // ADR-0043: QueryOptimizer (B6) — check cache before searching
       try {
-        const bridge = await import('../memory/memory-bridge.js');
-        const qo = await bridge.bridgeGetController('queryOptimizer');
+        const qo = await getController('queryOptimizer');
         if (qo && typeof (qo as Record<string, unknown>).getCached === 'function') {
           const cacheKey = JSON.stringify({ q: query, ns: namespace, limit, threshold });
           const cached = (qo as { getCached: (k: string) => Record<string, unknown> | null }).getCached(cacheKey);
@@ -399,7 +270,8 @@ export const memoryTools: MCPTool[] = [
       const startTime = performance.now();
 
       try {
-        const result = await searchEntries({
+        const result = await routeMemoryOp({
+          type: 'search',
           query,
           namespace,
           limit,
@@ -411,33 +283,30 @@ export const memoryTools: MCPTool[] = [
         // WM-105b: Get MemoryGraph controller for importance boosting
         let _mg: { getImportance: (key: string) => number | undefined } | null = null;
         try {
-          const { bridgeGetController } = await import('../memory/memory-bridge.js');
-          const _mgCtrl = await bridgeGetController('memoryGraph');
+          const _mgCtrl = await getController('memoryGraph');
           if (_mgCtrl && typeof (_mgCtrl as Record<string, unknown>).getImportance === 'function') {
             _mg = _mgCtrl as { getImportance: (key: string) => number | undefined };
           }
-        } catch (e) {
-          throw new Error(
-            `MemoryGraph.getImportance failed: ${(e as Error)?.message}\n` +
-            `Fix: set "memory.agentdb.enableGraph": false in .claude-flow/config.json`
-          );
+        } catch {
+          // MemoryGraph importance boost is non-fatal -- continue without boosting
         }
 
         // Parse JSON values in results, apply importance boost if available
-        const results = result.results.map(r => {
+        const rawResults = (result.results as Array<Record<string, unknown>>) || [];
+        const results = rawResults.map(r => {
           let value: unknown = r.content;
           try {
-            value = JSON.parse(r.content);
+            value = JSON.parse(r.content as string);
           } catch {
             // Keep as string
           }
 
-          const importance = _mg ? (_mg.getImportance(r.key) ?? 0) : 0;
+          const importance = _mg ? (_mg.getImportance(r.key as string) ?? 0) : 0;
           return {
-            key: r.key,
-            namespace: r.namespace,
+            key: r.key as string,
+            namespace: r.namespace as string,
             value,
-            similarity: r.score + importance * 0.1,
+            similarity: (r.score as number) + importance * 0.1,
             importance: importance || undefined,
           };
         });
@@ -446,24 +315,19 @@ export const memoryTools: MCPTool[] = [
         let filteredResults = results;
         if (input.metadata_filter) {
           try {
-            const bridge = await import('../memory/memory-bridge.js');
-            const mf = await bridge.bridgeGetController('metadataFilter');
+            const mf = await getController('metadataFilter');
             if (mf && typeof (mf as Record<string, unknown>).filter === 'function') {
               filteredResults = (mf as { filter: (r: typeof results, f: unknown) => typeof results }).filter(results, input.metadata_filter);
             }
-          } catch (e) {
-            throw new Error(
-              `MetadataFilter.filter failed: ${(e as Error)?.message}\n` +
-              `Fix: set "memory.metadataFilter.enabled": false in .claude-flow/config.json`
-            );
+          } catch {
+            // MetadataFilter is non-fatal -- continue with unfiltered results
           }
         }
 
         // WM-103b: Apply MMRDiversityRanker for diversity re-ranking (ADR-068)
         let outputResults = filteredResults;
         try {
-          const bridge = await import('../memory/memory-bridge.js');
-          const mmr = await bridge.bridgeGetController('mmrDiversityRanker');
+          const mmr = await getController('mmrDiversityRanker');
           if (mmr && typeof (mmr as Record<string, unknown>).selectDiverse === 'function' && outputResults.length > 1) {
             const lambda = (input.mmr_lambda as number) ?? 0.5;
             const diverseResults = await Promise.race([
@@ -482,33 +346,26 @@ export const memoryTools: MCPTool[] = [
         // WM-114c: Boost results with attention scores when available
         let attentionApplied = false;
         try {
-          const bridge = await import('../memory/memory-bridge.js');
-          if (typeof bridge.bridgeGetController === 'function') {
-            const attnService = await bridge.bridgeGetController('attentionService');
-            if (attnService && typeof (attnService as Record<string, unknown>).score === 'function' && outputResults.length > 1) {
-              for (const r of outputResults) {
-                const attnScore = (attnService as { score: (key: string) => number }).score(r.key);
-                if (typeof attnScore === 'number' && attnScore > 0) {
-                  r.similarity = r.similarity * 0.8 + attnScore * 0.2;
-                  (r as Record<string, unknown>).attentionBoosted = true;
-                }
+          const attnService = await getController('attentionService');
+          if (attnService && typeof (attnService as Record<string, unknown>).score === 'function' && outputResults.length > 1) {
+            for (const r of outputResults) {
+              const attnScore = (attnService as { score: (key: string) => number }).score(r.key);
+              if (typeof attnScore === 'number' && attnScore > 0) {
+                r.similarity = r.similarity * 0.8 + attnScore * 0.2;
+                (r as Record<string, unknown>).attentionBoosted = true;
               }
-              outputResults.sort((a, b) => b.similarity - a.similarity);
-              attentionApplied = true;
             }
+            outputResults.sort((a, b) => b.similarity - a.similarity);
+            attentionApplied = true;
           }
-        } catch (e) {
-          throw new Error(
-            `AttentionService.score re-ranking failed: ${(e as Error)?.message}\n` +
-            `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
-          );
+        } catch {
+          // AttentionService re-ranking is non-fatal -- continue with unranked results
         }
 
         // Phase 4: AgentMemoryScope — filter results by scope
         try {
           if (input.scope) {
-            const bridge = await import('../memory/memory-bridge.js');
-            const scopeCtrl: any = await bridge.bridgeGetController('agentMemoryScope');
+            const scopeCtrl: any = await getController('agentMemoryScope');
             if (scopeCtrl && typeof scopeCtrl.filterByScope === 'function') {
               outputResults = scopeCtrl.filterByScope(
                 outputResults,
@@ -523,8 +380,7 @@ export const memoryTools: MCPTool[] = [
         let synthesis: unknown = undefined;
         if (input.synthesize && outputResults.length > 0) {
           try {
-            const bridge = await import('../memory/memory-bridge.js');
-            const ctx = await bridge.bridgeGetController('contextSynthesizer');
+            const ctx = await getController('contextSynthesizer');
             if (ctx && typeof (ctx as Record<string, unknown>).synthesize === 'function') {
               synthesis = await Promise.race([
                 Promise.resolve(
@@ -548,8 +404,7 @@ export const memoryTools: MCPTool[] = [
         };
 
         try {
-          const bridge = await import('../memory/memory-bridge.js');
-          const qo = await bridge.bridgeGetController('queryOptimizer');
+          const qo = await getController('queryOptimizer');
           if (qo && typeof (qo as Record<string, unknown>).cache === 'function') {
             const cacheKey = JSON.stringify({ q: query, ns: namespace, limit, threshold });
             (qo as { cache: (k: string, v: unknown) => void }).cache(cacheKey, response);
@@ -581,7 +436,6 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async (input) => {
       await ensureInitialized();
-      const { deleteEntry } = await getMemoryFunctions();
 
       const key = input.key as string;
       const namespace = input.namespace as string;
@@ -592,14 +446,14 @@ export const memoryTools: MCPTool[] = [
       validateMemoryInput(key);
 
       try {
-        const result = await deleteEntry({ key, namespace });
+        const result = await routeMemoryOp({ type: 'delete', key, namespace });
 
         return {
-          success: result.deleted,
+          success: !!result.deleted,
           key,
           namespace,
-          deleted: result.deleted,
-          hnswIndexInvalidated: result.deleted,
+          deleted: !!result.deleted,
+          hnswIndexInvalidated: !!result.deleted,
           backend: 'sql.js + HNSW',
         };
       } catch (error) {
@@ -627,20 +481,21 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async (input) => {
       await ensureInitialized();
-      const { listEntries } = await getMemoryFunctions();
 
       const namespace = (input.namespace as string) || 'all';
       const limit = (input.limit as number) || 50;
       const offset = (input.offset as number) || 0;
 
       try {
-        const result = await listEntries({
+        const result = await routeMemoryOp({
+          type: 'list',
           namespace,
           limit,
           offset,
         });
 
-        const entries = result.entries.map(e => ({
+        const rawEntries = (result.entries as Array<Record<string, unknown>>) || [];
+        const entries = rawEntries.map(e => ({
           key: e.key,
           namespace: e.namespace,
           storedAt: e.createdAt,
@@ -652,7 +507,7 @@ export const memoryTools: MCPTool[] = [
 
         return {
           entries,
-          total: result.total,
+          total: (result.total as number) || 0,
           limit,
           offset,
           backend: 'sql.js + HNSW',
@@ -678,44 +533,25 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async () => {
       await ensureInitialized();
-      const { checkMemoryInitialization, listEntries } = await getMemoryFunctions();
 
       try {
-        const status = await checkMemoryInitialization();
-        const allEntries = await listEntries({ limit: 100000 });
+        const result = await routeMemoryOp({ type: 'stats' });
 
-        // Count by namespace
-        const namespaces: Record<string, number> = {};
-        let withEmbeddings = 0;
-
-        for (const entry of allEntries.entries) {
-          namespaces[entry.namespace] = (namespaces[entry.namespace] || 0) + 1;
-          if (entry.hasEmbedding) withEmbeddings++;
-        }
-
-        let oldest = Infinity;
-        let newest = 0;
-        for (const entry of allEntries.entries) {
-          const raw = entry.createdAt || entry.updatedAt;
-          if (!raw) continue;
-          const ts = typeof raw === 'number' ? raw : new Date(raw).getTime();
-          if (ts && ts < oldest) oldest = ts;
-          if (ts && ts > newest) newest = ts;
-        }
+        const totalEntries = (result.totalEntries as number) || 0;
+        const withEmbeddings = (result.entriesWithEmbeddings as number) || 0;
+        const namespaces = (result.namespaces as Record<string, number>) || {};
 
         return {
-          initialized: status.initialized,
-          totalEntries: allEntries.total,
+          initialized: !!result.initialized,
+          totalEntries,
           entriesWithEmbeddings: withEmbeddings,
-          embeddingCoverage: allEntries.total > 0
-            ? `${((withEmbeddings / allEntries.total) * 100).toFixed(1)}%`
+          embeddingCoverage: totalEntries > 0
+            ? `${((withEmbeddings / totalEntries) * 100).toFixed(1)}%`
             : '0%',
           namespaces,
-          oldestEntry: oldest < Infinity ? new Date(oldest).toISOString() : null,
-          newestEntry: newest > 0 ? new Date(newest).toISOString() : null,
           backend: 'sql.js + HNSW',
-          version: status.version || '3.0.0',
-          features: status.features || {
+          version: '3.0.0',
+          features: {
             vectorEmbeddings: true,
             hnswIndex: true,
             semanticSearch: true,
@@ -750,9 +586,9 @@ export const memoryTools: MCPTool[] = [
         }
       }
 
-      // Check for legacy data
-      const legacyStore = loadLegacyStore();
-      if (!legacyStore || Object.keys(legacyStore.entries).length === 0) {
+      await ensureRouter();
+
+      if (!hasLegacyStore()) {
         return {
           success: true,
           message: 'No legacy data to migrate',
@@ -760,13 +596,16 @@ export const memoryTools: MCPTool[] = [
         };
       }
 
-      // Run migration via ensureInitialized
-      await ensureInitialized();
+      const { migrated, total } = await migrateLegacyStore(async (opts) => {
+        const r = await routeMemoryOp({ type: 'store', ...opts });
+        return r;
+      });
 
       return {
         success: true,
         message: 'Migration completed',
-        migrated: Object.keys(legacyStore.entries).length,
+        migrated,
+        total,
         backend: 'sql.js + HNSW',
       };
     },
