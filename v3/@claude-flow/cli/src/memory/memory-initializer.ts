@@ -28,7 +28,8 @@ async function checkpointWalBeforeSqlJs(dbPath: string): Promise<void> {
   // Only needed if WAL files exist
   if (!fs.existsSync(dbPath + '-wal') && !fs.existsSync(dbPath + '-shm')) return;
   try {
-    const Database = (await import('better-sqlite3')).default;
+    const _bsmod = await import('better-sqlite3');
+    const Database = _bsmod.default ?? _bsmod; // CJS module.exports compat
     const db = new Database(dbPath);
     db.pragma('wal_checkpoint(TRUNCATE)');
     db.close();
@@ -1096,7 +1097,8 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
       return { success: true, columnsAdded: [] };
     }
 
-    const Database = (await import('better-sqlite3')).default;
+    const _bsmod = await import('better-sqlite3');
+    const Database = _bsmod.default ?? _bsmod; // CJS module.exports compat
     const db = new Database(dbPath);
 
     // Create memory_entries table if missing (safety net for store without init)
