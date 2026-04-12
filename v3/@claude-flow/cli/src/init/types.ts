@@ -230,6 +230,14 @@ export interface RuntimeConfig {
   learningTickInterval?: number;
   /** SONA mode */
   sonaMode?: string;
+  /** Per-hour confidence decay rate (ADR-0080) */
+  confidenceDecayRate?: number;
+  /** Confidence boost per access (ADR-0080) */
+  accessBoostAmount?: number;
+  /** Min trajectories before consolidation (ADR-0080) */
+  consolidationThreshold?: number;
+  /** PageRank damping factor for memoryGraph (ADR-0080) */
+  pageRankDamping?: number;
   /** Bridge init fallback */
   bridgeInitFallback?: boolean;
   /** Enable AgentDB learning (CLI flag) */

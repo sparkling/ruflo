@@ -1222,6 +1222,11 @@ async function writeRuntimeConfig(
     similarityThreshold: options.runtime?.similarityThreshold,
     embeddingModel: options.embeddings?.model,
     embeddingDim: options.embeddings?.dimension,
+    sonaMode: options.runtime?.sonaMode,
+    confidenceDecayRate: options.runtime?.confidenceDecayRate,
+    accessBoostAmount: options.runtime?.accessBoostAmount,
+    consolidationThreshold: options.runtime?.consolidationThreshold,
+    pageRankDamping: options.runtime?.pageRankDamping,
   };
 
   // ADR-0069: detect full mode via explicit flag or skills.all proxy
@@ -1287,6 +1292,14 @@ async function writeRuntimeConfig(
       maxEntries: 100000,
       defaultNamespace: 'default',
       dedupThreshold: 0.95,
+      sonaMode: 'balanced',
+      confidenceDecayRate: 0.0008,
+      accessBoostAmount: 0.05,
+      consolidationThreshold: 8,
+      ewcLambda: 2000,
+      pageRankDamping: 0.85,
+      maxNodes: 10000,
+      graphSimilarityThreshold: 0.25,
     }, null, 4);
     fs.writeFileSync(embeddingsJsonPath, embeddingsConfig, 'utf-8');
     result.created.files.push('.claude-flow/embeddings.json');

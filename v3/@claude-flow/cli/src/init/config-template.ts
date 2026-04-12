@@ -11,6 +11,11 @@ export interface ConfigOverrides {
   maxAgents?: number;
   embeddingModel?: string;
   embeddingDim?: number;
+  sonaMode?: string;
+  confidenceDecayRate?: number;
+  accessBoostAmount?: number;
+  consolidationThreshold?: number;
+  pageRankDamping?: number;
 }
 
 /**
@@ -85,14 +90,14 @@ export function getFullConfigTemplate(
       },
       learningBridge: {
         enabled: true,
-        sonaMode: 'balanced',
-        confidenceDecayRate: 0.0008,
-        accessBoostAmount: 0.05,
-        consolidationThreshold: 8,
+        sonaMode: overrides?.sonaMode ?? 'balanced',
+        confidenceDecayRate: overrides?.confidenceDecayRate ?? 0.0008,
+        accessBoostAmount: overrides?.accessBoostAmount ?? 0.05,
+        consolidationThreshold: overrides?.consolidationThreshold ?? 8,
       },
       memoryGraph: {
         enabled: true,
-        pageRankDamping: 0.85, // ADR-0080: aligned with settings-generator
+        pageRankDamping: overrides?.pageRankDamping ?? 0.85, // ADR-0080: aligned with settings-generator
         maxNodes: 10000,
         similarityThreshold: 0.25, // intentionally lower than memory.similarityThreshold (0.7) — graph edges need permissive matching for dense PageRank connectivity
       },

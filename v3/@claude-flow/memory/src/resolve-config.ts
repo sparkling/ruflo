@@ -43,6 +43,18 @@ export interface ResolvedConfig {
     readonly defaultNamespace: string;
     readonly dedupThreshold: number;
   };
+  readonly learning: {
+    readonly sonaMode: string;
+    readonly confidenceDecayRate: number;
+    readonly accessBoostAmount: number;
+    readonly consolidationThreshold: number;
+    readonly ewcLambda: number;
+  };
+  readonly graph: {
+    readonly pageRankDamping: number;
+    readonly maxNodes: number;
+    readonly similarityThreshold: number;
+  };
 }
 
 /** Partial overrides accepted by resolveConfig(). */
@@ -57,6 +69,14 @@ export interface ConfigOverrides {
   maxEntries?: number;
   defaultNamespace?: string;
   dedupThreshold?: number;
+  sonaMode?: string;
+  confidenceDecayRate?: number;
+  accessBoostAmount?: number;
+  consolidationThreshold?: number;
+  ewcLambda?: number;
+  pageRankDamping?: number;
+  maxNodes?: number;
+  graphSimilarityThreshold?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +93,14 @@ const DEFAULT_AUTO_PERSIST_INTERVAL = 30_000;
 const DEFAULT_MAX_ENTRIES = 100_000;
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_DEDUP_THRESHOLD = 0.95;
+const DEFAULT_SONA_MODE = 'balanced';
+const DEFAULT_CONFIDENCE_DECAY_RATE = 0.0008;
+const DEFAULT_ACCESS_BOOST_AMOUNT = 0.05;
+const DEFAULT_CONSOLIDATION_THRESHOLD = 8;
+const DEFAULT_EWC_LAMBDA = 2000;
+const DEFAULT_PAGE_RANK_DAMPING = 0.85;
+const DEFAULT_MAX_NODES = 10000;
+const DEFAULT_GRAPH_SIMILARITY_THRESHOLD = 0.25;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -164,6 +192,14 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
   let maxEntries: number = DEFAULT_MAX_ENTRIES;
   let defaultNamespace: string = DEFAULT_NAMESPACE;
   let dedupThreshold: number = DEFAULT_DEDUP_THRESHOLD;
+  let sonaMode: string = DEFAULT_SONA_MODE;
+  let confidenceDecayRate: number = DEFAULT_CONFIDENCE_DECAY_RATE;
+  let accessBoostAmount: number = DEFAULT_ACCESS_BOOST_AMOUNT;
+  let consolidationThreshold: number = DEFAULT_CONSOLIDATION_THRESHOLD;
+  let ewcLambda: number = DEFAULT_EWC_LAMBDA;
+  let pageRankDamping: number = DEFAULT_PAGE_RANK_DAMPING;
+  let maxNodes: number = DEFAULT_MAX_NODES;
+  let graphSimilarityThreshold: number = DEFAULT_GRAPH_SIMILARITY_THRESHOLD;
 
   // Layer 3: agentdb getEmbeddingConfig() (if available)
   const agentdbCfg = tryAgentdbConfig();
@@ -201,6 +237,39 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
     if (mem && typeof mem.dedupThreshold === 'number') {
       dedupThreshold = mem.dedupThreshold;
     }
+    if (typeof fileConfig.sonaMode === 'string') sonaMode = fileConfig.sonaMode;
+    if (typeof fileConfig.confidenceDecayRate === 'number') {
+      confidenceDecayRate = fileConfig.confidenceDecayRate;
+    }
+    if (typeof fileConfig.accessBoostAmount === 'number') {
+      accessBoostAmount = fileConfig.accessBoostAmount;
+    }
+    if (typeof fileConfig.consolidationThreshold === 'number') {
+      consolidationThreshold = fileConfig.consolidationThreshold;
+    }
+    if (typeof fileConfig.ewcLambda === 'number') ewcLambda = fileConfig.ewcLambda;
+    if (typeof fileConfig.pageRankDamping === 'number') {
+      pageRankDamping = fileConfig.pageRankDamping;
+    }
+    if (typeof fileConfig.maxNodes === 'number') maxNodes = fileConfig.maxNodes;
+    if (typeof fileConfig.graphSimilarityThreshold === 'number') {
+      graphSimilarityThreshold = fileConfig.graphSimilarityThreshold;
+    }
+    // Support nested learning.* and graph.* (structured style)
+    const lrn = fileConfig.learning as Record<string, unknown> | undefined;
+    if (lrn) {
+      if (typeof lrn.sonaMode === 'string') sonaMode = lrn.sonaMode;
+      if (typeof lrn.confidenceDecayRate === 'number') confidenceDecayRate = lrn.confidenceDecayRate;
+      if (typeof lrn.accessBoostAmount === 'number') accessBoostAmount = lrn.accessBoostAmount;
+      if (typeof lrn.consolidationThreshold === 'number') consolidationThreshold = lrn.consolidationThreshold;
+      if (typeof lrn.ewcLambda === 'number') ewcLambda = lrn.ewcLambda;
+    }
+    const grph = fileConfig.graph as Record<string, unknown> | undefined;
+    if (grph) {
+      if (typeof grph.pageRankDamping === 'number') pageRankDamping = grph.pageRankDamping;
+      if (typeof grph.maxNodes === 'number') maxNodes = grph.maxNodes;
+      if (typeof grph.similarityThreshold === 'number') graphSimilarityThreshold = grph.similarityThreshold;
+    }
   }
 
   // Layer 1: explicit overrides (highest priority)
@@ -217,6 +286,18 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
     if (overrides.maxEntries !== undefined) maxEntries = overrides.maxEntries;
     if (overrides.defaultNamespace !== undefined) defaultNamespace = overrides.defaultNamespace;
     if (overrides.dedupThreshold !== undefined) dedupThreshold = overrides.dedupThreshold;
+    if (overrides.sonaMode !== undefined) sonaMode = overrides.sonaMode;
+    if (overrides.confidenceDecayRate !== undefined) confidenceDecayRate = overrides.confidenceDecayRate;
+    if (overrides.accessBoostAmount !== undefined) accessBoostAmount = overrides.accessBoostAmount;
+    if (overrides.consolidationThreshold !== undefined) {
+      consolidationThreshold = overrides.consolidationThreshold;
+    }
+    if (overrides.ewcLambda !== undefined) ewcLambda = overrides.ewcLambda;
+    if (overrides.pageRankDamping !== undefined) pageRankDamping = overrides.pageRankDamping;
+    if (overrides.maxNodes !== undefined) maxNodes = overrides.maxNodes;
+    if (overrides.graphSimilarityThreshold !== undefined) {
+      graphSimilarityThreshold = overrides.graphSimilarityThreshold;
+    }
   }
 
   // Safety net: never resolve to 384 -- always 768 (ADR-0069)
@@ -230,6 +311,8 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
     storage: { provider: storageProvider, databasePath, walMode, autoPersistInterval },
     hnsw: { M: hnswParams.M, efConstruction: hnswParams.efConstruction, efSearch: hnswParams.efSearch },
     memory: { maxEntries, defaultNamespace, dedupThreshold },
+    learning: { sonaMode, confidenceDecayRate, accessBoostAmount, consolidationThreshold, ewcLambda },
+    graph: { pageRankDamping, maxNodes, similarityThreshold: graphSimilarityThreshold },
   });
 
   _singleton = resolved;

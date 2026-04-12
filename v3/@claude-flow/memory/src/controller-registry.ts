@@ -1187,12 +1187,14 @@ export class ControllerRegistry extends EventEmitter {
           async initialize() {},
           async shutdown() {},
         };
-        const config = this.config.memory?.learningBridge || {};
+        const resolved = getConfig();
+        const lbConfig = this.config.memory?.learningBridge || {};
         const bridge = new LearningBridge(this.backend || noOpBackend, {
-          sonaMode: config.sonaMode || this.config.neural?.sonaMode || 'real-time',
-          confidenceDecayRate: config.confidenceDecayRate,
-          accessBoostAmount: config.accessBoostAmount,
-          consolidationThreshold: config.consolidationThreshold,
+          sonaMode: lbConfig.sonaMode || resolved.learning.sonaMode,
+          confidenceDecayRate: lbConfig.confidenceDecayRate ?? resolved.learning.confidenceDecayRate,
+          accessBoostAmount: lbConfig.accessBoostAmount ?? resolved.learning.accessBoostAmount,
+          consolidationThreshold: lbConfig.consolidationThreshold ?? resolved.learning.consolidationThreshold,
+          ewcLambda: lbConfig.ewcLambda ?? resolved.learning.ewcLambda,
           enabled: true,
         });
         return getOrCreate(name, () => bridge);
