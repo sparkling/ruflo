@@ -109,7 +109,7 @@ const generateCommand: Command = {
   },
 };
 
-// Search subcommand - REAL implementation using sql.js
+// Search subcommand - REAL implementation using open-database wrapper
 const searchCommand: Command = {
   name: 'search',
   description: 'Semantic similarity search',
@@ -156,12 +156,8 @@ const searchCommand: Command = {
         return { success: false, exitCode: 1 };
       }
 
-      // Load sql.js
-      const initSqlJs = (await import('sql.js')).default;
-      const SQL = await initSqlJs();
-
-      const fileBuffer = fs.readFileSync(fullDbPath);
-      const db = new SQL.Database(fileBuffer);
+      const { openDatabase } = await import('../memory/open-database.js');
+      const db = await openDatabase(fullDbPath, { readonly: true });
 
       const startTime = Date.now();
 
@@ -171,7 +167,7 @@ const searchCommand: Command = {
       const queryEmbedding = queryResult.embedding;
 
       // Get all entries with embeddings from database
-      const entries = db.exec(`
+      const entries = queryRows(db, `
         SELECT id, key, namespace, content, embedding, embedding_dimensions
         FROM memory_entries
         WHERE status = 'active'
@@ -182,36 +178,38 @@ const searchCommand: Command = {
 
       const results: { score: number; id: string; key: string; content: string; namespace: string }[] = [];
 
-      if (entries[0]?.values) {
-        for (const row of entries[0].values) {
-          const [id, key, ns, content, embeddingJson] = row as [string, string, string, string, string];
+      for (const row of entries) {
+        const id = String(row.id ?? '');
+        const key = String(row.key ?? '');
+        const ns = String(row.namespace ?? '');
+        const content = String(row.content ?? '');
+        const embeddingJson = String(row.embedding ?? '');
 
-          if (!embeddingJson) continue;
+        if (!embeddingJson) continue;
 
-          try {
-            const embedding = JSON.parse(embeddingJson) as number[];
+        try {
+          const embedding = JSON.parse(embeddingJson) as number[];
 
-            // Calculate cosine similarity
-            const similarity = cosineSimilarity(queryEmbedding, embedding);
+          // Calculate cosine similarity
+          const similarity = cosineSimilarity(queryEmbedding, embedding);
 
-            if (similarity >= threshold) {
-              results.push({
-                score: similarity,
-                id: id.substring(0, 10),
-                key: key || id.substring(0, 15),
-                content: (content || '').substring(0, 45) + ((content || '').length > 45 ? '...' : ''),
-                namespace: ns || 'default'
-              });
-            }
-          } catch {
-            // Skip entries with invalid embeddings
+          if (similarity >= threshold) {
+            results.push({
+              score: similarity,
+              id: id.substring(0, 10),
+              key: key || id.substring(0, 15),
+              content: content.substring(0, 45) + (content.length > 45 ? '...' : ''),
+              namespace: ns || 'default'
+            });
           }
+        } catch {
+          // Skip entries with invalid embeddings
         }
       }
 
       // Also search entries without embeddings using keyword match
       if (results.length < limit) {
-        const keywordEntries = db.exec(`
+        const keywordEntries = queryRows(db, `
           SELECT id, key, namespace, content
           FROM memory_entries
           WHERE status = 'active'
@@ -220,20 +218,21 @@ const searchCommand: Command = {
           LIMIT ${limit - results.length}
         `);
 
-        if (keywordEntries[0]?.values) {
-          for (const row of keywordEntries[0].values) {
-            const [id, key, ns, content] = row as [string, string, string, string];
+        for (const row of keywordEntries) {
+          const id = String(row.id ?? '');
+          const key = String(row.key ?? '');
+          const ns = String(row.namespace ?? '');
+          const content = String(row.content ?? '');
 
-            // Avoid duplicates
-            if (!results.some(r => r.id === id.substring(0, 10))) {
-              results.push({
-                score: 0.5, // Keyword match base score
-                id: id.substring(0, 10),
-                key: key || id.substring(0, 15),
-                content: (content || '').substring(0, 45) + ((content || '').length > 45 ? '...' : ''),
-                namespace: ns || 'default'
-              });
-            }
+          // Avoid duplicates
+          if (!results.some(r => r.id === id.substring(0, 10))) {
+            results.push({
+              score: 0.5, // Keyword match base score
+              id: id.substring(0, 10),
+              key: key || id.substring(0, 15),
+              content: content.substring(0, 45) + (content.length > 45 ? '...' : ''),
+              namespace: ns || 'default'
+            });
           }
         }
       }
@@ -281,6 +280,25 @@ const searchCommand: Command = {
     }
   },
 };
+
+/**
+ * Run a SELECT query against a SafeDatabase (open-database wrapper).
+ * Returns rows as plain objects keyed by column name, regardless of
+ * whether the underlying engine is better-sqlite3 or sql.js.
+ */
+function queryRows(db: import('../memory/open-database.js').SafeDatabase, sql: string): Record<string, unknown>[] {
+  if (db.engine === 'better-sqlite3') {
+    return db.prepare(sql).all() as Record<string, unknown>[];
+  }
+  // sql.js fallback: prepare returns a Statement with step()/getAsObject()
+  const stmt = db.prepare(sql);
+  const rows: Record<string, unknown>[] = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject() as Record<string, unknown>);
+  }
+  stmt.free();
+  return rows;
+}
 
 /**
  * Optimized cosine similarity
@@ -400,7 +418,7 @@ const compareCommand: Command = {
   },
 };
 
-// Collections subcommand - REAL implementation using sql.js
+// Collections subcommand - REAL implementation using open-database wrapper
 const collectionsCommand: Command = {
   name: 'collections',
   description: 'Manage embedding collections (namespaces)',
@@ -435,15 +453,11 @@ const collectionsCommand: Command = {
         return { success: true, data: [] };
       }
 
-      // Load sql.js and query real data
-      const initSqlJs = (await import('sql.js')).default;
-      const SQL = await initSqlJs();
-
-      const fileBuffer = fs.readFileSync(fullDbPath);
-      const db = new SQL.Database(fileBuffer);
+      const { openDatabase } = await import('../memory/open-database.js');
+      const db = await openDatabase(fullDbPath, { readonly: true });
 
       // Get collection stats from database
-      const statsQuery = db.exec(`
+      const statsRows = queryRows(db, `
         SELECT
           namespace,
           COUNT(*) as total_entries,
@@ -456,24 +470,26 @@ const collectionsCommand: Command = {
         ORDER BY total_entries DESC
       `);
 
-      // Get vector index info
-      const indexQuery = db.exec(`SELECT name, dimensions, hnsw_m FROM vector_indexes`);
+      // Get vector index info (best-effort, table may not exist)
+      try { queryRows(db, `SELECT name, dimensions, hnsw_m FROM vector_indexes`); } catch { /* ignore */ }
 
       const collections: { name: string; vectors: string; total: string; dimensions: string; index: string; size: string }[] = [];
 
-      if (statsQuery[0]?.values) {
-        for (const row of statsQuery[0].values) {
-          const [namespace, total, withEmbeddings, avgDims, contentSize] = row as [string, number, number, number, number];
+      for (const row of statsRows) {
+        const ns = String(row.namespace ?? '');
+        const total = Number(row.total_entries ?? 0);
+        const withEmbeddings = Number(row.with_embeddings ?? 0);
+        const avgDims = Number(row.avg_dimensions ?? 0);
+        const contentSize = Number(row.total_content_size ?? 0);
 
-          collections.push({
-            name: namespace || 'default',
-            vectors: withEmbeddings.toLocaleString(),
-            total: total.toLocaleString(),
-            dimensions: avgDims ? Math.round(avgDims).toString() : '-',
-            index: withEmbeddings > 0 ? 'HNSW' : 'None',
-            size: formatBytes(contentSize || 0)
-          });
-        }
+        collections.push({
+          name: ns || 'default',
+          vectors: withEmbeddings.toLocaleString(),
+          total: total.toLocaleString(),
+          dimensions: avgDims ? Math.round(avgDims).toString() : '-',
+          index: withEmbeddings > 0 ? 'HNSW' : 'None',
+          size: formatBytes(contentSize || 0)
+        });
       }
 
       db.close();
@@ -1360,15 +1376,13 @@ const cacheCommand: Command = {
           sqliteSize = `${sizeBytes} B`;
         }
 
-        // Try to count real entries via sql.js
+        // Try to count real entries via open-database wrapper
         try {
-          const initSqlJs = (await import('sql.js')).default;
-          const SQL = await initSqlJs();
-          const fileBuffer = fs.readFileSync(resolvedDbPath);
-          const db = new SQL.Database(fileBuffer);
-          const result = db.exec('SELECT COUNT(*) as count FROM embeddings');
-          if (result.length > 0 && result[0].values.length > 0) {
-            sqliteEntries = result[0].values[0][0] as number;
+          const { openDatabase } = await import('../memory/open-database.js');
+          const db = await openDatabase(resolvedDbPath, { readonly: true });
+          const rows = queryRows(db, 'SELECT COUNT(*) as count FROM embeddings');
+          if (rows.length > 0) {
+            sqliteEntries = Number(rows[0].count ?? 0);
           }
           db.close();
         } catch {

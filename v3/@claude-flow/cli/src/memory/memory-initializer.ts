@@ -1,10 +1,11 @@
 /**
  * V3 Memory Initializer
- * Properly initializes the memory database with sql.js (WASM SQLite)
- * Includes pattern tables, vector embeddings, migration state tracking
+ * Properly initializes the memory database via openDatabase wrapper
+ * (better-sqlite3 preferred, sql.js fallback). Includes pattern tables,
+ * vector embeddings, migration state tracking.
  *
  * ADR-053: Routes through ControllerRegistry → AgentDB v3 when available,
- * falls back to raw sql.js for backwards compatibility.
+ * falls back to openDatabase wrapper for backwards compatibility.
  *
  * @module v3/cli/memory-initializer
  */
@@ -12,6 +13,27 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getConfig } from '@claude-flow/memory';
+
+/**
+ * ADR-0080 Phase 4: Checkpoint WAL before sql.js reads a database.
+ * sql.js can't read WAL journals — this forces all WAL data into the
+ * main .db file so sql.js sees complete data. Uses better-sqlite3
+ * (which handles WAL natively) to do the checkpoint.
+ *
+ * Call this BEFORE any `new SQL.Database(readFileSync(path))` on an
+ * existing file that may have been created by better-sqlite3 in WAL mode.
+ */
+async function checkpointWalBeforeSqlJs(dbPath: string): Promise<void> {
+  if (!fs.existsSync(dbPath)) return;
+  // Only needed if WAL files exist
+  if (!fs.existsSync(dbPath + '-wal') && !fs.existsSync(dbPath + '-shm')) return;
+  try {
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(dbPath);
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.close();
+  } catch { /* better-sqlite3 not available — sql.js will read what it can */ }
+}
 
 // ADR-053: Lazy import of AgentDB v3 bridge
 let _bridge: typeof import('./memory-bridge.js') | null | undefined;
@@ -535,41 +557,36 @@ export async function getHNSWIndex(options?: {
 
     if (!loadedFromStorage && fs.existsSync(dbPath)) {
       try {
-        const initSqlJs = (await import('sql.js')).default;
-        const SQL = await initSqlJs();
-        const fileBuffer = fs.readFileSync(dbPath);
-        const sqlDb = new SQL.Database(fileBuffer);
+        const { openDatabase } = await import('./open-database.js');
+        const sqlDb = await openDatabase(dbPath, { readonly: true });
 
         // Load all entries with embeddings
-        const result = sqlDb.exec(`
+        const rows = sqlDb.prepare(`
           SELECT id, key, namespace, content, embedding
           FROM memory_entries
           WHERE status = 'active' AND embedding IS NOT NULL
           LIMIT 10000
-        `);
+        `).all() as Array<{ id: string; key: string; namespace: string; content: string; embedding: string }>;
 
-        if (result[0]?.values) {
-          for (const row of result[0].values) {
-            const [id, key, ns, content, embeddingJson] = row as [string, string, string, string, string];
-            if (embeddingJson) {
-              try {
-                const embedding = JSON.parse(embeddingJson) as number[];
-                const vector = new Float32Array(embedding);
+        for (const row of rows) {
+          if (row.embedding) {
+            try {
+              const embedding = JSON.parse(row.embedding) as number[];
+              const vector = new Float32Array(embedding);
 
-                await db.insert({
-                  id: String(id),
-                  vector
-                });
+              await db.insert({
+                id: String(row.id),
+                vector
+              });
 
-                hnswIndex.entries.set(String(id), {
-                  id: String(id),
-                  key: key || String(id),
-                  namespace: ns || 'default',
-                  content: content || ''
-                });
-              } catch {
-                // Skip invalid embeddings
-              }
+              hnswIndex.entries.set(String(row.id), {
+                id: String(row.id),
+                key: row.key || String(row.id),
+                namespace: row.namespace || 'default',
+                content: row.content || ''
+              });
+            } catch {
+              // Skip invalid embeddings
             }
           }
         }
@@ -1162,21 +1179,18 @@ export async function checkAndMigrateLegacy(options: {
   for (const legacyPath of legacyPaths) {
     if (fs.existsSync(legacyPath) && legacyPath !== dbPath) {
       try {
-        const initSqlJs = (await import('sql.js')).default;
-        const SQL = await initSqlJs();
-
-        const legacyBuffer = fs.readFileSync(legacyPath);
-        const legacyDb = new SQL.Database(legacyBuffer);
+        const { openDatabase } = await import('./open-database.js');
+        const legacyDb = await openDatabase(legacyPath, { readonly: true });
 
         // Check if it has data
-        const countResult = legacyDb.exec('SELECT COUNT(*) FROM memory_entries');
-        const count = countResult[0]?.values[0]?.[0] as number || 0;
+        const countRow = legacyDb.prepare('SELECT COUNT(*) as cnt FROM memory_entries').get() as { cnt: number } | undefined;
+        const count = countRow?.cnt || 0;
 
         // Get version if available
         let version = 'unknown';
         try {
-          const versionResult = legacyDb.exec("SELECT value FROM metadata WHERE key='schema_version'");
-          version = versionResult[0]?.values[0]?.[0] as string || 'unknown';
+          const versionRow = legacyDb.prepare("SELECT value FROM metadata WHERE key='schema_version'").get() as { value: string } | undefined;
+          version = versionRow?.value || 'unknown';
         } catch { /* no metadata table */ }
 
         legacyDb.close();
@@ -1319,14 +1333,13 @@ export async function initializeMemoryDatabase(options: {
 
       // ADR-0080: create memory_entries BEFORE controller activation (which is slow).
       // Only create if the .db doesn't exist yet — if it exists, AgentDB (better-sqlite3)
-      // created it in WAL mode and sql.js can't safely read/modify WAL-mode databases.
+      // created it in WAL mode and we should not re-create it.
       try {
         const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
         if (!fs.existsSync(sqlitePath)) {
-          const initSqlJs = (await import('sql.js')).default;
-          const SQL = await initSqlJs();
-          const sqlDb = new SQL.Database();
-          sqlDb.run(`
+          const { openDatabase } = await import('./open-database.js');
+          const sqlDb = await openDatabase(sqlitePath);
+          sqlDb.exec(`
             CREATE TABLE IF NOT EXISTS memory_entries (
               id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
               content TEXT NOT NULL DEFAULT '', type TEXT DEFAULT 'semantic',
@@ -1341,11 +1354,9 @@ export async function initializeMemoryDatabase(options: {
             CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(key);
             CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_entries(status);
           `);
-          const data = sqlDb.export();
-          fs.writeFileSync(sqlitePath, Buffer.from(data));
           sqlDb.close();
         }
-      } catch { /* sql.js not available — controller activation will create .db */ }
+      } catch { /* openDatabase not available — controller activation will create .db */ }
 
       // ADR-053: Activate ControllerRegistry alongside new storage (slow — may timeout)
       const controllerResult = await activateControllerRegistry(dbPath, verbose);
@@ -1355,13 +1366,11 @@ export async function initializeMemoryDatabase(options: {
       try {
         const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
         if (fs.existsSync(sqlitePath)) {
-          const initSqlJs = (await import('sql.js')).default;
-          const SQL = await initSqlJs();
-          const buf = fs.readFileSync(sqlitePath);
-          const sqlDb = new SQL.Database(buf);
+          const { openDatabase: openDb } = await import('./open-database.js');
+          const sqlDb = await openDb(sqlitePath);
           // Only create memory_entries table + indexes — NOT the full MEMORY_SCHEMA_V3
           // which conflicts with AgentDB's pre-existing tables/indexes
-          sqlDb.run(`
+          sqlDb.exec(`
             CREATE TABLE IF NOT EXISTS memory_entries (
               id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
               content TEXT NOT NULL, type TEXT DEFAULT 'semantic',
@@ -1380,11 +1389,9 @@ export async function initializeMemoryDatabase(options: {
             CREATE INDEX IF NOT EXISTS idx_memory_accessed ON memory_entries(last_accessed_at);
             CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_entries(owner_id);
           `);
-          const data = sqlDb.export();
-          fs.writeFileSync(sqlitePath, Buffer.from(data));
           sqlDb.close();
         }
-      } catch { /* sql.js not available or DB locked — non-fatal */ }
+      } catch { /* openDatabase not available or DB locked — non-fatal */ }
 
       return {
         success: true,
@@ -1428,44 +1435,37 @@ export async function initializeMemoryDatabase(options: {
       };
     } catch { /* createStorage failed — fall through to sql.js */ }
 
-    // Try to use sql.js (WASM SQLite)
-    let db: any;
-    let usedSqlJs = false;
+    // Try to initialize memory database via openDatabase wrapper
+    let usedOpenDb = false;
 
     try {
-      // Dynamic import of sql.js
-      const initSqlJs = (await import('sql.js')).default;
-      const SQL = await initSqlJs();
+      const { openDatabase: openDb } = await import('./open-database.js');
 
       // Load existing database or create new
       if (fs.existsSync(dbPath) && force) {
         fs.unlinkSync(dbPath);
       }
 
-      db = new SQL.Database();
-      usedSqlJs = true;
+      const db = await openDb(dbPath);
+
+      // Execute schema
+      db.exec(MEMORY_SCHEMA_V3);
+
+      // Insert initial metadata
+      db.exec(getInitialMetadata(backend));
+
+      // Close database (wrapper handles persistence)
+      db.close();
+
+      usedOpenDb = true;
     } catch (e) {
-      // sql.js not available, fall back to writing schema file
+      // openDatabase not available, fall back to writing schema file
       if (verbose) {
-        console.log('sql.js not available, writing schema file for later initialization');
+        console.log('openDatabase not available, writing schema file for later initialization');
       }
     }
 
-    if (usedSqlJs && db) {
-      // Execute schema
-      db.run(MEMORY_SCHEMA_V3);
-
-      // Insert initial metadata
-      db.run(getInitialMetadata(backend));
-
-      // Save to file
-      const data = db.export();
-      const buffer = Buffer.from(data);
-      fs.writeFileSync(dbPath, buffer);
-
-      // Close database
-      db.close();
-
+    if (usedOpenDb) {
       // Also create schema file for reference
       const schemaPath = path.join(dbDir, 'schema.sql');
       fs.writeFileSync(schemaPath, MEMORY_SCHEMA_V3 + '\n' + getInitialMetadata(backend));
@@ -1609,6 +1609,7 @@ export async function checkMemoryInitialization(dbPath?: string): Promise<{
     // Try to load with sql.js
     const initSqlJs = (await import('sql.js')).default;
     const SQL = await initSqlJs();
+    await checkpointWalBeforeSqlJs(path_);
 
     const fileBuffer = fs.readFileSync(path_);
     const db = new SQL.Database(fileBuffer);
@@ -1665,6 +1666,7 @@ export async function applyTemporalDecay(dbPath?: string): Promise<{
     const initSqlJs = (await import('sql.js')).default;
     const SQL = await initSqlJs();
 
+    await checkpointWalBeforeSqlJs(path_);
     const fileBuffer = fs.readFileSync(path_);
     const db = new SQL.Database(fileBuffer);
 
@@ -2166,6 +2168,7 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     const fs = await import('fs');
 
     // Load database
+    await checkpointWalBeforeSqlJs(dbPath);
     const fileBuffer = fs.readFileSync(dbPath);
     const db = new SQL.Database(fileBuffer);
 
@@ -2410,11 +2413,8 @@ export async function storeEntry(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-
-    const fileBuffer = fs.readFileSync(dbPath);
-    const db = new SQL.Database(fileBuffer);
+    const { openDatabase } = await import('./open-database.js');
+    const db = await openDatabase(dbPath);
 
     const id = `entry_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const now = Date.now();
@@ -2444,7 +2444,8 @@ export async function storeEntry(options: {
           tags, metadata, created_at, updated_at, expires_at, status
         ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, ?, ?, ?, 'active')`;
 
-    db.run(insertSql, [
+    const insStmt = db.prepare(insertSql);
+    insStmt.bind([
       id,
       key,
       namespace,
@@ -2458,10 +2459,10 @@ export async function storeEntry(options: {
       now,
       ttl ? now + (ttl * 1000) : null
     ]);
+    insStmt.step();
+    insStmt.free();
 
-    // Save
-    const data = db.export();
-    fs.writeFileSync(dbPath, Buffer.from(data));
+    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     // Add to HNSW index for faster future searches
@@ -2585,11 +2586,8 @@ export async function searchEntries(options: {
     }
 
     // Fall back to brute-force SQLite search
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-
-    const fileBuffer = fs.readFileSync(dbPath);
-    const db = new SQL.Database(fileBuffer);
+    const { openDatabase } = await import('./open-database.js');
+    const db = await openDatabase(dbPath, { readonly: true });
 
     // Get entries with embeddings
     const searchStmt = db.prepare(
@@ -2740,11 +2738,8 @@ export async function listEntries(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-
-    const fileBuffer = fs.readFileSync(dbPath);
-    const db = new SQL.Database(fileBuffer);
+    const { openDatabase } = await import('./open-database.js');
+    const db = await openDatabase(dbPath, { readonly: true });
 
     // Get total count
     const countStmt = namespace
@@ -2868,11 +2863,8 @@ export async function getEntry(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-
-    const fileBuffer = fs.readFileSync(dbPath);
-    const db = new SQL.Database(fileBuffer);
+    const { openDatabase } = await import('./open-database.js');
+    const db = await openDatabase(dbPath);
 
     // Find entry by key
     const getStmt = db.prepare(`
@@ -2901,15 +2893,14 @@ export async function getEntry(options: {
     ];
 
     // Update access count
-    db.run(`
+    const updStmt = db.prepare(`
       UPDATE memory_entries
       SET access_count = access_count + 1, last_accessed_at = strftime('%s', 'now') * 1000
       WHERE id = ?
-    `, [String(id)]);
-
-    // Save updated database
-    const data = db.export();
-    fs.writeFileSync(dbPath, Buffer.from(data));
+    `);
+    updStmt.bind([String(id)]);
+    updStmt.step();
+    updStmt.free();
 
     db.close();
 
@@ -3009,15 +3000,13 @@ export async function deleteEntry(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-
-    const fileBuffer = fs.readFileSync(dbPath);
-    const db = new SQL.Database(fileBuffer);
+    const { openDatabase } = await import('./open-database.js');
+    const db = await openDatabase(dbPath);
 
     // Check if entry exists first
     const checkStmt = db.prepare(`
       SELECT id FROM memory_entries
+    await checkpointWalBeforeSqlJs(dbPath);
       WHERE status = 'active'
         AND key = ?
         AND namespace = ?
@@ -3033,8 +3022,10 @@ export async function deleteEntry(options: {
 
     if (!checkResult[0]?.values?.[0]) {
       // Get remaining count before closing
-      const countResult = db.exec(`SELECT COUNT(*) FROM memory_entries WHERE status = 'active'`);
-      const remainingEntries = countResult[0]?.values?.[0]?.[0] as number || 0;
+      const cntStmt = db.prepare(`SELECT COUNT(*) FROM memory_entries WHERE status = 'active'`);
+      let remainingEntries = 0;
+      if (cntStmt.step()) remainingEntries = cntStmt.get()[0] as number || 0;
+      cntStmt.free();
       db.close();
       return {
         success: true,
@@ -3051,7 +3042,7 @@ export async function deleteEntry(options: {
 
     // Delete the entry (soft delete by setting status to 'deleted')
     // Also null out the embedding to clean up vector data from SQLite
-    db.run(`
+    const delStmt = db.prepare(`
       UPDATE memory_entries
       SET status = 'deleted',
           embedding = NULL,
@@ -3059,7 +3050,10 @@ export async function deleteEntry(options: {
       WHERE key = ?
         AND namespace = ?
         AND status = 'active'
-    `, [key, namespace]);
+    `);
+    delStmt.bind([key, namespace]);
+    delStmt.step();
+    delStmt.free();
 
     // GV-001: Remove ghost vector from HNSW metadata file
     try {
@@ -3078,13 +3072,12 @@ export async function deleteEntry(options: {
         hnswIndex.entries.delete(entryId);
     }
     // Get remaining count
-    const countResult = db.exec(`SELECT COUNT(*) FROM memory_entries WHERE status = 'active'`);
-    const remainingEntries = countResult[0]?.values?.[0]?.[0] as number || 0;
+    const cntStmt2 = db.prepare(`SELECT COUNT(*) FROM memory_entries WHERE status = 'active'`);
+    let remainingEntries = 0;
+    if (cntStmt2.step()) remainingEntries = cntStmt2.get()[0] as number || 0;
+    cntStmt2.free();
 
-    // Save updated database
-    const data = db.export();
-    fs.writeFileSync(dbPath, Buffer.from(data));
-
+    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     // Clean up in-memory HNSW index so ghost vectors don't appear in searches.
