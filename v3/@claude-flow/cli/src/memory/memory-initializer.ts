@@ -1338,10 +1338,39 @@ export async function initializeMemoryDatabase(options: {
         verbose,
       });
 
-      // ADR-053: Activate ControllerRegistry alongside new storage
+      // ADR-0080: create memory_entries BEFORE controller activation (which is slow).
+      // If controller activation gets killed by timeout, the table still exists.
+      try {
+        const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
+        // Create the .db file if it doesn't exist yet
+        const initSqlJs = (await import('sql.js')).default;
+        const SQL = await initSqlJs();
+        const existingBuf = fs.existsSync(sqlitePath) ? fs.readFileSync(sqlitePath) : undefined;
+        const sqlDb = existingBuf ? new SQL.Database(existingBuf) : new SQL.Database();
+        sqlDb.run(`
+          CREATE TABLE IF NOT EXISTS memory_entries (
+            id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
+            content TEXT NOT NULL DEFAULT '', type TEXT DEFAULT 'semantic',
+            embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
+            tags TEXT, metadata TEXT, owner_id TEXT,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+            expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'active', UNIQUE(namespace, key)
+          );
+          CREATE INDEX IF NOT EXISTS idx_memory_namespace ON memory_entries(namespace);
+          CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(key);
+          CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_entries(status);
+        `);
+        const data = sqlDb.export();
+        fs.writeFileSync(sqlitePath, Buffer.from(data));
+        sqlDb.close();
+      } catch { /* sql.js not available — controller activation will create .db */ }
+
+      // ADR-053: Activate ControllerRegistry alongside new storage (slow — may timeout)
       const controllerResult = await activateControllerRegistry(dbPath, verbose);
 
-      // ADR-0080: ensure full memory schema exists in SQLite alongside RVF
+      // ADR-0080: ensure full schema after controller activation adds its tables
       // AgentDB creates memory.db with its own schema but not memory_entries
       try {
         const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
@@ -2349,7 +2378,26 @@ export async function storeEntry(options: {
   embedding?: { dimensions: number; model: string };
   error?: string;
 }> {
-  // ADR-053: Try AgentDB v3 bridge first
+  // ADR-0080 Phase 5: RVF-primary shim — try RVF before bridge/SQLite
+  try {
+    const shim = await import('./rvf-shim.js');
+    if (!shim.isReady()) await shim.init();
+    if (shim.isReady()) {
+      // Generate embedding for RVF store
+      let embedding: Float32Array | undefined;
+      if (options.generateEmbeddingFlag !== false) {
+        try {
+          const embResult = await generateEmbedding(options.value || '');
+          if (embResult?.embedding) embedding = new Float32Array(embResult.embedding);
+        } catch { /* embedding optional for RVF store */ }
+      }
+      const rvfResult = await shim.store({ ...options, embedding });
+      // Dual-write: also store in SQLite for list/stats/delete queries
+      // (fall through to bridge below — don't return yet)
+    }
+  } catch { /* RVF shim not available — continue to bridge */ }
+
+  // ADR-053: Try AgentDB v3 bridge (SQLite path — needed for list/stats)
   const bridge = await getBridge();
   if (bridge) {
     const bridgeResult = await bridge.bridgeStoreEntry(options);
@@ -2483,7 +2531,30 @@ export async function searchEntries(options: {
   searchTime: number;
   error?: string;
 }> {
-  // ADR-053: Try AgentDB v3 bridge first
+  // ADR-0080 Phase 5: RVF-primary search via HNSW
+  try {
+    const shim = await import('./rvf-shim.js');
+    if (shim.isReady()) {
+      const embedding = await generateEmbedding(options.query);
+      if (embedding?.embedding) {
+        const rvfResult = await shim.search({
+          query: options.query,
+          namespace: options.namespace,
+          limit: options.limit,
+          embedding: new Float32Array(embedding.embedding),
+        });
+        if (rvfResult.results.length > 0) {
+          return {
+            success: true,
+            results: rvfResult.results.map(r => ({ id: r.key, key: r.key, content: r.value, score: r.score, namespace: r.namespace })),
+            searchTime: 0,
+          };
+        }
+      }
+    }
+  } catch { /* RVF search not available — fall through */ }
+
+  // ADR-053: Try AgentDB v3 bridge
   const bridge = await getBridge();
   if (bridge) {
     const bridgeResult = await bridge.bridgeSearchEntries(options);
