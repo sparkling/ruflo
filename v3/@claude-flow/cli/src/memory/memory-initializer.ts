@@ -1069,31 +1069,36 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
 }> {
   const columnsAdded: string[] = [];
 
-  // ADR-0080: memory_entries table is created during memory init (not here).
-  // IMPORTANT: Do NOT use sql.js to read/modify existing .db files — AgentDB
-  // creates them with better-sqlite3 in WAL mode, and sql.js can't handle
-  // WAL-mode databases (reads only the main file, misses -wal data, produces
-  // "database disk image is malformed" on write-back).
+  // ADR-0080: Use better-sqlite3 (not sql.js) for ALL database modifications.
+  // sql.js corrupts WAL-mode databases because it reads only the main .db file,
+  // missing -wal journal data, and writes back a truncated version.
+  // better-sqlite3 handles WAL natively.
 
   try {
     if (!fs.existsSync(dbPath)) {
       return { success: true, columnsAdded: [] };
     }
 
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(dbPath);
 
-    const fileBuffer = fs.readFileSync(dbPath);
-    const db = new SQL.Database(fileBuffer);
+    // Create memory_entries table if missing (safety net for store without init)
+    db.exec(`CREATE TABLE IF NOT EXISTS memory_entries (
+      id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
+      content TEXT NOT NULL DEFAULT '', type TEXT DEFAULT 'semantic',
+      embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
+      tags TEXT, metadata TEXT, owner_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+      expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'active', UNIQUE(namespace, key)
+    )`);
 
     // Get current columns in memory_entries
-    const tableInfo = db.exec("PRAGMA table_info(memory_entries)");
-    const existingColumns = new Set(
-      tableInfo[0]?.values?.map(row => row[1] as string) || []
-    );
+    const tableInfo = db.pragma('table_info(memory_entries)') as Array<{ name: string }>;
+    const existingColumns = new Set(tableInfo.map(row => row.name));
 
     // Required columns that may be missing in older schemas
-    // Issue #977: 'type' column was missing from this list, causing store failures on older DBs
     const requiredColumns: Array<{ name: string; definition: string }> = [
       { name: 'content', definition: "content TEXT DEFAULT ''" },
       { name: 'type', definition: "type TEXT DEFAULT 'semantic'" },
@@ -1109,23 +1114,15 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
       { name: 'status', definition: "status TEXT DEFAULT 'active'" }
     ];
 
-    let modified = false;
     for (const col of requiredColumns) {
       if (!existingColumns.has(col.name)) {
         try {
-          db.run(`ALTER TABLE memory_entries ADD COLUMN ${col.definition}`);
+          db.exec(`ALTER TABLE memory_entries ADD COLUMN ${col.definition}`);
           columnsAdded.push(col.name);
-          modified = true;
-        } catch (e) {
+        } catch {
           // Column might already exist or other error - continue
         }
       }
-    }
-
-    if (modified) {
-      // Save updated database
-      const data = db.export();
-      fs.writeFileSync(dbPath, Buffer.from(data));
     }
 
     db.close();
