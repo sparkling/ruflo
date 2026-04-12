@@ -1037,6 +1037,8 @@ export async function bridgeStoreEntry(options: {
           embedding: embeddingJson ? new Float32Array(JSON.parse(embeddingJson)) : undefined,
           metadata: metadata ? JSON.parse(metadata) : undefined,
         });
+        // Flush to disk — CLI processes are short-lived, no time for autoPersist timer
+        if (typeof rvfBackend.persistToDisk === 'function') await rvfBackend.persistToDisk();
       }
     } catch { /* RVF write-behind is best-effort — SQLite already has the data */ }
 
