@@ -1606,27 +1606,26 @@ export async function checkMemoryInitialization(dbPath?: string): Promise<{
   }
 
   try {
-    // Try to load with sql.js
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-    await checkpointWalBeforeSqlJs(path_);
-
-    const fileBuffer = fs.readFileSync(path_);
-    const db = new SQL.Database(fileBuffer);
+    const { openDatabase } = await import('./open-database.js');
+    const db = await openDatabase(path_, { readonly: true });
 
     // Check for metadata table
-    const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
-    const tableNames = tables[0]?.values?.map(v => v[0] as string) || [];
+    const tblStmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table'");
+    const tableNames: string[] = [];
+    while (tblStmt.step()) { tableNames.push(tblStmt.get()[0] as string); }
+    tblStmt.free();
 
     // Get version
     let version = 'unknown';
     let backend = 'unknown';
     try {
-      const versionResult = db.exec("SELECT value FROM metadata WHERE key='schema_version'");
-      version = versionResult[0]?.values[0]?.[0] as string || 'unknown';
+      const vStmt = db.prepare("SELECT value FROM metadata WHERE key='schema_version'");
+      if (vStmt.step()) version = vStmt.get()[0] as string || 'unknown';
+      vStmt.free();
 
-      const backendResult = db.exec("SELECT value FROM metadata WHERE key='backend'");
-      backend = backendResult[0]?.values[0]?.[0] as string || 'unknown';
+      const bStmt = db.prepare("SELECT value FROM metadata WHERE key='backend'");
+      if (bStmt.step()) backend = bStmt.get()[0] as string || 'unknown';
+      bStmt.free();
     } catch {
       // Metadata table might not exist
     }
@@ -1663,12 +1662,8 @@ export async function applyTemporalDecay(dbPath?: string): Promise<{
   const path_ = dbPath || path.join(swarmDir, 'memory.db');
 
   try {
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-
-    await checkpointWalBeforeSqlJs(path_);
-    const fileBuffer = fs.readFileSync(path_);
-    const db = new SQL.Database(fileBuffer);
+    const { openDatabase } = await import('./open-database.js');
+    const db = await openDatabase(path_);
 
     // Apply decay: confidence *= exp(-decay_rate * days_since_last_use)
     const now = Date.now();
@@ -1682,13 +1677,18 @@ export async function applyTemporalDecay(dbPath?: string): Promise<{
         AND (? - COALESCE(last_matched_at, created_at)) > 86400000
     `;
 
-    db.run(decayQuery, [now, now, now]);
+    const dStmt = db.prepare(decayQuery);
+    dStmt.bind([now, now, now]);
+    dStmt.step();
+    dStmt.free();
 
-    const changes = db.getRowsModified();
+    // Get row count via SQLite changes() function
+    const chStmt = db.prepare(`SELECT changes()`);
+    let changes = 0;
+    if (chStmt.step()) changes = chStmt.get()[0] as number || 0;
+    chStmt.free();
 
-    // Save
-    const data = db.export();
-    fs.writeFileSync(path_, Buffer.from(data));
+    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     return {
@@ -2163,19 +2163,18 @@ export async function verifyMemoryInit(dbPath: string, options?: {
   const tests: { name: string; passed: boolean; details?: string; duration?: number }[] = [];
 
   try {
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
+    const { openDatabase } = await import('./open-database.js');
     const fs = await import('fs');
 
     // Load database
-    await checkpointWalBeforeSqlJs(dbPath);
-    const fileBuffer = fs.readFileSync(dbPath);
-    const db = new SQL.Database(fileBuffer);
+    const db = await openDatabase(dbPath);
 
     // Test 1: Schema verification
     const schemaStart = Date.now();
-    const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
-    const tableNames = tables[0]?.values?.map(v => v[0] as string) || [];
+    const tblStmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table'");
+    const tableNames: string[] = [];
+    while (tblStmt.step()) { tableNames.push(tblStmt.get()[0] as string); }
+    tblStmt.free();
     const expectedTables = ['memory_entries', 'patterns', 'metadata', 'vector_indexes'];
     const missingTables = expectedTables.filter(t => !tableNames.includes(t));
 
@@ -2193,10 +2192,13 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     const testValue = 'This is a verification test entry for memory initialization';
 
     try {
-      db.run(`
+      const wStmt = db.prepare(`
         INSERT INTO memory_entries (id, key, namespace, content, type, created_at, updated_at)
         VALUES (?, ?, 'test', ?, 'semantic', ?, ?)
-      `, [testId, testKey, testValue, Date.now(), Date.now()]);
+      `);
+      wStmt.bind([testId, testKey, testValue, Date.now(), Date.now()]);
+      wStmt.step();
+      wStmt.free();
 
       tests.push({
         name: 'Write entry',
@@ -2216,8 +2218,11 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     // Test 3: Read entry
     const readStart = Date.now();
     try {
-      const result = db.exec(`SELECT content FROM memory_entries WHERE id = ?`, [testId]);
-      const content = result[0]?.values[0]?.[0] as string;
+      const rStmt = db.prepare(`SELECT content FROM memory_entries WHERE id = ?`);
+      rStmt.bind([testId]);
+      let content: string | undefined;
+      if (rStmt.step()) content = rStmt.get()[0] as string;
+      rStmt.free();
 
       tests.push({
         name: 'Read entry',
@@ -2240,11 +2245,14 @@ export async function verifyMemoryInit(dbPath: string, options?: {
       const { embedding, dimensions, model } = await generateEmbedding(testValue);
       const embeddingJson = JSON.stringify(embedding);
 
-      db.run(`
+      const eStmt = db.prepare(`
         UPDATE memory_entries
         SET embedding = ?, embedding_dimensions = ?, embedding_model = ?
         WHERE id = ?
-      `, [embeddingJson, dimensions, model, testId]);
+      `);
+      eStmt.bind([embeddingJson, dimensions, model, testId]);
+      eStmt.step();
+      eStmt.free();
 
       tests.push({
         name: 'Generate embedding',
@@ -2265,10 +2273,13 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     const patternStart = Date.now();
     try {
       const patternId = `pattern_${Date.now()}`;
-      db.run(`
+      const pStmt = db.prepare(`
         INSERT INTO patterns (id, name, pattern_type, condition, action, confidence, created_at, updated_at)
         VALUES (?, 'test-pattern', 'task-routing', 'test condition', 'test action', 0.5, ?, ?)
-      `, [patternId, Date.now(), Date.now()]);
+      `);
+      pStmt.bind([patternId, Date.now(), Date.now()]);
+      pStmt.step();
+      pStmt.free();
 
       tests.push({
         name: 'Pattern storage',
@@ -2278,7 +2289,10 @@ export async function verifyMemoryInit(dbPath: string, options?: {
       });
 
       // Cleanup test pattern
-      db.run(`DELETE FROM patterns WHERE id = ?`, [patternId]);
+      const dpStmt = db.prepare(`DELETE FROM patterns WHERE id = ?`);
+      dpStmt.bind([patternId]);
+      dpStmt.step();
+      dpStmt.free();
     } catch (e) {
       tests.push({
         name: 'Pattern storage',
@@ -2291,8 +2305,10 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     // Test 6: Vector index configuration
     const indexStart = Date.now();
     try {
-      const indexResult = db.exec(`SELECT name, dimensions, hnsw_m, hnsw_ef_construction FROM vector_indexes`);
-      const indexes = indexResult[0]?.values || [];
+      const ixStmt = db.prepare(`SELECT name, dimensions, hnsw_m, hnsw_ef_construction FROM vector_indexes`);
+      const indexes: unknown[][] = [];
+      while (ixStmt.step()) { indexes.push(ixStmt.get()); }
+      ixStmt.free();
 
       tests.push({
         name: 'Vector index config',
@@ -2310,11 +2326,12 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     }
 
     // Cleanup test entry
-    db.run(`DELETE FROM memory_entries WHERE id = ?`, [testId]);
+    const clStmt = db.prepare(`DELETE FROM memory_entries WHERE id = ?`);
+    clStmt.bind([testId]);
+    clStmt.step();
+    clStmt.free();
 
-    // Save changes
-    const data = db.export();
-    fs.writeFileSync(dbPath, Buffer.from(data));
+    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     const passed = tests.filter(t => t.passed).length;
@@ -3006,7 +3023,6 @@ export async function deleteEntry(options: {
     // Check if entry exists first
     const checkStmt = db.prepare(`
       SELECT id FROM memory_entries
-    await checkpointWalBeforeSqlJs(dbPath);
       WHERE status = 'active'
         AND key = ?
         AND namespace = ?
