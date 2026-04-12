@@ -159,7 +159,7 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   },
   'embeddings-vectors': {
     name: 'Embeddings & Vector Search',
-    description: 'Vector embeddings with sql.js, HNSW indexing, hyperbolic embeddings, ONNX integration.',
+    description: 'Vector embeddings with SQLite, HNSW indexing, hyperbolic embeddings, ONNX integration.',
     tools: ['embeddings_embed', 'embeddings_batch', 'embeddings_search', 'embeddings_init'],
     commands: ['embeddings embed', 'embeddings batch', 'embeddings search', 'embeddings init'],
     agents: [],

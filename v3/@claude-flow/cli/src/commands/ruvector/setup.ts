@@ -617,7 +617,7 @@ USING hnsw (embedding ruvector_cosine_ops)
 WITH (m = 16, ef_construction = 100);
 \`\`\`
 
-## Import from sql.js/JSON
+## Import from SQLite/JSON
 
 \`\`\`bash
 # Export current Claude-Flow memory

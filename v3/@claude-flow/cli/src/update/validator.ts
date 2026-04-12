@@ -45,7 +45,7 @@ const BREAKING_CHANGES: Record<string, Record<string, string[]>> = {
   },
   '@claude-flow/embeddings': {
     '3.0.0': [
-      'Switched from better-sqlite3 to sql.js',
+      'Switched SQLite backend implementation',
       'New initialization required with initEmbeddings()',
     ],
   },

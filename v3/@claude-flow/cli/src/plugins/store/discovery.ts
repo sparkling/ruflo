@@ -356,7 +356,7 @@ export class PluginDiscoveryService {
         id: '@claude-flow/embeddings',
         name: '@claude-flow/embeddings',
         displayName: 'Vector Embeddings',
-        description: 'Vector embeddings service with sql.js, document chunking, and hyperbolic embeddings',
+        description: 'Vector embeddings service with SQLite, document chunking, and hyperbolic embeddings',
         version: '3.0.0',
         cid: 'bafybeiembeddingsplugin',
         size: 320000,
@@ -374,7 +374,7 @@ export class PluginDiscoveryService {
         minClaudeFlowVersion: '3.0.0',
         dependencies: [
           { name: '@claude-flow/core', version: '^3.0.0' },
-          { name: 'sql.js', version: '^1.8.0' },
+          { name: 'better-sqlite3', version: '^11.0.0' },
         ],
         type: 'core',
         hooks: ['embeddings:embed', 'embeddings:search'],

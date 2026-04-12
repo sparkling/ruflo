@@ -14,11 +14,6 @@ declare module 'pg' {
   export const Client: any;
 }
 
-declare module 'sql.js' {
-  const initSqlJs: any;
-  export default initSqlJs;
-}
-
 declare module 'agentic-flow' {
   export const reasoningbank: any;
 }

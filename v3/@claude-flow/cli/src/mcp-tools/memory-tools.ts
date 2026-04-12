@@ -1,7 +1,7 @@
 /**
- * Memory MCP Tools for CLI - V3 with sql.js/HNSW Backend
+ * Memory MCP Tools for CLI - V3 with SQLite/HNSW Backend
  *
- * UPGRADED: Now uses the advanced sql.js + HNSW backend for:
+ * UPGRADED: Now uses the advanced SQLite + HNSW backend for:
  * - 150x-12,500x faster semantic search
  * - Vector embeddings with cosine similarity
  * - Persistent SQLite storage (WASM)
@@ -53,7 +53,7 @@ async function ensureInitialized(): Promise<void> {
 export const memoryTools: MCPTool[] = [
   {
     name: 'memory_store',
-    description: 'Store a value in memory with vector embedding for semantic search (sql.js + HNSW backend). Use upsert=true to update existing keys.',
+    description: 'Store a value in memory with vector embedding for semantic search (SQLite + HNSW backend). Use upsert=true to update existing keys.',
     category: 'memory',
     inputSchema: {
       type: 'object',
@@ -146,7 +146,7 @@ export const memoryTools: MCPTool[] = [
           storedAt: result.storedAt as string || new Date().toISOString(),
           hasEmbedding: !!result.hasEmbedding,
           embeddingDimensions: (result.embeddingDimensions as number | null) || null,
-          backend: 'sql.js + HNSW',
+          backend: 'SQLite + HNSW',
           storeTime: `${duration.toFixed(2)}ms`,
           error: result.error,
         };
@@ -205,7 +205,7 @@ export const memoryTools: MCPTool[] = [
             accessCount: entry.accessCount,
             hasEmbedding: entry.hasEmbedding,
             found: true,
-            backend: 'sql.js + HNSW',
+            backend: 'SQLite + HNSW',
           };
         }
 
@@ -398,7 +398,7 @@ export const memoryTools: MCPTool[] = [
           results: outputResults,
           total: outputResults.length,
           searchTime: `${duration.toFixed(2)}ms`,
-          backend: 'HNSW + sql.js',
+          backend: 'HNSW + SQLite',
           attention: attentionApplied,
           ...(synthesis ? { synthesis } : {}),
         };
@@ -454,7 +454,7 @@ export const memoryTools: MCPTool[] = [
           namespace,
           deleted: !!result.deleted,
           hnswIndexInvalidated: !!result.deleted,
-          backend: 'sql.js + HNSW',
+          backend: 'SQLite + HNSW',
         };
       } catch (error) {
         return {
@@ -510,7 +510,7 @@ export const memoryTools: MCPTool[] = [
           total: (result.total as number) || 0,
           limit,
           offset,
-          backend: 'sql.js + HNSW',
+          backend: 'SQLite + HNSW',
         };
       } catch (error) {
         return {
@@ -549,7 +549,7 @@ export const memoryTools: MCPTool[] = [
             ? `${((withEmbeddings / totalEntries) * 100).toFixed(1)}%`
             : '0%',
           namespaces,
-          backend: 'sql.js + HNSW',
+          backend: 'SQLite + HNSW',
           version: '3.0.0',
           features: {
             vectorEmbeddings: true,
@@ -567,7 +567,7 @@ export const memoryTools: MCPTool[] = [
   },
   {
     name: 'memory_migrate',
-    description: 'Manually trigger migration from legacy JSON store to sql.js',
+    description: 'Manually trigger migration from legacy JSON store to SQLite',
     category: 'memory',
     inputSchema: {
       type: 'object',
@@ -606,7 +606,7 @@ export const memoryTools: MCPTool[] = [
         message: 'Migration completed',
         migrated,
         total,
-        backend: 'sql.js + HNSW',
+        backend: 'SQLite + HNSW',
       };
     },
   },

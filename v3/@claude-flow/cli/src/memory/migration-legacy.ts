@@ -2,7 +2,7 @@
  * migration-legacy.ts -- Standalone legacy JSON-to-RVF migration (ADR-0077 Phase 5)
  *
  * Extracted from memory-tools.ts. Run once during upgrade, not at every startup.
- * Converts old JSON store format to the current sql.js + HNSW backend.
+ * Converts old JSON store format to the current SQLite + HNSW backend.
  *
  * @module @claude-flow/cli/memory/migration-legacy
  */
@@ -120,7 +120,7 @@ export async function migrateLegacyStore(
   const keys = Object.keys(legacyStore.entries);
   let migrated = 0;
 
-  console.error(`[migration-legacy] Migrating ${keys.length} entries from JSON to sql.js...`);
+  console.error(`[migration-legacy] Migrating ${keys.length} entries from JSON to SQLite...`);
 
   for (const key of keys) {
     const entry = legacyStore.entries[key];

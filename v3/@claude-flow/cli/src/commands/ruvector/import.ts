@@ -1,6 +1,6 @@
 /**
  * V3 CLI RuVector Import Command
- * Import data from sql.js/JSON memory to RuVector PostgreSQL
+ * Import data from SQLite/JSON memory to RuVector PostgreSQL
  *
  * Usage:
  *   npx claude-flow ruvector import --input memory-export.json
@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Memory entry structure from sql.js/JSON export
+ * Memory entry structure from SQLite/JSON export
  */
 interface MemoryEntry {
   key: string;
@@ -96,11 +96,11 @@ ON CONFLICT (key, namespace) DO UPDATE SET
 }
 
 /**
- * RuVector Import command - import from sql.js/JSON to PostgreSQL
+ * RuVector Import command - import from SQLite/JSON to PostgreSQL
  */
 export const importCommand: Command = {
   name: 'import',
-  description: 'Import data from sql.js/JSON memory to RuVector PostgreSQL',
+  description: 'Import data from SQLite/JSON memory to RuVector PostgreSQL',
   aliases: ['load', 'migrate-data'],
   options: [
     {

@@ -109,7 +109,7 @@ const storeCommand: Command = {
 
     output.printInfo(`Storing in ${namespace}/${key}...`);
 
-    // Use direct sql.js storage with automatic embedding generation
+    // Use direct SQLite storage with automatic embedding generation
     try {
       const { storeEntry } = await import('../memory/memory-initializer.js');
 
@@ -189,7 +189,7 @@ const retrieveCommand: Command = {
       return { success: false, exitCode: 1 };
     }
 
-    // Use sql.js directly for consistent data access
+    // Use SQLite directly for consistent data access
     try {
       const { getEntry } = await import('../memory/memory-initializer.js');
       const result = await getEntry({ key, namespace });
@@ -328,7 +328,7 @@ const searchCommand: Command = {
     output.printInfo(`Searching: "${query}" (${searchType})`);
     output.writeln();
 
-    // Use direct sql.js search with vector similarity
+    // Use direct SQLite search with vector similarity
     try {
       const { searchEntries } = await import('../memory/memory-initializer.js');
 
@@ -417,7 +417,7 @@ const listCommand: Command = {
     const namespace = ctx.flags.namespace as string;
     const limit = ctx.flags.limit as number;
 
-    // Use sql.js directly for consistent data access
+    // Use SQLite directly for consistent data access
     try {
       const { listEntries } = await import('../memory/memory-initializer.js');
       const listResult = await listEntries({ namespace, limit, offset: 0 });
@@ -547,7 +547,7 @@ const deleteCommand: Command = {
       }
     }
 
-    // Use sql.js directly for consistent data access (Issue #980)
+    // Use SQLite directly for consistent data access (Issue #980)
     try {
       const { deleteEntry } = await import('../memory/memory-initializer.js');
       const result = await deleteEntry({ key, namespace });
@@ -1197,10 +1197,10 @@ const importCommand: Command = {
   }
 };
 
-// Init subcommand - initialize memory database using sql.js
+// Init subcommand - initialize memory database using SQLite
 const initMemoryCommand: Command = {
   name: 'init',
-  description: 'Initialize memory database with sql.js (WASM SQLite) - includes vector embeddings, pattern learning, temporal decay',
+  description: 'Initialize memory database with SQLite - includes vector embeddings, pattern learning, temporal decay',
   options: [
     {
       name: 'backend',
@@ -1665,7 +1665,7 @@ export const memoryCommand: Command = {
     output.writeln();
     output.writeln('Subcommands:');
     output.printList([
-      `${output.highlight('init')}       - Initialize memory database (sql.js)`,
+      `${output.highlight('init')}       - Initialize memory database (SQLite)`,
       `${output.highlight('store')}      - Store data in memory`,
       `${output.highlight('retrieve')}   - Retrieve data from memory`,
       `${output.highlight('search')}     - Semantic/vector search`,

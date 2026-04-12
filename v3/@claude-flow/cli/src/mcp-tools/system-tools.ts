@@ -162,10 +162,10 @@ export const systemTools: MCPTool[] = [
       let taskCounts = { pending: 0, completed: 0, failed: 0 };
       let _metricsSource: 'agentdb' | 'json-store' | 'none' = 'none';
 
-      // Primary: AgentDB (sql.js + HNSW)
+      // Primary: AgentDB (SQLite + HNSW)
       try {
-        const bridge = await import('../memory/memory-bridge.js');
-        const agentResults = await bridge.bridgeListEntries({ namespace: 'agents', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
+        const router = await import('../memory/memory-router.js');
+        const agentResults = await router.routeMemoryOp({ type: 'list', namespace: 'agents', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
         const agentEntries = agentResults?.entries;
         if (agentEntries && agentEntries.length > 0) {
           let active = 0;
@@ -178,7 +178,7 @@ export const systemTools: MCPTool[] = [
           agentCounts = { total: agentEntries.length, active };
           _metricsSource = 'agentdb';
         }
-        const taskResults = await bridge.bridgeListEntries({ namespace: 'tasks', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
+        const taskResults = await router.routeMemoryOp({ type: 'list', namespace: 'tasks', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
         const taskEntries = taskResults?.entries;
         if (taskEntries && taskEntries.length > 0) {
           let pending = 0, completed = 0, failed = 0;

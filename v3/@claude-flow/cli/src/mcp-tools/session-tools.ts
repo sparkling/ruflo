@@ -216,16 +216,17 @@ export const sessionTools: MCPTool[] = [
           if (!existsSync(memoryDir)) mkdirSync(memoryDir, { recursive: true });
           writeFileSync(join(memoryDir, 'store.json'), JSON.stringify(session.data.memory, null, 2), 'utf-8');
 
-          // Also populate active sql.js SQLite database so memory-tools can find entries
+          // Also populate active SQLite database so memory-tools can find entries
           try {
-            const { storeEntry } = await import('../memory/memory-initializer.js');
+            const { routeMemoryOp } = await import('../memory/memory-router.js');
             const memoryData = session.data.memory as { entries?: Record<string, { key?: string; id?: string; value?: string; content?: string; namespace?: string }> };
             if (memoryData.entries) {
               for (const entry of Object.values(memoryData.entries)) {
                 const key = entry.key || entry.id || '';
                 const value = entry.value || entry.content || '';
                 if (key && value) {
-                  await storeEntry({
+                  await routeMemoryOp({
+                    type: 'store',
                     key,
                     value,
                     namespace: entry.namespace || 'restored',
@@ -235,7 +236,7 @@ export const sessionTools: MCPTool[] = [
               }
             }
           } catch {
-            // Legacy JSON restore is the fallback -- sql.js import may not be available
+            // Legacy JSON restore is the fallback -- SQLite import may not be available
           }
         }
         if (session.data?.tasks) {

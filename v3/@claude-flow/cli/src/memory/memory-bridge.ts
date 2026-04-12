@@ -107,7 +107,7 @@ let registryPromise: Promise<any> | null = null;
 let registryInstance: any = null;
 let bridgeAvailable: boolean | null = null;
 
-// ADR-0070: ensure sql.js WASM db is flushed on process exit
+// ADR-0070: ensure SQLite db state is consistent on process exit
 let _exitHookRegistered = false;
 function ensureExitHook(): void {
   if (_exitHookRegistered) return;
@@ -870,7 +870,7 @@ function getDb(registry: any): any | null {
 /**
  * Store an entry via AgentDB v3.
  * Phase 2-5: Routes through MutationGuard → TieredCache → DB → AttestationLog.
- * Returns null to signal fallback to sql.js.
+ * Returns null to signal fallback to SQLite.
  */
 export async function bridgeStoreEntry(options: {
   key: string;
@@ -1010,9 +1010,6 @@ export async function bridgeStoreEntry(options: {
       ttl ? now + (ttl * 1000) : null
     );
 
-    // ADR-0070: flush sql.js WASM db to disk (no-op for better-sqlite3)
-    if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
-
     // Phase 2: Write-through to TieredCache
     const safeNs = String(namespace).replace(/:/g, '_');
     const safeKey = String(key).replace(/:/g, '_');
@@ -1021,13 +1018,6 @@ export async function bridgeStoreEntry(options: {
 
     // Phase 4: AttestationLog write audit
     await logAttestation(registry, 'store', id, { key, namespace, hasEmbedding: !!embeddingJson });
-
-    // Flush sql.js WASM memory to disk (sql.js stores in WASM heap, not on disk).
-    // Without this, data is lost when the CLI process exits or is killed by _run_and_kill.
-    // better-sqlite3 writes directly to disk via WAL, so save() is a no-op for native.
-    try {
-      if (typeof ctx.db.save === 'function') ctx.db.save();
-    } catch { /* best-effort flush */ }
 
     // ADR-0080: dual-write — append to RVF WAL for HNSW acceleration
     // SQLite is primary (already committed above). RVF is best-effort write-behind.
@@ -1429,8 +1419,7 @@ export async function bridgeGetEntry(options: {
       ctx.db.prepare(
         `UPDATE memory_entries SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`
       ).run(Date.now(), row.id);
-      // ADR-0070: flush sql.js WASM db to disk
-      if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
+      // ADR-0070: update access tracking
     } catch {
       // Non-fatal
     }
@@ -1506,8 +1495,7 @@ export async function bridgeDeleteEntry(options: {
         WHERE key = ? AND namespace = ? AND status = 'active'
       `).run(Date.now(), key, namespace);
       changes = result?.changes ?? 0;
-      // ADR-0070: flush sql.js WASM db to disk
-      if (typeof (ctx.db as any).save === 'function') (ctx.db as any).save();
+      // ADR-0070: delete memory entry
     } catch {
       return null;
     }
