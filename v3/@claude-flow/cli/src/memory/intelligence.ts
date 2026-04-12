@@ -806,23 +806,12 @@ export async function recordStep(step: TrajectoryStep): Promise<boolean> {
 
   try {
     // Generate embedding if not provided
-    // ADR-053: Try AgentDB v3 bridge embedder first
+    // ADR-0083 Wave 2: route through memory-router (single entry point)
     let embedding = step.embedding;
     if (!embedding) {
-      try {
-        const bridge = await import('./memory-bridge.js');
-        const bridgeResult = await bridge.bridgeGenerateEmbedding(step.content);
-        if (bridgeResult) {
-          embedding = bridgeResult.embedding;
-        }
-      } catch {
-        // Bridge not available
-      }
-      if (!embedding) {
-        const { generateEmbedding } = await import('./memory-initializer.js');
-        const result = await generateEmbedding(step.content);
-        embedding = result.embedding;
-      }
+      const router = await import('./memory-router.js');
+      const result = await router.generateEmbedding(step.content);
+      embedding = result.embedding;
     }
 
     // Record in SONA - <0.05ms
@@ -926,22 +915,10 @@ export async function findSimilarPatterns(
   }
 
   try {
-    // ADR-053: Try AgentDB v3 bridge embedder first
-    let queryEmbedding: number[] | null = null;
-    try {
-      const bridge = await import('./memory-bridge.js');
-      const bridgeResult = await bridge.bridgeGenerateEmbedding(query);
-      if (bridgeResult) {
-        queryEmbedding = bridgeResult.embedding;
-      }
-    } catch {
-      // Bridge not available
-    }
-    if (!queryEmbedding) {
-      const { generateEmbedding } = await import('./memory-initializer.js');
-      const queryResult = await generateEmbedding(query);
-      queryEmbedding = queryResult.embedding;
-    }
+    // ADR-0083 Wave 2: route through memory-router (single entry point)
+    const router = await import('./memory-router.js');
+    const queryResult = await router.generateEmbedding(query);
+    const queryEmbedding: number[] = queryResult.embedding;
 
     // Hash-fallback embeddings (128-dim) produce lower cosine similarities
     // than ONNX/transformer embeddings, so use a lower default threshold

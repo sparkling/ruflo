@@ -176,12 +176,16 @@ export const daaTools: MCPTool[] = [
       // Store adaptation feedback in AgentDB for pattern learning (backward compat: JSON store above)
       let _storedIn: 'agentdb' | 'json-store' = 'json-store';
       try {
-        const bridge = await import('../memory/memory-bridge.js');
-        await bridge.bridgeRecordFeedback({
-          taskId: `adapt-${agentId}-${agent.metrics.adaptations}`,
-          success: performanceScore >= 0.5,
-          quality: performanceScore,
-          agent: agentId,
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        await routeMemoryOp({
+          type: 'store',
+          key: `adapt-${agentId}-${agent.metrics.adaptations}`,
+          value: JSON.stringify({
+            success: performanceScore >= 0.5,
+            quality: performanceScore,
+            agent: agentId,
+          }),
+          namespace: 'daa-feedback',
         });
         _storedIn = 'agentdb';
       } catch { /* AgentDB not available */ }
@@ -311,8 +315,9 @@ export const daaTools: MCPTool[] = [
       // Primary: store in AgentDB for vector-searchable knowledge
       let _storedIn: 'agentdb' | 'json-store' = 'json-store';
       try {
-        const bridge = await import('../memory/memory-bridge.js');
-        await bridge.bridgeStoreEntry({
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        await routeMemoryOp({
+          type: 'store',
           key: knowledgeId,
           value: JSON.stringify(knowledgeEntry),
           namespace: 'daa-knowledge',

@@ -660,7 +660,7 @@ export async function embed(
 
   // A9 not available — fallback to existing pipeline via memory-initializer
   try {
-    const { generateEmbedding } = await import('../memory/memory-initializer.js');
+    const { generateEmbedding } = await import('../memory/memory-router.js');
     const result = await generateEmbedding(text);
     return { success: true, embedding: Array.from(result.embedding), dimension: result.dimensions, provider: result.model };
   } catch {

@@ -1,11 +1,13 @@
 /**
  * V3 Memory Initializer
- * Properly initializes the memory database via openDatabase wrapper
- * (better-sqlite3 preferred, sql.js fallback). Includes pattern tables,
- * vector embeddings, migration state tracking.
+ * Initializes the memory database via better-sqlite3 (WAL mode).
+ * Includes pattern tables, vector embeddings, migration state tracking.
  *
  * ADR-053: Routes through ControllerRegistry → AgentDB v3 when available,
- * falls back to openDatabase wrapper for backwards compatibility.
+ * falls back to direct better-sqlite3 for raw SQL access.
+ *
+ * ADR-0083: Removed openDatabase wrapper and sql.js fallback;
+ * all DB access is now direct better-sqlite3 via _getDb().
  *
  * @module v3/cli/memory-initializer
  */
@@ -14,26 +16,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getConfig } from '@claude-flow/memory';
 
-/**
- * ADR-0080 Phase 4: Checkpoint WAL before sql.js reads a database.
- * sql.js can't read WAL journals — this forces all WAL data into the
- * main .db file so sql.js sees complete data. Uses better-sqlite3
- * (which handles WAL natively) to do the checkpoint.
- *
- * Call this BEFORE any `new SQL.Database(readFileSync(path))` on an
- * existing file that may have been created by better-sqlite3 in WAL mode.
- */
-async function checkpointWalBeforeSqlJs(dbPath: string): Promise<void> {
-  if (!fs.existsSync(dbPath)) return;
-  // Only needed if WAL files exist
-  if (!fs.existsSync(dbPath + '-wal') && !fs.existsSync(dbPath + '-shm')) return;
-  try {
-    const _bsmod = await import('better-sqlite3');
-    const Database = _bsmod.default ?? _bsmod; // CJS module.exports compat
-    const db = new Database(dbPath);
-    db.pragma('wal_checkpoint(TRUNCATE)');
-    db.close();
-  } catch { /* better-sqlite3 not available — sql.js will read what it can */ }
+// ADR-0083: Direct better-sqlite3 (replaces open-database.ts wrapper)
+let _bsqlMod: any = null;
+async function _getDb(dbPath: string, opts?: { readonly?: boolean }): Promise<any> {
+  if (!_bsqlMod) {
+    const mod = await import('better-sqlite3');
+    _bsqlMod = mod.default ?? mod;
+  }
+  const isReadonly = opts?.readonly === true;
+  const db = new _bsqlMod(dbPath, { readonly: isReadonly });
+  if (!isReadonly) {
+    db.pragma('journal_mode = WAL');
+  }
+  return db;
 }
 
 // ADR-053: Lazy import of AgentDB v3 bridge
@@ -524,7 +519,7 @@ export async function getHNSWIndex(options?: {
       return hnswIndex;
     }
 
-    // ADR-0076 Phase 3: try createStorage() to load entries before sql.js fallback
+    // ADR-0076 Phase 3: try createStorage() to load entries before SQLite fallback
     let loadedFromStorage = false;
     try {
       const { createStorage } = await import('@claude-flow/memory');
@@ -554,12 +549,11 @@ export async function getHNSWIndex(options?: {
         }
       }
       loadedFromStorage = true;
-    } catch { /* createStorage failed — fall through to sql.js */ }
+    } catch { /* createStorage failed — fall through to direct SQLite */ }
 
     if (!loadedFromStorage && fs.existsSync(dbPath)) {
       try {
-        const { openDatabase } = await import('./open-database.js');
-        const sqlDb = await openDatabase(dbPath, { readonly: true });
+        const sqlDb = await _getDb(dbPath, { readonly: true });
 
         // Load all entries with embeddings
         const rows = sqlDb.prepare(`
@@ -1087,10 +1081,8 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
 }> {
   const columnsAdded: string[] = [];
 
-  // ADR-0080: Use better-sqlite3 (not sql.js) for ALL database modifications.
-  // sql.js corrupts WAL-mode databases because it reads only the main .db file,
-  // missing -wal journal data, and writes back a truncated version.
-  // better-sqlite3 handles WAL natively.
+  // ADR-0080/0083: Use better-sqlite3 for ALL database modifications.
+  // better-sqlite3 handles WAL natively; sql.js was removed in ADR-0083.
 
   try {
     if (!fs.existsSync(dbPath)) {
@@ -1181,8 +1173,7 @@ export async function checkAndMigrateLegacy(options: {
   for (const legacyPath of legacyPaths) {
     if (fs.existsSync(legacyPath) && legacyPath !== dbPath) {
       try {
-        const { openDatabase } = await import('./open-database.js');
-        const legacyDb = await openDatabase(legacyPath, { readonly: true });
+        const legacyDb = await _getDb(legacyPath, { readonly: true });
 
         // Check if it has data
         const countRow = legacyDb.prepare('SELECT COUNT(*) as cnt FROM memory_entries').get() as { cnt: number } | undefined;
@@ -1266,7 +1257,7 @@ async function activateControllerRegistry(
 }
 
 /**
- * Initialize the memory database properly using sql.js
+ * Initialize the memory database properly using better-sqlite3
  */
 export async function initializeMemoryDatabase(options: {
   backend?: string;
@@ -1321,7 +1312,7 @@ export async function initializeMemoryDatabase(options: {
       };
     }
 
-    // ADR-0076 Phase 3: try createStorage() before sql.js fallback
+    // ADR-0076 Phase 3: try createStorage() before SQLite fallback
     try {
       const { createStorage } = await import('@claude-flow/memory');
       const embCfg = readEmbeddingsConfig();
@@ -1339,8 +1330,7 @@ export async function initializeMemoryDatabase(options: {
       try {
         const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
         if (!fs.existsSync(sqlitePath)) {
-          const { openDatabase } = await import('./open-database.js');
-          const sqlDb = await openDatabase(sqlitePath);
+          const sqlDb = await _getDb(sqlitePath);
           sqlDb.exec(`
             CREATE TABLE IF NOT EXISTS memory_entries (
               id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
@@ -1358,7 +1348,7 @@ export async function initializeMemoryDatabase(options: {
           `);
           sqlDb.close();
         }
-      } catch { /* openDatabase not available — controller activation will create .db */ }
+      } catch { /* better-sqlite3 unavailable — controller activation will create .db */ }
 
       // ADR-053: Activate ControllerRegistry alongside new storage (slow — may timeout)
       const controllerResult = await activateControllerRegistry(dbPath, verbose);
@@ -1368,8 +1358,7 @@ export async function initializeMemoryDatabase(options: {
       try {
         const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
         if (fs.existsSync(sqlitePath)) {
-          const { openDatabase: openDb } = await import('./open-database.js');
-          const sqlDb = await openDb(sqlitePath);
+          const sqlDb = await _getDb(sqlitePath);
           // Only create memory_entries table + indexes — NOT the full MEMORY_SCHEMA_V3
           // which conflicts with AgentDB's pre-existing tables/indexes
           sqlDb.exec(`
@@ -1393,7 +1382,7 @@ export async function initializeMemoryDatabase(options: {
           `);
           sqlDb.close();
         }
-      } catch { /* openDatabase not available or DB locked — non-fatal */ }
+      } catch { /* better-sqlite3 unavailable or DB locked — non-fatal */ }
 
       return {
         success: true,
@@ -1435,20 +1424,18 @@ export async function initializeMemoryDatabase(options: {
         },
         controllers: controllerResult,
       };
-    } catch { /* createStorage failed — fall through to sql.js */ }
+    } catch { /* createStorage failed — fall through to direct SQLite */ }
 
-    // Try to initialize memory database via openDatabase wrapper
+    // Try to initialize memory database via better-sqlite3
     let usedOpenDb = false;
 
     try {
-      const { openDatabase: openDb } = await import('./open-database.js');
-
       // Load existing database or create new
       if (fs.existsSync(dbPath) && force) {
         fs.unlinkSync(dbPath);
       }
 
-      const db = await openDb(dbPath);
+      const db = await _getDb(dbPath);
 
       // Execute schema
       db.exec(MEMORY_SCHEMA_V3);
@@ -1456,14 +1443,14 @@ export async function initializeMemoryDatabase(options: {
       // Insert initial metadata
       db.exec(getInitialMetadata(backend));
 
-      // Close database (wrapper handles persistence)
+      // Close database
       db.close();
 
       usedOpenDb = true;
     } catch (e) {
-      // openDatabase not available, fall back to writing schema file
+      // better-sqlite3 not available, fall back to writing schema file
       if (verbose) {
-        console.log('openDatabase not available, writing schema file for later initialization');
+        console.log('better-sqlite3 not available, writing schema file for later initialization');
       }
     }
 
@@ -1608,26 +1595,21 @@ export async function checkMemoryInitialization(dbPath?: string): Promise<{
   }
 
   try {
-    const { openDatabase } = await import('./open-database.js');
-    const db = await openDatabase(path_, { readonly: true });
+    const db = await _getDb(path_, { readonly: true });
 
     // Check for metadata table
-    const tblStmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table'");
-    const tableNames: string[] = [];
-    while (tblStmt.step()) { tableNames.push(tblStmt.get()[0] as string); }
-    tblStmt.free();
+    const tableRows = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
+    const tableNames = tableRows.map(r => r.name);
 
     // Get version
     let version = 'unknown';
     let backend = 'unknown';
     try {
-      const vStmt = db.prepare("SELECT value FROM metadata WHERE key='schema_version'");
-      if (vStmt.step()) version = vStmt.get()[0] as string || 'unknown';
-      vStmt.free();
+      const vRow = db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get() as { value: string } | undefined;
+      if (vRow) version = vRow.value || 'unknown';
 
-      const bStmt = db.prepare("SELECT value FROM metadata WHERE key='backend'");
-      if (bStmt.step()) backend = bStmt.get()[0] as string || 'unknown';
-      bStmt.free();
+      const bRow = db.prepare("SELECT value FROM metadata WHERE key='backend'").get() as { value: string } | undefined;
+      if (bRow) backend = bRow.value || 'unknown';
     } catch {
       // Metadata table might not exist
     }
@@ -1664,8 +1646,7 @@ export async function applyTemporalDecay(dbPath?: string): Promise<{
   const path_ = dbPath || path.join(swarmDir, 'memory.db');
 
   try {
-    const { openDatabase } = await import('./open-database.js');
-    const db = await openDatabase(path_);
+    const db = await _getDb(path_);
 
     // Apply decay: confidence *= exp(-decay_rate * days_since_last_use)
     const now = Date.now();
@@ -1679,18 +1660,9 @@ export async function applyTemporalDecay(dbPath?: string): Promise<{
         AND (? - COALESCE(last_matched_at, created_at)) > 86400000
     `;
 
-    const dStmt = db.prepare(decayQuery);
-    dStmt.bind([now, now, now]);
-    dStmt.step();
-    dStmt.free();
+    const result = db.prepare(decayQuery).run(now, now, now);
+    const changes = result.changes;
 
-    // Get row count via SQLite changes() function
-    const chStmt = db.prepare(`SELECT changes()`);
-    let changes = 0;
-    if (chStmt.step()) changes = chStmt.get()[0] as number || 0;
-    chStmt.free();
-
-    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     return {
@@ -2165,18 +2137,12 @@ export async function verifyMemoryInit(dbPath: string, options?: {
   const tests: { name: string; passed: boolean; details?: string; duration?: number }[] = [];
 
   try {
-    const { openDatabase } = await import('./open-database.js');
-    const fs = await import('fs');
-
-    // Load database
-    const db = await openDatabase(dbPath);
+    const db = await _getDb(dbPath);
 
     // Test 1: Schema verification
     const schemaStart = Date.now();
-    const tblStmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table'");
-    const tableNames: string[] = [];
-    while (tblStmt.step()) { tableNames.push(tblStmt.get()[0] as string); }
-    tblStmt.free();
+    const tableRows = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
+    const tableNames = tableRows.map(r => r.name);
     const expectedTables = ['memory_entries', 'patterns', 'metadata', 'vector_indexes'];
     const missingTables = expectedTables.filter(t => !tableNames.includes(t));
 
@@ -2194,13 +2160,10 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     const testValue = 'This is a verification test entry for memory initialization';
 
     try {
-      const wStmt = db.prepare(`
+      db.prepare(`
         INSERT INTO memory_entries (id, key, namespace, content, type, created_at, updated_at)
         VALUES (?, ?, 'test', ?, 'semantic', ?, ?)
-      `);
-      wStmt.bind([testId, testKey, testValue, Date.now(), Date.now()]);
-      wStmt.step();
-      wStmt.free();
+      `).run(testId, testKey, testValue, Date.now(), Date.now());
 
       tests.push({
         name: 'Write entry',
@@ -2220,11 +2183,8 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     // Test 3: Read entry
     const readStart = Date.now();
     try {
-      const rStmt = db.prepare(`SELECT content FROM memory_entries WHERE id = ?`);
-      rStmt.bind([testId]);
-      let content: string | undefined;
-      if (rStmt.step()) content = rStmt.get()[0] as string;
-      rStmt.free();
+      const rRow = db.prepare(`SELECT content FROM memory_entries WHERE id = ?`).get(testId) as { content: string } | undefined;
+      const content = rRow?.content;
 
       tests.push({
         name: 'Read entry',
@@ -2247,14 +2207,11 @@ export async function verifyMemoryInit(dbPath: string, options?: {
       const { embedding, dimensions, model } = await generateEmbedding(testValue);
       const embeddingJson = JSON.stringify(embedding);
 
-      const eStmt = db.prepare(`
+      db.prepare(`
         UPDATE memory_entries
         SET embedding = ?, embedding_dimensions = ?, embedding_model = ?
         WHERE id = ?
-      `);
-      eStmt.bind([embeddingJson, dimensions, model, testId]);
-      eStmt.step();
-      eStmt.free();
+      `).run(embeddingJson, dimensions, model, testId);
 
       tests.push({
         name: 'Generate embedding',
@@ -2275,13 +2232,10 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     const patternStart = Date.now();
     try {
       const patternId = `pattern_${Date.now()}`;
-      const pStmt = db.prepare(`
+      db.prepare(`
         INSERT INTO patterns (id, name, pattern_type, condition, action, confidence, created_at, updated_at)
         VALUES (?, 'test-pattern', 'task-routing', 'test condition', 'test action', 0.5, ?, ?)
-      `);
-      pStmt.bind([patternId, Date.now(), Date.now()]);
-      pStmt.step();
-      pStmt.free();
+      `).run(patternId, Date.now(), Date.now());
 
       tests.push({
         name: 'Pattern storage',
@@ -2291,10 +2245,7 @@ export async function verifyMemoryInit(dbPath: string, options?: {
       });
 
       // Cleanup test pattern
-      const dpStmt = db.prepare(`DELETE FROM patterns WHERE id = ?`);
-      dpStmt.bind([patternId]);
-      dpStmt.step();
-      dpStmt.free();
+      db.prepare(`DELETE FROM patterns WHERE id = ?`).run(patternId);
     } catch (e) {
       tests.push({
         name: 'Pattern storage',
@@ -2307,10 +2258,7 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     // Test 6: Vector index configuration
     const indexStart = Date.now();
     try {
-      const ixStmt = db.prepare(`SELECT name, dimensions, hnsw_m, hnsw_ef_construction FROM vector_indexes`);
-      const indexes: unknown[][] = [];
-      while (ixStmt.step()) { indexes.push(ixStmt.get()); }
-      ixStmt.free();
+      const indexes = db.prepare(`SELECT name, dimensions, hnsw_m, hnsw_ef_construction FROM vector_indexes`).all();
 
       tests.push({
         name: 'Vector index config',
@@ -2328,12 +2276,8 @@ export async function verifyMemoryInit(dbPath: string, options?: {
     }
 
     // Cleanup test entry
-    const clStmt = db.prepare(`DELETE FROM memory_entries WHERE id = ?`);
-    clStmt.bind([testId]);
-    clStmt.step();
-    clStmt.free();
+    db.prepare(`DELETE FROM memory_entries WHERE id = ?`).run(testId);
 
-    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     const passed = tests.filter(t => t.passed).length;
@@ -2362,7 +2306,7 @@ export async function verifyMemoryInit(dbPath: string, options?: {
 }
 
 /**
- * Store an entry directly using sql.js
+ * Store an entry directly using SQLite
  * This bypasses MCP and writes directly to the database
  */
 export async function storeEntry(options: {
@@ -2380,36 +2324,19 @@ export async function storeEntry(options: {
   embedding?: { dimensions: number; model: string };
   error?: string;
 }> {
-  // ADR-0080 Phase 5: RVF-primary shim — try RVF before bridge/SQLite
-  try {
-    const shim = await import('./rvf-shim.js');
-    if (!shim.isReady()) await shim.init();
-    if (shim.isReady()) {
-      // Generate embedding for RVF store
-      let embedding: Float32Array | undefined;
-      if (options.generateEmbeddingFlag !== false) {
-        try {
-          const embResult = await generateEmbedding(options.value || '');
-          if (embResult?.embedding) embedding = new Float32Array(embResult.embedding);
-        } catch { /* embedding optional for RVF store */ }
-      }
-      const rvfResult = await shim.store({ ...options, embedding });
-      // Dual-write: also store in SQLite for list/stats/delete queries
-      // (fall through to bridge below — don't return yet)
-    }
-  } catch { /* RVF shim not available — continue to bridge */ }
-
   // ADR-053: Try AgentDB v3 bridge (SQLite path — needed for list/stats)
   const bridge = await getBridge();
   if (bridge) {
     const bridgeResult = await bridge.bridgeStoreEntry(options);
     // DB-007: Only accept bridge result on explicit success;
     // null means DB unavailable, false success means a guard rejection etc.
-    // Either way, fall through to sql.js fallback.
-    if (bridgeResult && bridgeResult.success) return bridgeResult;
+    // Either way, fall through to direct SQLite fallback.
+    if (bridgeResult && bridgeResult.success) {
+      return bridgeResult;
+    }
   }
 
-  // Fallback: raw sql.js
+  // Fallback: direct SQLite
   const {
     key,
     value,
@@ -2432,8 +2359,7 @@ export async function storeEntry(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const { openDatabase } = await import('./open-database.js');
-    const db = await openDatabase(dbPath);
+    const db = await _getDb(dbPath);
 
     const id = `entry_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const now = Date.now();
@@ -2463,8 +2389,7 @@ export async function storeEntry(options: {
           tags, metadata, created_at, updated_at, expires_at, status
         ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, ?, ?, ?, 'active')`;
 
-    const insStmt = db.prepare(insertSql);
-    insStmt.bind([
+    db.prepare(insertSql).run(
       id,
       key,
       namespace,
@@ -2477,11 +2402,8 @@ export async function storeEntry(options: {
       now,
       now,
       ttl ? now + (ttl * 1000) : null
-    ]);
-    insStmt.step();
-    insStmt.free();
+    );
 
-    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     // Add to HNSW index for faster future searches
@@ -2510,7 +2432,7 @@ export async function storeEntry(options: {
 }
 
 /**
- * Search entries using sql.js with vector similarity
+ * Search entries using SQLite with vector similarity
  * Uses HNSW index for 150x faster search when available
  */
 export async function searchEntries(options: {
@@ -2531,40 +2453,17 @@ export async function searchEntries(options: {
   searchTime: number;
   error?: string;
 }> {
-  // ADR-0080 Phase 5: RVF-primary search via HNSW
-  try {
-    const shim = await import('./rvf-shim.js');
-    if (shim.isReady()) {
-      const embedding = await generateEmbedding(options.query);
-      if (embedding?.embedding) {
-        const rvfResult = await shim.search({
-          query: options.query,
-          namespace: options.namespace,
-          limit: options.limit,
-          embedding: new Float32Array(embedding.embedding),
-        });
-        if (rvfResult.results.length > 0) {
-          return {
-            success: true,
-            results: rvfResult.results.map(r => ({ id: r.key, key: r.key, content: r.value, score: r.score, namespace: r.namespace })),
-            searchTime: 0,
-          };
-        }
-      }
-    }
-  } catch { /* RVF search not available — fall through */ }
-
   // ADR-053: Try AgentDB v3 bridge
   const bridge = await getBridge();
   if (bridge) {
     const bridgeResult = await bridge.bridgeSearchEntries(options);
     // DB-007: Only use bridge result if it actually found results;
     // an empty { success: true, results: [] } is truthy but should
-    // fall through to the sql.js fallback for a second chance.
+    // fall through to the SQLite fallback for a second chance.
     if (bridgeResult && bridgeResult.results && bridgeResult.results.length > 0) return bridgeResult;
   }
 
-  // Fallback: raw sql.js
+  // Fallback: direct SQLite
   const {
     query,
     namespace,
@@ -2605,61 +2504,47 @@ export async function searchEntries(options: {
     }
 
     // Fall back to brute-force SQLite search
-    const { openDatabase } = await import('./open-database.js');
-    const db = await openDatabase(dbPath, { readonly: true });
+    const db = await _getDb(dbPath, { readonly: true });
 
     // Get entries with embeddings
-    const searchStmt = db.prepare(
-      effectiveNamespace !== 'all'
-        ? `SELECT id, key, namespace, content, embedding FROM memory_entries WHERE status = 'active' AND namespace = ? LIMIT 1000`
-        : `SELECT id, key, namespace, content, embedding FROM memory_entries WHERE status = 'active' LIMIT 1000`
-    );
-    if (effectiveNamespace !== 'all') {
-      searchStmt.bind([effectiveNamespace]);
-    }
-    const searchRows: unknown[][] = [];
-    while (searchStmt.step()) {
-      searchRows.push(searchStmt.get());
-    }
-    searchStmt.free();
-    const entries = searchRows.length > 0 ? [{ values: searchRows }] : [];
+    const searchRows = effectiveNamespace !== 'all'
+      ? db.prepare(`SELECT id, key, namespace, content, embedding FROM memory_entries WHERE status = 'active' AND namespace = ? LIMIT 1000`).all(effectiveNamespace) as Array<{ id: string; key: string; namespace: string; content: string; embedding: string | null }>
+      : db.prepare(`SELECT id, key, namespace, content, embedding FROM memory_entries WHERE status = 'active' LIMIT 1000`).all() as Array<{ id: string; key: string; namespace: string; content: string; embedding: string | null }>;
 
     const results: { id: string; key: string; content: string; score: number; namespace: string }[] = [];
 
-    if (entries[0]?.values) {
-      for (const row of entries[0].values) {
-        const [id, key, ns, content, embeddingJson] = row as [string, string, string, string, string | null];
+    for (const row of searchRows) {
+      const { id, key, namespace: ns, content, embedding: embeddingJson } = row;
 
-        let score = 0;
+      let score = 0;
 
-        if (embeddingJson) {
-          try {
-            const embedding = JSON.parse(embeddingJson) as number[];
-            score = cosineSim(queryEmbedding, embedding);
-          } catch {
-            // Invalid embedding, use keyword score
-          }
+      if (embeddingJson) {
+        try {
+          const embedding = JSON.parse(embeddingJson) as number[];
+          score = cosineSim(queryEmbedding, embedding);
+        } catch {
+          // Invalid embedding, use keyword score
         }
+      }
 
-        // Fallback to keyword matching
-        if (score < threshold) {
-          const lowerContent = (content || '').toLowerCase();
-          const lowerQuery = query.toLowerCase();
-          const words = lowerQuery.split(/\s+/);
-          const matchCount = words.filter(w => lowerContent.includes(w)).length;
-          const keywordScore = matchCount / words.length * 0.5;
-          score = Math.max(score, keywordScore);
-        }
+      // Fallback to keyword matching
+      if (score < threshold) {
+        const lowerContent = (content || '').toLowerCase();
+        const lowerQuery = query.toLowerCase();
+        const words = lowerQuery.split(/\s+/);
+        const matchCount = words.filter(w => lowerContent.includes(w)).length;
+        const keywordScore = matchCount / words.length * 0.5;
+        score = Math.max(score, keywordScore);
+      }
 
-        if (score >= threshold) {
-          results.push({
-            id: id.substring(0, 12),
-            key: key || id.substring(0, 15),
-            content: (content || '').substring(0, 60) + ((content || '').length > 60 ? '...' : ''),
-            score,
-            namespace: ns || 'default'
-          });
-        }
+      if (score >= threshold) {
+        results.push({
+          id: id.substring(0, 12),
+          key: key || id.substring(0, 15),
+          content: (content || '').substring(0, 60) + ((content || '').length > 60 ? '...' : ''),
+          score,
+          namespace: ns || 'default'
+        });
       }
     }
 
@@ -2738,7 +2623,7 @@ export async function listEntries(options: {
     if (bridgeResult) return bridgeResult;
   }
 
-  // Fallback: raw sql.js
+  // Fallback: direct SQLite
   const {
     namespace,
     limit = 20,
@@ -2757,41 +2642,21 @@ export async function listEntries(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const { openDatabase } = await import('./open-database.js');
-    const db = await openDatabase(dbPath, { readonly: true });
+    const db = await _getDb(dbPath, { readonly: true });
 
     // Get total count
-    const countStmt = namespace
-      ? db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active' AND namespace = ?`)
-      : db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'`);
-    if (namespace) {
-      countStmt.bind([namespace]);
-    }
-    const countRows: unknown[][] = [];
-    while (countStmt.step()) {
-      countRows.push(countStmt.get());
-    }
-    countStmt.free();
-    const countResult = countRows.length > 0 ? [{ values: countRows }] : [];
-    const total = countResult[0]?.values?.[0]?.[0] as number || 0;
+    const countRow = namespace
+      ? db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active' AND namespace = ?`).get(namespace) as { cnt: number } | undefined
+      : db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'`).get() as { cnt: number } | undefined;
+    const total = countRow?.cnt || 0;
 
     // Get entries
     const safeLimit = parseInt(String(limit), 10) || 100;
     const safeOffset = parseInt(String(offset), 10) || 0;
-    const listStmt = namespace
-      ? db.prepare(`SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at FROM memory_entries WHERE status = 'active' AND namespace = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
-      : db.prepare(`SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at FROM memory_entries WHERE status = 'active' ORDER BY updated_at DESC LIMIT ? OFFSET ?`);
-    if (namespace) {
-      listStmt.bind([namespace, safeLimit, safeOffset]);
-    } else {
-      listStmt.bind([safeLimit, safeOffset]);
-    }
-    const listRows: unknown[][] = [];
-    while (listStmt.step()) {
-      listRows.push(listStmt.get());
-    }
-    listStmt.free();
-    const result = listRows.length > 0 ? [{ values: listRows }] : [];
+    const listRows = namespace
+      ? db.prepare(`SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at FROM memory_entries WHERE status = 'active' AND namespace = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(namespace, safeLimit, safeOffset) as Array<Record<string, unknown>>
+      : db.prepare(`SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at FROM memory_entries WHERE status = 'active' ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(safeLimit, safeOffset) as Array<Record<string, unknown>>;
+
     const entries: {
       id: string;
       key: string;
@@ -2803,22 +2668,17 @@ export async function listEntries(options: {
       hasEmbedding: boolean;
     }[] = [];
 
-    if (result[0]?.values) {
-      for (const row of result[0].values) {
-        const [id, key, ns, content, embedding, accessCount, createdAt, updatedAt] = row as [
-          string, string, string, string, string | null, number, string, string
-        ];
-        entries.push({
-          id: String(id).substring(0, 20),
-          key: key || String(id).substring(0, 15),
-          namespace: ns || 'default',
-          size: (content || '').length,
-          accessCount: accessCount || 0,
-          createdAt: createdAt || new Date().toISOString(),
-          updatedAt: updatedAt || new Date().toISOString(),
-          hasEmbedding: !!embedding && embedding.length > 10
-        });
-      }
+    for (const row of listRows) {
+      entries.push({
+        id: String(row.id).substring(0, 20),
+        key: (row.key as string) || String(row.id).substring(0, 15),
+        namespace: (row.namespace as string) || 'default',
+        size: ((row.content as string) || '').length,
+        accessCount: (row.access_count as number) || 0,
+        createdAt: (row.created_at as string) || new Date().toISOString(),
+        updatedAt: (row.updated_at as string) || new Date().toISOString(),
+        hasEmbedding: !!(row.embedding) && (row.embedding as string).length > 10
+      });
     }
 
     db.close();
@@ -2864,7 +2724,7 @@ export async function getEntry(options: {
     if (bridgeResult) return bridgeResult;
   }
 
-  // Fallback: raw sql.js
+  // Fallback: direct SQLite
   const {
     key,
     namespace = 'default',
@@ -2882,51 +2742,36 @@ export async function getEntry(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const { openDatabase } = await import('./open-database.js');
-    const db = await openDatabase(dbPath);
+    const db = await _getDb(dbPath);
 
     // Find entry by key
-    const getStmt = db.prepare(`
+    const row = db.prepare(`
       SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at, tags
       FROM memory_entries
       WHERE status = 'active'
         AND key = ?
         AND namespace = ?
       LIMIT 1
-    `);
-    getStmt.bind([key, namespace]);
-    const getRows: unknown[][] = [];
-    while (getStmt.step()) {
-      getRows.push(getStmt.get());
-    }
-    getStmt.free();
-    const result = getRows.length > 0 ? [{ values: getRows }] : [];
+    `).get(key, namespace) as Record<string, unknown> | undefined;
 
-    if (!result[0]?.values?.[0]) {
+    if (!row) {
       db.close();
       return { success: true, found: false };
     }
 
-    const [id, entryKey, ns, content, embedding, accessCount, createdAt, updatedAt, tagsJson] = result[0].values[0] as [
-      string, string, string, string, string | null, number, string, string, string | null
-    ];
-
     // Update access count
-    const updStmt = db.prepare(`
+    db.prepare(`
       UPDATE memory_entries
       SET access_count = access_count + 1, last_accessed_at = strftime('%s', 'now') * 1000
       WHERE id = ?
-    `);
-    updStmt.bind([String(id)]);
-    updStmt.step();
-    updStmt.free();
+    `).run(String(row.id));
 
     db.close();
 
     let tags: string[] = [];
-    if (tagsJson) {
+    if (row.tags) {
       try {
-        tags = JSON.parse(tagsJson);
+        tags = JSON.parse(row.tags as string);
       } catch {
         // Invalid JSON
       }
@@ -2936,14 +2781,14 @@ export async function getEntry(options: {
       success: true,
       found: true,
       entry: {
-        id: String(id),
-        key: entryKey || String(id),
-        namespace: ns || 'default',
-        content: content || '',
-        accessCount: (accessCount || 0) + 1,
-        createdAt: createdAt || new Date().toISOString(),
-        updatedAt: updatedAt || new Date().toISOString(),
-        hasEmbedding: !!embedding && embedding.length > 10,
+        id: String(row.id),
+        key: (row.key as string) || String(row.id),
+        namespace: (row.namespace as string) || 'default',
+        content: (row.content as string) || '',
+        accessCount: ((row.access_count as number) || 0) + 1,
+        createdAt: (row.created_at as string) || new Date().toISOString(),
+        updatedAt: (row.updated_at as string) || new Date().toISOString(),
+        hasEmbedding: !!(row.embedding) && (row.embedding as string).length > 10,
         tags
       }
     };
@@ -2994,7 +2839,7 @@ export async function deleteEntry(options: {
     }
   }
 
-  // Fallback: raw sql.js
+  // Fallback: direct SQLite
   const {
     key,
     namespace = 'default',
@@ -3019,31 +2864,21 @@ export async function deleteEntry(options: {
     // Ensure schema has all required columns (migration for older DBs)
     await ensureSchemaColumns(dbPath);
 
-    const { openDatabase } = await import('./open-database.js');
-    const db = await openDatabase(dbPath);
+    const db = await _getDb(dbPath);
 
     // Check if entry exists first
-    const checkStmt = db.prepare(`
+    const checkRow = db.prepare(`
       SELECT id FROM memory_entries
       WHERE status = 'active'
         AND key = ?
         AND namespace = ?
       LIMIT 1
-    `);
-    checkStmt.bind([key, namespace]);
-    const checkRows: unknown[][] = [];
-    while (checkStmt.step()) {
-      checkRows.push(checkStmt.get());
-    }
-    checkStmt.free();
-    const checkResult = checkRows.length > 0 ? [{ values: checkRows }] : [];
+    `).get(key, namespace) as { id: string } | undefined;
 
-    if (!checkResult[0]?.values?.[0]) {
+    if (!checkRow) {
       // Get remaining count before closing
-      const cntStmt = db.prepare(`SELECT COUNT(*) FROM memory_entries WHERE status = 'active'`);
-      let remainingEntries = 0;
-      if (cntStmt.step()) remainingEntries = cntStmt.get()[0] as number || 0;
-      cntStmt.free();
+      const cntRow = db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'`).get() as { cnt: number } | undefined;
+      const remainingEntries = cntRow?.cnt || 0;
       db.close();
       return {
         success: true,
@@ -3056,11 +2891,11 @@ export async function deleteEntry(options: {
     }
 
     // Capture the entry ID for HNSW cleanup
-    const entryId = String(checkResult[0].values[0][0]);
+    const entryId = String(checkRow.id);
 
     // Delete the entry (soft delete by setting status to 'deleted')
     // Also null out the embedding to clean up vector data from SQLite
-    const delStmt = db.prepare(`
+    db.prepare(`
       UPDATE memory_entries
       SET status = 'deleted',
           embedding = NULL,
@@ -3068,10 +2903,7 @@ export async function deleteEntry(options: {
       WHERE key = ?
         AND namespace = ?
         AND status = 'active'
-    `);
-    delStmt.bind([key, namespace]);
-    delStmt.step();
-    delStmt.free();
+    `).run(key, namespace);
 
     // GV-001: Remove ghost vector from HNSW metadata file
     try {
@@ -3090,12 +2922,9 @@ export async function deleteEntry(options: {
         hnswIndex.entries.delete(entryId);
     }
     // Get remaining count
-    const cntStmt2 = db.prepare(`SELECT COUNT(*) FROM memory_entries WHERE status = 'active'`);
-    let remainingEntries = 0;
-    if (cntStmt2.step()) remainingEntries = cntStmt2.get()[0] as number || 0;
-    cntStmt2.free();
+    const cntRow2 = db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'`).get() as { cnt: number } | undefined;
+    const remainingEntries = cntRow2?.cnt || 0;
 
-    // Wrapper close() handles WAL-safe write-back
     db.close();
 
     // Clean up in-memory HNSW index so ghost vectors don't appear in searches.

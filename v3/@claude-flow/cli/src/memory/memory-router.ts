@@ -1,16 +1,20 @@
 /**
- * memory-router.ts -- Single entry point for all memory operations (ADR-0077 Phase 5)
+ * memory-router.ts -- Single entry point for ALL memory operations (ADR-0083 Phase 5)
  *
- * Data flow: MCP tool -> routeMemoryOp() -> storage functions
+ * Data flow: MCP tool -> routeMemoryOp() / routeEmbeddingOp() -> storage functions
  * Controller access: getController() -> controller-intercept pool (Phase 4)
  * Embedding: EmbeddingPipeline (Phase 3) for vector operations
  * Config: ResolvedConfig singleton (Phase 1) for dimension/model
+ * JSON sidecar: writeJsonSidecar() -> .claude-flow/data/auto-memory-store.json (CJS contract)
  *
  * Bypasses memory-bridge.ts entirely. Uses memory-initializer.ts internally
  * for actual storage operations (not deleted, not modified -- just wrapped).
  *
  * @module @claude-flow/cli/memory/memory-router
  */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +50,26 @@ export interface MemoryResult {
   [key: string]: unknown;
 }
 
+export type EmbeddingOpType =
+  | 'generate' | 'generateBatch' | 'loadModel' | 'getThreshold'
+  | 'hnswGet' | 'hnswAdd' | 'hnswSearch' | 'hnswStatus' | 'hnswClear' | 'hnswRebuild'
+  | 'quantize' | 'dequantize' | 'quantizedSim' | 'quantizationStats'
+  | 'batchSim' | 'softmax' | 'topK' | 'flashSearch';
+
+export interface EmbeddingOp {
+  type: EmbeddingOpType;
+  text?: string;
+  texts?: string[];
+  vector?: number[] | Float32Array;
+  vectors?: Array<number[] | Float32Array>;
+  id?: string;
+  key?: string;
+  query?: string;
+  limit?: number;
+  k?: number;
+  data?: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Internal state
 // ---------------------------------------------------------------------------
@@ -63,6 +87,14 @@ interface StorageFns {
 let _fns: StorageFns | null = null;
 let _initialized = false;
 let _initPromise: Promise<void> | null = null;
+
+// Lazy-cached embedding functions for routeEmbeddingOp
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _embeddingFns: Record<string, (...args: any[]) => any> | null = null;
+
+// Lazy-cached full module for individual named-export wrappers
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _allFns: Record<string, (...args: any[]) => any> | null = null;
 
 // Lazy-cached Phase 4 controller-intercept module
 let _interceptMod: typeof import('../../../memory/src/controller-intercept.js') | null = null;
@@ -98,6 +130,73 @@ async function loadIntercept() {
     }
   }
   return _interceptMod;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadEmbeddingFns(): Promise<Record<string, (...args: any[]) => any>> {
+  if (_embeddingFns) return _embeddingFns;
+  const mod = await import('./memory-initializer.js');
+  _embeddingFns = mod as unknown as Record<string, (...args: any[]) => any>;
+  return _embeddingFns;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadAllFns(): Promise<Record<string, (...args: any[]) => any>> {
+  if (_allFns) return _allFns;
+  const mod = await import('./memory-initializer.js');
+  _allFns = mod as unknown as Record<string, (...args: any[]) => any>;
+  return _allFns;
+}
+
+// ---------------------------------------------------------------------------
+// JSON sidecar (intelligence.cjs CJS contract)
+// ---------------------------------------------------------------------------
+
+const AUTO_MEMORY_STORE_MAX = 1000;
+
+/**
+ * Write an entry to .claude-flow/data/auto-memory-store.json so intelligence.cjs
+ * can see CLI-stored memory. Best-effort — never throws.
+ */
+function writeJsonSidecar(entry: {
+  id: string; key: string; value: string; namespace: string;
+}): void {
+  try {
+    const dataDir = path.join(process.cwd(), '.claude-flow', 'data');
+    const storePath = path.join(dataDir, 'auto-memory-store.json');
+    const tmpPath = storePath + '.tmp';
+
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+    let store: Array<Record<string, unknown>> = [];
+    if (fs.existsSync(storePath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+        store = Array.isArray(raw) ? raw : (raw?.entries ?? []);
+      } catch { /* corrupt file — start fresh */ }
+    }
+
+    store = store.filter((e) => e.id !== entry.id);
+
+    store.push({
+      id: entry.id,
+      key: entry.key,
+      value: entry.value,
+      content: entry.value,
+      namespace: entry.namespace,
+      metadata: { source: 'cli-memory-store' },
+      created_at: new Date().toISOString(),
+    });
+
+    if (store.length > AUTO_MEMORY_STORE_MAX) {
+      store = store.slice(store.length - AUTO_MEMORY_STORE_MAX);
+    }
+
+    fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2));
+    fs.renameSync(tmpPath, storePath);
+  } catch {
+    // Best-effort — intelligence.cjs visibility is non-critical
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,10 +269,19 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         ttl: op.ttl,
         upsert: op.upsert,
       });
+      const storeSuccess = !!(result as { success?: boolean }).success;
+      if (storeSuccess && op.key && op.value) {
+        writeJsonSidecar({
+          id: op.key,
+          key: op.key,
+          value: op.value,
+          namespace: op.namespace || 'default',
+        });
+      }
       return {
-        success: !!(result as { success?: boolean }).success,
+        success: storeSuccess,
         key: op.key,
-        stored: !!(result as { success?: boolean }).success,
+        stored: storeSuccess,
         storedAt: new Date().toISOString(),
         hasEmbedding: !!(result as { embedding?: unknown }).embedding,
         embeddingDimensions: (result as { embedding?: { dimensions?: number } }).embedding?.dimensions || null,
@@ -349,11 +457,112 @@ export async function healthCheck(): Promise<unknown> {
 }
 
 // ---------------------------------------------------------------------------
+// routeEmbeddingOp — embedding/HNSW operation router (ADR-0083 Phase 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single entry point for embedding and HNSW operations.
+ * Mirrors routeMemoryOp but for vector/index operations.
+ */
+export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
+  await ensureRouter();
+  const fns = await loadEmbeddingFns();
+
+  switch (op.type) {
+    case 'generate':
+      return { success: true, ...(await fns.generateEmbedding(op.text, op.data)) };
+    case 'generateBatch':
+      return { success: true, ...(await fns.generateBatchEmbeddings(op.texts, op.data)) };
+    case 'loadModel':
+      return { success: true, ...(await fns.loadEmbeddingModel(op.data)) };
+    case 'getThreshold':
+      return { success: true, threshold: await fns.getAdaptiveThreshold(op.data as number | undefined) };
+    case 'hnswGet':
+      return { success: true, index: await fns.getHNSWIndex(op.data) };
+    case 'hnswAdd':
+      return { success: true, ...(await fns.addToHNSWIndex(op.id || op.key, op.vector, op.data)) };
+    case 'hnswSearch':
+      return { success: true, ...(await fns.searchHNSWIndex(op.vector || op.query, op.k || op.limit || 10, op.data)) };
+    case 'hnswStatus':
+      return { success: true, ...fns.getHNSWStatus() };
+    case 'hnswClear':
+      fns.clearHNSWIndex();
+      return { success: true };
+    case 'hnswRebuild':
+      fns.rebuildSearchIndex();
+      return { success: true };
+    case 'quantize':
+      return { success: true, ...fns.quantizeInt8(op.vector as number[] | Float32Array) };
+    case 'dequantize':
+      return { success: true, vector: fns.dequantizeInt8(op.data) };
+    case 'quantizedSim':
+      return { success: true, similarity: fns.quantizedCosineSim(op.vectors?.[0], op.vectors?.[1]) };
+    case 'quantizationStats':
+      return { success: true, ...fns.getQuantizationStats(op.vector as number[] | Float32Array) };
+    case 'batchSim':
+      return { success: true, similarities: fns.batchCosineSim(op.vector, op.vectors) };
+    case 'softmax':
+      return { success: true, scores: fns.softmaxAttention(op.data as Float32Array, op.k) };
+    case 'topK':
+      return { success: true, indices: fns.topKIndices(op.data as Float32Array, op.k || 10) };
+    case 'flashSearch':
+      return { success: true, ...fns.flashAttentionSearch(op.vector, op.vectors, op.k || 10, op.data) };
+    default:
+      return { success: false, error: `Unknown embedding operation: ${(op as { type: string }).type}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Lazy wrappers — 23 named exports from memory-initializer (ADR-0083 Phase 5)
+// Each wraps a single memory-initializer function via loadAllFns().
+// ---------------------------------------------------------------------------
+
+// Helper: create a lazy-delegating wrapper
+function _wrap(name: string) {
+  return async (...args: unknown[]) => {
+    const fns = await loadAllFns();
+    return fns[name](...args);
+  };
+}
+
+// HNSW (6)
+export const getHNSWIndex = _wrap('getHNSWIndex');
+export const addToHNSWIndex = _wrap('addToHNSWIndex');
+export const searchHNSWIndex = _wrap('searchHNSWIndex');
+export const getHNSWStatus = _wrap('getHNSWStatus');
+export const clearHNSWIndex = _wrap('clearHNSWIndex');
+export const rebuildSearchIndex = _wrap('rebuildSearchIndex');
+// Quantization (4)
+export const quantizeInt8 = _wrap('quantizeInt8');
+export const dequantizeInt8 = _wrap('dequantizeInt8');
+export const quantizedCosineSim = _wrap('quantizedCosineSim');
+export const getQuantizationStats = _wrap('getQuantizationStats');
+// Attention (3+1)
+export const batchCosineSim = _wrap('batchCosineSim');
+export const softmaxAttention = _wrap('softmaxAttention');
+export const topKIndices = _wrap('topKIndices');
+export const flashAttentionSearch = _wrap('flashAttentionSearch');
+// DB lifecycle (3)
+export const getInitialMetadata = _wrap('getInitialMetadata');
+export const ensureSchemaColumns = _wrap('ensureSchemaColumns');
+export const checkAndMigrateLegacy = _wrap('checkAndMigrateLegacy');
+// Embedding (4)
+export const loadEmbeddingModel = _wrap('loadEmbeddingModel');
+export const generateEmbedding = _wrap('generateEmbedding');
+export const generateBatchEmbeddings = _wrap('generateBatchEmbeddings');
+export const getAdaptiveThreshold = _wrap('getAdaptiveThreshold');
+// Decay/verify (2)
+export const applyTemporalDecay = _wrap('applyTemporalDecay');
+export const verifyMemoryInit = _wrap('verifyMemoryInit');
+
+// ---------------------------------------------------------------------------
 // Reset (testing only)
 // ---------------------------------------------------------------------------
 
 export function resetRouter(): void {
   _fns = null;
+  _embeddingFns = null;
+  _allFns = null;
   _interceptMod = null;
   _initialized = false;
   _initPromise = null;

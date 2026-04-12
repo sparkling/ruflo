@@ -378,110 +378,8 @@ async function doImport() {
   await backend.shutdown();
 }
 
-async function doSync() {
-  log('Syncing insights to auto memory files...');
-
-  // ADR-0059 Phase 4: Check daemon IPC availability
-  const ipcSocket = await tryDaemonIPC();
-  if (ipcSocket) {
-    dim('[Phase 4] Daemon IPC available for sync');
-  }
-
-  const memPkg = await loadMemoryPackage();
-  if (!memPkg || !memPkg.AutoMemoryBridge) {
-    dim('Memory package not available — skipping sync');
-    return;
-  }
-
-  const config = readConfig();
-  const { backend } = createBackend(config, memPkg);
-  await backend.initialize();
-
-  const entryCount = await backend.count();
-  if (entryCount === 0) {
-    dim('No entries to sync');
-    await backend.shutdown();
-    return;
-  }
-
-  const bridgeConfig = {
-    workingDir: PROJECT_ROOT,
-    syncMode: config.syncMode || 'on-session-end',
-  };
-
-  if (config.learningBridge.enabled && memPkg.LearningBridge) {
-    bridgeConfig.learning = {
-      sonaMode: config.learningBridge.sonaMode,
-      confidenceDecayRate: config.learningBridge.confidenceDecayRate,
-      consolidationThreshold: config.learningBridge.consolidationThreshold,
-    };
-  }
-
-  if (config.memoryGraph.enabled && memPkg.MemoryGraph) {
-    bridgeConfig.graph = {
-      pageRankDamping: config.memoryGraph.pageRankDamping,
-      maxNodes: config.memoryGraph.maxNodes,
-    };
-  }
-
-  const bridge = new memPkg.AutoMemoryBridge(backend, bridgeConfig);
-
-  try {
-    const syncResult = await bridge.syncToAutoMemory();
-    success(`Synced ${syncResult.synced} entries to auto memory`);
-    dim(`├─ Categories updated: ${syncResult.categories?.join(', ') || 'none'}`);
-    dim(`└─ Backend entries: ${entryCount}`);
-
-    // Curate MEMORY.md index with graph-aware ordering
-    await bridge.curateIndex();
-    success('Curated MEMORY.md index');
-  } catch (err) {
-    dim(`Sync failed (non-critical): ${err.message}`);
-  }
-
-  // ADR-0074 Phase 2: Drain CJS intelligence data into RvfBackend
-  // The CJS intelligence.cjs writes ranked-context.json with PageRank + confidence scores.
-  // This bridges the CJS/ESM silo by reading that JSON artifact and upserting into the
-  // persistent backend, so memory_search and agentdb_pattern_store can see intelligence data.
-  try {
-    const rankedPath = join(PROJECT_ROOT, '.claude-flow', 'data', 'ranked-context.json');
-    if (existsSync(rankedPath)) {
-      const ranked = JSON.parse(readFileSync(rankedPath, 'utf-8'));
-      const entries = ranked.entries || [];
-      if (entries.length > 0) {
-        const MAX_DRAIN = 500;
-        const toDrain = entries.slice(0, MAX_DRAIN);
-        let drained = 0;
-        for (const entry of toDrain) {
-          if (!entry.content && !entry.summary) continue;
-          try {
-            await backend.store({
-              key: entry.id || `intel-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              value: entry.content || entry.summary,
-              namespace: entry.category || 'intelligence',
-              metadata: {
-                source: 'cjs-intelligence-drain',
-                confidence: entry.confidence,
-                pageRank: entry.pageRank,
-                accessCount: entry.accessCount,
-                drainedAt: Date.now(),
-              },
-            });
-            drained++;
-          } catch { /* skip individual entry failures */ }
-        }
-        if (drained > 0) {
-          success(`Drained ${drained}/${entries.length} intelligence entries to backend (ADR-0074)`);
-        }
-      }
-    }
-  } catch (err) {
-    dim(`Intelligence drain skipped: ${err.message}`);
-  }
-
-  if (bridge.destroy) bridge.destroy();
-  await backend.shutdown();
-}
+// ADR-0083: doSync() removed — router centralizes JSON sidecar writes,
+// eliminating the need for a separate CJS→RVF drain path.
 
 async function doStatus() {
   const memPkg = await loadMemoryPackage();
@@ -519,10 +417,9 @@ process.on('unhandledRejection', () => {});
 try {
   switch (command) {
     case 'import': await doImport(); break;
-    case 'sync': await doSync(); break;
     case 'status': await doStatus(); break;
     default:
-      console.log('Usage: auto-memory-hook.mjs <import|sync|status>');
+      console.log('Usage: auto-memory-hook.mjs <import|status>');
       break;
   }
 } catch (err) {

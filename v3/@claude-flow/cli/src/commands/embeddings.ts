@@ -109,7 +109,7 @@ const generateCommand: Command = {
   },
 };
 
-// Search subcommand - REAL implementation using open-database wrapper
+// Search subcommand - REAL implementation using better-sqlite3
 const searchCommand: Command = {
   name: 'search',
   description: 'Semantic similarity search',
@@ -156,8 +156,10 @@ const searchCommand: Command = {
         return { success: false, exitCode: 1 };
       }
 
-      const { openDatabase } = await import('../memory/open-database.js');
-      const db = await openDatabase(fullDbPath, { readonly: true });
+      const bsMod = await import('better-sqlite3');
+      const Database = bsMod.default ?? bsMod;
+      const db = new Database(fullDbPath, { readonly: true });
+      db.pragma('journal_mode = WAL');
 
       const startTime = Date.now();
 
@@ -282,22 +284,11 @@ const searchCommand: Command = {
 };
 
 /**
- * Run a SELECT query against a SafeDatabase (open-database wrapper).
- * Returns rows as plain objects keyed by column name, regardless of
- * whether the underlying engine is better-sqlite3 or sql.js.
+ * Run a SELECT query against a better-sqlite3 database.
+ * Returns rows as plain objects keyed by column name.
  */
-function queryRows(db: import('../memory/open-database.js').SafeDatabase, sql: string): Record<string, unknown>[] {
-  if (db.engine === 'better-sqlite3') {
-    return db.prepare(sql).all() as Record<string, unknown>[];
-  }
-  // sql.js fallback: prepare returns a Statement with step()/getAsObject()
-  const stmt = db.prepare(sql);
-  const rows: Record<string, unknown>[] = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject() as Record<string, unknown>);
-  }
-  stmt.free();
-  return rows;
+function queryRows(db: any, sql: string): Record<string, unknown>[] {
+  return db.prepare(sql).all() as Record<string, unknown>[];
 }
 
 /**
@@ -418,7 +409,7 @@ const compareCommand: Command = {
   },
 };
 
-// Collections subcommand - REAL implementation using open-database wrapper
+// Collections subcommand - REAL implementation using better-sqlite3
 const collectionsCommand: Command = {
   name: 'collections',
   description: 'Manage embedding collections (namespaces)',
@@ -453,8 +444,10 @@ const collectionsCommand: Command = {
         return { success: true, data: [] };
       }
 
-      const { openDatabase } = await import('../memory/open-database.js');
-      const db = await openDatabase(fullDbPath, { readonly: true });
+      const bsMod = await import('better-sqlite3');
+      const Database = bsMod.default ?? bsMod;
+      const db = new Database(fullDbPath, { readonly: true });
+      db.pragma('journal_mode = WAL');
 
       // Get collection stats from database
       const statsRows = queryRows(db, `
@@ -1376,10 +1369,12 @@ const cacheCommand: Command = {
           sqliteSize = `${sizeBytes} B`;
         }
 
-        // Try to count real entries via open-database wrapper
+        // Try to count real entries via better-sqlite3
         try {
-          const { openDatabase } = await import('../memory/open-database.js');
-          const db = await openDatabase(resolvedDbPath, { readonly: true });
+          const bsMod = await import('better-sqlite3');
+          const Database = bsMod.default ?? bsMod;
+          const db = new Database(resolvedDbPath, { readonly: true });
+          db.pragma('journal_mode = WAL');
           const rows = queryRows(db, 'SELECT COUNT(*) as count FROM embeddings');
           if (rows.length > 0) {
             sqliteEntries = Number(rows[0].count ?? 0);

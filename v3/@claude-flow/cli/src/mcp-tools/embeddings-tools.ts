@@ -82,7 +82,7 @@ let realEmbeddingFn: ((text: string) => Promise<{ embedding: number[]; dimension
 async function getRealEmbeddingFunction() {
   if (!realEmbeddingFn) {
     try {
-      const { generateEmbedding } = await import('../memory/memory-initializer.js');
+      const { generateEmbedding } = await import('../memory/memory-router.js');
       realEmbeddingFn = generateEmbedding;
     } catch {
       realEmbeddingFn = null;
@@ -459,8 +459,9 @@ export const embeddingsTools: MCPTool[] = [
 
       // Try to search using real memory search
       try {
-        const { searchEntries } = await import('../memory/memory-initializer.js');
-        const searchResult = await searchEntries({
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        const searchResult = await routeMemoryOp({
+          type: 'search',
           query,
           limit: topK,
           threshold,
@@ -469,10 +470,11 @@ export const embeddingsTools: MCPTool[] = [
 
         const searchTime = (performance.now() - startTime).toFixed(2);
 
+        const results = (searchResult.results as Array<{ key: string; content?: string; score: number; namespace: string }>) || [];
         return {
           success: true,
           query,
-          results: searchResult.results.map((r) => ({
+          results: results.map((r) => ({
             key: r.key,
             content: r.content?.substring(0, 100),
             similarity: r.score,
@@ -485,7 +487,7 @@ export const embeddingsTools: MCPTool[] = [
             namespace: namespace || 'default',
             searchTime: `${searchTime}ms`,
             indexType: config.hyperbolic.enabled ? 'HNSW (hyperbolic)' : 'HNSW (euclidean)',
-            resultCount: searchResult.results.length
+            resultCount: results.length
           },
         };
       } catch {
