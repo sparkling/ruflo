@@ -501,12 +501,14 @@ async function queryRvfStore(options: {
         bm25ScoreVal = Math.min(bm25ScoreVal / 10, 1.0);
       }
 
-      const score = queryEmbedding
+      // ADR-0082: hash-fallback embeddings carry zero semantic signal — use BM25-only
+      const isHashFallback = _detectedModel === 'hash-fallback';
+      const score = queryEmbedding && !isHashFallback
         ? (0.7 * semanticScore + 0.3 * bm25ScoreVal)
-        : bm25ScoreVal;
+        : bm25ScoreVal;  // BM25-only when no embeddings or hash-fallback
 
       if (score >= threshold) {
-        const provenance = queryEmbedding
+        const provenance = queryEmbedding && !isHashFallback
           ? `rvf:semantic:${semanticScore.toFixed(3)}+bm25:${bm25ScoreVal.toFixed(3)}`
           : `rvf:bm25:${bm25ScoreVal.toFixed(3)}`;
 
@@ -1197,15 +1199,17 @@ export async function bridgeSearchEntries(options: {
         bm25ScoreVal = Math.min(bm25ScoreVal / 10, 1.0);
       }
 
+      // ADR-0082: hash-fallback embeddings carry zero semantic signal — use BM25-only
+      const isHashFallback = _detectedModel === 'hash-fallback';
       // Reciprocal rank fusion: combine semantic and BM25
       // Weight: 0.7 semantic + 0.3 BM25 (semantic preferred when embeddings available)
-      const score = queryEmbedding
+      const score = queryEmbedding && !isHashFallback
         ? (0.7 * semanticScore + 0.3 * bm25ScoreVal)
-        : bm25ScoreVal;  // BM25-only when no embeddings
+        : bm25ScoreVal;  // BM25-only when no embeddings or hash-fallback
 
       if (score >= threshold) {
         // Phase 4: ExplainableRecall provenance
-        const provenance = queryEmbedding
+        const provenance = queryEmbedding && !isHashFallback
           ? `semantic:${semanticScore.toFixed(3)}+bm25:${bm25ScoreVal.toFixed(3)}`
           : `bm25:${bm25ScoreVal.toFixed(3)}`;
 
