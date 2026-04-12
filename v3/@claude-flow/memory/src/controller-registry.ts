@@ -989,6 +989,7 @@ export class ControllerRegistry extends EventEmitter {
         hnswM: config.hnswM ?? 23,
         hnswEfConstruction: config.hnswEfConstruction ?? 100,
         hnswEfSearch: config.hnswEfSearch ?? 50,
+        enableGraph: config.controllers?.graphAdapter === true,
       });
 
       // Suppress agentdb's noisy info-level output during init
@@ -1108,6 +1109,9 @@ export class ControllerRegistry extends EventEmitter {
       // Advanced controllers -- enabled if agentdb available (ADR-0061 Phase 5)
       case 'selfLearningRvfBackend':
       case 'quantizedVectorStore':
+      case 'graphTransformer': // ADR-0081: was missing — fell to default:false
+      case 'flashAttentionService': // ADR-0081: was missing — fell to default:false
+      case 'moeAttentionService': // ADR-0081: was missing — fell to default:false
         return this.agentdb !== null;
 
       // Federated learning -- only useful in multi-agent swarms
