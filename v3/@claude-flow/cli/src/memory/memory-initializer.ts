@@ -1069,29 +1069,11 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
 }> {
   const columnsAdded: string[] = [];
 
-  // ADR-0080: create memory_entries table if it doesn't exist
-  // Uses inline DDL instead of MEMORY_SCHEMA_V3 to avoid index collisions with AgentDB
-  try {
-    const initSqlJs = (await import('sql.js')).default;
-    const SQL = await initSqlJs();
-    if (fs.existsSync(dbPath)) {
-      const buf = fs.readFileSync(dbPath);
-      const sqlDb = new SQL.Database(buf);
-      sqlDb.run(`CREATE TABLE IF NOT EXISTS memory_entries (
-        id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
-        content TEXT NOT NULL, type TEXT DEFAULT 'semantic',
-        embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
-        tags TEXT, metadata TEXT, owner_id TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
-        expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
-        status TEXT DEFAULT 'active', UNIQUE(namespace, key)
-      )`);
-      const data = sqlDb.export();
-      fs.writeFileSync(dbPath, Buffer.from(data));
-      sqlDb.close();
-    }
-  } catch { /* non-fatal — sql.js may not be available */ }
+  // ADR-0080: memory_entries table is created during memory init (not here).
+  // IMPORTANT: Do NOT use sql.js to read/modify existing .db files — AgentDB
+  // creates them with better-sqlite3 in WAL mode, and sql.js can't handle
+  // WAL-mode databases (reads only the main file, misses -wal data, produces
+  // "database disk image is malformed" on write-back).
 
   try {
     if (!fs.existsSync(dbPath)) {
@@ -1339,32 +1321,33 @@ export async function initializeMemoryDatabase(options: {
       });
 
       // ADR-0080: create memory_entries BEFORE controller activation (which is slow).
-      // If controller activation gets killed by timeout, the table still exists.
+      // Only create if the .db doesn't exist yet — if it exists, AgentDB (better-sqlite3)
+      // created it in WAL mode and sql.js can't safely read/modify WAL-mode databases.
       try {
         const sqlitePath = dbPath.replace(/\.rvf$/, '.db');
-        // Create the .db file if it doesn't exist yet
-        const initSqlJs = (await import('sql.js')).default;
-        const SQL = await initSqlJs();
-        const existingBuf = fs.existsSync(sqlitePath) ? fs.readFileSync(sqlitePath) : undefined;
-        const sqlDb = existingBuf ? new SQL.Database(existingBuf) : new SQL.Database();
-        sqlDb.run(`
-          CREATE TABLE IF NOT EXISTS memory_entries (
-            id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
-            content TEXT NOT NULL DEFAULT '', type TEXT DEFAULT 'semantic',
-            embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
-            tags TEXT, metadata TEXT, owner_id TEXT,
-            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
-            updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
-            expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'active', UNIQUE(namespace, key)
-          );
-          CREATE INDEX IF NOT EXISTS idx_memory_namespace ON memory_entries(namespace);
-          CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(key);
-          CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_entries(status);
-        `);
-        const data = sqlDb.export();
-        fs.writeFileSync(sqlitePath, Buffer.from(data));
-        sqlDb.close();
+        if (!fs.existsSync(sqlitePath)) {
+          const initSqlJs = (await import('sql.js')).default;
+          const SQL = await initSqlJs();
+          const sqlDb = new SQL.Database();
+          sqlDb.run(`
+            CREATE TABLE IF NOT EXISTS memory_entries (
+              id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
+              content TEXT NOT NULL DEFAULT '', type TEXT DEFAULT 'semantic',
+              embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
+              tags TEXT, metadata TEXT, owner_id TEXT,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+              expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
+              status TEXT DEFAULT 'active', UNIQUE(namespace, key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_namespace ON memory_entries(namespace);
+            CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(key);
+            CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_entries(status);
+          `);
+          const data = sqlDb.export();
+          fs.writeFileSync(sqlitePath, Buffer.from(data));
+          sqlDb.close();
+        }
       } catch { /* sql.js not available — controller activation will create .db */ }
 
       // ADR-053: Activate ControllerRegistry alongside new storage (slow — may timeout)
