@@ -31,19 +31,7 @@ async function _getDb(dbPath: string, opts?: { readonly?: boolean }): Promise<an
   return db;
 }
 
-// ADR-053: Lazy import of AgentDB v3 bridge
-let _bridge: typeof import('./memory-bridge.js') | null | undefined;
-async function getBridge(): Promise<typeof import('./memory-bridge.js') | null> {
-  if (_bridge === null) return null;
-  if (_bridge) return _bridge;
-  try {
-    _bridge = await import('./memory-bridge.js');
-    return _bridge;
-  } catch {
-    _bridge = null;
-    return null;
-  }
-}
+// ADR-0085: memory-bridge dependency removed — all operations use direct SQLite + router
 
 // ADR-0069: config-chain swarmDir
 function getSwarmDir(): string {
@@ -625,13 +613,7 @@ export async function addToHNSWIndex(
   embedding: number[],
   entry: HNSWEntry
 ): Promise<boolean> {
-  // ADR-053: Try AgentDB v3 bridge first
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeAddToHNSW(id, embedding, entry);
-    if (bridgeResult === true) return true;
-  }
-
+  // ADR-0085: Bridge removed — direct HNSW only
   const index = await getHNSWIndex({ dimensions: embedding.length });
   if (!index) return false;
 
@@ -662,13 +644,7 @@ export async function searchHNSWIndex(
     namespace?: string;
   }
 ): Promise<Array<{ id: string; key: string; content: string; score: number; namespace: string }> | null> {
-  // ADR-053: Try AgentDB v3 bridge first
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeSearchHNSW(queryEmbedding, options);
-    if (bridgeResult) return bridgeResult;
-  }
-
+  // ADR-0085: Bridge removed — direct HNSW only
   const index = await getHNSWIndex({ dimensions: queryEmbedding.length });
   if (!index) return null;
 
@@ -723,17 +699,7 @@ export function getHNSWStatus(): {
   entryCount: number;
   dimensions: number;
 } {
-  // ADR-053: If bridge was previously loaded, report availability
-  if (_bridge && _bridge !== null) {
-    // Bridge is loaded — HNSW-equivalent is available via AgentDB v3
-    return {
-      available: true,
-      initialized: true,
-      entryCount: hnswIndex?.entries.size ?? 0,
-      dimensions: hnswIndex?.dimensions ?? readEmbeddingsConfig().dimension
-    };
-  }
-
+  // ADR-0085: Bridge removed — report local HNSW state only
   return {
     available: hnswIndex !== null,
     initialized: hnswIndex?.initialized ?? false,
@@ -1204,57 +1170,7 @@ export async function checkAndMigrateLegacy(options: {
   return { needsMigration: false };
 }
 
-/**
- * ADR-053: Activate ControllerRegistry so AgentDB v3 controllers
- * (ReasoningBank, SkillLibrary, ExplainableRecall, etc.) are instantiated.
- *
- * Uses the memory-bridge's getControllerRegistry() which lazily creates
- * a singleton ControllerRegistry and initializes it with the given dbPath.
- * After this call, all enabled controllers are ready for immediate use.
- *
- * Failures are isolated: if @claude-flow/memory or agentdb is not installed,
- * this returns an empty result without throwing.
- */
-async function activateControllerRegistry(
-  dbPath: string,
-  verbose?: boolean,
-): Promise<{ activated: string[]; failed: string[]; initTimeMs: number }> {
-  const startTime = performance.now();
-  const activated: string[] = [];
-  const failed: string[] = [];
-
-  try {
-    const bridge = await getBridge();
-    if (!bridge) {
-      return { activated, failed, initTimeMs: performance.now() - startTime };
-    }
-
-    const registry = await bridge.getControllerRegistry(dbPath);
-    if (!registry) {
-      return { activated, failed, initTimeMs: performance.now() - startTime };
-    }
-
-    // Collect controller status from the registry
-    if (typeof registry.listControllers === 'function') {
-      const controllers = registry.listControllers();
-      for (const ctrl of controllers) {
-        if (ctrl.enabled) {
-          activated.push(ctrl.name);
-        } else {
-          failed.push(ctrl.name);
-        }
-      }
-    }
-
-    if (verbose && activated.length > 0) {
-      console.log(`ControllerRegistry: ${activated.length} controllers activated`);
-    }
-  } catch {
-    // ControllerRegistry activation is best-effort
-  }
-
-  return { activated, failed, initTimeMs: performance.now() - startTime };
-}
+// ADR-0085: activateControllerRegistry removed — router handles registry bootstrap via initControllerRegistry()
 
 /**
  * Initialize the memory database properly using better-sqlite3
@@ -1350,8 +1266,8 @@ export async function initializeMemoryDatabase(options: {
         }
       } catch { /* better-sqlite3 unavailable — controller activation will create .db */ }
 
-      // ADR-053: Activate ControllerRegistry alongside new storage (slow — may timeout)
-      const controllerResult = await activateControllerRegistry(dbPath, verbose);
+      // ADR-0085: ControllerRegistry bootstrap moved to router (initControllerRegistry)
+      const controllerResult = { activated: [] as string[], failed: [] as string[], initTimeMs: 0 };
 
       // ADR-0080: ensure full schema after controller activation adds its tables
       // AgentDB creates memory.db with its own schema but not memory_entries
@@ -1459,9 +1375,8 @@ export async function initializeMemoryDatabase(options: {
       const schemaPath = path.join(dbDir, 'schema.sql');
       fs.writeFileSync(schemaPath, MEMORY_SCHEMA_V3 + '\n' + getInitialMetadata(backend));
 
-      // ADR-053: Activate ControllerRegistry so controllers (ReasoningBank,
-      // SkillLibrary, ExplainableRecall, etc.) are instantiated during init
-      const controllerResult = await activateControllerRegistry(dbPath, verbose);
+      // ADR-0085: ControllerRegistry bootstrap moved to router (initControllerRegistry)
+      const controllerResult = { activated: [] as string[], failed: [] as string[], initTimeMs: 0 };
 
       return {
         success: true,
@@ -1523,8 +1438,8 @@ export async function initializeMemoryDatabase(options: {
 
       fs.writeFileSync(dbPath, sqliteHeader);
 
-      // ADR-053: Activate ControllerRegistry even on fallback path
-      const controllerResult = await activateControllerRegistry(dbPath, verbose);
+      // ADR-0085: ControllerRegistry bootstrap moved to router (initControllerRegistry)
+      const controllerResult = { activated: [] as string[], failed: [] as string[], initTimeMs: 0 };
 
       return {
         success: true,
@@ -1718,22 +1633,7 @@ export async function loadEmbeddingModel(options?: {
     };
   }
 
-  // ADR-053: Try AgentDB v3 bridge first
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeLoadEmbeddingModel();
-    if (bridgeResult && bridgeResult.success) {
-      // Mark local state as loaded too so subsequent calls use cache
-      embeddingModelState = {
-        loaded: true,
-        model: null, // Bridge handles embedding
-        tokenizer: null,
-        dimensions: bridgeResult.dimensions
-      };
-      return bridgeResult;
-    }
-  }
-
+  // ADR-0085: Bridge removed — direct model loading only
   try {
     // Read embedding model from agentdb config (single source of truth)
     let modelName = 'nomic-ai/nomic-embed-text-v1.5';
@@ -1952,13 +1852,7 @@ export async function generateEmbedding(
     }
   } catch { /* no prefix available */ }
 
-  // ADR-053: Try AgentDB v3 bridge first
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeGenerateEmbedding(processedText);
-    if (bridgeResult) return bridgeResult;
-  }
-
+  // ADR-0085: Bridge removed — direct embedding generation only
   // Ensure model is loaded
   if (!embeddingModelState?.loaded) {
     await loadEmbeddingModel();
@@ -2324,19 +2218,7 @@ export async function storeEntry(options: {
   embedding?: { dimensions: number; model: string };
   error?: string;
 }> {
-  // ADR-053: Try AgentDB v3 bridge (SQLite path — needed for list/stats)
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeStoreEntry(options);
-    // DB-007: Only accept bridge result on explicit success;
-    // null means DB unavailable, false success means a guard rejection etc.
-    // Either way, fall through to direct SQLite fallback.
-    if (bridgeResult && bridgeResult.success) {
-      return bridgeResult;
-    }
-  }
-
-  // Fallback: direct SQLite
+  // ADR-0085: Bridge removed — direct SQLite
   const {
     key,
     value,
@@ -2453,17 +2335,7 @@ export async function searchEntries(options: {
   searchTime: number;
   error?: string;
 }> {
-  // ADR-053: Try AgentDB v3 bridge
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeSearchEntries(options);
-    // DB-007: Only use bridge result if it actually found results;
-    // an empty { success: true, results: [] } is truthy but should
-    // fall through to the SQLite fallback for a second chance.
-    if (bridgeResult && bridgeResult.results && bridgeResult.results.length > 0) return bridgeResult;
-  }
-
-  // Fallback: direct SQLite
+  // ADR-0085: Bridge removed — direct SQLite
   const {
     query,
     namespace,
@@ -2616,14 +2488,7 @@ export async function listEntries(options: {
   total: number;
   error?: string;
 }> {
-  // ADR-053: Try AgentDB v3 bridge first
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeListEntries(options);
-    if (bridgeResult) return bridgeResult;
-  }
-
-  // Fallback: direct SQLite
+  // ADR-0085: Bridge removed — direct SQLite
   const {
     namespace,
     limit = 20,
@@ -2717,14 +2582,7 @@ export async function getEntry(options: {
   };
   error?: string;
 }> {
-  // ADR-053: Try AgentDB v3 bridge first
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeGetEntry(options);
-    if (bridgeResult) return bridgeResult;
-  }
-
-  // Fallback: direct SQLite
+  // ADR-0085: Bridge removed — direct SQLite
   const {
     key,
     namespace = 'default',
@@ -2817,29 +2675,7 @@ export async function deleteEntry(options: {
   remainingEntries: number;
   error?: string;
 }> {
-  // ADR-053: Try AgentDB v3 bridge first
-  const bridge = await getBridge();
-  if (bridge) {
-    const bridgeResult = await bridge.bridgeDeleteEntry(options);
-    if (bridgeResult) {
-      // #1122: Bridge path must also invalidate the in-memory HNSW index.
-      // Without this, deleted vectors remain as ghost entries in search results.
-      if (bridgeResult.deleted && hnswIndex?.entries) {
-        // Remove the entry from the HNSW entries map by key+namespace composite
-        for (const [id, entry] of hnswIndex.entries) {
-          if ((entry as any)?.key === options.key && ((entry as any)?.namespace ?? 'default') === (options.namespace ?? 'default')) {
-            hnswIndex.entries.delete(id);
-            break;
-          }
-        }
-        saveHNSWMetadata();
-        rebuildSearchIndex();
-      }
-      return bridgeResult;
-    }
-  }
-
-  // Fallback: direct SQLite
+  // ADR-0085: Bridge removed — direct SQLite
   const {
     key,
     namespace = 'default',

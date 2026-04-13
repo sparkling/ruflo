@@ -159,7 +159,7 @@ const DEFAULT_EWC_CONFIG: EWCConfig = {
     const _path = require('path');
     let _dir = process.cwd();
     let _embPath = '';
-    // Walk up to find .claude-flow/embeddings.json (same as memory-bridge findProjectRoot)
+    // Walk up to find .claude-flow/embeddings.json
     while (_dir !== _path.dirname(_dir)) {
       const candidate = _path.join(_dir, '.claude-flow', 'embeddings.json');
       if (_fs.existsSync(candidate)) { _embPath = candidate; break; }
