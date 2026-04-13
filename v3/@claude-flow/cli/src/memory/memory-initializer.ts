@@ -1349,6 +1349,14 @@ async function _loadAdapter() {
   return _embAdapter;
 }
 
+let _routerMod: typeof import('./memory-router.js') | null = null;
+async function _loadRouter() {
+  if (!_routerMod) {
+    _routerMod = await import('./memory-router.js');
+  }
+  return _routerMod;
+}
+
 export async function loadEmbeddingModel(options?: {
   modelPath?: string;
   verbose?: boolean;
@@ -1595,99 +1603,14 @@ export async function storeEntry(options: {
   embedding?: { dimensions: number; model: string };
   error?: string;
 }> {
-  // ADR-0085: Bridge removed — direct SQLite
-  const {
-    key,
-    value,
-    namespace = 'default',
-    generateEmbeddingFlag = true,
-    tags = [],
-    ttl,
-    dbPath: customPath,
-    upsert = false
-  } = options;
-
-  const swarmDir = path.resolve(process.cwd(), getSwarmDir());
-  const dbPath = customPath ? path.resolve(customPath) : path.join(swarmDir, 'memory.db');
-
-  try {
-    if (!fs.existsSync(dbPath)) {
-      return { success: false, id: '', error: 'Database not initialized. Run: claude-flow memory init' };
-    }
-
-    // Ensure schema has all required columns (migration for older DBs)
-    await ensureSchemaColumns(dbPath);
-
-    const db = await _getDb(dbPath);
-
-    const id = `entry_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    const now = Date.now();
-
-    // Generate embedding if requested
-    let embeddingJson: string | null = null;
-    let embeddingDimensions: number | null = null;
-    let embeddingModel: string | null = null;
-
-    if (generateEmbeddingFlag && value.length > 0) {
-      const embResult = await generateEmbedding(value);
-      embeddingJson = JSON.stringify(embResult.embedding);
-      embeddingDimensions = embResult.dimensions;
-      embeddingModel = embResult.model;
-    }
-
-    // Insert or update entry (upsert mode uses REPLACE)
-    const insertSql = upsert
-      ? `INSERT OR REPLACE INTO memory_entries (
-          id, key, namespace, content, type,
-          embedding, embedding_dimensions, embedding_model,
-          tags, metadata, created_at, updated_at, expires_at, status
-        ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
-      : `INSERT INTO memory_entries (
-          id, key, namespace, content, type,
-          embedding, embedding_dimensions, embedding_model,
-          tags, metadata, created_at, updated_at, expires_at, status
-        ) VALUES (?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, ?, ?, ?, 'active')`;
-
-    db.prepare(insertSql).run(
-      id,
-      key,
-      namespace,
-      value,
-      embeddingJson,
-      embeddingDimensions,
-      embeddingModel,
-      tags.length > 0 ? JSON.stringify(tags) : null,
-      '{}',
-      now,
-      now,
-      ttl ? now + (ttl * 1000) : null
-    );
-
-    db.close();
-
-    // Add to HNSW index for faster future searches
-    if (embeddingJson) {
-      const embResult = JSON.parse(embeddingJson) as number[];
-      await addToHNSWIndex(id, embResult, {
-        id,
-        key,
-        namespace,
-        content: value
-      });
-    }
-
-    return {
-      success: true,
-      id,
-      embedding: embeddingJson ? { dimensions: embeddingDimensions!, model: embeddingModel! } : undefined
-    };
-  } catch (error) {
-    return {
-      success: false,
-      id: '',
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
+  // ADR-0086 T2.6: delegates to routeMemoryOp (RvfBackend)
+  const router = await _loadRouter();
+  const result = await router.routeMemoryOp({
+    type: 'store', key: options.key, value: options.value,
+    namespace: options.namespace, generateEmbedding: options.generateEmbeddingFlag,
+    tags: options.tags, ttl: options.ttl, upsert: options.upsert,
+  });
+  return { success: result.success, id: (result as any).key || '', embedding: (result as any).hasEmbedding ? { dimensions: (result as any).embeddingDimensions || 0, model: 'rvf' } : undefined, error: (result as any).error };
 }
 
 /**
@@ -1712,109 +1635,19 @@ export async function searchEntries(options: {
   searchTime: number;
   error?: string;
 }> {
-  // ADR-0085: Bridge removed — direct SQLite
-  const {
-    query,
-    namespace,
-    limit = 10,
-    threshold: explicitThreshold,
-    dbPath: customPath
-  } = options;
-  // FB-004: adaptive threshold based on embedding model
-  const threshold = await getAdaptiveThreshold(explicitThreshold);
-  const effectiveNamespace = namespace || 'all';
-
-  const swarmDir = path.resolve(process.cwd(), getSwarmDir());
-  const dbPath = customPath ? path.resolve(customPath) : path.join(swarmDir, 'memory.db');
+  // ADR-0086 T2.6: delegates to routeMemoryOp (RvfBackend)
   const startTime = Date.now();
-
-  try {
-    if (!fs.existsSync(dbPath)) {
-      return { success: false, results: [], searchTime: 0, error: 'Database not found' };
-    }
-
-    // Ensure schema has all required columns (migration for older DBs)
-    await ensureSchemaColumns(dbPath);
-
-    // Generate query embedding (intent: 'query' for model-specific prefix)
-    const queryEmb = await generateEmbedding(query, { intent: 'query' });
-    const queryEmbedding = queryEmb.embedding;
-
-    // Try HNSW search first (150x faster)
-    const hnswResults = await searchHNSWIndex(queryEmbedding, { k: limit, namespace: effectiveNamespace });
-    if (hnswResults && hnswResults.length > 0) {
-      // Filter by threshold
-      const filtered = hnswResults.filter(r => r.score >= threshold);
-      return {
-        success: true,
-        results: filtered,
-        searchTime: Date.now() - startTime
-      };
-    }
-
-    // Fall back to brute-force SQLite search
-    const db = await _getDb(dbPath, { readonly: true });
-
-    // Get entries with embeddings
-    const searchRows = effectiveNamespace !== 'all'
-      ? db.prepare(`SELECT id, key, namespace, content, embedding FROM memory_entries WHERE status = 'active' AND namespace = ? LIMIT 1000`).all(effectiveNamespace) as Array<{ id: string; key: string; namespace: string; content: string; embedding: string | null }>
-      : db.prepare(`SELECT id, key, namespace, content, embedding FROM memory_entries WHERE status = 'active' LIMIT 1000`).all() as Array<{ id: string; key: string; namespace: string; content: string; embedding: string | null }>;
-
-    const results: { id: string; key: string; content: string; score: number; namespace: string }[] = [];
-
-    for (const row of searchRows) {
-      const { id, key, namespace: ns, content, embedding: embeddingJson } = row;
-
-      let score = 0;
-
-      if (embeddingJson) {
-        try {
-          const embedding = JSON.parse(embeddingJson) as number[];
-          score = cosineSim(queryEmbedding, embedding);
-        } catch {
-          // Invalid embedding, use keyword score
-        }
-      }
-
-      // Fallback to keyword matching
-      if (score < threshold) {
-        const lowerContent = (content || '').toLowerCase();
-        const lowerQuery = query.toLowerCase();
-        const words = lowerQuery.split(/\s+/);
-        const matchCount = words.filter(w => lowerContent.includes(w)).length;
-        const keywordScore = matchCount / words.length * 0.5;
-        score = Math.max(score, keywordScore);
-      }
-
-      if (score >= threshold) {
-        results.push({
-          id: id.substring(0, 12),
-          key: key || id.substring(0, 15),
-          content: (content || '').substring(0, 60) + ((content || '').length > 60 ? '...' : ''),
-          score,
-          namespace: ns || 'default'
-        });
-      }
-    }
-
-    db.close();
-
-    // Sort by score
-    results.sort((a, b) => b.score - a.score);
-
-    return {
-      success: true,
-      results: results.slice(0, limit),
-      searchTime: Date.now() - startTime
-    };
-  } catch (error) {
-    return {
-      success: false,
-      results: [],
-      searchTime: Date.now() - startTime,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
+  const router = await _loadRouter();
+  const result = await router.routeMemoryOp({
+    type: 'search', query: options.query,
+    namespace: options.namespace, limit: options.limit, threshold: options.threshold,
+  });
+  return {
+    success: result.success,
+    results: (result as any).results || [],
+    searchTime: Date.now() - startTime,
+    error: (result as any).error,
+  };
 }
 
 /**
@@ -1865,75 +1698,18 @@ export async function listEntries(options: {
   total: number;
   error?: string;
 }> {
-  // ADR-0085: Bridge removed — direct SQLite
-  const {
-    namespace,
-    limit = 20,
-    offset = 0,
-    dbPath: customPath
-  } = options;
-
-  const swarmDir = path.join(process.cwd(), getSwarmDir());
-  const dbPath = customPath || path.join(swarmDir, 'memory.db');
-
-  try {
-    if (!fs.existsSync(dbPath)) {
-      return { success: false, entries: [], total: 0, error: 'Database not found' };
-    }
-
-    // Ensure schema has all required columns (migration for older DBs)
-    await ensureSchemaColumns(dbPath);
-
-    const db = await _getDb(dbPath, { readonly: true });
-
-    // Get total count
-    const countRow = namespace
-      ? db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active' AND namespace = ?`).get(namespace) as { cnt: number } | undefined
-      : db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'`).get() as { cnt: number } | undefined;
-    const total = countRow?.cnt || 0;
-
-    // Get entries
-    const safeLimit = parseInt(String(limit), 10) || 100;
-    const safeOffset = parseInt(String(offset), 10) || 0;
-    const listRows = namespace
-      ? db.prepare(`SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at FROM memory_entries WHERE status = 'active' AND namespace = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(namespace, safeLimit, safeOffset) as Array<Record<string, unknown>>
-      : db.prepare(`SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at FROM memory_entries WHERE status = 'active' ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(safeLimit, safeOffset) as Array<Record<string, unknown>>;
-
-    const entries: {
-      id: string;
-      key: string;
-      namespace: string;
-      size: number;
-      accessCount: number;
-      createdAt: string;
-      updatedAt: string;
-      hasEmbedding: boolean;
-    }[] = [];
-
-    for (const row of listRows) {
-      entries.push({
-        id: String(row.id).substring(0, 20),
-        key: (row.key as string) || String(row.id).substring(0, 15),
-        namespace: (row.namespace as string) || 'default',
-        size: ((row.content as string) || '').length,
-        accessCount: (row.access_count as number) || 0,
-        createdAt: (row.created_at as string) || new Date().toISOString(),
-        updatedAt: (row.updated_at as string) || new Date().toISOString(),
-        hasEmbedding: !!(row.embedding) && (row.embedding as string).length > 10
-      });
-    }
-
-    db.close();
-
-    return { success: true, entries, total };
-  } catch (error) {
-    return {
-      success: false,
-      entries: [],
-      total: 0,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
+  // ADR-0086 T2.6: delegates to routeMemoryOp (RvfBackend)
+  const router = await _loadRouter();
+  const result = await router.routeMemoryOp({
+    type: 'list', namespace: options.namespace,
+    limit: options.limit, offset: options.offset,
+  });
+  return {
+    success: result.success,
+    entries: (result as any).entries || [],
+    total: (result as any).total || 0,
+    error: (result as any).error,
+  };
 }
 
 /**
@@ -1959,81 +1735,17 @@ export async function getEntry(options: {
   };
   error?: string;
 }> {
-  // ADR-0085: Bridge removed — direct SQLite
-  const {
-    key,
-    namespace = 'default',
-    dbPath: customPath
-  } = options;
-
-  const swarmDir = path.join(process.cwd(), getSwarmDir());
-  const dbPath = customPath || path.join(swarmDir, 'memory.db');
-
-  try {
-    if (!fs.existsSync(dbPath)) {
-      return { success: false, found: false, error: 'Database not found' };
-    }
-
-    // Ensure schema has all required columns (migration for older DBs)
-    await ensureSchemaColumns(dbPath);
-
-    const db = await _getDb(dbPath);
-
-    // Find entry by key
-    const row = db.prepare(`
-      SELECT id, key, namespace, content, embedding, access_count, created_at, updated_at, tags
-      FROM memory_entries
-      WHERE status = 'active'
-        AND key = ?
-        AND namespace = ?
-      LIMIT 1
-    `).get(key, namespace) as Record<string, unknown> | undefined;
-
-    if (!row) {
-      db.close();
-      return { success: true, found: false };
-    }
-
-    // Update access count
-    db.prepare(`
-      UPDATE memory_entries
-      SET access_count = access_count + 1, last_accessed_at = strftime('%s', 'now') * 1000
-      WHERE id = ?
-    `).run(String(row.id));
-
-    db.close();
-
-    let tags: string[] = [];
-    if (row.tags) {
-      try {
-        tags = JSON.parse(row.tags as string);
-      } catch {
-        // Invalid JSON
-      }
-    }
-
-    return {
-      success: true,
-      found: true,
-      entry: {
-        id: String(row.id),
-        key: (row.key as string) || String(row.id),
-        namespace: (row.namespace as string) || 'default',
-        content: (row.content as string) || '',
-        accessCount: ((row.access_count as number) || 0) + 1,
-        createdAt: (row.created_at as string) || new Date().toISOString(),
-        updatedAt: (row.updated_at as string) || new Date().toISOString(),
-        hasEmbedding: !!(row.embedding) && (row.embedding as string).length > 10,
-        tags
-      }
-    };
-  } catch (error) {
-    return {
-      success: false,
-      found: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
+  // ADR-0086 T2.6: delegates to routeMemoryOp (RvfBackend)
+  const router = await _loadRouter();
+  const result = await router.routeMemoryOp({
+    type: 'get', key: options.key, namespace: options.namespace,
+  });
+  return {
+    success: result.success,
+    found: (result as any).found ?? false,
+    entry: (result as any).entry,
+    error: (result as any).error,
+  };
 }
 
 /**
@@ -2052,123 +1764,19 @@ export async function deleteEntry(options: {
   remainingEntries: number;
   error?: string;
 }> {
-  // ADR-0085: Bridge removed — direct SQLite
-  const {
-    key,
-    namespace = 'default',
-    dbPath: customPath
-  } = options;
-
-  const swarmDir = path.join(process.cwd(), getSwarmDir());
-  const dbPath = customPath || path.join(swarmDir, 'memory.db');
-
-  try {
-    if (!fs.existsSync(dbPath)) {
-      return {
-        success: false,
-        deleted: false,
-        key,
-        namespace,
-        remainingEntries: 0,
-        error: 'Database not found'
-      };
-    }
-
-    // Ensure schema has all required columns (migration for older DBs)
-    await ensureSchemaColumns(dbPath);
-
-    const db = await _getDb(dbPath);
-
-    // Check if entry exists first
-    const checkRow = db.prepare(`
-      SELECT id FROM memory_entries
-      WHERE status = 'active'
-        AND key = ?
-        AND namespace = ?
-      LIMIT 1
-    `).get(key, namespace) as { id: string } | undefined;
-
-    if (!checkRow) {
-      // Get remaining count before closing
-      const cntRow = db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'`).get() as { cnt: number } | undefined;
-      const remainingEntries = cntRow?.cnt || 0;
-      db.close();
-      return {
-        success: true,
-        deleted: false,
-        key,
-        namespace,
-        remainingEntries,
-        error: `Key '${key}' not found in namespace '${namespace}'`
-      };
-    }
-
-    // Capture the entry ID for HNSW cleanup
-    const entryId = String(checkRow.id);
-
-    // Delete the entry (soft delete by setting status to 'deleted')
-    // Also null out the embedding to clean up vector data from SQLite
-    db.prepare(`
-      UPDATE memory_entries
-      SET status = 'deleted',
-          embedding = NULL,
-          updated_at = strftime('%s', 'now') * 1000
-      WHERE key = ?
-        AND namespace = ?
-        AND status = 'active'
-    `).run(key, namespace);
-
-    // GV-001: Remove ghost vector from HNSW metadata file
-    try {
-        const swarmDir = path.join(process.cwd(), '.swarm');
-        const metadataPath = path.join(swarmDir, 'hnsw.metadata.json');
-        if (fs.existsSync(metadataPath)) {
-            const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
-            const filtered = metadata.filter(([id]: [string, unknown]) => id !== entryId);
-            if (filtered.length < metadata.length) {
-                fs.writeFileSync(metadataPath, JSON.stringify(filtered));
-            }
-        }
-    } catch { /* GV-001: best-effort file cleanup — metadata file may not exist */ }
-    // GV-001: Also clear in-memory index if loaded
-    if (hnswIndex?.entries?.has(entryId)) {
-        hnswIndex.entries.delete(entryId);
-    }
-    // Get remaining count
-    const cntRow2 = db.prepare(`SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'`).get() as { cnt: number } | undefined;
-    const remainingEntries = cntRow2?.cnt || 0;
-
-    db.close();
-
-    // Clean up in-memory HNSW index so ghost vectors don't appear in searches.
-    // Remove the entry from the HNSW entries map and invalidate the index.
-    // The next search will rebuild the HNSW index from the remaining DB rows.
-    if (hnswIndex?.entries) {
-      hnswIndex.entries.delete(entryId);
-      saveHNSWMetadata();
-      // Invalidate the HNSW index so it rebuilds from DB on next search.
-      // We can't surgically remove a vector from the HNSW graph, so we
-      // clear the entire index; it will be lazily rebuilt from SQLite.
-      rebuildSearchIndex();
-    }
-
-    return {
-      success: true,
-      deleted: true,
-      key,
-      namespace,
-      remainingEntries
-    };
-  } catch (error) {
-    return {
-      success: false,
-      deleted: false,
-      key,
-      namespace,
-      remainingEntries: 0,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
+  // ADR-0086 T2.6: delegates to routeMemoryOp (RvfBackend)
+  const router = await _loadRouter();
+  const result = await router.routeMemoryOp({
+    type: 'delete', key: options.key, namespace: options.namespace,
+  });
+  return {
+    success: result.success,
+    deleted: (result as any).deleted ?? false,
+    key: options.key,
+    namespace: options.namespace || 'default',
+    remainingEntries: (result as any).remainingEntries || 0,
+    error: (result as any).error,
+  };
 }
 
 export default {
