@@ -594,6 +594,10 @@ export class WorkerDaemon extends EventEmitter {
         const result = await routeMemoryOp({ ...(params as any), type: 'list' });
         return (result as any)?.total ?? 0;
       });
+      this.ipcServer.registerMethod('memory.list', async (params) => {
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        return routeMemoryOp({ ...(params as any), type: 'list' });
+      });
       this.ipcServer.registerMethod('memory.bulkInsert', async (params: any) => {
         const { routeMemoryOp } = await import('../memory/memory-router.js');
         const entries = params.entries || [];
@@ -1047,9 +1051,9 @@ export class WorkerDaemon extends EventEmitter {
       try {
         const { routeLearningOp } = await import('../memory/memory-router.js');
         const routerResult = await routeLearningOp({ type: 'consolidate' });
-        result.bridgeConsolidated = routerResult?.success ?? false;
-      } catch (bridgeErr: unknown) {
-        const msg = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr);
+        result.routerConsolidated = routerResult?.success ?? false;
+      } catch (routerErr: unknown) {
+        const msg = routerErr instanceof Error ? routerErr.message : String(routerErr);
         throw new Error(
           `routeLearningOp consolidate failed: ${msg}\n` +
           `Fix: set "memory.agentdb.enableLearning": false in .claude-flow/config.json`
