@@ -12,6 +12,7 @@ import type {
   HealthCheckResult,
   MemoryType,
 } from './types.js';
+import type { IStorageContract } from './storage.js';
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
 import { deriveHNSWParams } from './hnsw-utils.js';
 
@@ -58,7 +59,9 @@ const DEFAULT_EF_CONSTRUCTION = 200;
 const DEFAULT_MAX_ELEMENTS = 100000;
 const DEFAULT_PERSIST_INTERVAL = 30000;
 
-export class RvfBackend implements IMemoryBackend {
+// ADR-0086 T2.1: IStorageContract ≡ IMemoryBackend (16 methods, verified by
+// adr0086-storage-contract.test.mjs). Explicit implements added for Phase 2 wiring.
+export class RvfBackend implements IMemoryBackend, IStorageContract {
   private entries = new Map<string, MemoryEntry>();
   private keyIndex = new Map<string, string>();
   private hnswIndex: HnswLite | null = null;
