@@ -112,10 +112,8 @@ let _sonaTrajectory: any = null;
 async function getSonaTrajectory(): Promise<any> {
   if (_sonaTrajectory) return _sonaTrajectory;
   try {
-    const bridge = await import('../memory/memory-bridge.js');
-    _sonaTrajectory = bridge.bridgeGetController
-      ? await bridge.bridgeGetController('sonaTrajectory')
-      : null;
+    const { getController } = await import('../memory/memory-router.js');
+    _sonaTrajectory = await getController('sonaTrajectory') ?? null;
   } catch { _sonaTrajectory = null; }
   return _sonaTrajectory;
 }
@@ -788,20 +786,26 @@ export const hooksPostEdit: MCPTool = {
     const success = params.success !== false;
     const agent = (params.agent as string) || 'unknown';
 
-    // Wire recordFeedback through bridge (issue #1209)
+    // Wire recordFeedback through router (issue #1209, ADR-0084 Phase 3)
     let feedbackResult: { success: boolean; controller: string; updated: number } | null = null;
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      feedbackResult = await bridge.bridgeRecordFeedback({
+      const { routeFeedbackOp } = await import('../memory/memory-router.js');
+      const result = await routeFeedbackOp({
+        type: 'record',
         taskId: `edit-${filePath}-${Date.now()}`,
         success,
         quality: success ? 0.85 : 0.3,
         agent,
       });
+      feedbackResult = {
+        success: result.success,
+        controller: (result.controller as string) || 'unknown',
+        updated: (result.updated as number) || 0,
+      };
     } catch (e) {
-      // HK-002a: fail-loud bridge error handling
+      // HK-002a: fail-loud error handling
       throw new Error(
-        `HK-002a: store via memory-bridge failed: ${(e as Error)?.message}\n` +
+        `HK-002a: store via memory-router failed: ${(e as Error)?.message}\n` +
         `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json`
       );
     }
@@ -909,8 +913,8 @@ export const hooksPostCommand: MCPTool = {
 // WM-104a: CausalRecall helper — resolves causalRecall via bridge (ADR-068)
 async function getCausalRecallInstance() {
   try {
-    const bridge = await import('../memory/memory-bridge.js');
-    return (await bridge.bridgeGetController?.('causalRecall')) ?? null;
+    const { getController } = await import('../memory/memory-router.js');
+    return (await getController('causalRecall')) ?? null;
   } catch (e) {
     throw new Error(
       `CausalRecall controller init failed: ${(e as Error)?.message}\n` +
@@ -939,14 +943,15 @@ export const hooksRoute: MCPTool = {
     // Mutable metadata that controllers can enrich
     let routingMetadata: Record<string, unknown> = {};
 
-    // Phase 2: Try SolverBandit first (learned routing)
+    // Phase 2: Try SolverBandit first (learned routing) — ADR-0084 Phase 3: via memory-router
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      if (bridge.bridgeSolverBanditSelect) {
+      const { getController } = await import('../memory/memory-router.js');
+      const solver = await getController<any>('solverBandit');
+      if (solver && typeof solver.selectArm === 'function') {
         const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
         const taskType = task;
         const banditResult = await Promise.race([
-          bridge.bridgeSolverBanditSelect(taskType, agents),
+          solver.selectArm(taskType, agents),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SolverBandit timeout')), 2000)),
         ]);
         if (banditResult.confidence > 0.6 && banditResult.controller !== 'fallback') {
@@ -967,10 +972,8 @@ export const hooksRoute: MCPTool = {
 
     // Phase 4: SkillLibrary — check for learned skills matching this task (P4-A: ADR-0033)
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      const skills = bridge.bridgeGetController
-        ? await bridge.bridgeGetController('skills')
-        : null;
+      const { getController: getCtrl } = await import('../memory/memory-router.js');
+      const skills = await getCtrl('skills');
       if (skills && typeof skills.search === 'function') {
         const taskType = (params.task_type as string) || task || 'default';
         const skillResult = await Promise.race([
@@ -999,8 +1002,8 @@ export const hooksRoute: MCPTool = {
 
     // Phase 4: LearningSystem algorithm recommendation
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      const ls = bridge.bridgeGetController ? await bridge.bridgeGetController('learningSystem') : null;
+      const { getController: getCtrlLS } = await import('../memory/memory-router.js');
+      const ls = await getCtrlLS('learningSystem');
       if (ls && typeof ls.recommendAlgorithm === 'function') {
         const taskType = task;
         const recommendation = await Promise.race([
@@ -1014,12 +1017,13 @@ export const hooksRoute: MCPTool = {
       }
     } catch { /* LearningSystem unavailable */ }
 
-    // Phase 5: Use bridge SemanticRouter when available (replaces static TASK_PATTERNS)
+    // Phase 5: Use SemanticRouter when available (replaces static TASK_PATTERNS) — ADR-0084 Phase 3: via memory-router
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      if (bridge.bridgeSemanticRoute) {
+      const { getController: getCtrlSR } = await import('../memory/memory-router.js');
+      const semantic = await getCtrlSR<any>('semanticRouter');
+      if (semantic && typeof semantic.route === 'function') {
         const routeResult = await Promise.race([
-          bridge.bridgeSemanticRoute({ input: task }),
+          semantic.route({ input: task }),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SemanticRouter timeout')), 2000)),
         ]);
         if (routeResult?.route && !routeResult.error) {
@@ -1039,11 +1043,14 @@ export const hooksRoute: MCPTool = {
       }
     } catch { /* SemanticRouter unavailable — fall through to patterns */ }
 
-    // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first
+    // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first — ADR-0084 Phase 3: via memory-router
     if (useSemanticRouter) {
       try {
-        const bridge = await import('../memory/memory-bridge.js');
-        const agentdbRoute = await bridge.bridgeRouteTask({ task, context });
+        const { getController: getCtrlTR } = await import('../memory/memory-router.js');
+        const taskRouter = await getCtrlTR<any>('taskRouter');
+        const agentdbRoute = taskRouter && typeof taskRouter.route === 'function'
+          ? await taskRouter.route({ task, context })
+          : null;
         if (agentdbRoute && agentdbRoute.confidence > 0.5) {
           const agents = agentdbRoute.agents.length > 0 ? agentdbRoute.agents : ['coder', 'researcher'];
           const complexity = task.length > 200 ? 'high' : task.length < 50 ? 'low' : 'medium';
@@ -1447,11 +1454,12 @@ export const hooksPostTask: MCPTool = {
     const quality = (params.quality as number) ?? (success ? 0.85 : 0.2);
     const startTime = Date.now();
 
-    // HK-002c: Wire recordFeedback through bridge with fail-loud error handling
+    // HK-002c: Wire recordFeedback through router with fail-loud error handling (ADR-0084 Phase 3)
     let feedbackResult: { success: boolean; controller: string; updated: number } | null = null;
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      feedbackResult = await bridge.bridgeRecordFeedback({
+      const { routeFeedbackOp } = await import('../memory/memory-router.js');
+      const result = await routeFeedbackOp({
+        type: 'record',
         taskId,
         success,
         quality,
@@ -1459,17 +1467,23 @@ export const hooksPostTask: MCPTool = {
         duration: (params.duration as number) || undefined,
         patterns: (params.patterns as string[]) || undefined,
       });
+      feedbackResult = {
+        success: result.success,
+        controller: (result.controller as string) || 'unknown',
+        updated: (result.updated as number) || 0,
+      };
     } catch (e) {
       throw new Error(
-        `bridge.recordFeedback failed: ${(e as Error)?.message}\n` +
+        `routeFeedbackOp failed: ${(e as Error)?.message}\n` +
         `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json to allow degraded routing`
       );
     }
 
-    // HK-002c: Record causal edge with fail-loud error handling
+    // HK-002c: Record causal edge with fail-loud error handling (ADR-0084 Phase 3)
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      await bridge.bridgeRecordCausalEdge({
+      const { routeCausalOp } = await import('../memory/memory-router.js');
+      await routeCausalOp({
+        type: 'edge',
         sourceId: taskId,
         targetId: `outcome-${taskId}`,
         relation: success ? 'succeeded' : 'failed',
@@ -1477,7 +1491,7 @@ export const hooksPostTask: MCPTool = {
       });
     } catch (e) {
       throw new Error(
-        `bridge.recordCausalEdge failed: ${(e as Error)?.message}\n` +
+        `routeCausalOp failed: ${(e as Error)?.message}\n` +
         `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json to allow degraded routing`
       );
     }
@@ -1841,22 +1855,23 @@ export const hooksSessionStart: MCPTool = {
       }
     }
 
-    // Phase 5: Wire ReflexionMemory session start via bridge
+    // Phase 5: Wire ReflexionMemory session start via router (ADR-0084 Phase 3)
     let sessionMemory: { controller: string; restoredPatterns: number } | null = null;
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      const result = await bridge.bridgeSessionStart({
+      const { routeSessionOp } = await import('../memory/memory-router.js');
+      const result = await routeSessionOp({
+        type: 'start',
         sessionId,
         context: restoreLatest ? 'restore previous session patterns' : 'new session',
       });
       if (result) {
         sessionMemory = {
-          controller: result.controller,
-          restoredPatterns: result.restoredPatterns,
+          controller: (result.controller as string) || 'unknown',
+          restoredPatterns: (result.restoredPatterns as number) || 0,
         };
       }
     } catch {
-      // Bridge not available
+      // Router not available
     }
 
     return {
@@ -1909,11 +1924,12 @@ export const hooksSessionEnd: MCPTool = {
       }
     }
 
-    // Phase 5: Wire ReflexionMemory session end + NightlyLearner consolidation via bridge
+    // Phase 5: Wire ReflexionMemory session end + NightlyLearner consolidation via router (ADR-0084 Phase 3)
     let sessionPersistence: { controller: string; persisted: boolean } | null = null;
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      const result = await bridge.bridgeSessionEnd({
+      const { routeSessionOp } = await import('../memory/memory-router.js');
+      const result = await routeSessionOp({
+        type: 'end',
         sessionId,
         summary: saveState ? 'Session ended with state saved' : 'Session ended',
         tasksCompleted: (params.tasksCompleted as number) ?? 0, // WM-107c: use actual count (ADR-073 Gap C)
@@ -1921,18 +1937,18 @@ export const hooksSessionEnd: MCPTool = {
       });
       if (result) {
         sessionPersistence = {
-          controller: result.controller,
-          persisted: result.persisted,
+          controller: (result.controller as string) || 'unknown',
+          persisted: (result.persisted as boolean) || false,
         };
       }
     } catch {
-      // Bridge not available
+      // Router not available
     }
 
-    // Phase 3: Trigger NightlyLearner consolidation on session end
+    // Phase 3: Trigger NightlyLearner consolidation on session end (ADR-0084 Phase 3: via memory-router)
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      const registry = bridge.bridgeGetController ? await bridge.bridgeGetController('nightlyLearner') : null;
+      const { getController: getCtrlNL } = await import('../memory/memory-router.js');
+      const registry = await getCtrlNL('nightlyLearner');
       if (registry && typeof registry.consolidate === 'function') {
         // Fire-and-forget — consolidation is background work
         Promise.race([
@@ -2457,13 +2473,20 @@ export const hooksPatternStore: MCPTool = {
     const timestamp = new Date().toISOString();
     const patternId = `pattern-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    // Phase 3: Try ReasoningBank via bridge first
+    // Phase 3: Try ReasoningBank via router first (ADR-0084 Phase 3)
     let reasoningResult: { success: boolean; patternId: string; controller: string } | null = null;
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      reasoningResult = await bridge.bridgeStorePattern({ pattern, type, confidence, metadata: metadata as Record<string, unknown> | undefined });
+      const { routePatternOp } = await import('../memory/memory-router.js');
+      const result = await routePatternOp({ type: 'store', pattern, patternType: type, confidence, metadata: metadata as Record<string, unknown> | undefined });
+      if (result.success) {
+        reasoningResult = {
+          success: result.success,
+          patternId: (result.patternId as string) || patternId,
+          controller: (result.controller as string) || 'unknown',
+        };
+      }
     } catch {
-      // Bridge not available
+      // Router not available
     }
 
     // Fallback: persist using memory-initializer store
@@ -2550,14 +2573,14 @@ export const hooksPatternSearch: MCPTool = {
     const minConfidence = (params.minConfidence as number) || 0.3;
     const namespace = (params.namespace as string) || 'patterns';
 
-    // Phase 3: Try ReasoningBank search via bridge first
+    // Phase 3: Try ReasoningBank search via router first (ADR-0084 Phase 3)
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      const rbResult = await bridge.bridgeSearchPatterns({ query, topK, minConfidence });
-      if (rbResult && rbResult.results.length > 0) {
+      const { routePatternOp } = await import('../memory/memory-router.js');
+      const rbResult = await routePatternOp({ type: 'search', query, topK, minConfidence });
+      if (rbResult && rbResult.success && Array.isArray(rbResult.results) && (rbResult.results as unknown[]).length > 0) {
         return {
           query,
-          results: rbResult.results.map(r => ({
+          results: (rbResult.results as Array<{ id: string; content: string; score: number }>).map(r => ({
             patternId: r.id,
             pattern: r.content,
             similarity: r.score,
@@ -2565,12 +2588,12 @@ export const hooksPatternSearch: MCPTool = {
             namespace,
           })),
           searchTimeMs: 0,
-          backend: rbResult.controller,
-          note: `Results from ${rbResult.controller} controller`,
+          backend: (rbResult.controller as string) || 'unknown',
+          note: `Results from ${(rbResult.controller as string) || 'unknown'} controller`,
         };
       }
     } catch {
-      // Bridge not available — fall through
+      // Router not available — fall through
     }
 
     // Fallback: Try real vector search via memory-initializer
@@ -2926,11 +2949,11 @@ export const hooksIntelligenceLearn: MCPTool = {
       }
     }
 
-    // WM-106a: Call LearningBridge.learn() via bridge controller
+    // WM-106a: Call LearningBridge.learn() via router controller (ADR-0084 Phase 3)
     let lbResult: { learned?: boolean } | null = null;
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      const lb = await bridge.bridgeGetController('learningBridge');
+      const { getController: getCtrlLB } = await import('../memory/memory-router.js');
+      const lb = await getCtrlLB('learningBridge');
       if (lb && typeof (lb as Record<string, unknown>).learn === 'function') {
         lbResult = await (lb as { learn: (opts: Record<string, unknown>) => Promise<{ learned?: boolean }> }).learn({
           trajectoryIds: params.trajectoryIds,
@@ -2944,23 +2967,21 @@ export const hooksIntelligenceLearn: MCPTool = {
       );
     }
 
-    // WM-114a: Populate AttentionService memory store with learned patterns
+    // WM-114a: Populate AttentionService memory store with learned patterns (ADR-0084 Phase 3: via memory-router)
     let attentionPopulated = 0;
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      if (typeof bridge.bridgeGetController === 'function') {
-        const attnService = await bridge.bridgeGetController('attentionService');
-        if (attnService && typeof (attnService as Record<string, unknown>).addMemory === 'function') {
-          const patternCount = sonaStats.totalPatterns || 0;
-          if (patternCount > 0) {
-            (attnService as { addMemory: (m: Record<string, unknown>) => void }).addMemory({
-              key: `sona-patterns-${Date.now()}`,
-              content: JSON.stringify({ patterns: patternCount, confidence: sonaStats.avgConfidence }),
-              score: sonaStats.avgConfidence || 0.5,
-              timestamp: Date.now(),
-            });
-            attentionPopulated = 1;
-          }
+      const { getController: getCtrlAttn } = await import('../memory/memory-router.js');
+      const attnService = await getCtrlAttn('attentionService');
+      if (attnService && typeof (attnService as Record<string, unknown>).addMemory === 'function') {
+        const patternCount = sonaStats.totalPatterns || 0;
+        if (patternCount > 0) {
+          (attnService as { addMemory: (m: Record<string, unknown>) => void }).addMemory({
+            key: `sona-patterns-${Date.now()}`,
+            content: JSON.stringify({ patterns: patternCount, confidence: sonaStats.avgConfidence }),
+            score: sonaStats.avgConfidence || 0.5,
+            timestamp: Date.now(),
+          });
+          attentionPopulated = 1;
         }
       }
     } catch (e) {
@@ -3014,26 +3035,24 @@ export const hooksIntelligenceAttention: MCPTool = {
     let implementation = 'placeholder';
     const results: Array<{ index: number; weight: number; pattern: string; expert?: string }> = [];
 
-    // WM-114b: Try real AttentionService (JS softmax fallback) before MoE
+    // WM-114b: Try real AttentionService (JS softmax fallback) before MoE (ADR-0084 Phase 3: via memory-router)
     if (mode === 'flash' || mode === 'attention') {
       try {
-        const bridge = await import('../memory/memory-bridge.js');
-        if (typeof bridge.bridgeGetController === 'function') {
-          const attnService = await bridge.bridgeGetController('attentionService');
-          if (attnService && typeof (attnService as Record<string, unknown>).attend === 'function') {
-            const queryEmb = generateSimpleEmbedding(query);
-            const attnResult = (attnService as { attend: (emb: Float32Array, k: number) => { scores: number[]; keys?: string[] } }).attend(queryEmb, topK);
-            if (attnResult && attnResult.scores) {
-              for (let i = 0; i < Math.min(topK, attnResult.scores.length); i++) {
-                results.push({
-                  index: i,
-                  weight: attnResult.scores[i],
-                  pattern: attnResult.keys?.[i] || `attention-${i}`,
-                  expert: 'attention-service',
-                });
-              }
-              implementation = 'real-attention-service';
+        const { getController: getCtrlAttn2 } = await import('../memory/memory-router.js');
+        const attnService = await getCtrlAttn2('attentionService');
+        if (attnService && typeof (attnService as Record<string, unknown>).attend === 'function') {
+          const queryEmb = generateSimpleEmbedding(query);
+          const attnResult = (attnService as { attend: (emb: Float32Array, k: number) => { scores: number[]; keys?: string[] } }).attend(queryEmb, topK);
+          if (attnResult && attnResult.scores) {
+            for (let i = 0; i < Math.min(topK, attnResult.scores.length); i++) {
+              results.push({
+                index: i,
+                weight: attnResult.scores[i],
+                pattern: attnResult.keys?.[i] || `attention-${i}`,
+                expert: 'attention-service',
+              });
             }
+            implementation = 'real-attention-service';
           }
         }
       } catch (e) {

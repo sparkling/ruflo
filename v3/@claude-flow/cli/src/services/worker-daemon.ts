@@ -580,26 +580,26 @@ export class WorkerDaemon extends EventEmitter {
         socketPath: getDaemonSocketPath(this.projectRoot),
         projectRoot: this.projectRoot,
       });
-      // Register memory method handlers
+      // Register memory method handlers (ADR-0084 Phase 3: routed via memory-router)
       this.ipcServer.registerMethod('memory.store', async (params) => {
-        const { bridgeStoreEntry } = await import('../memory/memory-bridge.js');
-        return bridgeStoreEntry(params as any);
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        return routeMemoryOp({ ...(params as any), type: 'store' });
       });
       this.ipcServer.registerMethod('memory.search', async (params) => {
-        const { bridgeSearchEntries } = await import('../memory/memory-bridge.js');
-        return bridgeSearchEntries(params as any);
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        return routeMemoryOp({ ...(params as any), type: 'search' });
       });
       this.ipcServer.registerMethod('memory.count', async (params) => {
-        const { bridgeListEntries } = await import('../memory/memory-bridge.js');
-        const result = await bridgeListEntries(params as any);
-        return result?.total ?? 0;
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        const result = await routeMemoryOp({ ...(params as any), type: 'list' });
+        return (result as any)?.total ?? 0;
       });
       this.ipcServer.registerMethod('memory.bulkInsert', async (params: any) => {
-        const { bridgeStoreEntry } = await import('../memory/memory-bridge.js');
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
         const entries = params.entries || [];
         let stored = 0;
         for (const entry of entries) {
-          const r = await bridgeStoreEntry(entry);
+          const r = await routeMemoryOp({ ...entry, type: 'store' });
           if (r?.success) stored++;
         }
         return { stored, total: entries.length };
@@ -607,17 +607,17 @@ export class WorkerDaemon extends EventEmitter {
       await this.ipcServer.start();
       this.log('info', `IPC server listening on ${this.ipcServer.socketPath}`);
 
-      // ADR-0064: Pre-warm the memory bridge AND embedder so first IPC call
-      // doesn't pay cold-start penalty. bridgeSearchEntries exercises the full
+      // ADR-0064: Pre-warm the memory router AND embedder so first IPC call
+      // doesn't pay cold-start penalty. routeMemoryOp exercises the full
       // path: ControllerRegistry + AgentDB + Transformers.js init + first
       // embed() call (ONNX/WASM JIT warmup). Without this, the first
       // memory.search call takes 8-15s, exceeding typical IPC timeouts.
       try {
-        const { bridgeSearchEntries } = await import('../memory/memory-bridge.js');
-        await bridgeSearchEntries({ query: 'warmup', limit: 1 });
-        this.log('info', 'Memory bridge pre-warmed (including embedder)');
+        const { routeMemoryOp } = await import('../memory/memory-router.js');
+        await routeMemoryOp({ type: 'search', query: 'warmup', limit: 1 });
+        this.log('info', 'Memory router pre-warmed (including embedder)');
       } catch {
-        this.log('info', 'Memory bridge pre-warm skipped (non-fatal)');
+        this.log('info', 'Memory router pre-warm skipped (non-fatal)');
       }
     } catch (err: any) {
       this.log('warn', `IPC server failed to start: ${err.message}`);
@@ -661,11 +661,11 @@ export class WorkerDaemon extends EventEmitter {
     }
 
     this.running = false;
-    // WM-108c: Shut down bridge to close DB connections + clear timers (ADR-073 Gap E)
+    // ADR-0084 Phase 4: shut down via router (replaces direct bridge dependency)
     try {
-      const bridge = await import('../memory/memory-bridge.js');
-      if (bridge.shutdownBridge) await bridge.shutdownBridge();
-    } catch { /* bridge may not be loaded */ }
+      const router = await import('../memory/memory-router.js');
+      if (router.shutdownRouter) await router.shutdownRouter();
+    } catch { /* router may not be loaded */ }
     this.removePidFile();
     this.saveState();
     this.emit('stopped', { stoppedAt: new Date() });
@@ -1043,17 +1043,15 @@ export class WorkerDaemon extends EventEmitter {
       const hnsw = await mi.getHNSWIndex({ forceRebuild: true });
       if (hnsw) result.hnswRebuilt = hnsw.entries?.size ?? 0;
       result.memoryCleaned = 1;
-      // WM-108b: Run bridge consolidation pipeline (ADR-073 Gap D)
+      // WM-108b: Run consolidation pipeline via memory-router (ADR-0084 Phase 3)
       try {
-        const bridge = await import('../memory/memory-bridge.js');
-        if (bridge.bridgeConsolidate) {
-          const bridgeResult = await bridge.bridgeConsolidate({});
-          result.bridgeConsolidated = bridgeResult?.success ?? false;
-        }
+        const { routeLearningOp } = await import('../memory/memory-router.js');
+        const routerResult = await routeLearningOp({ type: 'consolidate' });
+        result.bridgeConsolidated = routerResult?.success ?? false;
       } catch (bridgeErr: unknown) {
         const msg = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr);
         throw new Error(
-          `bridgeConsolidate failed: ${msg}\n` +
+          `routeLearningOp consolidate failed: ${msg}\n` +
           `Fix: set "memory.agentdb.enableLearning": false in .claude-flow/config.json`
         );
       }

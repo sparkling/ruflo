@@ -1,151 +1,75 @@
 /**
- * agentdb-orchestration.ts — Extracted orchestration helpers (ADR-0078 Phase 3)
+ * agentdb-orchestration.ts -- Thin delegation layer (ADR-0084 Phase 3, T3.3)
  *
- * Each helper replicates the multi-controller orchestration logic from
- * memory-bridge.ts, using getController() from memory-router instead of
- * getBridge(). The bridge file is NOT modified.
- *
- * Drift detection: each helper has a source-marker comment referencing
- * the bridge function and line range it replicates. On upstream sync,
- * if memory-bridge.ts changed, audit this file.
+ * Each helper delegates to memory-router.ts routeXxxOp() or getController().
+ * The function signatures
+ * and return shapes are unchanged -- agentdb-tools.ts callers need no edits.
  *
  * @module v3/cli/mcp-tools/agentdb-orchestration
  */
 
-import { getController, routeMemoryOp, waitForDeferred } from '../memory/memory-router.js';
-import * as crypto from 'crypto';
-
 // ---------------------------------------------------------------------------
-// Shared utilities (copied verbatim from bridge)
+// Category A: Direct router equivalents (7 functions)
 // ---------------------------------------------------------------------------
 
-// Replicates: memory-bridge.ts getCallableMethod (lines 1859-1868)
-// Last synced: 2026-04-11
-function getCallableMethod(obj: any, ...names: string[]): ((...args: any[]) => any) | null {
-  if (!obj) return null;
-  for (const name of names) {
-    if (typeof obj[name] === 'function') return obj[name].bind(obj);
-    if (obj.default && typeof obj.default[name] === 'function') return obj.default[name].bind(obj.default);
-    if (obj.instance && typeof obj.instance[name] === 'function') return obj.instance[name].bind(obj.instance);
-    if (obj.controller && typeof obj.controller[name] === 'function') return obj.controller[name].bind(obj.controller);
-  }
-  return null;
-}
-
-// Replicates: memory-bridge.ts generateId (lines 151-153)
-// Last synced: 2026-04-11
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
-}
-
-// ---------------------------------------------------------------------------
-// Category B: Multi-controller orchestration (12 functions)
-// ---------------------------------------------------------------------------
-
-// Replicates: memory-bridge.ts bridgeStorePattern (lines 1876-1938)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts routePatternOp
 export async function storePattern(options: {
   pattern: string;
   type: string;
   confidence: number;
   metadata?: Record<string, unknown>;
 }): Promise<{ success: boolean; patternId: string; controller: string; error?: string } | null> {
-  const reasoningBank = await getController<any>('reasoningBank');
-  const patternId = generateId('pattern');
-
-  // OPT-001: Probe for callable store method across binding patterns
-  const storeFn = getCallableMethod(reasoningBank, 'store', 'storePattern', 'add');
-  if (storeFn) {
-    try {
-      await storeFn({
-        id: patternId,
-        content: options.pattern,
-        type: options.type,
-        confidence: options.confidence,
-        metadata: options.metadata,
-        timestamp: Date.now(),
-      });
-      return { success: true, patternId, controller: 'reasoningBank' };
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return { success: false, patternId: '', controller: '', error: `PatternStore failed: ${msg}` };
-    }
-  }
-
-  // Fallback: store via routeMemoryOp
   try {
-    const result = await routeMemoryOp({
+    const { routePatternOp } = await import('../memory/memory-router.js');
+    const result = await routePatternOp({
       type: 'store',
-      key: patternId,
-      value: JSON.stringify({ pattern: options.pattern, type: options.type, confidence: options.confidence, metadata: options.metadata }),
-      namespace: 'pattern',
-      generateEmbedding: true,
-      tags: [options.type, 'reasoning-pattern'],
+      pattern: options.pattern,
+      patternType: options.type,
+      confidence: options.confidence,
+      metadata: options.metadata,
     });
-    if (result?.success) {
-      return { success: true, patternId: (result.key as string) || patternId, controller: 'bridge-fallback' };
-    }
-    return { success: false, patternId: '', controller: '', error: 'PatternStore unavailable: store operation failed' };
+    return {
+      success: result.success,
+      patternId: (result.patternId as string) || '',
+      controller: (result.controller as string) || '',
+      error: result.error as string | undefined,
+    };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return { success: false, patternId: '', controller: '', error: `PatternStore failed: ${msg}` };
   }
 }
 
-// Replicates: memory-bridge.ts bridgeSearchPatterns (lines 1944-1990)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts routePatternOp
 export async function searchPatterns(options: {
   query: string;
   topK?: number;
   minConfidence?: number;
 }): Promise<{ results: Array<{ id: string; content: string; score: number }>; controller: string } | null> {
-  const reasoningBank = await getController<any>('reasoningBank');
-
-  // ReasoningBank may expose .searchPatterns() (agentdb) or .search() (legacy)
-  if (reasoningBank && typeof (reasoningBank.searchPatterns ?? reasoningBank.search) === 'function') {
-    try {
-      let results: any;
-      if (typeof reasoningBank.searchPatterns === 'function') {
-        results = await reasoningBank.searchPatterns({ task: options.query, k: options.topK || 5, threshold: options.minConfidence || 0.3 });
-      } else {
-        results = await reasoningBank.search(options.query, { topK: options.topK || 5, minScore: options.minConfidence || 0.3 });
-      }
-      return {
-        results: Array.isArray(results) ? results.map((r: any) => ({
-          id: r.id || r.patternId || '',
-          content: r.content || r.pattern || '',
-          score: r.score ?? r.confidence ?? 0,
-        })) : [],
-        controller: 'reasoningBank',
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  // Fallback: search via routeMemoryOp
   try {
-    const result = await routeMemoryOp({
+    const { routePatternOp } = await import('../memory/memory-router.js');
+    const result = await routePatternOp({
       type: 'search',
       query: options.query,
-      namespace: 'pattern',
-      limit: options.topK || 5,
-      threshold: options.minConfidence || 0.3,
+      topK: options.topK,
+      minConfidence: options.minConfidence,
     });
-    if (result?.results) {
-      return {
-        results: (result.results as any[]).map((r: any) => ({ id: r.id || '', content: r.content || '', score: r.score || 0 })),
-        controller: 'bridge-fallback',
-      };
-    }
-    return null;
+    if (!result.success) return null;
+    const rawResults = (result.results as any[]) || [];
+    return {
+      results: rawResults.map((r: any) => ({
+        id: r.id || r.patternId || '',
+        content: r.content || r.pattern || '',
+        score: r.score ?? r.confidence ?? 0,
+      })),
+      controller: (result.controller as string) || '',
+    };
   } catch {
     return null;
   }
 }
 
-// Replicates: memory-bridge.ts bridgeRecordFeedback (lines 1998-2096)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts routeFeedbackOp
 export async function recordFeedback(options: {
   taskId: string;
   success: boolean;
@@ -154,132 +78,138 @@ export async function recordFeedback(options: {
   duration?: number;
   patterns?: string[];
 }): Promise<{ success: boolean; controller: string; updated: number } | null> {
-  let controller = 'none';
-  let updated = 0;
-
-  // Try LearningSystem first
-  const learningSystem = await getController<any>('learningSystem');
-  if (learningSystem) {
-    try {
-      if (typeof learningSystem.recordFeedback === 'function') {
-        await learningSystem.recordFeedback({
-          taskId: options.taskId, success: options.success, quality: options.quality,
-          agent: options.agent, duration: options.duration, timestamp: Date.now(),
-        });
-        controller = 'learningSystem';
-        updated++;
-      } else if (typeof learningSystem.record === 'function') {
-        await learningSystem.record(options.taskId, options.quality, options.success ? 'success' : 'failure');
-        controller = 'learningSystem';
-        updated++;
-      }
-    } catch { /* API mismatch — skip */ }
-  }
-
-  // Also record in ReasoningBank for pattern reinforcement
-  const reasoningBank = await getController<any>('reasoningBank');
-  if (reasoningBank) {
-    try {
-      const recordOutcomeFn = getCallableMethod(reasoningBank, 'recordOutcome');
-      const recordFn = !recordOutcomeFn ? getCallableMethod(reasoningBank, 'record', 'addFeedback') : null;
-      if (recordOutcomeFn) {
-        await recordOutcomeFn({
-          taskId: options.taskId, verdict: options.success ? 'success' : 'failure',
-          score: options.quality, timestamp: Date.now(),
-        });
-        controller = controller === 'none' ? 'reasoningBank' : `${controller}+reasoningBank`;
-        updated++;
-      } else if (recordFn) {
-        await recordFn(options.taskId, options.quality);
-        controller = controller === 'none' ? 'reasoningBank' : `${controller}+reasoningBank`;
-        updated++;
-      }
-    } catch { /* API mismatch — skip */ }
-  }
-
-  // SkillLibrary promotion for high-quality patterns
-  if (options.success && options.quality >= 0.9 && options.patterns?.length) {
-    const skills = await getController<any>('skills');
-    if (skills && typeof skills.promote === 'function') {
-      for (const pattern of options.patterns) {
-        try { await skills.promote(pattern, options.quality); updated++; } catch { /* skip */ }
-      }
-      controller += '+skills';
-    }
-  }
-
-  // ADR-0046: Forward to SelfLearningRvfBackend (fire-and-forget)
-  const a6 = await getController<any>('selfLearningRvfBackend');
-  if (a6 && typeof (a6 as any).recordFeedback === 'function') {
-    (a6 as any).recordFeedback({
-      query: options.taskId,
-      selectedResult: options.agent || 'unknown',
-      reward: options.quality,
-    });
-    controller = controller === 'none' ? 'selfLearningRvf' : `${controller}+selfLearningRvf`;
-    updated++;
-  }
-
-  // Always store feedback as a memory entry for retrieval
   try {
-    const storeResult = await routeMemoryOp({
-      type: 'store',
-      key: `feedback-${options.taskId}`,
-      value: JSON.stringify(options),
-      namespace: 'feedback',
-      tags: [options.success ? 'success' : 'failure', options.agent || 'unknown'],
+    const { routeFeedbackOp } = await import('../memory/memory-router.js');
+    const result = await routeFeedbackOp({
+      type: 'record',
+      taskId: options.taskId,
+      success: options.success,
+      quality: options.quality,
+      agent: options.agent,
+      duration: options.duration,
+      patterns: options.patterns,
     });
-    if (storeResult?.success) {
-      controller = controller === 'none' ? 'bridge-store' : `${controller}+bridge-store`;
-      updated++;
-    }
-  } catch { /* store failure non-fatal */ }
-
-  return { success: true, controller, updated };
+    return {
+      success: result.success,
+      controller: (result.controller as string) || 'none',
+      updated: (result.updated as number) || 0,
+    };
+  } catch {
+    return { success: false, controller: 'none', updated: 0 };
+  }
 }
 
-// Replicates: memory-bridge.ts bridgeRecordCausalEdge (lines 2103-2145)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts routeCausalOp
 export async function recordCausalEdge(options: {
   sourceId: string;
   targetId: string;
   relation: string;
   weight?: number;
 }): Promise<{ success: boolean; controller: string } | null> {
-  const causalGraph = await getController<any>('causalGraph');
-  if (causalGraph && typeof causalGraph.addEdge === 'function') {
-    try {
-      causalGraph.addEdge(options.sourceId, options.targetId, {
-        relation: options.relation,
-        weight: options.weight ?? 1.0,
-        timestamp: Date.now(),
-      });
-      return { success: true, controller: 'causalGraph' };
-    } catch {
-      return null;
-    }
-  }
-
-  // Fallback: store edge via routeMemoryOp
   try {
-    const result = await routeMemoryOp({
-      type: 'store',
-      key: `${options.sourceId}→${options.targetId}`,
-      value: JSON.stringify(options),
-      namespace: 'causal-edges',
+    const { routeCausalOp } = await import('../memory/memory-router.js');
+    const result = await routeCausalOp({
+      type: 'edge',
+      sourceId: options.sourceId,
+      targetId: options.targetId,
+      relation: options.relation,
+      weight: options.weight,
     });
-    if (result?.success) return { success: true, controller: 'bridge-fallback' };
-  } catch { /* skip */ }
-
-  return null;
+    if (!result.success) return null;
+    return {
+      success: true,
+      controller: (result.controller as string) || '',
+    };
+  } catch {
+    return null;
+  }
 }
 
-// Replicates: memory-bridge.ts bridgeRouteTask (lines 2274-2320)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts routeSessionOp
+export async function sessionStart(options: {
+  sessionId: string;
+  context?: string;
+}): Promise<{ success: boolean; controller: string; restoredPatterns: number; sessionId: string } | null> {
+  try {
+    const { routeSessionOp } = await import('../memory/memory-router.js');
+    const result = await routeSessionOp({
+      type: 'start',
+      sessionId: options.sessionId,
+      context: options.context,
+    });
+    return {
+      success: result.success,
+      controller: (result.controller as string) || 'none',
+      restoredPatterns: (result.restoredPatterns as number) || 0,
+      sessionId: options.sessionId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Delegates to: memory-router.ts routeSessionOp
+export async function sessionEnd(options: {
+  sessionId: string;
+  summary?: string;
+  tasksCompleted?: number;
+  patternsLearned?: number;
+}): Promise<{ success: boolean; controller: string; persisted: boolean } | null> {
+  try {
+    const { routeSessionOp } = await import('../memory/memory-router.js');
+    const result = await routeSessionOp({
+      type: 'end',
+      sessionId: options.sessionId,
+      summary: options.summary,
+      tasksCompleted: options.tasksCompleted,
+      patternsLearned: options.patternsLearned,
+    });
+    return {
+      success: result.success,
+      controller: (result.controller as string) || 'none',
+      persisted: (result.persisted as boolean) || false,
+    };
+  } catch {
+    return { success: false, controller: 'none', persisted: false };
+  }
+}
+
+// Delegates to: memory-router.ts routeCausalOp
+export async function causalRecall(options: {
+  query: string;
+  k?: number;
+  includeEvidence?: boolean;
+}): Promise<{ success: boolean; results?: any[]; warning?: string; error?: string }> {
+  try {
+    const { routeCausalOp } = await import('../memory/memory-router.js');
+    const result = await routeCausalOp({
+      type: 'recall',
+      query: options.query,
+      k: options.k,
+      includeEvidence: options.includeEvidence,
+    });
+    return {
+      success: result.success,
+      results: (result.results as any[]) || [],
+      warning: result.warning as string | undefined,
+      error: result.error as string | undefined,
+    };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Category B: Controller-direct delegation (10 functions)
+// ---------------------------------------------------------------------------
+
+// Delegates to: memory-router.ts getController('semanticRouter') + getController('learningSystem')
 export async function routeTask(options: {
   task: string;
   context?: string;
 }): Promise<{ route: string; confidence: number; agents: string[]; controller: string } | null> {
+  const { getController } = await import('../memory/memory-router.js');
+
   // Try SemanticRouter
   const semanticRouter = await getController<any>('semanticRouter');
   if (semanticRouter && typeof semanticRouter.route === 'function') {
@@ -315,111 +245,14 @@ export async function routeTask(options: {
   return null;
 }
 
-// Replicates: memory-bridge.ts bridgeSessionStart (lines 2153-2199)
-// Last synced: 2026-04-11
-export async function sessionStart(options: {
-  sessionId: string;
-  context?: string;
-}): Promise<{ success: boolean; controller: string; restoredPatterns: number; sessionId: string } | null> {
-  let restoredPatterns = 0;
-  let controller = 'none';
-
-  // Try ReflexionMemory for episodic session replay
-  const reflexion = await getController<any>('reflexion');
-  if (reflexion && typeof reflexion.startEpisode === 'function') {
-    try {
-      await reflexion.startEpisode(options.sessionId, { context: options.context });
-      controller = 'reflexion';
-    } catch { /* skip */ }
-  }
-
-  // Load recent patterns from past sessions
-  try {
-    const searchResult = await routeMemoryOp({
-      type: 'search',
-      query: options.context || 'session patterns',
-      namespace: 'session',
-      limit: 10,
-      threshold: 0.3,
-    });
-    if (searchResult?.results) {
-      restoredPatterns = (searchResult.results as any[]).length;
-    }
-  } catch { /* search failure non-fatal */ }
-
-  return {
-    success: true,
-    controller: controller === 'none' ? 'bridge-search' : controller,
-    restoredPatterns,
-    sessionId: options.sessionId,
-  };
-}
-
-// Replicates: memory-bridge.ts bridgeSessionEnd (lines 2204-2266)
-// Last synced: 2026-04-11
-export async function sessionEnd(options: {
-  sessionId: string;
-  summary?: string;
-  tasksCompleted?: number;
-  patternsLearned?: number;
-}): Promise<{ success: boolean; controller: string; persisted: boolean } | null> {
-  let controller = 'none';
-  let persisted = false;
-
-  // End episode in ReflexionMemory
-  const reflexion = await getController<any>('reflexion');
-  if (reflexion && typeof reflexion.endEpisode === 'function') {
-    try {
-      await reflexion.endEpisode(options.sessionId, {
-        summary: options.summary,
-        tasksCompleted: options.tasksCompleted,
-        patternsLearned: options.patternsLearned,
-      });
-      controller = 'reflexion';
-      persisted = true;
-    } catch { /* skip */ }
-  }
-
-  // Persist session summary as memory entry
-  try {
-    await routeMemoryOp({
-      type: 'store',
-      key: `session-${options.sessionId}`,
-      value: JSON.stringify({
-        sessionId: options.sessionId,
-        summary: options.summary || 'Session ended',
-        tasksCompleted: options.tasksCompleted ?? 0,
-        patternsLearned: options.patternsLearned ?? 0,
-        endedAt: new Date().toISOString(),
-      }),
-      namespace: 'session',
-      tags: ['session-end'],
-      upsert: true,
-    });
-    if (controller === 'none') controller = 'bridge-store';
-    persisted = true;
-  } catch { /* store failure non-fatal */ }
-
-  // Trigger NightlyLearner consolidation if available
-  const nightlyLearner = await getController<any>('nightlyLearner');
-  if (nightlyLearner && typeof nightlyLearner.consolidate === 'function') {
-    try {
-      await nightlyLearner.consolidate({ sessionId: options.sessionId });
-      controller += '+nightlyLearner';
-    } catch { /* non-fatal */ }
-  }
-
-  return { success: true, controller, persisted };
-}
-
-// Replicates: memory-bridge.ts bridgeHierarchicalStore (lines 2399-2419)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts getController('hierarchicalMemory')
 export async function hierarchicalStore(params: {
   key: string;
   value: string;
   tier?: string;
   importance?: number;
 }): Promise<any> {
+  const { getController } = await import('../memory/memory-router.js');
   const hm = await getController<any>('hierarchicalMemory');
   if (!hm) return { success: false, error: 'HierarchicalMemory not available' };
   const tier = params.tier || 'working';
@@ -441,13 +274,13 @@ export async function hierarchicalStore(params: {
   }
 }
 
-// Replicates: memory-bridge.ts bridgeHierarchicalRecall (lines 2431-2458)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts getController('hierarchicalMemory')
 export async function hierarchicalRecall(params: {
   query: string;
   tier?: string;
   topK?: number;
 }): Promise<any> {
+  const { getController } = await import('../memory/memory-router.js');
   const hm = await getController<any>('hierarchicalMemory');
   if (!hm) return { results: [], error: 'HierarchicalMemory not available' };
 
@@ -459,7 +292,7 @@ export async function hierarchicalRecall(params: {
       const results = await hm.recall(memoryQuery);
       return { results: results || [], controller: 'hierarchicalMemory' };
     }
-    // Stub fallback — recall(string, number)
+    // Stub fallback -- recall(string, number)
     const results = hm.recall(params.query, params.topK || 5);
     const filtered = params.tier
       ? results.filter((r: any) => r.tier === params.tier)
@@ -470,12 +303,12 @@ export async function hierarchicalRecall(params: {
   }
 }
 
-// Replicates: memory-bridge.ts bridgeContextSynthesize (lines 2536-2567)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts getController('contextSynthesizer') + getController('hierarchicalMemory')
 export async function contextSynthesize(params: {
   query: string;
   maxEntries?: number;
 }): Promise<any> {
+  const { getController } = await import('../memory/memory-router.js');
   const CS = await getController<any>('contextSynthesizer');
   if (!CS || typeof CS.synthesize !== 'function') {
     return { success: false, error: 'ContextSynthesizer not available' };
@@ -508,46 +341,30 @@ export async function contextSynthesize(params: {
   }
 }
 
-// Replicates: memory-bridge.ts bridgeFlashConsolidate (lines 3500-3526)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts routeLearningOp
 export async function flashConsolidate(params: {
   entries?: any[];
   blockSize?: number;
 }): Promise<{ success: boolean; result?: any; error?: string }> {
-  const attn = await getController<any>('attentionService');
-  if (!attn || typeof attn.applyFlashAttention !== 'function') {
-    // Fallback to standard consolidation
-    const mc = await getController<any>('memoryConsolidation');
-    if (!mc) return { success: false, error: 'AttentionService and MemoryConsolidation not available' };
-    try {
-      const result = await mc.consolidate();
-      return { success: true, result: { consolidated: result } };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
-  }
-
   try {
-    const entries = params.entries || [];
-    if (entries.length === 0) return { success: true, result: { consolidated: 0 } };
-    const embeddings = entries.map((e: any) => e.embedding || []).filter((e: any[]) => e.length > 0);
-    if (embeddings.length < 2) return { success: true, result: { consolidated: embeddings.length } };
-    const query = embeddings[0];
-    const keys = embeddings.slice(1);
-    const values = keys; // Self-attention: keys === values
-    const output = await attn.applyFlashAttention(query, keys, values);
-    return { success: true, result: { consolidated: entries.length, flashOutput: output } };
-  } catch {
-    return { success: false, error: 'Flash consolidation failed' };
+    const { routeLearningOp } = await import('../memory/memory-router.js');
+    const result = await routeLearningOp({ type: 'consolidate' });
+    if (result.success) {
+      return { success: true, result: { consolidated: result.consolidated ?? 0 } };
+    }
+    return { success: false, error: (result.error as string) || 'Consolidation unavailable' };
+  } catch (e: any) {
+    return { success: false, error: e?.message || 'Flash consolidation failed' };
   }
 }
 
-// Replicates: memory-bridge.ts bridgeBatchOperation (lines 2487-2530)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts getController('batchOperations') + getController('resourceTracker') + getController('rateLimiter')
 export async function batchOperation(params: {
   operation: string;
   entries: any[];
 }): Promise<any> {
+  const { getController } = await import('../memory/memory-router.js');
+
   // ADR-0042: Resource check before batch
   const resourceTracker = await getController<any>('resourceTracker');
   if (resourceTracker && typeof resourceTracker.isOverLimit === 'function') {
@@ -602,18 +419,15 @@ export async function batchOperation(params: {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Category C: Deferred init + type detection (4 functions)
-// ---------------------------------------------------------------------------
-
-// Replicates: memory-bridge.ts bridgeEmbed (lines 3181-3257)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts getController('enhancedEmbeddingService') + routeEmbeddingOp fallback
 export async function embed(
   text: string,
 ): Promise<{ success: boolean; embedding?: number[]; dimension?: number; provider?: string; cached?: boolean; error?: string }> {
   if (!text || typeof text !== 'string') {
     return { success: false, error: 'text is required (non-empty string)' };
   }
+
+  const { waitForDeferred, getController, generateEmbedding } = await import('../memory/memory-router.js');
 
   // Wait for deferred (Level 2+) controllers so A9 EnhancedEmbeddingService is ready
   await waitForDeferred();
@@ -658,9 +472,8 @@ export async function embed(
     }
   }
 
-  // A9 not available — fallback to existing pipeline via memory-initializer
+  // A9 not available -- fallback to existing pipeline via memory-router
   try {
-    const { generateEmbedding } = await import('../memory/memory-router.js');
     const result = await generateEmbedding(text);
     return { success: true, embedding: Array.from(result.embedding), dimension: result.dimensions, provider: result.model };
   } catch {
@@ -668,8 +481,7 @@ export async function embed(
   }
 }
 
-// Replicates: memory-bridge.ts bridgeFilteredSearch (lines 3061-3111)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts routeMemoryOp + getController('metadataFilter')
 export async function filteredSearch(options: {
   query: string;
   filter?: Record<string, unknown>;
@@ -677,7 +489,8 @@ export async function filteredSearch(options: {
   limit?: number;
   threshold?: number;
 }): Promise<{ success: boolean; results: any[]; filtered: boolean; searchTime: number; error?: string } | null> {
-  // First, perform the base search via routeMemoryOp
+  const { routeMemoryOp, getController } = await import('../memory/memory-router.js');
+
   let searchResult: any;
   const start = Date.now();
   try {
@@ -721,43 +534,9 @@ export async function filteredSearch(options: {
   }
 }
 
-// Replicates: memory-bridge.ts bridgeCausalRecall (lines 2793-2822)
-// Last synced: 2026-04-11
-export async function causalRecall(options: {
-  query: string;
-  k?: number;
-  includeEvidence?: boolean;
-}): Promise<{ success: boolean; results?: any[]; warning?: string; error?: string }> {
-  const cr = await getController<any>('causalRecall');
-  if (!cr || typeof cr.search !== 'function') {
-    return { success: false, error: 'CausalRecall not available' };
-  }
-
-  // Cold-start guard: check if causal graph has enough edges
-  if (typeof cr.getStats === 'function') {
-    const stats = cr.getStats();
-    if (stats && (stats.totalCausalEdges || 0) < 5) {
-      return { success: true, results: [], warning: 'Cold start: fewer than 5 causal edges' };
-    }
-  }
-
-  try {
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('CausalRecall timeout (2s)')), 2000)
-    );
-    const results = await Promise.race([
-      cr.search({ query: options.query, k: options.k || 10, includeEvidence: options.includeEvidence }),
-      timeoutPromise,
-    ]);
-    return { success: true, results: Array.isArray(results) ? results : [] };
-  } catch (e: any) {
-    return { success: false, error: e?.message || String(e) };
-  }
-}
-
-// Replicates: memory-bridge.ts bridgeBatchOptimize (lines 2829-2876)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts getController('batchOperations')
 export async function batchOptimize(): Promise<{ success: boolean; stats?: any; error?: string }> {
+  const { getController } = await import('../memory/memory-router.js');
   const bo = await getController<any>('batchOperations');
   if (!bo) return { success: false, error: 'BatchOperations not available' };
 
@@ -778,12 +557,12 @@ export async function batchOptimize(): Promise<{ success: boolean; stats?: any; 
   }
 }
 
-// Replicates: memory-bridge.ts bridgeBatchPrune (lines 2858-2876)
-// Last synced: 2026-04-11
+// Delegates to: memory-router.ts getController('batchOperations')
 export async function batchPrune(config?: {
   maxAge?: number;
   minReward?: number;
 }): Promise<{ success: boolean; pruned?: any; error?: string }> {
+  const { getController } = await import('../memory/memory-router.js');
   const bo = await getController<any>('batchOperations');
   if (!bo || typeof bo.pruneData !== 'function') {
     return { success: false, error: 'BatchOperations not available' };
