@@ -104,11 +104,11 @@ export async function generateEmbedding(
     return {
       embedding: Array.from(vec),
       dimensions: vec.length,
-      model: pipeline.getProvider(),
+      model: pipeline.getModel(),
     };
   }
 
-  // Should not reach here — loadEmbeddingModel always succeeds (hash fallback)
+  // Should not reach here — initPipeline uses hash fallback as last resort
   throw new Error('EmbeddingPipeline failed to initialize');
 }
 

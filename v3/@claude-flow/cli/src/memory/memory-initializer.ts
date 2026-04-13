@@ -589,49 +589,8 @@ export async function getHNSWIndex(options?: {
   }
 }
 
-/**
- * Save HNSW metadata to disk for persistence
- */
-function saveHNSWMetadata(): void {
-  if (!hnswIndex?.entries) return;
-
-  try {
-    const swarmDir = path.join(process.cwd(), getSwarmDir());
-    const metadataPath = path.join(swarmDir, 'hnsw.metadata.json');
-    const metadata = Array.from(hnswIndex.entries.entries());
-    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
-  } catch {
-    // Silently fail - metadata save is best-effort
-  }
-}
-
-/**
- * Add entry to HNSW index (with automatic persistence)
- */
-export async function addToHNSWIndex(
-  id: string,
-  embedding: number[],
-  entry: HNSWEntry
-): Promise<boolean> {
-  // ADR-0085: Bridge removed — direct HNSW only
-  const index = await getHNSWIndex({ dimensions: embedding.length });
-  if (!index) return false;
-
-  try {
-    const vector = new Float32Array(embedding);
-    await index.db.insert({
-      id,
-      vector
-    });
-    index.entries.set(id, entry);
-
-    // Save metadata for persistence (debounced would be better for high-volume)
-    saveHNSWMetadata();
-    return true;
-  } catch {
-    return false;
-  }
-}
+// ADR-0086: saveHNSWMetadata deleted (no callers)
+// ADR-0086: addToHNSWIndex deleted (no callers)
 
 /**
  * Search HNSW index (150x faster than brute-force)
@@ -780,82 +739,7 @@ export interface MemoryInitResult {
   error?: string;
 }
 
-/**
- * Ensure memory_entries table has all required columns
- * Adds missing columns for older databases (e.g., 'content' column)
- */
-export async function ensureSchemaColumns(dbPath: string): Promise<{
-  success: boolean;
-  columnsAdded: string[];
-  error?: string;
-}> {
-  const columnsAdded: string[] = [];
-
-  // ADR-0080/0083: Use better-sqlite3 for ALL database modifications.
-  // better-sqlite3 handles WAL natively; the WASM fallback was removed in ADR-0083.
-
-  try {
-    if (!fs.existsSync(dbPath)) {
-      return { success: true, columnsAdded: [] };
-    }
-
-    const _bsmod = await import('better-sqlite3');
-    const Database = _bsmod.default ?? _bsmod; // CJS module.exports compat
-    const db = new Database(dbPath);
-
-    // Create memory_entries table if missing (safety net for store without init)
-    db.exec(`CREATE TABLE IF NOT EXISTS memory_entries (
-      id TEXT PRIMARY KEY, key TEXT NOT NULL, namespace TEXT DEFAULT 'default',
-      content TEXT NOT NULL DEFAULT '', type TEXT DEFAULT 'semantic',
-      embedding TEXT, embedding_model TEXT DEFAULT 'local', embedding_dimensions INTEGER,
-      tags TEXT, metadata TEXT, owner_id TEXT,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
-      expires_at INTEGER, last_accessed_at INTEGER, access_count INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'active', UNIQUE(namespace, key)
-    )`);
-
-    // Get current columns in memory_entries
-    const tableInfo = db.pragma('table_info(memory_entries)') as Array<{ name: string }>;
-    const existingColumns = new Set(tableInfo.map(row => row.name));
-
-    // Required columns that may be missing in older schemas
-    const requiredColumns: Array<{ name: string; definition: string }> = [
-      { name: 'content', definition: "content TEXT DEFAULT ''" },
-      { name: 'type', definition: "type TEXT DEFAULT 'semantic'" },
-      { name: 'embedding', definition: 'embedding TEXT' },
-      { name: 'embedding_model', definition: "embedding_model TEXT DEFAULT 'local'" },
-      { name: 'embedding_dimensions', definition: 'embedding_dimensions INTEGER' },
-      { name: 'tags', definition: 'tags TEXT' },
-      { name: 'metadata', definition: 'metadata TEXT' },
-      { name: 'owner_id', definition: 'owner_id TEXT' },
-      { name: 'expires_at', definition: 'expires_at INTEGER' },
-      { name: 'last_accessed_at', definition: 'last_accessed_at INTEGER' },
-      { name: 'access_count', definition: 'access_count INTEGER DEFAULT 0' },
-      { name: 'status', definition: "status TEXT DEFAULT 'active'" }
-    ];
-
-    for (const col of requiredColumns) {
-      if (!existingColumns.has(col.name)) {
-        try {
-          db.exec(`ALTER TABLE memory_entries ADD COLUMN ${col.definition}`);
-          columnsAdded.push(col.name);
-        } catch {
-          // Column might already exist or other error - continue
-        }
-      }
-    }
-
-    db.close();
-    return { success: true, columnsAdded };
-  } catch (error) {
-    return {
-      success: false,
-      columnsAdded,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
-}
+// ADR-0086: ensureSchemaColumns deleted (no callers)
 
 /**
  * Check for legacy database installations and migrate if needed
@@ -1234,6 +1118,8 @@ export async function initializeMemoryDatabase(options: {
 
 /**
  * Check if memory database is properly initialized
+ *
+ * // TODO(ADR-0086): Replace with RvfBackend health check
  */
 export async function checkMemoryInitialization(dbPath?: string): Promise<{
   initialized: boolean;
@@ -1295,6 +1181,8 @@ export async function checkMemoryInitialization(dbPath?: string): Promise<{
 /**
  * Apply temporal decay to patterns
  * Reduces confidence of patterns that haven't been used recently
+ *
+ * // TODO(ADR-0086): Dead — temporal decay not implemented in RvfBackend yet
  */
 export async function applyTemporalDecay(dbPath?: string): Promise<{
   success: boolean;
@@ -1350,6 +1238,7 @@ async function _loadAdapter() {
 }
 
 let _routerMod: typeof import('./memory-router.js') | null = null;
+// Safe: routeMemoryOp calls ensureRouter() internally
 async function _loadRouter() {
   if (!_routerMod) {
     _routerMod = await import('./memory-router.js');
@@ -1395,6 +1284,8 @@ export async function getAdaptiveThreshold(explicitThreshold?: number): Promise<
 /**
  * Verify memory initialization works correctly
  * Tests: write, read, search, patterns
+ *
+ * // TODO(ADR-0086): Replace with RvfBackend verification — this still uses SQLite directly
  */
 export async function verifyMemoryInit(dbPath: string, options?: {
   verbose?: boolean;
@@ -1650,30 +1541,7 @@ export async function searchEntries(options: {
   };
 }
 
-/**
- * Optimized cosine similarity
- * V8 JIT-friendly - avoids manual unrolling which can hurt performance
- * ~0.5μs per 768-dim vector comparison
- */
-function cosineSim(a: number[], b: number[]): number {
-  if (!a || !b || a.length === 0 || b.length === 0) return 0;
-
-  if (a.length !== b.length) {
-    throw new Error(`Embedding dimension mismatch: expected ${a.length}, got ${b.length}. Re-embed stored vectors or change model.`);
-  }
-
-  let dot = 0, normA = 0, normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    const ai = a[i], bi = b[i];
-    dot += ai * bi;
-    normA += ai * ai;
-    normB += bi * bi;
-  }
-
-  const mag = Math.sqrt(normA * normB);
-  return mag === 0 ? 0 : dot / mag;
-}
+// ADR-0086: cosineSim deleted (no callers)
 
 /**
  * List all entries from the memory database
@@ -1783,7 +1651,6 @@ export default {
   initializeMemoryDatabase,
   checkMemoryInitialization,
   checkAndMigrateLegacy,
-  ensureSchemaColumns,
   applyTemporalDecay,
   loadEmbeddingModel,
   generateEmbedding,

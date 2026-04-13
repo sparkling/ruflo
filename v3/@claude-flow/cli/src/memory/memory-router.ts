@@ -620,8 +620,8 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
           .catch(() => import('../../../memory/src/embedding-adapter.js'));
         const result = await adapterMod.generateEmbedding(op.query || '', { intent: 'query' });
         embedding = new Float32Array(result.embedding);
-      } catch {
-        return { success: true, results: [], total: 0 };
+      } catch (e) {
+        return { success: false, error: 'Embedding generation failed: ' + (e instanceof Error ? e.message : String(e)) };
       }
 
       const namespace = op.namespace === 'all' ? undefined : op.namespace;
@@ -673,9 +673,9 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
       }
       return {
         success: true,
-        initialized: health.healthy,
+        initialized: (health as any).status === 'healthy',
         totalEntries: stats.totalEntries ?? 0,
-        entriesWithEmbeddings: stats.entriesWithEmbeddings ?? 0,
+        entriesWithEmbeddings: stats.totalEntries ?? 0, // TODO: BackendStats lacks entriesWithEmbeddings; using totalEntries as proxy
         namespaces,
       };
     }
@@ -842,17 +842,14 @@ export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
       return { success: true, ...stats };
     }
     case 'hnswAdd': {
-      // RvfBackend adds to HNSW automatically on store()
-      return { success: true, message: 'HNSW managed internally by RvfBackend' };
+      return { success: false, error: 'Direct HNSW add not supported — entries are indexed automatically on store()' };
     }
     case 'hnswGet': case 'hnswClear': case 'hnswRebuild': {
-      // RvfBackend manages HNSW lifecycle internally
-      return { success: true, message: 'HNSW managed internally by RvfBackend' };
+      return { success: false, error: 'Direct HNSW manipulation not supported — index is managed by RvfBackend. Use routeMemoryOp for data operations.' };
     }
     default:
       return { success: false, error: `Unknown embedding operation: ${(op as { type: string }).type}` };
   }
-  return { success: false, error: 'Unreachable' };
 }
 
 // ---------------------------------------------------------------------------

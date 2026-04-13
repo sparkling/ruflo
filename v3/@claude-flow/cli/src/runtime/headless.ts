@@ -24,9 +24,46 @@ import {
 } from '../memory/intelligence.js';
 import {
   getHNSWStatus,
-  batchCosineSim,
-  flashAttentionSearch
 } from '../memory/memory-initializer.js';
+
+// Inline math utilities (ADR-0086: removed from memory-initializer)
+function batchCosineSim(query: Float32Array | number[], vectors: (Float32Array | number[])[]): Float32Array {
+  const scores = new Float32Array(vectors.length);
+  let qNorm = 0;
+  for (let i = 0; i < query.length; i++) qNorm += query[i] * query[i];
+  qNorm = Math.sqrt(qNorm);
+  if (qNorm === 0) return scores;
+  for (let v = 0; v < vectors.length; v++) {
+    const vec = vectors[v];
+    let dot = 0, vNorm = 0;
+    for (let i = 0; i < Math.min(query.length, vec.length); i++) {
+      dot += query[i] * vec[i]; vNorm += vec[i] * vec[i];
+    }
+    vNorm = Math.sqrt(vNorm);
+    scores[v] = vNorm === 0 ? 0 : dot / (qNorm * vNorm);
+  }
+  return scores;
+}
+
+function flashAttentionSearch(
+  query: Float32Array | number[], vectors: (Float32Array | number[])[],
+  options: { k?: number; temperature?: number; threshold?: number } = {}
+): { indices: number[]; scores: Float32Array; weights: Float32Array } {
+  const { k = 10, temperature = 1.0, threshold = 0 } = options;
+  const sims = batchCosineSim(query, vectors);
+  const indexed = Array.from(sims).map((s, i) => ({ s, i }));
+  indexed.sort((a, b) => b.s - a.s);
+  const topK = indexed.slice(0, k).filter(x => x.s >= threshold);
+  const indices = topK.map(x => x.i);
+  const topScores = new Float32Array(topK.map(x => x.s));
+  const weights = new Float32Array(topK.length);
+  let max = -Infinity, sum = 0;
+  for (const s of topScores) if (s > max) max = s;
+  for (let i = 0; i < topScores.length; i++) { weights[i] = Math.exp((topScores[i] - max) / temperature); sum += weights[i]; }
+  if (sum > 0) for (let i = 0; i < weights.length; i++) weights[i] /= sum;
+  return { indices, scores: topScores, weights };
+}
+
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
