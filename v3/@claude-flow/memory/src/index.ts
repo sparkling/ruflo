@@ -205,6 +205,13 @@ export {
   resetPipeline,
 } from './embedding-pipeline.js';
 export type { EmbeddingConfig } from './embedding-pipeline.js';
+// ADR-0086 T1.3: Embedding adapter (relocated from CLI memory-initializer)
+export {
+  loadEmbeddingModel,
+  generateEmbedding,
+  generateBatchEmbeddings,
+  getAdaptiveThreshold,
+} from './embedding-adapter.js';
 export { CacheManager, TieredCacheManager } from './cache-manager.js';
 export { QueryBuilder, query, QueryTemplates } from './query-builder.js';
 export type { SortDirection, SortField } from './query-builder.js';

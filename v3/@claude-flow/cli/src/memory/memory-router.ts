@@ -55,8 +55,7 @@ export interface MemoryResult {
 export type EmbeddingOpType =
   | 'generate' | 'generateBatch' | 'loadModel' | 'getThreshold'
   | 'hnswGet' | 'hnswAdd' | 'hnswSearch' | 'hnswStatus' | 'hnswClear' | 'hnswRebuild'
-  | 'quantize' | 'dequantize' | 'quantizedSim' | 'quantizationStats'
-  | 'batchSim' | 'softmax' | 'topK' | 'flashSearch';
+  ; // ADR-0086: quantize/attention op types removed
 
 export interface EmbeddingOp {
   type: EmbeddingOpType;
@@ -318,8 +317,10 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
         try {
           const { config: cfgJson, embeddings: embJson } = _getProjectConfig();
 
-          // Listen for deferred init completion to restore console
+          // Listen for deferred init completion to restore console.
+          // unref() prevents timer from keeping the process alive (ADR-0085 flaw 2).
           const _deferredTimeout = setTimeout(_restoreConsole, 120_000);
+          _deferredTimeout.unref();
           (registry as unknown as { once: (event: string, cb: () => void) => void }).once('deferred:initialized', () => {
             clearTimeout(_deferredTimeout);
             _restoreConsole();
@@ -680,17 +681,24 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
 
 /**
  * Get a controller by name.
- * ADR-0085: Try local registry first (single-instance guarantee), fall back to intercept pool.
+ * ADR-0085: Try local registry first, fall back to intercept pool.
+ *
+ * Both paths read from the same ControllerRegistry singleton instantiated by
+ * initControllerRegistry(). controller-intercept does NOT create its own
+ * registry — it accesses the one the router bootstrapped. The fallback exists
+ * only for the case where initControllerRegistry() failed or hasn't run yet
+ * (e.g. neural.enabled=false), not as an independent controller source.
  */
 export async function getController<T = unknown>(name: string): Promise<T | undefined> {
-  // ADR-0085: Local registry is the primary source
+  // Primary: router-local registry (populated by initControllerRegistry)
   if (_registryInstance && typeof _registryInstance.get === 'function') {
     try {
       const ctrl = _registryInstance.get(name);
       if (ctrl) return ctrl as T;
     } catch { /* fall through to intercept */ }
   }
-  // Fallback: controller-intercept pool (pre-ADR-0085 path)
+  // Fallback: controller-intercept reads from the same shared registry.
+  // Only reached when _registryInstance is null (init failed / neural disabled).
   const intercept = await loadIntercept();
   if (intercept?.getExisting) {
     return intercept.getExisting<T>(name);
@@ -700,12 +708,13 @@ export async function getController<T = unknown>(name: string): Promise<T | unde
 
 /**
  * Check if a controller exists in the pool.
- * ADR-0085: Local registry first, intercept fallback.
+ * Same shared-singleton contract as getController — see its JSDoc.
  */
 export async function hasController(name: string): Promise<boolean> {
   if (_registryInstance && typeof _registryInstance.has === 'function') {
     try { if (_registryInstance.has(name)) return true; } catch { /* fall through */ }
   }
+  // Shared registry fallback (init failed / neural disabled)
   const intercept = await loadIntercept();
   if (intercept?.has) return intercept.has(name);
   return false;
@@ -713,7 +722,7 @@ export async function hasController(name: string): Promise<boolean> {
 
 /**
  * List all registered controller names and info.
- * ADR-0085: Local registry first, intercept fallback.
+ * Same shared-singleton contract as getController — see its JSDoc.
  */
 export async function listControllerInfo(): Promise<unknown[]> {
   if (_registryInstance && typeof _registryInstance.listControllers === 'function') {
@@ -724,6 +733,7 @@ export async function listControllerInfo(): Promise<unknown[]> {
       }
     } catch { /* fall through */ }
   }
+  // Shared registry fallback (init failed / neural disabled)
   const intercept = await loadIntercept();
   if (intercept?.listControllers) {
     const names = intercept.listControllers();
@@ -745,7 +755,7 @@ export async function waitForDeferred(): Promise<void> {
 
 /**
  * Controller health check.
- * ADR-0085: Check local registry first, then intercept.
+ * Same shared-singleton contract as getController — see its JSDoc.
  */
 export async function healthCheck(): Promise<unknown> {
   if (_registryInstance && typeof _registryInstance.listControllers === 'function') {
@@ -800,22 +810,8 @@ export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
     case 'hnswRebuild':
       fns.rebuildSearchIndex();
       return { success: true };
-    case 'quantize':
-      return { success: true, ...fns.quantizeInt8(op.vector as number[] | Float32Array) };
-    case 'dequantize':
-      return { success: true, vector: fns.dequantizeInt8(op.data) };
-    case 'quantizedSim':
-      return { success: true, similarity: fns.quantizedCosineSim(op.vectors?.[0], op.vectors?.[1]) };
-    case 'quantizationStats':
-      return { success: true, ...fns.getQuantizationStats(op.vector as number[] | Float32Array) };
-    case 'batchSim':
-      return { success: true, similarities: fns.batchCosineSim(op.vector, op.vectors) };
-    case 'softmax':
-      return { success: true, scores: fns.softmaxAttention(op.data as Float32Array, op.k) };
-    case 'topK':
-      return { success: true, indices: fns.topKIndices(op.data as Float32Array, op.k || 10) };
-    case 'flashSearch':
-      return { success: true, ...fns.flashAttentionSearch(op.vector, op.vectors, op.k || 10, op.data) };
+    // ADR-0086 T1.1+T1.2: quantize/dequantize/quantizedSim/quantizationStats/
+    // batchSim/softmax/topK/flashSearch cases removed — no consumer exists.
     default:
       return { success: false, error: `Unknown embedding operation: ${(op as { type: string }).type}` };
   }
@@ -1288,28 +1284,16 @@ export const searchHNSWIndex = _wrap('searchHNSWIndex');
 export const getHNSWStatus = _wrap('getHNSWStatus');
 export const clearHNSWIndex = _wrap('clearHNSWIndex');
 export const rebuildSearchIndex = _wrap('rebuildSearchIndex');
-// Quantization (4)
-export const quantizeInt8 = _wrap('quantizeInt8');
-export const dequantizeInt8 = _wrap('dequantizeInt8');
-export const quantizedCosineSim = _wrap('quantizedCosineSim');
-export const getQuantizationStats = _wrap('getQuantizationStats');
-// Attention (3+1)
-export const batchCosineSim = _wrap('batchCosineSim');
-export const softmaxAttention = _wrap('softmaxAttention');
-export const topKIndices = _wrap('topKIndices');
-export const flashAttentionSearch = _wrap('flashAttentionSearch');
-// DB lifecycle (3)
-export const getInitialMetadata = _wrap('getInitialMetadata');
-export const ensureSchemaColumns = _wrap('ensureSchemaColumns');
-export const checkAndMigrateLegacy = _wrap('checkAndMigrateLegacy');
+// ADR-0086 T1.1+T1.2: Quantization (4) and attention (4) _wrap delegates removed.
+// ADR-0086 T1.4: DB lifecycle delegates removed (getInitialMetadata,
+// ensureSchemaColumns, checkAndMigrateLegacy). Internal-only until Phase 3.
 // Embedding (4)
 export const loadEmbeddingModel = _wrap('loadEmbeddingModel');
 export const generateEmbedding = _wrap('generateEmbedding');
 export const generateBatchEmbeddings = _wrap('generateBatchEmbeddings');
 export const getAdaptiveThreshold = _wrap('getAdaptiveThreshold');
-// Decay/verify (2)
+// Decay (1) — verifyMemoryInit removed (ADR-0086 T1.5: callers import directly)
 export const applyTemporalDecay = _wrap('applyTemporalDecay');
-export const verifyMemoryInit = _wrap('verifyMemoryInit');
 
 // ---------------------------------------------------------------------------
 // Shutdown + Reset

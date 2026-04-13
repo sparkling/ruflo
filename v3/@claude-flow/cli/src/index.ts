@@ -552,15 +552,7 @@ export {
   searchHNSWIndex,
   getHNSWStatus,
   clearHNSWIndex,
-  quantizeInt8,
-  dequantizeInt8,
-  quantizedCosineSim,
-  getQuantizationStats,
-  // Flash Attention-style batch operations
-  batchCosineSim,
-  softmaxAttention,
-  topKIndices,
-  flashAttentionSearch,
+  // ADR-0086 T1.1+T1.2: quantization (4) + attention (4) exports removed
   type MemoryInitResult,
 } from './memory/memory-initializer.js';
 
