@@ -6,7 +6,7 @@
  * ADR-053: Routes through ControllerRegistry → AgentDB v3 when available,
  * falls back to direct better-sqlite3 for raw SQL access.
  *
- * ADR-0083: Removed openDatabase wrapper and sql.js fallback;
+ * ADR-0083: Removed openDatabase wrapper and the WASM SQLite layer;
  * all DB access is now direct better-sqlite3 via _getDb().
  *
  * @module v3/cli/memory-initializer
@@ -1082,7 +1082,7 @@ export async function ensureSchemaColumns(dbPath: string): Promise<{
   const columnsAdded: string[] = [];
 
   // ADR-0080/0083: Use better-sqlite3 for ALL database modifications.
-  // better-sqlite3 handles WAL natively; sql.js was removed in ADR-0083.
+  // better-sqlite3 handles WAL natively; the WASM fallback was removed in ADR-0083.
 
   try {
     if (!fs.existsSync(dbPath)) {

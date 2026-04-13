@@ -71,6 +71,89 @@ export interface EmbeddingOp {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 op types (ADR-0084) — bridge caller migration
+// ---------------------------------------------------------------------------
+
+export type PatternOpType = 'store' | 'search';
+
+export interface PatternOp {
+  type: PatternOpType;
+  pattern?: string;
+  patternType?: string;
+  confidence?: number;
+  metadata?: Record<string, unknown>;
+  query?: string;
+  topK?: number;
+  minConfidence?: number;
+  dbPath?: string;
+}
+
+export type FeedbackOpType = 'record';
+
+export interface FeedbackOp {
+  type: FeedbackOpType;
+  taskId: string;
+  success: boolean;
+  quality: number;
+  agent?: string;
+  duration?: number;
+  patterns?: string[];
+  dbPath?: string;
+}
+
+export type SessionOpType = 'start' | 'end';
+
+export interface SessionOp {
+  type: SessionOpType;
+  sessionId: string;
+  context?: string;
+  summary?: string;
+  tasksCompleted?: number;
+  patternsLearned?: number;
+  dbPath?: string;
+}
+
+export type LearningOpType = 'search' | 'consolidate';
+
+export interface LearningOp {
+  type: LearningOpType;
+  query?: string;
+  limit?: number;
+  namespace?: string;
+  threshold?: number;
+  minAge?: number;
+  maxEntries?: number;
+  dbPath?: string;
+}
+
+export type ReflexionOpType = 'store' | 'retrieve';
+
+export interface ReflexionOp {
+  type: ReflexionOpType;
+  task?: string;
+  input?: string;
+  output?: string;
+  reward?: number;
+  success?: boolean;
+  sessionId?: string;
+  k?: number;
+}
+
+export type CausalOpType = 'edge' | 'recall';
+
+export interface CausalOp {
+  type: CausalOpType;
+  sourceId?: string;
+  targetId?: string;
+  relation?: string;
+  weight?: number;
+  query?: string;
+  k?: number;
+  includeEvidence?: boolean;
+  dbPath?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Internal state
 // ---------------------------------------------------------------------------
 
@@ -98,6 +181,9 @@ let _allFns: Record<string, (...args: any[]) => any> | null = null;
 
 // Lazy-cached Phase 4 controller-intercept module
 let _interceptMod: typeof import('../../../memory/src/controller-intercept.js') | null = null;
+
+// Lazy-cached bridge module for Phase 2 router methods (ADR-0084)
+let _bridgeMod: typeof import('./memory-bridge.js') | null = null;
 
 // ---------------------------------------------------------------------------
 // Lazy loaders
@@ -132,6 +218,12 @@ async function loadIntercept() {
   return _interceptMod;
 }
 
+async function loadBridge(): Promise<typeof import('./memory-bridge.js')> {
+  if (_bridgeMod) return _bridgeMod;
+  _bridgeMod = await import('./memory-bridge.js');
+  return _bridgeMod;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadEmbeddingFns(): Promise<Record<string, (...args: any[]) => any>> {
   if (_embeddingFns) return _embeddingFns;
@@ -158,7 +250,7 @@ const AUTO_MEMORY_STORE_MAX = 1000;
  * Write an entry to .claude-flow/data/auto-memory-store.json so intelligence.cjs
  * can see CLI-stored memory. Best-effort — never throws.
  */
-function writeJsonSidecar(entry: {
+export function writeJsonSidecar(entry: {
   id: string; key: string; value: string; namespace: string;
 }): void {
   try {
@@ -513,6 +605,235 @@ export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 route methods (ADR-0084) — bridge caller migration
+// ---------------------------------------------------------------------------
+
+/**
+ * Route pattern store/search operations.
+ * Wraps bridgeStorePattern / bridgeSearchPatterns from memory-bridge.ts.
+ */
+export async function routePatternOp(op: PatternOp): Promise<MemoryResult> {
+  await ensureRouter();
+  const bridge = await loadBridge();
+
+  switch (op.type) {
+    case 'store': {
+      const result = await bridge.bridgeStorePattern({
+        pattern: op.pattern || '',
+        type: op.patternType || 'general',
+        confidence: op.confidence ?? 1.0,
+        metadata: op.metadata,
+        dbPath: op.dbPath,
+      });
+      return result
+        ? { success: result.success, patternId: result.patternId, controller: result.controller, error: result.error }
+        : { success: false, error: 'Pattern store unavailable' };
+    }
+    case 'search': {
+      const result = await bridge.bridgeSearchPatterns({
+        query: op.query || '',
+        topK: op.topK,
+        minConfidence: op.minConfidence,
+        dbPath: op.dbPath,
+      });
+      return result
+        ? { success: true, results: result.results, controller: result.controller }
+        : { success: false, error: 'Pattern search unavailable' };
+    }
+    default:
+      return { success: false, error: `Unknown pattern operation: ${(op as { type: string }).type}` };
+  }
+}
+
+/**
+ * Route feedback recording operations.
+ * Wraps bridgeRecordFeedback from memory-bridge.ts.
+ */
+export async function routeFeedbackOp(op: FeedbackOp): Promise<MemoryResult> {
+  await ensureRouter();
+  const bridge = await loadBridge();
+
+  switch (op.type) {
+    case 'record': {
+      const result = await bridge.bridgeRecordFeedback({
+        taskId: op.taskId,
+        success: op.success,
+        quality: op.quality,
+        agent: op.agent,
+        duration: op.duration,
+        patterns: op.patterns,
+        dbPath: op.dbPath,
+      });
+      return result
+        ? { success: result.success, controller: result.controller, updated: result.updated }
+        : { success: false, error: 'Feedback recording unavailable' };
+    }
+    default:
+      return { success: false, error: `Unknown feedback operation: ${(op as { type: string }).type}` };
+  }
+}
+
+/**
+ * Route session lifecycle operations.
+ * Wraps bridgeSessionStart / bridgeSessionEnd from memory-bridge.ts.
+ */
+export async function routeSessionOp(op: SessionOp): Promise<MemoryResult> {
+  await ensureRouter();
+  const bridge = await loadBridge();
+
+  switch (op.type) {
+    case 'start': {
+      const result = await bridge.bridgeSessionStart({
+        sessionId: op.sessionId,
+        context: op.context,
+        dbPath: op.dbPath,
+      });
+      return result
+        ? { success: result.success, controller: result.controller, restoredPatterns: result.restoredPatterns, sessionId: result.sessionId }
+        : { success: false, error: 'Session start unavailable' };
+    }
+    case 'end': {
+      const result = await bridge.bridgeSessionEnd({
+        sessionId: op.sessionId,
+        summary: op.summary,
+        tasksCompleted: op.tasksCompleted,
+        patternsLearned: op.patternsLearned,
+        dbPath: op.dbPath,
+      });
+      return result
+        ? { success: result.success, controller: result.controller, persisted: result.persisted }
+        : { success: false, error: 'Session end unavailable' };
+    }
+    default:
+      return { success: false, error: `Unknown session operation: ${(op as { type: string }).type}` };
+  }
+}
+
+/**
+ * Route self-learning search and memory consolidation.
+ * Wraps bridgeSelfLearningSearch / bridgeConsolidate from memory-bridge.ts.
+ */
+export async function routeLearningOp(op: LearningOp): Promise<MemoryResult> {
+  await ensureRouter();
+  const bridge = await loadBridge();
+
+  switch (op.type) {
+    case 'search': {
+      const result = await bridge.bridgeSelfLearningSearch({
+        query: op.query || '',
+        limit: op.limit,
+        namespace: op.namespace,
+        threshold: op.threshold,
+        dbPath: op.dbPath,
+      });
+      return result
+        ? { success: result.success, results: result.results, routed: result.routed, controller: result.controller, stats: result.stats }
+        : { success: false, error: 'Self-learning search unavailable' };
+    }
+    case 'consolidate': {
+      const result = await bridge.bridgeConsolidate({
+        minAge: op.minAge,
+        maxEntries: op.maxEntries,
+      });
+      return result
+        ? { success: result.success, consolidated: result.consolidated, error: result.error }
+        : { success: false, error: 'Consolidation unavailable' };
+    }
+    default:
+      return { success: false, error: `Unknown learning operation: ${(op as { type: string }).type}` };
+  }
+}
+
+/**
+ * Route reflexion store/retrieve operations.
+ * Uses reflexion controller directly (no bridge functions exist for reflexion).
+ */
+export async function routeReflexionOp(op: ReflexionOp): Promise<MemoryResult> {
+  await ensureRouter();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reflexion = await getController<any>('reflexion');
+
+  switch (op.type) {
+    case 'store': {
+      if (!reflexion || typeof reflexion.store !== 'function') {
+        return { success: false, error: 'Reflexion controller not available' };
+      }
+      try {
+        const result = await Promise.race([
+          reflexion.store({
+            session_id: op.sessionId,
+            task: op.task,
+            input: op.input,
+            output: op.output,
+            reward: op.reward ?? 0,
+            success: op.success ?? false,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('reflexion store timeout (2s)')), 2000)
+          ),
+        ]);
+        return { success: true, stored: result };
+      } catch (e: unknown) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    case 'retrieve': {
+      if (!reflexion || typeof reflexion.retrieve !== 'function') {
+        return { success: false, error: 'Reflexion controller not available' };
+      }
+      try {
+        const results = await Promise.race([
+          reflexion.retrieve(op.task, op.k || 5),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('reflexion retrieve timeout (2s)')), 2000)
+          ),
+        ]);
+        return { success: true, results: Array.isArray(results) ? results : [] };
+      } catch (e: unknown) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    default:
+      return { success: false, error: `Unknown reflexion operation: ${(op as { type: string }).type}` };
+  }
+}
+
+/**
+ * Route causal graph operations.
+ * Wraps bridgeRecordCausalEdge / bridgeCausalRecall from memory-bridge.ts.
+ */
+export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
+  await ensureRouter();
+  const bridge = await loadBridge();
+
+  switch (op.type) {
+    case 'edge': {
+      const result = await bridge.bridgeRecordCausalEdge({
+        sourceId: op.sourceId || '',
+        targetId: op.targetId || '',
+        relation: op.relation || '',
+        weight: op.weight,
+        dbPath: op.dbPath,
+      });
+      return result
+        ? { success: result.success, controller: result.controller }
+        : { success: false, error: 'Causal edge recording unavailable' };
+    }
+    case 'recall': {
+      const result = await bridge.bridgeCausalRecall({
+        query: op.query || '',
+        k: op.k,
+        includeEvidence: op.includeEvidence,
+      });
+      return { success: result.success, results: result.results, warning: result.warning, error: result.error };
+    }
+    default:
+      return { success: false, error: `Unknown causal operation: ${(op as { type: string }).type}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Lazy wrappers — 23 named exports from memory-initializer (ADR-0083 Phase 5)
 // Each wraps a single memory-initializer function via loadAllFns().
 // ---------------------------------------------------------------------------
@@ -564,6 +885,7 @@ export function resetRouter(): void {
   _embeddingFns = null;
   _allFns = null;
   _interceptMod = null;
+  _bridgeMod = null;
   _initialized = false;
   _initPromise = null;
 }
