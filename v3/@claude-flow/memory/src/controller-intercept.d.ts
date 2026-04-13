@@ -10,52 +10,30 @@
  *
  * @module @claude-flow/memory/controller-intercept
  */
-
-const _instances = new Map<string, unknown>();
-
 /**
  * Get an existing controller instance or create one.
  * First caller's factory wins; subsequent calls return the cached instance.
  */
-export function getOrCreate<T>(name: string, factory: () => T): T {
-  if (_instances.has(name)) return _instances.get(name) as T;
-  const inst = factory();
-  _instances.set(name, inst);
-  return inst;
-}
-
+export declare function getOrCreate<T>(name: string, factory: () => T): T;
 /**
  * Get an existing controller instance without creating one.
  * Returns undefined if the controller hasn't been created yet.
  */
-export function getExisting<T>(name: string): T | undefined {
-  return _instances.get(name) as T | undefined;
-}
-
+export declare function getExisting<T>(name: string): T | undefined;
 /**
  * Check if a controller instance exists in the pool.
  */
-export function has(name: string): boolean {
-  return _instances.has(name);
-}
-
+export declare function has(name: string): boolean;
 /**
  * Get all registered controller names.
  */
-export function listControllers(): string[] {
-  return [..._instances.keys()];
-}
-
+export declare function listControllers(): string[];
 /**
  * Get the total number of registered controllers.
  */
-export function controllerCount(): number {
-  return _instances.size;
-}
-
+export declare function controllerCount(): number;
 /**
  * Reset the singleton pool (for testing only).
  */
-export function resetInterceptPool(): void {
-  _instances.clear();
-}
+export declare function resetInterceptPool(): void;
+//# sourceMappingURL=controller-intercept.d.ts.map
