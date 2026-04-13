@@ -192,18 +192,7 @@ function getLearningStats() {
     } catch (e) { /* ignore */ }
   }
 
-  // 4. auto-memory-store.json — fallback entry count
-  if (patterns === 0) {
-    const autoMemPath = path.join(dataDir, 'auto-memory-store.json');
-    if (fs.existsSync(autoMemPath)) {
-      try {
-        const data = JSON.parse(fs.readFileSync(autoMemPath, 'utf-8'));
-        patterns = Array.isArray(data) ? data.length : (data.entries ? data.entries.length : 0);
-      } catch (e) { /* ignore */ }
-    }
-  }
-
-  // FALLBACK: Legacy memory.db file-size estimation
+  // 4. ADR-0085: Direct SQLite COUNT (replaces auto-memory-store.json sidecar)
   if (patterns === 0) {
     const memoryPaths = [
       path.join(process.cwd(), '.swarm', 'memory.db'),
@@ -213,10 +202,20 @@ function getLearningStats() {
     for (let j = 0; j < memoryPaths.length; j++) {
       if (fs.existsSync(memoryPaths[j])) {
         try {
-          const dbStats = fs.statSync(memoryPaths[j]);
-          patterns = Math.floor(dbStats.size / 1024 / 2);
-          break;
-        } catch (e) { /* ignore */ }
+          const bsql = require('better-sqlite3');
+          const Db = bsql.default || bsql;
+          const db = new Db(memoryPaths[j], { readonly: true });
+          const row = db.prepare("SELECT COUNT(*) as cnt FROM memory_entries WHERE status = 'active'").get();
+          db.close();
+          if (row && row.cnt > 0) { patterns = row.cnt; break; }
+        } catch {
+          // better-sqlite3 unavailable or table missing — try file-size fallback
+          try {
+            const dbStats = fs.statSync(memoryPaths[j]);
+            patterns = Math.floor(dbStats.size / 1024 / 2);
+            break;
+          } catch { /* ignore */ }
+        }
       }
     }
   }

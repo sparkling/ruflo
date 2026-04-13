@@ -132,11 +132,7 @@ const storeCommand: Command = {
         return { success: false, exitCode: 1 };
       }
 
-      // ADR-0083: Write JSON sidecar so intelligence.cjs can see CLI stores
-      try {
-        const { writeJsonSidecar } = await import('../memory/memory-router.js');
-        writeJsonSidecar({ id: key, key, value, namespace });
-      } catch { /* best-effort — sidecar visibility is non-critical */ }
+      // ADR-0085: writeJsonSidecar removed — intelligence reads from SQLite directly
 
       output.writeln();
       output.printTable({

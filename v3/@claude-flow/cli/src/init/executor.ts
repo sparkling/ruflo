@@ -213,7 +213,7 @@ export async function executeInit(options: InitOptions): Promise<InitResult> {
       const hDir = path.join(targetDir, '.claude', 'helpers');
       fs.mkdirSync(hDir, { recursive: true });
       const criticalForSettings: Record<string, string> = {
-        'hook-handler.cjs': generateHookHandler(),
+        'hook-handler.mjs': generateHookHandler(),
         'auto-memory-hook.mjs': generateAutoMemoryHook(),
       };
       for (const [name, content] of Object.entries(criticalForSettings)) {
@@ -439,7 +439,7 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
     // 0. ALWAYS update critical helpers (force overwrite)
     const sourceHelpersForUpgrade = findSourceHelpersDir();
     if (sourceHelpersForUpgrade) {
-      const criticalHelpers = ['auto-memory-hook.mjs', 'hook-handler.cjs', 'intelligence.cjs'];
+      const criticalHelpers = ['auto-memory-hook.mjs', 'hook-handler.mjs', 'intelligence.cjs'];
       for (const helperName of criticalHelpers) {
         const targetPath = path.join(targetDir, '.claude', 'helpers', helperName);
         const sourcePath = path.join(sourceHelpersForUpgrade, helperName);
@@ -456,7 +456,7 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
     } else {
       // Source not found (npx with broken paths) — use generated fallbacks
       const generatedCritical: Record<string, string> = {
-        'hook-handler.cjs': generateHookHandler(),
+        'hook-handler.mjs': generateHookHandler(),
         'intelligence.cjs': generateIntelligenceStub(),
         'auto-memory-hook.mjs': generateAutoMemoryHook(),
       };
@@ -980,12 +980,12 @@ async function copyAgents(
 
 /**
  * Find source helpers directory.
- * Validates that the directory contains hook-handler.cjs to avoid
+ * Validates that the directory contains hook-handler.mjs to avoid
  * returning the target directory or an incomplete source.
  */
 function findSourceHelpersDir(sourceBaseDir?: string): string | null {
   const possiblePaths: string[] = [];
-  const SENTINEL_FILE = 'hook-handler.cjs'; // Must exist in valid source
+  const SENTINEL_FILE = 'hook-handler.mjs'; // Must exist in valid source
 
   // If explicit source base directory is provided, check it first
   if (sourceBaseDir) {
@@ -1087,7 +1087,7 @@ async function writeHelpers(
     'session.js': generateSessionManager(),
     'router.js': generateAgentRouter(),
     'memory.js': generateMemoryHelper(),
-    'hook-handler.cjs': generateHookHandler(),
+    'hook-handler.mjs': generateHookHandler(),
     'intelligence.cjs': generateIntelligenceStub(),
     'auto-memory-hook.mjs': generateAutoMemoryHook(),
   };

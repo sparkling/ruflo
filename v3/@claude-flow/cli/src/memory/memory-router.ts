@@ -5,7 +5,7 @@
  * Controller access: getController() -> controller-intercept pool (Phase 4)
  * Embedding: EmbeddingPipeline (Phase 3) for vector operations
  * Config: ResolvedConfig singleton (Phase 1) for dimension/model
- * JSON sidecar: writeJsonSidecar() -> .claude-flow/data/auto-memory-store.json (CJS contract)
+ * ADR-0085: JSON sidecar eliminated — intelligence reads from SQLite directly
  *
  * ADR-0084 Phase 4: Route methods use controller-direct (getController) instead of bridge.
  * Uses memory-initializer.ts internally
@@ -498,52 +498,7 @@ async function loadAllFns(): Promise<Record<string, (...args: any[]) => any>> {
 // JSON sidecar (intelligence.cjs CJS contract)
 // ---------------------------------------------------------------------------
 
-const AUTO_MEMORY_STORE_MAX = 1000;
-
-/**
- * Write an entry to .claude-flow/data/auto-memory-store.json so intelligence.cjs
- * can see CLI-stored memory. Best-effort — never throws.
- */
-export function writeJsonSidecar(entry: {
-  id: string; key: string; value: string; namespace: string;
-}): void {
-  try {
-    const dataDir = path.join(process.cwd(), '.claude-flow', 'data');
-    const storePath = path.join(dataDir, 'auto-memory-store.json');
-    const tmpPath = storePath + '.tmp';
-
-    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-
-    let store: Array<Record<string, unknown>> = [];
-    if (fs.existsSync(storePath)) {
-      try {
-        const raw = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-        store = Array.isArray(raw) ? raw : (raw?.entries ?? []);
-      } catch { /* corrupt file — start fresh */ }
-    }
-
-    store = store.filter((e) => e.id !== entry.id);
-
-    store.push({
-      id: entry.id,
-      key: entry.key,
-      value: entry.value,
-      content: entry.value,
-      namespace: entry.namespace,
-      metadata: { source: 'cli-memory-store' },
-      created_at: new Date().toISOString(),
-    });
-
-    if (store.length > AUTO_MEMORY_STORE_MAX) {
-      store = store.slice(store.length - AUTO_MEMORY_STORE_MAX);
-    }
-
-    fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2));
-    fs.renameSync(tmpPath, storePath);
-  } catch {
-    // Best-effort — intelligence.cjs visibility is non-critical
-  }
-}
+// ADR-0085: writeJsonSidecar removed — intelligence.cjs reads from SQLite directly
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -621,14 +576,7 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         upsert: op.upsert,
       });
       const storeSuccess = !!(result as { success?: boolean }).success;
-      if (storeSuccess && op.key && op.value) {
-        writeJsonSidecar({
-          id: op.key,
-          key: op.key,
-          value: op.value,
-          namespace: op.namespace || 'default',
-        });
-      }
+      // ADR-0085: writeJsonSidecar removed — intelligence reads from SQLite directly
       return {
         success: storeSuccess,
         key: op.key,

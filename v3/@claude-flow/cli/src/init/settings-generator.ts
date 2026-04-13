@@ -213,7 +213,7 @@ function hookCmd(script: string, subcommand: string): string {
 
 /** Shorthand for CJS hook-handler commands */
 function hookHandlerCmd(subcommand: string): string {
-  return hookCmd('.claude/helpers/hook-handler.cjs', subcommand);
+  return hookCmd('.claude/helpers/hook-handler.mjs', subcommand);
 }
 
 /** Shorthand for ESM auto-memory-hook commands */
@@ -241,7 +241,7 @@ function generateStatusLineConfig(_options: InitOptions): object {
 
 /**
  * Generate hooks configuration
- * Uses local hook-handler.cjs for cross-platform compatibility.
+ * Uses local hook-handler.mjs for cross-platform compatibility.
  * All hooks invoke scripts directly via `node <script> <subcommand>`,
  * working identically on Windows, macOS, and Linux.
  */

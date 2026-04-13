@@ -362,7 +362,7 @@ module.exports = commands;
 }
 
 /**
- * Generate hook-handler.cjs (cross-platform hook dispatcher)
+ * Generate hook-handler.mjs (cross-platform hook dispatcher)
  * This is the inline fallback when file copy from the package fails.
  * Uses string concatenation instead of template literals to avoid escaping issues.
  */
@@ -586,7 +586,7 @@ export function generateHookHandler(): string {
     '} else if (command) {',
     "  console.log('[OK] Hook: ' + command);",
     '} else {',
-    "  console.log('Usage: hook-handler.cjs <route|pre-bash|post-edit|session-restore|session-end|pre-task|post-task|compact-manual|compact-auto|status|stats>');",
+    "  console.log('Usage: hook-handler.mjs <route|pre-bash|post-edit|session-restore|session-end|pre-task|post-task|compact-manual|compact-auto|status|stats>');",
     '}',
     '} // end main',
     '',

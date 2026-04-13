@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * Intelligence Layer (ADR-050)
+ * Intelligence Layer (ADR-050, ADR-0085)
  *
  * Closes the intelligence loop by wiring PageRank-ranked memory into
- * the hook system. Pure CJS — no ESM imports of @claude-flow/memory.
+ * the hook system. CJS module — loaded via dynamic import() from hook-handler.mjs.
+ *
+ * ADR-0085: Reads directly from SQLite (memory.db) via better-sqlite3.
+ * The auto-memory-store.json sidecar is eliminated.
  *
  * Data files (all under .claude-flow/data/):
- *   auto-memory-store.json  — written by auto-memory-hook.mjs
  *   graph-state.json        — serialized graph (nodes + edges + pageRanks)
  *   ranked-context.json     — pre-computed ranked entries for fast lookup
  *   pending-insights.jsonl  — append-only edit/task log
@@ -24,6 +26,80 @@ const RANKED_PATH = path.join(DATA_DIR, 'ranked-context.json');
 const PENDING_PATH = path.join(DATA_DIR, 'pending-insights.jsonl');
 const SESSION_DIR = path.join(process.cwd(), '.claude-flow', 'sessions');
 const SESSION_FILE = path.join(SESSION_DIR, 'current.json');
+
+// ── ADR-0085: Direct SQLite read (replaces auto-memory-store.json sidecar) ──
+// better-sqlite3 is synchronous — matches the existing sync API budget (<200ms).
+let _bsql = null;
+function readStoreFromDb() {
+  // Resolve DB path: config.json swarmDir → .swarm/memory.db → legacy paths
+  const cfgPaths = [
+    path.join(process.cwd(), '.claude-flow', 'config.json'),
+  ];
+  let swarmDir = '.swarm';
+  for (const cfgPath of cfgPaths) {
+    try {
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+        if (cfg.memory && cfg.memory.swarmDir) swarmDir = cfg.memory.swarmDir;
+        break;
+      }
+    } catch { /* use default */ }
+  }
+  const dbCandidates = [
+    path.join(process.cwd(), swarmDir, 'memory.db'),
+    path.join(process.cwd(), '.swarm', 'memory.db'),
+    path.join(process.cwd(), '.claude', 'memory.db'),
+  ];
+  let dbPath = null;
+  for (const p of dbCandidates) {
+    if (fs.existsSync(p)) { dbPath = p; break; }
+  }
+  if (!dbPath) return null;
+
+  try {
+    if (!_bsql) {
+      const mod = require('better-sqlite3');
+      _bsql = mod.default || mod;
+    }
+    const db = new _bsql(dbPath, { readonly: true });
+    try {
+      // Check if memory_entries table exists
+      const tableCheck = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_entries'"
+      ).get();
+      if (!tableCheck) { db.close(); return null; }
+
+      const rows = db.prepare(
+        `SELECT id, key, namespace, content, type, tags, metadata, embedding_dimensions,
+                created_at, updated_at, access_count
+         FROM memory_entries WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1000`
+      ).all();
+      db.close();
+
+      return rows.map(row => ({
+        id: row.id,
+        key: row.key,
+        content: row.content,
+        value: row.content,
+        namespace: row.namespace || 'default',
+        type: row.type || 'semantic',
+        summary: row.key,
+        metadata: row.metadata ? (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })() : {},
+        createdAt: row.created_at || Date.now(),
+        updatedAt: row.updated_at || Date.now(),
+        accessCount: row.access_count || 0,
+      }));
+    } catch (e) {
+      try { db.close(); } catch {}
+      process.stderr.write('[INTELLIGENCE] ERROR: SQLite read failed: ' + (e.message || e) + '\n');
+      return null;
+    }
+  } catch (e) {
+    // better-sqlite3 not available — fail loud
+    process.stderr.write('[INTELLIGENCE] ERROR: Cannot read memory.db (better-sqlite3 unavailable): ' + (e.message || e) + '\n');
+    return null;
+  }
+}
 
 // ── Safety limits (fixes #1530, #1531) ─────────────────────────────────────
 const MAX_DATA_FILE_SIZE = 10 * 1024 * 1024; // 10 MB — skip files larger than this
@@ -320,15 +396,17 @@ function parseMemoryDir(dir, entries) {
 
 /**
  * init() — Called from session-restore. Budget: <200ms.
- * Reads auto-memory-store.json, builds graph, computes PageRank, writes caches.
- * If store is empty, bootstraps from MEMORY.md files directly.
+ * ADR-0085: Reads directly from SQLite (memory.db) via better-sqlite3.
+ * Falls back to auto-memory-store.json if DB unavailable.
+ * If both are empty, bootstraps from MEMORY.md files directly.
  */
 function init() {
   ensureDataDir();
 
   // Check if graph-state.json is fresh (within 60s of store)
   const graphState = readJSON(GRAPH_PATH);
-  let store = readJSON(STORE_PATH);
+  // ADR-0085: SQLite direct read — no sidecar fallback
+  let store = readStoreFromDb();
 
   // Bootstrap from MEMORY.md files if store is empty
   if (!store || !Array.isArray(store) || store.length === 0) {
@@ -558,7 +636,8 @@ function boostConfidence(ids, amount) {
 function consolidate() {
   ensureDataDir();
 
-  let store = readJSON(STORE_PATH);
+  // ADR-0085: SQLite direct read — no sidecar fallback
+  let store = readStoreFromDb();
   if (!store || !Array.isArray(store)) {
     return { entries: 0, edges: 0, newEntries: 0, message: 'No store to consolidate' };
   }
