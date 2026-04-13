@@ -8,7 +8,7 @@
  * ADR-0085: JSON sidecar eliminated — intelligence reads from SQLite directly
  *
  * ADR-0084 Phase 4: Route methods use controller-direct (getController) instead of bridge.
- * Uses memory-initializer.ts internally
+ * ADR-0086: Uses RvfBackend (IStorageContract) for storage
  * for actual storage operations (not deleted, not modified -- just wrapped).
  *
  * @module @claude-flow/cli/memory/memory-router
@@ -182,13 +182,7 @@ let _storage: IStorageContract | null = null;
 let _initialized = false;
 let _initPromise: Promise<void> | null = null;
 
-// Lazy-cached embedding functions for routeEmbeddingOp
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _embeddingFns: Record<string, (...args: any[]) => any> | null = null;
-
-// Lazy-cached full module for individual named-export wrappers
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _allFns: Record<string, (...args: any[]) => any> | null = null;
+// ADR-0086 Phase 3: _embeddingFns + _allFns removed (no more initializer dependency).
 
 // Lazy-cached Phase 4 controller-intercept module
 let _interceptMod: typeof import('../../../memory/src/controller-intercept.js') | null = null;
@@ -486,21 +480,7 @@ function getCallableMethod(obj: any, ...names: string[]): ((...args: any[]) => a
   return null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadEmbeddingFns(): Promise<Record<string, (...args: any[]) => any>> {
-  if (_embeddingFns) return _embeddingFns;
-  const mod = await import('./memory-initializer.js');
-  _embeddingFns = mod as unknown as Record<string, (...args: any[]) => any>;
-  return _embeddingFns;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadAllFns(): Promise<Record<string, (...args: any[]) => any>> {
-  if (_allFns) return _allFns;
-  const mod = await import('./memory-initializer.js');
-  _allFns = mod as unknown as Record<string, (...args: any[]) => any>;
-  return _allFns;
-}
+// ADR-0086 Phase 3: loadEmbeddingFns + loadAllFns deleted (no more initializer dependency).
 
 // ---------------------------------------------------------------------------
 // JSON sidecar (intelligence.cjs CJS contract)
@@ -848,19 +828,26 @@ export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
         .catch(() => import('../../../memory/src/embedding-adapter.js'));
       return { success: true, threshold: await adapter.getAdaptiveThreshold(op.data as number | undefined) };
     }
-    // HNSW ops still through initializer (until Phase 3)
-    case 'hnswGet': case 'hnswAdd': case 'hnswSearch':
-    case 'hnswStatus': case 'hnswClear': case 'hnswRebuild': {
-      const fns = await loadEmbeddingFns();
-      switch (op.type) {
-        case 'hnswGet': return { success: true, index: await fns.getHNSWIndex(op.data) };
-        case 'hnswAdd': return { success: true, ...(await fns.addToHNSWIndex(op.id || op.key, op.vector, op.data)) };
-        case 'hnswSearch': return { success: true, ...(await fns.searchHNSWIndex(op.vector || op.query, op.k || op.limit || 10, op.data)) };
-        case 'hnswStatus': return { success: true, ...fns.getHNSWStatus() };
-        case 'hnswClear': fns.clearHNSWIndex(); return { success: true };
-        case 'hnswRebuild': fns.rebuildSearchIndex(); return { success: true };
-      }
-      break;
+    // ADR-0086 Phase 3: HNSW ops via RvfBackend (IStorageContract)
+    case 'hnswSearch': {
+      if (!_storage) return { success: false, error: 'Storage not initialized' };
+      const vec = op.vector instanceof Float32Array ? op.vector
+        : new Float32Array(op.vector as number[]);
+      const results = await _storage.search(vec, { limit: op.k || op.limit || 10 });
+      return { success: true, results, total: results.length };
+    }
+    case 'hnswStatus': {
+      if (!_storage) return { success: false, error: 'Storage not initialized' };
+      const stats = await _storage.getStats();
+      return { success: true, ...stats };
+    }
+    case 'hnswAdd': {
+      // RvfBackend adds to HNSW automatically on store()
+      return { success: true, message: 'HNSW managed internally by RvfBackend' };
+    }
+    case 'hnswGet': case 'hnswClear': case 'hnswRebuild': {
+      // RvfBackend manages HNSW lifecycle internally
+      return { success: true, message: 'HNSW managed internally by RvfBackend' };
     }
     default:
       return { success: false, error: `Unknown embedding operation: ${(op as { type: string }).type}` };
@@ -1316,35 +1303,20 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Lazy wrappers — 23 named exports from memory-initializer (ADR-0083 Phase 5)
-// Each wraps a single memory-initializer function via loadAllFns().
+// ADR-0086 Phase 3: _wrap delegates + loadAllFns deleted.
+// Embedding functions re-exported from adapter.
+// HNSW managed internally by RvfBackend.
 // ---------------------------------------------------------------------------
 
-// Helper: create a lazy-delegating wrapper
-function _wrap(name: string) {
-  return async (...args: unknown[]) => {
-    const fns = await loadAllFns();
-    return fns[name](...args);
-  };
+// Embedding re-exports (ADR-0086 Phase 3: from adapter, not initializer)
+async function _loadAdapter() {
+  return import('@claude-flow/memory/embedding-adapter.js' as string)
+    .catch(() => import('../../../memory/src/embedding-adapter.js'));
 }
-
-// HNSW (6)
-export const getHNSWIndex = _wrap('getHNSWIndex');
-export const addToHNSWIndex = _wrap('addToHNSWIndex');
-export const searchHNSWIndex = _wrap('searchHNSWIndex');
-export const getHNSWStatus = _wrap('getHNSWStatus');
-export const clearHNSWIndex = _wrap('clearHNSWIndex');
-export const rebuildSearchIndex = _wrap('rebuildSearchIndex');
-// ADR-0086 T1.1+T1.2: Quantization (4) and attention (4) _wrap delegates removed.
-// ADR-0086 T1.4: DB lifecycle delegates removed (getInitialMetadata,
-// ensureSchemaColumns, checkAndMigrateLegacy). Internal-only until Phase 3.
-// Embedding (4)
-export const loadEmbeddingModel = _wrap('loadEmbeddingModel');
-export const generateEmbedding = _wrap('generateEmbedding');
-export const generateBatchEmbeddings = _wrap('generateBatchEmbeddings');
-export const getAdaptiveThreshold = _wrap('getAdaptiveThreshold');
-// Decay (1) — verifyMemoryInit removed (ADR-0086 T1.5: callers import directly)
-export const applyTemporalDecay = _wrap('applyTemporalDecay');
+export const loadEmbeddingModel = async (...args: unknown[]) => (await _loadAdapter()).loadEmbeddingModel(...(args as [any]));
+export const generateEmbedding = async (...args: unknown[]) => (await _loadAdapter()).generateEmbedding(...(args as [any, any]));
+export const generateBatchEmbeddings = async (...args: unknown[]) => (await _loadAdapter()).generateBatchEmbeddings(...(args as [any, any]));
+export const getAdaptiveThreshold = async (...args: unknown[]) => (await _loadAdapter()).getAdaptiveThreshold(...(args as [any]));
 
 // ---------------------------------------------------------------------------
 // Shutdown + Reset
@@ -1382,8 +1354,6 @@ export async function shutdownRouter(): Promise<void> {
 /** Reset all cached modules (testing only). */
 export function resetRouter(): void {
   _storage = null;
-  _embeddingFns = null;
-  _allFns = null;
   _interceptMod = null;
   _initialized = false;
   _initPromise = null;

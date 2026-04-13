@@ -540,21 +540,16 @@ export {
   type MCPServerStatus,
 } from './mcp-server.js';
 
-// Memory & Intelligence (V3 Performance Features)
+// ADR-0086 Phase 3: Memory exports from router (RvfBackend) + adapter
 export {
-  initializeMemoryDatabase,
+  routeMemoryOp,
+  routeEmbeddingOp,
+  ensureRouter,
+  loadEmbeddingModel,
   generateEmbedding,
   generateBatchEmbeddings,
-  storeEntry,
-  searchEntries,
-  getHNSWIndex,
-  addToHNSWIndex,
-  searchHNSWIndex,
-  getHNSWStatus,
-  clearHNSWIndex,
-  // ADR-0086 T1.1+T1.2: quantization (4) + attention (4) exports removed
-  type MemoryInitResult,
-} from './memory/memory-initializer.js';
+  getAdaptiveThreshold,
+} from './memory/memory-router.js';
 
 export {
   initializeIntelligence,
