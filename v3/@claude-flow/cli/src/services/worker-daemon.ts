@@ -1038,19 +1038,19 @@ export class WorkerDaemon extends EventEmitter {
     };
 
     try {
-      const mi = await import('../memory/memory-initializer.js');
-      // 1. Apply temporal decay (reduce confidence of stale patterns)
-      const decayResult = await mi.applyTemporalDecay();
-      if (decayResult?.success) result.patternsConsolidated = decayResult.patternsDecayed || 0;
-      // 2. Rebuild HNSW index with current data
-      mi.clearHNSWIndex();
-      const hnsw = await mi.getHNSWIndex({ forceRebuild: true });
-      if (hnsw) result.hnswRebuilt = hnsw.entries?.size ?? 0;
+      // ADR-0086 T2.7: import from router (was memory-initializer)
+      const mi = await import('../memory/memory-router.js');
+      // 1. Temporal decay is a no-op with RVF storage (ADR-0086 B1)
+      // applyTemporalDecay was SQLite-specific; RVF handles TTL internally.
+      result.patternsConsolidated = 0;
+      // 2. HNSW index is managed internally by RvfBackend — explicit
+      // clear/rebuild not supported. Query stats for reporting only.
+      const hnswStatus = await mi.routeEmbeddingOp({ type: 'hnswStatus' });
+      if (hnswStatus?.success) result.hnswRebuilt = (hnswStatus as Record<string, unknown>).totalEntries ?? 0;
       result.memoryCleaned = 1;
       // WM-108b: Run consolidation pipeline via memory-router (ADR-0084 Phase 3)
       try {
-        const { routeLearningOp } = await import('../memory/memory-router.js');
-        const routerResult = await routeLearningOp({ type: 'consolidate' });
+        const routerResult = await mi.routeLearningOp({ type: 'consolidate' });
         result.routerConsolidated = routerResult?.success ?? false;
       } catch (routerErr: unknown) {
         const msg = routerErr instanceof Error ? routerErr.message : String(routerErr);
@@ -1192,11 +1192,12 @@ export class WorkerDaemon extends EventEmitter {
   private async runPreloadWorkerLocal(): Promise<unknown> {
     const result: Record<string, unknown> = { timestamp: new Date().toISOString(), mode: 'local', resourcesPreloaded: 0, cacheStatus: 'active' };
     try {
-      const mi = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.7: import from router (was memory-initializer)
+      const mi = await import('../memory/memory-router.js');
       const modelResult = await mi.loadEmbeddingModel({ verbose: false });
-      if (modelResult.success) { result.resourcesPreloaded = (result.resourcesPreloaded as number) + 1; result.embeddingModel = modelResult.modelName; }
-      const hnswResult = await mi.getHNSWIndex();
-      if (hnswResult) { result.resourcesPreloaded = (result.resourcesPreloaded as number) + 1; result.hnswEntries = hnswResult.entries?.size ?? 0; }
+      if ((modelResult as Record<string, unknown>)?.success) { result.resourcesPreloaded = (result.resourcesPreloaded as number) + 1; result.embeddingModel = (modelResult as Record<string, unknown>).modelName; }
+      const hnswResult = await mi.routeEmbeddingOp({ type: 'hnswStatus' });
+      if (hnswResult?.success) { result.resourcesPreloaded = (result.resourcesPreloaded as number) + 1; result.hnswEntries = (hnswResult as Record<string, unknown>).totalEntries ?? 0; }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(

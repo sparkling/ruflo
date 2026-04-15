@@ -76,13 +76,14 @@ const benchmarkCommand: Command = {
     const spinner = output.createSpinner({ text: `Running ${suite} benchmarks...`, spinner: 'dots' });
     spinner.start();
 
-    // Import real implementations
+    // ADR-0086 T2.6: import from router (was memory-initializer)
     const {
       generateEmbedding,
-      getHNSWStatus,
-      storeEntry,
-      searchEntries,
-    } = await import('../memory/memory-initializer.js');
+      routeEmbeddingOp,
+      routeMemoryOp,
+      ensureRouter,
+    } = await import('../memory/memory-router.js');
+    await ensureRouter();
     const { benchmarkAdaptation, initializeIntelligence } = await import('../memory/intelligence.js');
 
     const results: { operation: string; mean: string; p95: string; p99: string; improvement: string }[] = [];
@@ -162,7 +163,11 @@ const benchmarkCommand: Command = {
     // 3. HNSW Search Benchmark
     if (suite === 'all' || suite === 'search') {
       spinner.setText('Benchmarking HNSW search...');
-      const hnswStatus = getHNSWStatus();
+      const hnswStatusResult = await routeEmbeddingOp({ type: 'hnswStatus' });
+      const hnswStatus = {
+        available: hnswStatusResult.success,
+        entryCount: (hnswStatusResult as any).totalEntries ?? 0,
+      };
 
       if (hnswStatus.available && hnswStatus.entryCount > 0) {
         const searchTimes: number[] = [];
@@ -176,14 +181,14 @@ const benchmarkCommand: Command = {
 
         // Warmup
         for (const q of testQueries.slice(0, 2)) {
-          await searchEntries({ query: q, limit: 10 });
+          await routeMemoryOp({ type: 'search', query: q, limit: 10 });
         }
 
         // Actual measurement
         for (let i = 0; i < Math.min(iterations, 50); i++) {
           const query = testQueries[i % testQueries.length];
           const start = performance.now();
-          await searchEntries({ query, limit: 10 });
+          await routeMemoryOp({ type: 'search', query, limit: 10 });
           searchTimes.push(performance.now() - start);
         }
 
@@ -233,11 +238,12 @@ const benchmarkCommand: Command = {
       // Use in-memory operations for benchmark (don't persist)
       for (let i = 0; i < Math.min(iterations, 20); i++) {
         const start = performance.now();
-        await storeEntry({
+        await routeMemoryOp({
+          type: 'store',
           key: `bench_${Date.now()}_${i}`,
           value: `Benchmark test entry ${i} with some content for testing storage performance`,
           namespace: 'benchmark',
-          generateEmbeddingFlag: true,
+          generateEmbedding: true,
         });
         storeTimes.push(performance.now() - start);
       }
@@ -413,9 +419,10 @@ const metricsCommand: Command = {
     let cacheHitRate = 'N/A';
     let hnswEntries = 0;
     try {
-      const { getHNSWStatus } = await import('../memory/memory-initializer.js');
-      const status = getHNSWStatus();
-      hnswEntries = status?.entryCount || 0;
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { routeEmbeddingOp: hnswOp } = await import('../memory/memory-router.js');
+      const status = await hnswOp({ type: 'hnswStatus' });
+      hnswEntries = (status as any)?.totalEntries || 0;
     } catch { /* HNSW not initialized */ }
 
     // Try to get real cache stats

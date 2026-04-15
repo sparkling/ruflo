@@ -27,78 +27,82 @@ const PENDING_PATH = path.join(DATA_DIR, 'pending-insights.jsonl');
 const SESSION_DIR = path.join(process.cwd(), '.claude-flow', 'sessions');
 const SESSION_FILE = path.join(SESSION_DIR, 'current.json');
 
-// ── ADR-0085: Direct SQLite read (replaces auto-memory-store.json sidecar) ──
-// better-sqlite3 is synchronous — matches the existing sync API budget (<200ms).
-let _bsql = null;
-function readStoreFromDb() {
-  // Resolve DB path: config.json swarmDir → .swarm/memory.db → legacy paths
-  const cfgPaths = [
-    path.join(process.cwd(), '.claude-flow', 'config.json'),
+// ── ADR-0086: Direct RVF read (replaces SQLite reader from ADR-0085) ──
+// Reads the RVF binary format synchronously — matches the existing sync API budget (<200ms).
+// Format: 4B magic (RVF\0) + 4B LE header len + JSON header + [4B LE entry len + JSON entry]*
+function readStoreFromRvf() {
+  const candidates = [
+    path.join(process.cwd(), '.claude-flow', 'memory.rvf'),
+    path.join(process.cwd(), '.swarm', 'memory.rvf'),
   ];
-  let swarmDir = '.swarm';
-  for (const cfgPath of cfgPaths) {
-    try {
-      if (fs.existsSync(cfgPath)) {
-        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-        if (cfg.memory && cfg.memory.swarmDir) swarmDir = cfg.memory.swarmDir;
-        break;
-      }
-    } catch { /* use default */ }
+  let rvfPath = null;
+  for (const p of candidates) {
+    if (fs.existsSync(p)) { rvfPath = p; break; }
   }
-  const dbCandidates = [
-    path.join(process.cwd(), swarmDir, 'memory.db'),
-    path.join(process.cwd(), '.swarm', 'memory.db'),
-    path.join(process.cwd(), '.claude', 'memory.db'),
-  ];
-  let dbPath = null;
-  for (const p of dbCandidates) {
-    if (fs.existsSync(p)) { dbPath = p; break; }
-  }
-  if (!dbPath) return null;
+  if (!rvfPath) return null;
 
+  const entries = [];
+  const entryMap = new Map(); // id → index for WAL dedup
   try {
-    if (!_bsql) {
-      const mod = require('better-sqlite3');
-      _bsql = mod.default || mod;
-    }
-    const db = new _bsql(dbPath, { readonly: true });
-    try {
-      // Check if memory_entries table exists
-      const tableCheck = db.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_entries'"
-      ).get();
-      if (!tableCheck) { db.close(); return null; }
+    const raw = fs.readFileSync(rvfPath);
+    if (raw.length < 8) return null;
+    const magic = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
+    if (magic !== 'RVF\0') return null;
+    const headerLen = raw.readUInt32LE(4);
+    if (8 + headerLen > raw.length) return null;
 
-      const rows = db.prepare(
-        `SELECT id, key, namespace, content, type, tags, metadata, embedding_dimensions,
-                created_at, updated_at, access_count
-         FROM memory_entries WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1000`
-      ).all();
-      db.close();
-
-      return rows.map(row => ({
-        id: row.id,
-        key: row.key,
-        content: row.content,
-        value: row.content,
-        namespace: row.namespace || 'default',
-        type: row.type || 'semantic',
-        summary: row.key,
-        metadata: row.metadata ? (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })() : {},
-        createdAt: row.created_at || Date.now(),
-        updatedAt: row.updated_at || Date.now(),
-        accessCount: row.access_count || 0,
-      }));
-    } catch (e) {
-      try { db.close(); } catch {}
-      process.stderr.write('[INTELLIGENCE] ERROR: SQLite read failed: ' + (e.message || e) + '\n');
-      return null;
+    let offset = 8 + headerLen;
+    while (offset + 4 <= raw.length) {
+      const entryLen = raw.readUInt32LE(offset);
+      offset += 4;
+      if (offset + entryLen > raw.length) break;
+      try {
+        const e = JSON.parse(raw.subarray(offset, offset + entryLen).toString('utf-8'));
+        entryMap.set(e.id, entries.length);
+        entries.push(e);
+      } catch { /* skip corrupt entry */ }
+      offset += entryLen;
     }
   } catch (e) {
-    // better-sqlite3 not available — fail loud
-    process.stderr.write('[INTELLIGENCE] ERROR: Cannot read memory.db (better-sqlite3 unavailable): ' + (e.message || e) + '\n');
+    process.stderr.write('[INTELLIGENCE] ERROR: RVF read failed: ' + (e.message || e) + '\n');
     return null;
   }
+
+  // Replay WAL if present (same length-prefixed JSON, no header)
+  const walPath = rvfPath + '.wal';
+  if (fs.existsSync(walPath)) {
+    try {
+      const walRaw = fs.readFileSync(walPath);
+      let offset = 0;
+      while (offset + 4 <= walRaw.length) {
+        const entryLen = walRaw.readUInt32LE(offset);
+        offset += 4;
+        if (offset + entryLen > walRaw.length) break;
+        try {
+          const e = JSON.parse(walRaw.subarray(offset, offset + entryLen).toString('utf-8'));
+          const existing = entryMap.get(e.id);
+          if (existing !== undefined) entries[existing] = e;
+          else { entryMap.set(e.id, entries.length); entries.push(e); }
+        } catch { /* skip */ }
+        offset += entryLen;
+      }
+    } catch { /* WAL read error — continue with main entries */ }
+  }
+
+  if (entries.length === 0) return null;
+  return entries.map(e => ({
+    id: e.id,
+    key: e.key,
+    content: e.content,
+    value: e.content,
+    namespace: e.namespace || 'default',
+    type: e.type || 'semantic',
+    summary: e.key,
+    metadata: typeof e.metadata === 'string' ? (() => { try { return JSON.parse(e.metadata); } catch { return {}; } })() : (e.metadata || {}),
+    createdAt: e.createdAt || Date.now(),
+    updatedAt: e.updatedAt || Date.now(),
+    accessCount: e.accessCount || 0,
+  }));
 }
 
 // ── Safety limits (fixes #1530, #1531) ─────────────────────────────────────
@@ -406,7 +410,7 @@ function init() {
   // Check if graph-state.json is fresh (within 60s of store)
   const graphState = readJSON(GRAPH_PATH);
   // ADR-0085: SQLite direct read — no sidecar fallback
-  let store = readStoreFromDb();
+  let store = readStoreFromRvf();
 
   // Bootstrap from MEMORY.md files if store is empty
   if (!store || !Array.isArray(store) || store.length === 0) {
@@ -637,7 +641,7 @@ function consolidate() {
   ensureDataDir();
 
   // ADR-0085: SQLite direct read — no sidecar fallback
-  let store = readStoreFromDb();
+  let store = readStoreFromRvf();
   if (!store || !Array.isArray(store)) {
     return { entries: 0, edges: 0, newEntries: 0, message: 'No store to consolidate' };
   }

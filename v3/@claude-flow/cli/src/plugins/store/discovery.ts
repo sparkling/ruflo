@@ -374,7 +374,6 @@ export class PluginDiscoveryService {
         minClaudeFlowVersion: '3.0.0',
         dependencies: [
           { name: '@claude-flow/core', version: '^3.0.0' },
-          { name: 'better-sqlite3', version: '^11.0.0' },
         ],
         type: 'core',
         hooks: ['embeddings:embed', 'embeddings:search'],

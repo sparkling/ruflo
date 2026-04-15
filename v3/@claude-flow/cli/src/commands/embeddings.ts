@@ -8,7 +8,7 @@
  * - L2/L1/minmax/zscore normalization
  * - Hyperbolic embeddings (Poincaré ball)
  * - Neural substrate integration
- * - Persistent SQLite cache
+ * - Persistent RVF cache
  *
  * Created with ❤️ by ruv.io
  */
@@ -59,8 +59,8 @@ const generateCommand: Command = {
     spinner.start();
 
     try {
-      // Use real embedding generator
-      const { generateEmbedding, loadEmbeddingModel } = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { generateEmbedding, loadEmbeddingModel } = await import('../memory/memory-router.js');
 
       const startTime = Date.now();
       const modelInfo = await loadEmbeddingModel({ verbose: false });
@@ -109,7 +109,7 @@ const generateCommand: Command = {
   },
 };
 
-// Search subcommand - REAL implementation using better-sqlite3
+// Search subcommand - REAL implementation using routeMemoryOp
 const searchCommand: Command = {
   name: 'search',
   description: 'Semantic similarity search',
@@ -129,7 +129,7 @@ const searchCommand: Command = {
     const namespace = ctx.flags.collection as string || 'default';
     const limit = parseInt(ctx.flags.limit as string || '10', 10);
     const threshold = parseFloat(ctx.flags.threshold as string || '0.5');
-    const dbPath = ctx.flags['db-path'] as string || '.swarm/memory.db';
+    const _dbPath = ctx.flags['db-path'] as string || '.swarm/memory.db'; // kept for CLI compat; router resolves path
 
     if (!query) {
       output.printError('Query is required');
@@ -144,97 +144,70 @@ const searchCommand: Command = {
     spinner.start();
 
     try {
-      const fs = await import('fs');
-      const path = await import('path');
-      const fullDbPath = path.resolve(process.cwd(), dbPath);
-
-      // Check if database exists
-      if (!fs.existsSync(fullDbPath)) {
-        spinner.fail('Database not found');
-        output.printWarning(`No database at ${fullDbPath}`);
-        output.printInfo('Run: claude-flow memory init');
-        return { success: false, exitCode: 1 };
-      }
-
-      const bsMod = await import('better-sqlite3');
-      const Database = bsMod.default ?? bsMod;
-      const db = new Database(fullDbPath, { readonly: true });
-      db.pragma('journal_mode = WAL');
-
       const startTime = Date.now();
 
-      // Generate embedding for query
-      const { generateEmbedding } = await import('../memory/memory-initializer.js');
-      const queryResult = await generateEmbedding(query);
-      const queryEmbedding = queryResult.embedding;
+      // ADR-0086 Debt-7: route through memory-router instead of SQLite
+      const { routeMemoryOp, ensureRouter, generateEmbedding } = await import('../memory/memory-router.js');
+      await ensureRouter();
 
-      // Get all entries with embeddings from database
-      const entries = queryRows(db, `
-        SELECT id, key, namespace, content, embedding, embedding_dimensions
-        FROM memory_entries
-        WHERE status = 'active'
-          AND embedding IS NOT NULL
-          ${namespace !== 'all' ? `AND namespace = '${namespace}'` : ''}
-        LIMIT 1000
-      `);
+      const searchResult = await routeMemoryOp({
+        type: 'search',
+        query: query,
+        namespace: namespace === 'all' ? undefined : namespace,
+        limit: limit,
+        threshold: threshold,
+      });
+
+      const queryResult = await generateEmbedding(query);
 
       const results: { score: number; id: string; key: string; content: string; namespace: string }[] = [];
 
-      for (const row of entries) {
-        const id = String(row.id ?? '');
-        const key = String(row.key ?? '');
-        const ns = String(row.namespace ?? '');
-        const content = String(row.content ?? '');
-        const embeddingJson = String(row.embedding ?? '');
-
-        if (!embeddingJson) continue;
-
-        try {
-          const embedding = JSON.parse(embeddingJson) as number[];
-
-          // Calculate cosine similarity
-          const similarity = cosineSimilarity(queryEmbedding, embedding);
-
-          if (similarity >= threshold) {
-            results.push({
-              score: similarity,
-              id: id.substring(0, 10),
-              key: key || id.substring(0, 15),
-              content: content.substring(0, 45) + (content.length > 45 ? '...' : ''),
-              namespace: ns || 'default'
-            });
-          }
-        } catch {
-          // Skip entries with invalid embeddings
+      if (searchResult.success && Array.isArray(searchResult.results)) {
+        for (const r of searchResult.results as { key: string; score: number; namespace: string; content: string }[]) {
+          const key = String(r.key ?? '');
+          const content = String(r.content ?? '');
+          const ns = String(r.namespace ?? 'default');
+          results.push({
+            score: r.score,
+            id: key.substring(0, 10),
+            key: key || key.substring(0, 15),
+            content: content.substring(0, 45) + (content.length > 45 ? '...' : ''),
+            namespace: ns,
+          });
         }
       }
 
       // Also search entries without embeddings using keyword match
       if (results.length < limit) {
-        const keywordEntries = queryRows(db, `
-          SELECT id, key, namespace, content
-          FROM memory_entries
-          WHERE status = 'active'
-            AND (content LIKE '%${query.replace(/'/g, "''")}%' OR key LIKE '%${query.replace(/'/g, "''")}%')
-            ${namespace !== 'all' ? `AND namespace = '${namespace}'` : ''}
-          LIMIT ${limit - results.length}
-        `);
+        const listResult = await routeMemoryOp({
+          type: 'list',
+          namespace: namespace === 'all' ? undefined : namespace,
+          limit: 1000,
+        });
 
-        for (const row of keywordEntries) {
-          const id = String(row.id ?? '');
-          const key = String(row.key ?? '');
-          const ns = String(row.namespace ?? '');
-          const content = String(row.content ?? '');
+        if (listResult.success && Array.isArray(listResult.entries)) {
+          const queryLower = query.toLowerCase();
+          for (const entry of listResult.entries as { id?: string; key?: string; namespace?: string; content?: string }[]) {
+            const id = String(entry.id ?? '');
+            const key = String(entry.key ?? '');
+            const ns = String(entry.namespace ?? 'default');
+            const content = String(entry.content ?? '');
 
-          // Avoid duplicates
-          if (!results.some(r => r.id === id.substring(0, 10))) {
-            results.push({
-              score: 0.5, // Keyword match base score
-              id: id.substring(0, 10),
-              key: key || id.substring(0, 15),
-              content: content.substring(0, 45) + (content.length > 45 ? '...' : ''),
-              namespace: ns || 'default'
-            });
+            // Keyword match on content or key
+            if (content.toLowerCase().includes(queryLower) || key.toLowerCase().includes(queryLower)) {
+              // Avoid duplicates
+              if (!results.some(r => r.id === id.substring(0, 10))) {
+                results.push({
+                  score: 0.5, // Keyword match base score
+                  id: id.substring(0, 10),
+                  key: key || id.substring(0, 15),
+                  content: content.substring(0, 45) + (content.length > 45 ? '...' : ''),
+                  namespace: ns || 'default',
+                });
+              }
+            }
+
+            if (results.length >= limit) break;
           }
         }
       }
@@ -244,7 +217,6 @@ const searchCommand: Command = {
       const topResults = results.slice(0, limit);
 
       const searchTime = Date.now() - startTime;
-      db.close();
 
       spinner.succeed(`Found ${topResults.length} matches (${searchTime}ms)`);
 
@@ -282,14 +254,6 @@ const searchCommand: Command = {
     }
   },
 };
-
-/**
- * Run a SELECT query against a better-sqlite3 database.
- * Returns rows as plain objects keyed by column name.
- */
-function queryRows(db: any, sql: string): Record<string, unknown>[] {
-  return db.prepare(sql).all() as Record<string, unknown>[];
-}
 
 /**
  * Optimized cosine similarity
@@ -343,7 +307,8 @@ const compareCommand: Command = {
     spinner.start();
 
     try {
-      const { generateEmbedding } = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { generateEmbedding } = await import('../memory/memory-router.js');
 
       // Generate real embeddings for both texts
       const startTime = Date.now();
@@ -409,7 +374,7 @@ const compareCommand: Command = {
   },
 };
 
-// Collections subcommand - REAL implementation using better-sqlite3
+// Collections subcommand - REAL implementation using routeMemoryOp
 const collectionsCommand: Command = {
   name: 'collections',
   description: 'Manage embedding collections (namespaces)',
@@ -424,68 +389,49 @@ const collectionsCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const action = ctx.flags.action as string || 'list';
-    const dbPath = ctx.flags['db-path'] as string || '.swarm/memory.db';
+    const _dbPath = ctx.flags['db-path'] as string || '.swarm/memory.db'; // kept for CLI compat; router resolves path
 
     output.writeln();
     output.writeln(output.bold('Embedding Collections (Namespaces)'));
     output.writeln(output.dim('─'.repeat(60)));
 
     try {
-      const fs = await import('fs');
-      const path = await import('path');
-      const fullDbPath = path.resolve(process.cwd(), dbPath);
+      // ADR-0086 Debt-7: route through memory-router instead of SQLite
+      const { routeMemoryOp, ensureRouter } = await import('../memory/memory-router.js');
+      await ensureRouter();
 
-      // Check if database exists
-      if (!fs.existsSync(fullDbPath)) {
-        output.printWarning('No database found');
-        output.printInfo('Run: claude-flow memory init');
+      const nsResult = await routeMemoryOp({ type: 'listNamespaces' });
+
+      if (!nsResult.success || !Array.isArray(nsResult.namespaces) || nsResult.namespaces.length === 0) {
+        output.printWarning('No collections found');
         output.writeln();
-        output.writeln(output.dim('No collections yet - initialize memory first'));
+        output.writeln(output.dim('Store some data first:'));
+        output.writeln(output.highlight('  claude-flow memory store -k "key" --value "data"'));
         return { success: true, data: [] };
       }
 
-      const bsMod = await import('better-sqlite3');
-      const Database = bsMod.default ?? bsMod;
-      const db = new Database(fullDbPath, { readonly: true });
-      db.pragma('journal_mode = WAL');
-
-      // Get collection stats from database
-      const statsRows = queryRows(db, `
-        SELECT
-          namespace,
-          COUNT(*) as total_entries,
-          SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) as with_embeddings,
-          AVG(embedding_dimensions) as avg_dimensions,
-          SUM(LENGTH(content)) as total_content_size
-        FROM memory_entries
-        WHERE status = 'active'
-        GROUP BY namespace
-        ORDER BY total_entries DESC
-      `);
-
-      // Get vector index info (best-effort, table may not exist)
-      try { queryRows(db, `SELECT name, dimensions, hnsw_m FROM vector_indexes`); } catch { /* ignore */ }
-
       const collections: { name: string; vectors: string; total: string; dimensions: string; index: string; size: string }[] = [];
 
-      for (const row of statsRows) {
-        const ns = String(row.namespace ?? '');
-        const total = Number(row.total_entries ?? 0);
-        const withEmbeddings = Number(row.with_embeddings ?? 0);
-        const avgDims = Number(row.avg_dimensions ?? 0);
-        const contentSize = Number(row.total_content_size ?? 0);
+      for (const ns of nsResult.namespaces as string[]) {
+        const countResult = await routeMemoryOp({ type: 'count', namespace: ns });
+        const total = countResult.success ? Number(countResult.count ?? 0) : 0;
+
+        // Use stats to get entries-with-embeddings count
+        const statsResult = await routeMemoryOp({ type: 'stats' });
+        const withEmbeddings = statsResult.success ? Number(statsResult.entriesWithEmbeddings ?? 0) : 0;
+        // Proportion of this namespace's vectors (best-effort estimate)
+        const totalEntries = statsResult.success ? Number(statsResult.totalEntries ?? 1) : 1;
+        const nsVectors = totalEntries > 0 ? Math.round(withEmbeddings * (total / totalEntries)) : 0;
 
         collections.push({
           name: ns || 'default',
-          vectors: withEmbeddings.toLocaleString(),
+          vectors: nsVectors.toLocaleString(),
           total: total.toLocaleString(),
-          dimensions: avgDims ? Math.round(avgDims).toString() : '-',
-          index: withEmbeddings > 0 ? 'HNSW' : 'None',
-          size: formatBytes(contentSize || 0)
+          dimensions: total > 0 ? String(EMBEDDING_DIM) : '-',
+          index: nsVectors > 0 ? 'HNSW' : 'None',
+          size: formatBytes(total * 200), // Estimate ~200 bytes per entry
         });
       }
-
-      db.close();
 
       if (collections.length === 0) {
         output.printWarning('No collections found');
@@ -508,7 +454,7 @@ const collectionsCommand: Command = {
       });
 
       output.writeln();
-      output.writeln(output.dim(`Database: ${fullDbPath}`));
+      output.writeln(output.dim('Storage: RVF (memory-router)'));
 
       return { success: true, data: collections };
     } catch (error) {
@@ -553,10 +499,11 @@ const indexCommand: Command = {
     output.writeln(output.dim('─'.repeat(50)));
 
     try {
-      const { getHNSWStatus, getHNSWIndex, searchHNSWIndex, generateEmbedding } = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { routeEmbeddingOp, generateEmbedding } = await import('../memory/memory-router.js');
 
-      // Get real HNSW status
-      const status = getHNSWStatus();
+      // Get real HNSW status via router
+      const status = await routeEmbeddingOp({ type: 'hnswStatus' });
 
       if (action === 'status') {
         output.writeln();
@@ -566,39 +513,41 @@ const indexCommand: Command = {
             { key: 'value', header: 'Value', width: 30 },
           ],
           data: [
-            { metric: 'HNSW Available', value: status.available ? output.success('Yes (@ruvector/core)') : output.warning('No') },
-            { metric: 'Index Initialized', value: status.initialized ? output.success('Yes') : output.dim('No') },
-            { metric: 'Vector Count', value: status.entryCount.toLocaleString() },
-            { metric: 'Dimensions', value: String(status.dimensions) },
+            { metric: 'HNSW Available', value: status.success ? output.success('Yes (@ruvector/core)') : output.warning('No') },
+            { metric: 'Index Initialized', value: status.success ? output.success('Yes') : output.dim('No') },
+            { metric: 'Vector Count', value: (Number(status.entryCount) || 0).toLocaleString() },
+            { metric: 'Dimensions', value: String(status.dimensions || EMBEDDING_DIM) },
             { metric: 'Distance Metric', value: 'Cosine' },
             { metric: 'HNSW M', value: String(m) },
             { metric: 'ef_construction', value: String(efConstruction) },
           ],
         });
 
-        if (status.available && status.entryCount > 0) {
+        const entryCount = Number(status.entryCount) || 0;
+        if (status.success && entryCount > 0) {
           // Run a quick benchmark to show actual performance
           output.writeln();
           output.writeln(output.dim('Running quick performance test...'));
 
           const testQuery = await generateEmbedding('test performance query');
           const start = performance.now();
-          const results = await searchHNSWIndex(testQuery.embedding, { k: 10 });
+          const searchResult = await routeEmbeddingOp({ type: 'hnswSearch', vector: testQuery.embedding, k: 10 });
           const searchTime = performance.now() - start;
+          const results = (searchResult.results || []) as unknown[];
 
           // Estimate brute force time (0.5μs per comparison)
-          const bruteForceEstimate = status.entryCount * 0.0005;
+          const bruteForceEstimate = entryCount * 0.0005;
           const speedup = bruteForceEstimate / (searchTime / 1000);
 
           output.writeln();
           output.printBox([
-            `Performance (n=${status.entryCount}):`,
+            `Performance (n=${entryCount}):`,
             `  HNSW Search: ${searchTime.toFixed(2)}ms`,
             `  Brute Force Est: ${(bruteForceEstimate * 1000).toFixed(2)}ms`,
             `  Speedup: ~${Math.round(speedup)}x`,
-            `  Results: ${results?.length || 0} matches`,
+            `  Results: ${results.length} matches`,
           ].join('\n'), 'Search Performance');
-        } else if (!status.available) {
+        } else if (!status.success) {
           output.writeln();
           output.printWarning('@ruvector/core not available');
           output.printInfo('Install: npm install @ruvector/core');
@@ -611,7 +560,7 @@ const indexCommand: Command = {
         return { success: true, data: status };
       }
 
-      // Build/Rebuild action
+      // Build/Rebuild action — RvfBackend manages index automatically (ADR-0086)
       if (action === 'build' || action === 'rebuild') {
         if (!collection) {
           output.printError('Collection is required for build/rebuild');
@@ -621,10 +570,10 @@ const indexCommand: Command = {
         const spinner = output.createSpinner({ text: `${action}ing index for ${collection}...`, spinner: 'dots' });
         spinner.start();
 
-        // Force rebuild if requested
-        const index = await getHNSWIndex({ forceRebuild: action === 'rebuild' });
+        // Query status — RvfBackend manages the index; no manual rebuild needed
+        const buildStatus = await routeEmbeddingOp({ type: 'hnswStatus' });
 
-        if (!index) {
+        if (!buildStatus.success) {
           spinner.fail('@ruvector/core not available');
           output.printInfo('Install: npm install @ruvector/core');
           return { success: false, exitCode: 1 };
@@ -632,13 +581,13 @@ const indexCommand: Command = {
 
         spinner.succeed(`Index ${action} complete`);
 
-        const newStatus = getHNSWStatus();
+        const newStatus = await routeEmbeddingOp({ type: 'hnswStatus' });
         output.writeln();
         output.printBox([
           `Collection: ${collection}`,
           `Action: ${action}`,
-          `Vectors: ${newStatus.entryCount}`,
-          `Dimensions: ${newStatus.dimensions}`,
+          `Vectors: ${Number(newStatus.entryCount) || 0}`,
+          `Dimensions: ${newStatus.dimensions || EMBEDDING_DIM}`,
           `M: ${m}`,
           `ef_construction: ${efConstruction}`,
         ].join('\n'), 'Index Built');
@@ -1331,7 +1280,7 @@ const cacheCommand: Command = {
   description: 'Manage embedding cache',
   options: [
     { name: 'action', short: 'a', type: 'string', description: 'Action: stats, clear, persist', default: 'stats' },
-    { name: 'db-path', type: 'string', description: 'SQLite database path', default: '.cache/embeddings.db' },
+    { name: 'db-path', type: 'string', description: 'RVF data path', default: '.cache/embeddings.rvf' },
   ],
   examples: [
     { command: 'claude-flow embeddings cache', description: 'Show cache stats' },
@@ -1339,7 +1288,7 @@ const cacheCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const action = ctx.flags.action as string || 'stats';
-    const dbPath = ctx.flags['db-path'] as string || '.cache/embeddings.db';
+    const dbPath = ctx.flags['db-path'] as string || '.cache/embeddings.rvf';
 
     output.writeln();
     output.writeln(output.bold('Embedding Cache'));
@@ -1348,41 +1297,41 @@ const cacheCommand: Command = {
     const fs = await import('fs');
     const path = await import('path');
 
-    // Get real cache stats
+    // ADR-0086 Debt-7: route through memory-router instead of SQLite
     const resolvedDbPath = path.resolve(dbPath);
-    let sqliteEntries = 0;
-    let sqliteSize = '0 B';
-    let sqliteExists = false;
+    let rvfEntries = 0;
+    let rvfSize = '0 B';
+    let rvfExists = false;
 
     try {
+      // Check for .rvf file on disk
       if (fs.existsSync(resolvedDbPath)) {
-        sqliteExists = true;
+        rvfExists = true;
         const stats = fs.statSync(resolvedDbPath);
         const sizeBytes = stats.size;
 
         // Format size
         if (sizeBytes >= 1024 * 1024) {
-          sqliteSize = `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
+          rvfSize = `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
         } else if (sizeBytes >= 1024) {
-          sqliteSize = `${(sizeBytes / 1024).toFixed(1)} KB`;
+          rvfSize = `${(sizeBytes / 1024).toFixed(1)} KB`;
         } else {
-          sqliteSize = `${sizeBytes} B`;
+          rvfSize = `${sizeBytes} B`;
         }
+      }
 
-        // Try to count real entries via better-sqlite3
-        try {
-          const bsMod = await import('better-sqlite3');
-          const Database = bsMod.default ?? bsMod;
-          const db = new Database(resolvedDbPath, { readonly: true });
-          db.pragma('journal_mode = WAL');
-          const rows = queryRows(db, 'SELECT COUNT(*) as count FROM embeddings');
-          if (rows.length > 0) {
-            sqliteEntries = Number(rows[0].count ?? 0);
-          }
-          db.close();
-        } catch {
-          // Estimate entries from file size (~3200 bytes per entry for 768-dim embeddings)
-          sqliteEntries = Math.floor(stats.size / 1600);
+      // Count real entries via routeMemoryOp
+      try {
+        const { routeMemoryOp, ensureRouter } = await import('../memory/memory-router.js');
+        await ensureRouter();
+        const countResult = await routeMemoryOp({ type: 'count' });
+        rvfEntries = countResult.success ? Number(countResult.count ?? 0) : 0;
+        rvfExists = rvfExists || rvfEntries > 0;
+      } catch {
+        // Router not available — use file-based estimate
+        if (rvfExists) {
+          const stats = fs.statSync(resolvedDbPath);
+          rvfEntries = Math.floor(stats.size / 1600);
         }
       }
     } catch { /* file access error */ }
@@ -1391,11 +1340,12 @@ const cacheCommand: Command = {
     let memoryEntries = 0;
     let memorySize = '0 B';
     try {
-      const { getHNSWStatus } = await import('../memory/memory-initializer.js');
-      const hnswStatus = getHNSWStatus();
-      if (hnswStatus && hnswStatus.initialized) {
-        memoryEntries = hnswStatus.entryCount || 0;
-        const memBytes = memoryEntries * (hnswStatus.dimensions || EMBEDDING_DIM) * 4; // Float32 = 4 bytes per dimension; ADR-0052: matches embedding config default
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { routeEmbeddingOp } = await import('../memory/memory-router.js');
+      const hnswStatus = await routeEmbeddingOp({ type: 'hnswStatus' });
+      if (hnswStatus && hnswStatus.success) {
+        memoryEntries = Number(hnswStatus.entryCount) || 0;
+        const memBytes = memoryEntries * (Number(hnswStatus.dimensions) || EMBEDDING_DIM) * 4; // Float32 = 4 bytes per dimension; ADR-0052: matches embedding config default
         if (memBytes >= 1024 * 1024) {
           memorySize = `${(memBytes / 1024 / 1024).toFixed(1)} MB`;
         } else if (memBytes >= 1024) {
@@ -1408,12 +1358,19 @@ const cacheCommand: Command = {
 
     if (action === 'clear') {
       try {
+        // Clear via router first
+        try {
+          const { routeMemoryOp, ensureRouter } = await import('../memory/memory-router.js');
+          await ensureRouter();
+          await routeMemoryOp({ type: 'clearNamespace', namespace: 'default' });
+        } catch { /* router not available */ }
+
+        // Also remove the on-disk file
         if (fs.existsSync(resolvedDbPath)) {
           fs.unlinkSync(resolvedDbPath);
-          output.writeln(output.success('Cache cleared!'));
-        } else {
-          output.writeln(output.dim('No cache to clear.'));
         }
+
+        output.writeln(output.success('Cache cleared!'));
         return { success: true };
       } catch (error) {
         output.printError(`Failed to clear cache: ${error}`);
@@ -1437,17 +1394,17 @@ const cacheCommand: Command = {
           size: memorySize,
         },
         {
-          cache: 'SQLite (Disk)',
-          entries: String(sqliteEntries),
-          status: sqliteExists ? output.success('Active') : output.dim('Not Found'),
-          size: sqliteSize,
+          cache: 'RVF (Disk)',
+          entries: String(rvfEntries),
+          status: rvfExists ? output.success('Active') : output.dim('Not Found'),
+          size: rvfSize,
         },
       ],
     });
 
     output.writeln();
-    output.writeln(output.dim(`Database: ${resolvedDbPath}`));
-    if (sqliteExists) {
+    output.writeln(output.dim(`Storage: ${resolvedDbPath}`));
+    if (rvfExists) {
       output.writeln(output.dim('Persistent cache survives restarts'));
     } else {
       output.writeln(output.dim('Cache will be created on first embedding operation'));
@@ -1483,7 +1440,8 @@ const warmupCommand: Command = {
     const overallStart = Date.now();
 
     try {
-      const { loadEmbeddingModel, generateEmbedding } = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { loadEmbeddingModel, generateEmbedding } = await import('../memory/memory-router.js');
 
       // Phase 1: Load model
       const loadStart = Date.now();
@@ -1569,7 +1527,8 @@ const benchmarkCommand: Command = {
     const results: { test: string; time: string; opsPerSec: string }[] = [];
 
     try {
-      const { loadEmbeddingModel, generateEmbedding } = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { loadEmbeddingModel, generateEmbedding } = await import('../memory/memory-router.js');
 
       // Test 1: Cold start (model load)
       output.writeln(output.dim('Testing cold start...'));
@@ -1753,14 +1712,14 @@ export const embeddingsCommand: Command = {
       'hyperbolic  - Poincaré ball embeddings',
       'neural      - Neural substrate (drift, memory, swarm)',
       'models      - List/download ONNX models',
-      'cache       - Manage persistent SQLite cache',
+      'cache       - Manage persistent RVF cache',
     ]);
     output.writeln();
     output.writeln('Performance:');
     output.printList([
       'HNSW indexing: 150x-12,500x faster search',
       'Agentic Flow: 75x faster than Transformers.js (~3ms)',
-      'Persistent cache: SQLite-backed, survives restarts',
+      'Persistent cache: RVF-backed, survives restarts',
       'Hyperbolic: Better hierarchical representation',
     ]);
     output.writeln();

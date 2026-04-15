@@ -128,7 +128,8 @@ const neuralCommand: Command = {
       type EmbeddingResult = { embedding: number[]; dimensions: number; model: string };
       let generateEmbedding: (text: string) => Promise<EmbeddingResult>;
       try {
-        const memory = await import('../memory/memory-initializer.js');
+        // ADR-0086 T2.6: import from router (was memory-initializer)
+        const memory = await import('../memory/memory-router.js');
         generateEmbedding = memory.generateEmbedding;
       } catch {
         generateEmbedding = async (text: string) => {
@@ -161,7 +162,8 @@ const neuralCommand: Command = {
       spinner.setText('Benchmarking batch cosine similarity...');
       let batchCosineSim: (query: Float32Array, vectors: Float32Array[]) => Float32Array;
       try {
-        const memory = await import('../memory/memory-initializer.js');
+        // ADR-0086 T2.6: import from router (was memory-initializer)
+        const memory = await import('../memory/memory-router.js');
         batchCosineSim = memory.batchCosineSim;
       } catch {
         batchCosineSim = (query: Float32Array, vectors: Float32Array[]) => {
@@ -205,7 +207,8 @@ const neuralCommand: Command = {
       spinner.setText('Benchmarking flash attention search...');
       const flashTimes: number[] = [];
       try {
-        const memory = await import('../memory/memory-initializer.js');
+        // ADR-0086 T2.6: import from router (was memory-initializer)
+        const memory = await import('../memory/memory-router.js');
         if (memory.flashAttentionSearch) {
           for (let i = 0; i < Math.min(iterations, 50); i++) {
             const start = performance.now();
@@ -301,18 +304,15 @@ const memoryCommand: Command = {
 
       const results: { name: string; mean: number; p95: number; target: number; met: boolean }[] = [];
 
-      // Import memory functions
-      let storeEntry: (opts: { key: string; value: string; namespace?: string }) => Promise<{ success: boolean }>;
-      let searchEntries: (opts: { query: string; namespace?: string; limit?: number }) => Promise<{ results: unknown[]; searchTime: number }>;
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      let routeMemoryOp: (op: { type: string; key?: string; value?: string; namespace?: string; query?: string; limit?: number }) => Promise<{ success: boolean; [k: string]: unknown }>;
 
       try {
-        const memory = await import('../memory/memory-initializer.js');
-        storeEntry = memory.storeEntry;
-        searchEntries = memory.searchEntries;
+        const memory = await import('../memory/memory-router.js');
+        routeMemoryOp = memory.routeMemoryOp;
       } catch {
         // @claude-flow/memory not available — return null metrics instead of fake numbers
-        storeEntry = async () => ({ success: true });
-        searchEntries = async () => ({ results: [], searchTime: 0 }); // 0 = no-op fallback, not a real benchmark
+        routeMemoryOp = async () => ({ success: true });
       }
 
       // 1. Store benchmark
@@ -320,7 +320,8 @@ const memoryCommand: Command = {
       const storeTimes: number[] = [];
       for (let i = 0; i < iterations; i++) {
         const start = performance.now();
-        await storeEntry({
+        await routeMemoryOp({
+          type: 'store',
           key: `bench-key-${i}`,
           value: `Benchmark value ${i} with some additional content`,
           namespace: 'benchmark',
@@ -348,7 +349,8 @@ const memoryCommand: Command = {
       const searchTimes: number[] = [];
       for (let i = 0; i < iterations; i++) {
         const start = performance.now();
-        await searchEntries({
+        await routeMemoryOp({
+          type: 'search',
           query: queries[i % queries.length],
           namespace: 'benchmark',
           limit: 10,

@@ -22,9 +22,19 @@ import {
   benchmarkAdaptation,
   getIntelligenceStats
 } from '../memory/intelligence.js';
-import {
-  getHNSWStatus,
-} from '../memory/memory-initializer.js';
+// ADR-0086 T2.7 + adversarial C1: import from router (was memory-initializer static import)
+import { routeEmbeddingOp } from '../memory/memory-router.js';
+
+/** Async wrapper for HNSW status — replaces sync getHNSWStatus() from initializer. */
+async function getHNSWStatus(): Promise<{ available: boolean; initialized: boolean; entryCount: number; dimensions: number }> {
+  const result = await routeEmbeddingOp({ type: 'hnswStatus' });
+  return {
+    available: result.success,
+    initialized: result.success,
+    entryCount: Number((result as Record<string, unknown>).totalEntries ?? 0),
+    dimensions: Number((result as Record<string, unknown>).dimensions ?? 768),
+  };
+}
 
 // Inline math utilities (ADR-0086: removed from memory-initializer)
 function batchCosineSim(query: Float32Array | number[], vectors: (Float32Array | number[])[]): Float32Array {
@@ -281,7 +291,7 @@ async function runBenchmarks(): Promise<BenchmarkResults> {
 
   // HNSW Status
   console.log('\n3. HNSW Index Status...');
-  const hnswStatus = getHNSWStatus();
+  const hnswStatus = await getHNSWStatus();
   console.log(`   Entries indexed: ${hnswStatus.entryCount}`);
   console.log(`   Initialized: ${hnswStatus.initialized}`);
 
@@ -336,7 +346,7 @@ async function showStatus(): Promise<void> {
   console.log(`  Patterns learned: ${stats.patternsLearned}`);
 
   // HNSW
-  const hnsw = getHNSWStatus();
+  const hnsw = await getHNSWStatus();
   console.log('\nHNSW Index:');
   console.log(`  Initialized: ${hnsw.initialized}`);
   console.log(`  Entries: ${hnsw.entryCount}`);

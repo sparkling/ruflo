@@ -5121,8 +5121,8 @@ const notifyCommand: Command = {
 
     // Store notification in memory if available
     try {
-      const { storeEntry } = await import('../memory/memory-initializer.js');
-      await storeEntry({ key: `notify-${Date.now()}`, value: `[${level}] ${message}`, namespace: 'notifications' });
+      const { routeMemoryOp } = await import('../memory/memory-router.js'); // ADR-0086 T2.6: import from router (was memory-initializer)
+      await routeMemoryOp({ type: 'store', key: `notify-${Date.now()}`, value: `[${level}] ${message}`, namespace: 'notifications' });
     } catch { /* memory not available */ }
 
     return { success: true, data: { timestamp, level, message } };

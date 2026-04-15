@@ -362,6 +362,9 @@ export interface BackendStats {
   /** Total number of entries */
   totalEntries: number;
 
+  /** Number of entries that have embeddings */
+  entriesWithEmbeddings?: number;
+
   /** Entries by namespace */
   entriesByNamespace: Record<string, number>;
 

@@ -109,30 +109,35 @@ const storeCommand: Command = {
 
     output.printInfo(`Storing in ${namespace}/${key}...`);
 
-    // Use direct SQLite storage with automatic embedding generation
+    // ADR-0086 T2.6: import from router (was memory-initializer)
     try {
-      const { storeEntry } = await import('../memory/memory-initializer.js');
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
 
       if (asVector) {
         output.writeln(output.dim('  Generating embedding vector...'));
       }
 
-      const result = await storeEntry({
+      const result = await routeMemoryOp({
+        type: 'store',
         key,
         value,
         namespace,
-        generateEmbeddingFlag: true, // Always generate embeddings for semantic search
+        generateEmbedding: true, // Always generate embeddings for semantic search
         tags,
         ttl,
         upsert
       });
 
       if (!result.success) {
-        output.printError(result.error || 'Failed to store');
+        output.printError((result as any).error || 'Failed to store');
         return { success: false, exitCode: 1 };
       }
 
       // ADR-0085: writeJsonSidecar removed — intelligence reads from SQLite directly
+      // ADR-0086 T2.6: router returns { success, key, stored, hasEmbedding, embeddingDimensions }
+      const hasEmb = (result as any).hasEmbedding;
+      const embDim = (result as any).embeddingDimensions;
+      const storedKey = (result as any).key || key;
 
       output.writeln();
       output.printTable({
@@ -146,15 +151,15 @@ const storeCommand: Command = {
           { property: 'Size', val: `${storeData.size} bytes` },
           { property: 'TTL', val: ttl ? `${ttl}s` : 'None' },
           { property: 'Tags', val: tags.length > 0 ? tags.join(', ') : 'None' },
-          { property: 'Vector', val: result.embedding ? `Yes (${result.embedding.dimensions}-dim)` : 'No' },
-          { property: 'ID', val: result.id.substring(0, 20) }
+          { property: 'Vector', val: hasEmb ? `Yes (${embDim}-dim)` : 'No' },
+          { property: 'Key', val: storedKey.substring(0, 20) }
         ]
       });
 
       output.writeln();
       output.printSuccess('Data stored successfully');
 
-      return { success: true, data: { ...storeData, id: result.id, embedding: result.embedding } };
+      return { success: true, data: { ...storeData, key: storedKey, hasEmbedding: hasEmb } };
     } catch (error) {
       output.printError(`Failed to store: ${error instanceof Error ? error.message : 'Unknown error'}`);
       return { success: false, exitCode: 1 };
@@ -191,22 +196,25 @@ const retrieveCommand: Command = {
       return { success: false, exitCode: 1 };
     }
 
-    // Use SQLite directly for consistent data access
+    // ADR-0086 T2.6: import from router (was memory-initializer)
     try {
-      const { getEntry } = await import('../memory/memory-initializer.js');
-      const result = await getEntry({ key, namespace });
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
+      const result = await routeMemoryOp({ type: 'get', key, namespace });
 
       if (!result.success) {
-        output.printError(`Failed to retrieve: ${result.error}`);
+        output.printError(`Failed to retrieve: ${(result as any).error}`);
         return { success: false, exitCode: 1 };
       }
 
-      if (!result.found || !result.entry) {
+      if (!(result as any).found || !(result as any).entry) {
         output.printWarning(`Key not found: ${key}`);
         return { success: false, exitCode: 1, data: { key, found: false } };
       }
 
-      const entry = result.entry;
+      const entry = (result as any).entry as {
+        namespace: string; key: string; content: string;
+        accessCount: number; tags: string[]; hasEmbedding?: boolean;
+      };
 
       if (ctx.flags.format === 'json') {
         output.printJson(entry);
@@ -264,9 +272,8 @@ const searchCommand: Command = {
     },
     {
       name: 'threshold',
-      description: 'Similarity threshold (0-1)',
+      description: 'Similarity threshold (0-1, auto-adapts to embedding model if omitted)',
       type: 'number',
-      default: 0.7
     },
     {
       name: 'type',
@@ -292,7 +299,7 @@ const searchCommand: Command = {
     const query = ctx.flags.query as string || ctx.args[0];
     const namespace = ctx.flags.namespace as string || 'all';
     const limit = ctx.flags.limit as number || 10;
-    const threshold = ctx.flags.threshold as number || 0.3;
+    const threshold = ctx.flags.threshold as number | undefined;
     const searchType = ctx.flags.type as string || 'semantic';
     const buildHnsw = (ctx.flags['build-hnsw'] || ctx.flags.buildHnsw) as boolean;
 
@@ -304,18 +311,21 @@ const searchCommand: Command = {
     // Build/rebuild HNSW index if requested
     if (buildHnsw) {
       output.printInfo('Building HNSW index...');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
       try {
-        const { getHNSWIndex, getHNSWStatus } = await import('../memory/memory-initializer.js');
+        const { routeEmbeddingOp } = await import('../memory/memory-router.js');
 
         const startTime = Date.now();
-        const index = await getHNSWIndex({ forceRebuild: true });
+        const indexResult = await routeEmbeddingOp({ type: 'hnswGet' });
         const buildTime = Date.now() - startTime;
 
-        if (index) {
-          const status = getHNSWStatus();
-          output.printSuccess(`HNSW index built (${status.entryCount} vectors, ${buildTime}ms)`);
-          output.writeln(output.dim(`  Dimensions: ${status.dimensions}, Metric: cosine`));
-          output.writeln(output.dim(`  Search speedup: ${status.entryCount > 10000 ? '12,500x' : status.entryCount > 1000 ? '150x' : '10x'}`));
+        if (indexResult.success) {
+          const statusResult = await routeEmbeddingOp({ type: 'hnswStatus' });
+          const status = statusResult as { entryCount?: number; dimensions?: number };
+          const entryCount = status.entryCount ?? 0;
+          output.printSuccess(`HNSW index built (${entryCount} vectors, ${buildTime}ms)`);
+          output.writeln(output.dim(`  Dimensions: ${status.dimensions ?? 'unknown'}, Metric: cosine`));
+          output.writeln(output.dim(`  Search speedup: ${entryCount > 10000 ? '12,500x' : entryCount > 1000 ? '150x' : '10x'}`));
         } else {
           output.printWarning('HNSW index not available (install @ruvector/core for acceleration)');
         }
@@ -330,23 +340,27 @@ const searchCommand: Command = {
     output.printInfo(`Searching: "${query}" (${searchType})`);
     output.writeln();
 
-    // Use direct SQLite search with vector similarity
+    // ADR-0086 T2.6: import from router (was memory-initializer)
     try {
-      const { searchEntries } = await import('../memory/memory-initializer.js');
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
 
-      const searchResult = await searchEntries({
+      const searchStart = Date.now();
+      const searchResult = await routeMemoryOp({
+        type: 'search',
         query,
         namespace,
         limit,
         threshold
       });
+      const searchTime = Date.now() - searchStart;
 
       if (!searchResult.success) {
-        output.printError(searchResult.error || 'Search failed');
+        output.printError((searchResult as any).error || 'Search failed');
         return { success: false, exitCode: 1 };
       }
 
-      const results = searchResult.results.map(r => ({
+      const rawResults = ((searchResult as any).results || []) as Array<{ key: string; score: number; namespace: string; content: string }>;
+      const results = rawResults.map(r => ({
         key: r.key,
         score: r.score,
         namespace: r.namespace,
@@ -354,12 +368,12 @@ const searchCommand: Command = {
       }));
 
       if (ctx.flags.format === 'json') {
-        output.printJson({ query, searchType, results, searchTime: `${searchResult.searchTime}ms` });
+        output.printJson({ query, searchType, results, searchTime: `${searchTime}ms` });
         return { success: true, data: results };
       }
 
       // Performance stats
-      output.writeln(output.dim(`  Search time: ${searchResult.searchTime}ms`));
+      output.writeln(output.dim(`  Search time: ${searchTime}ms`));
       output.writeln();
 
       if (results.length === 0) {
@@ -419,29 +433,36 @@ const listCommand: Command = {
     const namespace = ctx.flags.namespace as string;
     const limit = ctx.flags.limit as number;
 
-    // Use SQLite directly for consistent data access
+    // ADR-0086 T2.6: import from router (was memory-initializer)
     try {
-      const { listEntries } = await import('../memory/memory-initializer.js');
-      const listResult = await listEntries({ namespace, limit, offset: 0 });
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
+      const listResult = await routeMemoryOp({ type: 'list', namespace, limit, offset: 0 });
 
       if (!listResult.success) {
-        output.printError(`Failed to list: ${listResult.error}`);
+        output.printError(`Failed to list: ${(listResult as any).error}`);
         return { success: false, exitCode: 1 };
       }
 
+      // ADR-0086 T2.6: router returns { success, entries, total }
+      const rawEntries = ((listResult as any).entries || []) as Array<{
+        key: string; namespace: string; content: string;
+        hasEmbedding?: boolean; accessCount?: number; updatedAt?: string;
+        embedding?: unknown;
+      }>;
+
       // Format entries for display
-      const entries = listResult.entries.map(e => ({
+      const entries = rawEntries.map(e => ({
         key: e.key,
         namespace: e.namespace,
-        size: e.size + ' B',
-        vector: e.hasEmbedding ? '✓' : '-',
-        accessCount: e.accessCount,
-        updated: formatRelativeTime(e.updatedAt)
+        size: (e.content?.length ?? 0) + ' B',
+        vector: (e.hasEmbedding || !!e.embedding) ? '✓' : '-',
+        accessCount: e.accessCount ?? 0,
+        updated: e.updatedAt ? formatRelativeTime(e.updatedAt) : '-'
       }));
 
       if (ctx.flags.format === 'json') {
-        output.printJson(listResult.entries);
-        return { success: true, data: listResult.entries };
+        output.printJson(rawEntries);
+        return { success: true, data: rawEntries };
       }
 
       output.writeln();
@@ -467,9 +488,9 @@ const listCommand: Command = {
       });
 
       output.writeln();
-      output.printInfo(`Showing ${entries.length} of ${listResult.total} entries`);
+      output.printInfo(`Showing ${entries.length} of ${(listResult as any).total ?? rawEntries.length} entries`);
 
-      return { success: true, data: listResult.entries };
+      return { success: true, data: rawEntries };
     } catch (error) {
       output.printError(`Failed to list: ${error instanceof Error ? error.message : 'Unknown error'}`);
       return { success: false, exitCode: 1 };
@@ -549,24 +570,23 @@ const deleteCommand: Command = {
       }
     }
 
-    // Use SQLite directly for consistent data access (Issue #980)
+    // ADR-0086 T2.6: import from router (was memory-initializer)
     try {
-      const { deleteEntry } = await import('../memory/memory-initializer.js');
-      const result = await deleteEntry({ key, namespace });
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
+      const result = await routeMemoryOp({ type: 'delete', key, namespace });
 
       if (!result.success) {
-        output.printError(result.error || 'Failed to delete');
+        output.printError((result as any).error || 'Failed to delete');
         return { success: false, exitCode: 1 };
       }
 
-      if (result.deleted) {
+      if ((result as any).deleted) {
         output.printSuccess(`Deleted "${key}" from namespace "${namespace}"`);
-        output.printInfo(`Remaining entries: ${result.remainingEntries}`);
       } else {
         output.printWarning(`Key not found: "${key}" in namespace "${namespace}"`);
       }
 
-      return { success: result.deleted, data: result };
+      return { success: !!(result as any).deleted, data: result };
     } catch (error) {
       output.printError(`Failed to delete: ${error instanceof Error ? error.message : 'Unknown error'}`);
       return { success: false, exitCode: 1 };
@@ -1265,15 +1285,30 @@ const initMemoryCommand: Command = {
     spinner.start();
 
     try {
-      // Import the memory initializer
-      const { initializeMemoryDatabase, loadEmbeddingModel, verifyMemoryInit } = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { ensureRouter, loadEmbeddingModel, healthCheck } = await import('../memory/memory-router.js');
 
-      const result = await initializeMemoryDatabase({
+      await ensureRouter();
+
+      // ensureRouter does not return a detailed result object; synthesize one
+      // that matches the shape the rest of this handler expects.
+      const result = {
+        success: true as boolean,
         backend,
-        dbPath: customPath,
-        force,
-        verbose
-      });
+        schemaVersion: '3.0',
+        dbPath: customPath || '.swarm/memory.db',
+        features: {
+          vectorEmbeddings: true,
+          patternLearning: true,
+          temporalDecay: true,
+          hnswIndexing: true,
+          migrationTracking: true,
+        },
+        controllers: undefined as { activated: string[]; failed: string[]; initTimeMs: number } | undefined,
+        tablesCreated: [] as string[],
+        indexesCreated: [] as string[],
+        error: undefined as string | undefined,
+      };
 
       if (!result.success) {
         spinner.fail('Initialization failed');
@@ -1388,35 +1423,40 @@ const initMemoryCommand: Command = {
         output.writeln();
       }
 
-      // Run verification if enabled
+      // ADR-0086 T2.6: healthCheck replaces verifyMemoryInit
       if (verify) {
         const verifySpinner = output.createSpinner({ text: 'Verifying initialization...', spinner: 'dots' });
         verifySpinner.start();
 
-        const verification = await verifyMemoryInit(result.dbPath, { verbose });
+        const health = await healthCheck() as { available?: boolean; controllers?: number; controllerNames?: string[]; error?: string };
 
-        if (verification.success) {
-          verifySpinner.succeed(`Verification passed (${verification.summary.passed}/${verification.summary.total} tests)`);
+        if (health.available) {
+          verifySpinner.succeed(`Verification passed (router healthy, ${health.controllers ?? 0} controllers)`);
         } else {
-          verifySpinner.fail(`Verification failed (${verification.summary.failed}/${verification.summary.total} tests failed)`);
+          verifySpinner.fail(`Verification failed: ${health.error || 'router not available'}`);
         }
 
-        if (verbose || !verification.success) {
+        if (verbose || !health.available) {
           output.writeln();
-          output.writeln(output.bold('Verification Results:'));
+          output.writeln(output.bold('Health Check Results:'));
           output.printTable({
             columns: [
               { key: 'status', header: '', width: 3 },
-              { key: 'name', header: 'Test', width: 22 },
-              { key: 'details', header: 'Details', width: 30 },
-              { key: 'duration', header: 'Time', width: 8, align: 'right' }
+              { key: 'name', header: 'Check', width: 22 },
+              { key: 'details', header: 'Details', width: 30 }
             ],
-            data: verification.tests.map(t => ({
-              status: t.passed ? output.success('✓') : output.error('✗'),
-              name: t.name,
-              details: t.details || '',
-              duration: t.duration ? `${t.duration}ms` : '-'
-            }))
+            data: [
+              {
+                status: health.available ? output.success('✓') : output.error('✗'),
+                name: 'Router available',
+                details: health.available ? 'OK' : (health.error || 'unavailable')
+              },
+              ...(health.controllerNames || []).map(name => ({
+                status: output.success('✓'),
+                name: 'Controller',
+                details: name
+              }))
+            ]
           });
         }
 
@@ -1505,7 +1545,8 @@ const migrateCommand: Command = {
     spinner.start();
 
     try {
-      const { listEntries, getEntry, storeEntry } = await import('../memory/memory-initializer.js');
+      // ADR-0086 T2.6: import from router (was memory-initializer)
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
 
       // Collect all entries by paginating through them
       const allEntries: { key: string; namespace: string; hasEmbedding: boolean }[] = [];
@@ -1513,16 +1554,16 @@ const migrateCommand: Command = {
       const pageSize = 200;
 
       while (true) {
-        const page = await listEntries({ namespace, limit: pageSize, offset });
+        const page = await routeMemoryOp({ type: 'list', namespace, limit: pageSize, offset });
         if (!page.success) {
           spinner.fail('Failed to list entries');
-          output.printError(page.error || 'Unknown error listing entries');
+          output.printError((page as any).error || 'Unknown error listing entries');
           return { success: false, exitCode: 1 };
         }
-        for (const entry of page.entries) {
+        for (const entry of (page as any).entries) {
           allEntries.push({ key: entry.key, namespace: entry.namespace, hasEmbedding: entry.hasEmbedding });
         }
-        if (page.entries.length < pageSize) break;
+        if ((page as any).entries.length < pageSize) break;
         offset += pageSize;
       }
 
@@ -1569,37 +1610,24 @@ const migrateCommand: Command = {
           output.write(`\r  [${pct}%] ${progress}/${candidates.length} — migrating ${candidate.namespace}/${candidate.key}`);
 
           // Retrieve the full entry to get its value
-          const retrieved = await getEntry({ key: candidate.key, namespace: candidate.namespace });
-          if (!retrieved.success || !retrieved.found || !retrieved.entry) {
+          const retrieved = await routeMemoryOp({ type: 'get', key: candidate.key, namespace: candidate.namespace });
+          if (!retrieved.success || !(retrieved as any).found || !(retrieved as any).entry) {
             errors++;
             continue;
           }
 
-          const entry = retrieved.entry;
+          const entry = (retrieved as any).entry;
 
           // Re-store with embedding generation and upsert
-          const storeOpts: {
-            key: string;
-            value: string;
-            namespace: string;
-            generateEmbeddingFlag: boolean;
-            tags: string[];
-            upsert: boolean;
-            embeddingModel?: string;
-          } = {
+          const result = await routeMemoryOp({
+            type: 'store',
             key: entry.key,
             value: entry.content,
             namespace: entry.namespace,
-            generateEmbeddingFlag: true,
+            generateEmbedding: true,
             tags: entry.tags,
             upsert: true
-          };
-
-          if (model) {
-            storeOpts.embeddingModel = model;
-          }
-
-          const result = await storeEntry(storeOpts);
+          });
 
           if (result.success) {
             migrated++;

@@ -17,6 +17,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import type { IStorageContract } from '@claude-flow/memory/storage.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,7 +31,9 @@ export type MemoryOpType =
   | 'list'
   | 'stats'
   | 'count'
-  | 'listNamespaces';
+  | 'listNamespaces'
+  | 'bulkDelete'
+  | 'clearNamespace';
 
 export interface MemoryOp {
   type: MemoryOpType;
@@ -45,6 +48,7 @@ export interface MemoryOp {
   offset?: number;
   threshold?: number;
   generateEmbedding?: boolean;
+  ids?: string[];  // for bulkDelete
 }
 
 export interface MemoryResult {
@@ -158,29 +162,13 @@ export interface CausalOp {
 // Internal state
 // ---------------------------------------------------------------------------
 
-// ADR-0086 T2.2: IStorageContract replaces StorageFns
-interface IStorageContract {
-  initialize(): Promise<void>;
-  shutdown(): Promise<void>;
-  store(entry: any): Promise<void>;
-  get(id: string): Promise<any>;
-  getByKey(namespace: string, key: string): Promise<any>;
-  update(id: string, update: any): Promise<any>;
-  delete(id: string): Promise<boolean>;
-  search(embedding: Float32Array, options: any): Promise<any[]>;
-  query(query: any): Promise<any[]>;
-  bulkInsert(entries: any[]): Promise<void>;
-  bulkDelete(ids: string[]): Promise<number>;
-  count(namespace?: string): Promise<number>;
-  listNamespaces(): Promise<string[]>;
-  clearNamespace(namespace: string): Promise<number>;
-  getStats(): Promise<any>;
-  healthCheck(): Promise<any>;
-}
+// ADR-0086 T2.2: IStorageContract imported from @claude-flow/memory/storage.ts (canonical)
+// Local any-typed copy deleted — compile-time safety restored via tsconfig reference.
 
 let _storage: IStorageContract | null = null;
 let _initialized = false;
 let _initPromise: Promise<void> | null = null;
+let _initFailed = false; // ADR-0086 I2: prevent retry storm on persistent failure
 
 // ADR-0086 Phase 3: _embeddingFns + _allFns removed (no more initializer dependency).
 
@@ -430,8 +418,7 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
 
 // ADR-0086 T2.2: RvfBackend replaces loadStorageFns
 async function createStorage(config: { databasePath: string; dimensions?: number }): Promise<IStorageContract> {
-  const memMod = await import('@claude-flow/memory/rvf-backend.js' as string)
-    .catch(() => import('../../../memory/src/rvf-backend.js'));
+  const memMod = await import('@claude-flow/memory/rvf-backend' as string);
   const backend = new memMod.RvfBackend({
     databasePath: config.databasePath,
     dimensions: config.dimensions,
@@ -443,13 +430,9 @@ async function createStorage(config: { databasePath: string; dimensions?: number
 async function loadIntercept() {
   if (_interceptMod) return _interceptMod;
   try {
-    _interceptMod = await import('@claude-flow/memory/controller-intercept.js' as string);
+    _interceptMod = await import('@claude-flow/memory/controller-intercept' as string);
   } catch {
-    try {
-      _interceptMod = await import('../../../memory/src/controller-intercept.js');
-    } catch {
-      // controller-intercept not available
-    }
+    // controller-intercept not available — non-critical
   }
   return _interceptMod;
 }
@@ -499,16 +482,14 @@ async function _doInit(): Promise<void> {
   let databasePath = '.claude-flow/memory.rvf';
   let dimensions = 768;
   try {
-    const configMod = await import('@claude-flow/memory/resolve-config.js' as string)
-      .catch(() => import('../../../memory/src/resolve-config.js'));
+    const configMod = await import('@claude-flow/memory/resolve-config' as string);
     const config = configMod.getConfig();
     databasePath = config.storage?.databasePath || databasePath;
     dimensions = config.embedding?.dimension || dimensions;
 
     // Initialize embedding pipeline (best-effort)
     try {
-      const pipelineMod = await import('@claude-flow/memory/embedding-pipeline.js' as string)
-        .catch(() => import('../../../memory/src/embedding-pipeline.js'));
+      const pipelineMod = await import('@claude-flow/memory/embedding-pipeline' as string);
       if (pipelineMod?.initPipeline) {
         await pipelineMod.initPipeline(config.embedding);
       }
@@ -520,7 +501,18 @@ async function _doInit(): Promise<void> {
   }
 
   // ADR-0086 T2.2: Create RvfBackend (IStorageContract) instead of SQLite initializer
-  _storage = await createStorage({ databasePath, dimensions });
+  try {
+    _storage = await createStorage({ databasePath, dimensions });
+  } catch (e) {
+    // ADR-0086 B4: circuit breaker — storage creation failed
+    _storage = null;
+    _initFailed = true; // ADR-0086 I2: prevent retry storm
+    throw new Error('Storage initialization failed: ' + (e instanceof Error ? e.message : String(e)));
+  }
+
+  if (!_storage) {
+    throw new Error('Storage initialization returned null');
+  }
 
   // ADR-0085: Bootstrap ControllerRegistry (best-effort — non-fatal)
   try {
@@ -535,6 +527,8 @@ async function _doInit(): Promise<void> {
 /** Ensure the router (storage + pipeline) is initialized. */
 export async function ensureRouter(): Promise<void> {
   if (_initialized) return;
+  // ADR-0086 I2: fast-fail on persistent init failure — prevents retry storm
+  if (_initFailed) throw new Error('Storage initialization permanently failed. Call resetRouter() or restart the process to retry.');
   if (_initPromise) return _initPromise;
   _initPromise = _doInit().finally(() => { _initPromise = null; });
   return _initPromise;
@@ -550,144 +544,218 @@ export async function ensureRouter(): Promise<void> {
  */
 export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
   await ensureRouter();
-  const storage = _storage!;
+  // ADR-0086 B4: defense-in-depth null guard
+  if (!_storage) {
+    return { success: false, error: 'Storage not initialized. Call ensureRouter() first.' };
+  }
+  const storage = _storage;
 
   switch (op.type) {
     case 'store': {
-      const id = generateId('mem');
-      const namespace = op.namespace || 'default';
-      const now = Date.now();
+      try {
+        const id = generateId('mem');
+        const namespace = op.namespace || 'default';
+        const now = Date.now();
 
-      // Generate embedding for semantic search
-      let embedding: Float32Array | undefined;
-      if (op.generateEmbedding !== false && op.value) {
-        try {
-          const adapterMod = await import('@claude-flow/memory/embedding-adapter.js' as string)
-            .catch(() => import('../../../memory/src/embedding-adapter.js'));
-          const result = await adapterMod.generateEmbedding(op.value);
-          embedding = new Float32Array(result.embedding);
-        } catch { /* embedding optional — store without it */ }
-      }
-
-      // Upsert: check if entry exists
-      if (op.upsert && op.key) {
-        const existing = await storage.getByKey(namespace, op.key);
-        if (existing) {
-          await storage.update(existing.id, {
-            content: op.value,
-            tags: op.tags,
-            metadata: { ...(existing.metadata || {}), ttl: op.ttl },
-          });
-          return {
-            success: true, key: op.key, stored: true,
-            storedAt: new Date().toISOString(),
-            hasEmbedding: !!embedding, embeddingDimensions: embedding?.length || null,
-          };
+        // Generate embedding for semantic search
+        let embedding: Float32Array | undefined;
+        if (op.generateEmbedding !== false && op.value) {
+          try {
+            const adapterMod = await import('@claude-flow/memory/embedding-adapter' as string);
+            const result = await adapterMod.generateEmbedding(op.value);
+            embedding = new Float32Array(result.embedding);
+          } catch { /* embedding optional — store without it */ }
         }
+
+        // Upsert: check if entry exists
+        if (op.upsert && op.key) {
+          const existing = await storage.getByKey(namespace, op.key);
+          if (existing) {
+            await storage.update(existing.id, {
+              content: op.value,
+              tags: op.tags,
+              metadata: { ...(existing.metadata || {}), ttl: op.ttl },
+            });
+            return {
+              success: true, key: op.key, stored: true,
+              storedAt: new Date().toISOString(),
+              hasEmbedding: !!embedding, embeddingDimensions: embedding?.length || null,
+            };
+          }
+        }
+
+        const entry = {
+          id,
+          key: op.key || id,
+          content: op.value || '',
+          embedding,
+          type: 'semantic' as const,
+          namespace,
+          tags: op.tags || [],
+          metadata: op.ttl ? { ttl: op.ttl } : {},
+          accessLevel: 'private' as const,
+          createdAt: now,
+          updatedAt: now,
+          version: 1,
+          references: [],
+          accessCount: 0,
+          lastAccessedAt: now,
+        };
+
+        await storage.store(entry);
+        return {
+          success: true, key: op.key, stored: true,
+          storedAt: new Date().toISOString(),
+          hasEmbedding: !!embedding, embeddingDimensions: embedding?.length || null,
+        };
+      } catch (e) {
+        return { success: false, error: `store failed: ${e instanceof Error ? e.message : String(e)}` };
       }
-
-      const entry = {
-        id,
-        key: op.key || id,
-        content: op.value || '',
-        embedding,
-        type: 'semantic' as const,
-        namespace,
-        tags: op.tags || [],
-        metadata: op.ttl ? { ttl: op.ttl } : {},
-        accessLevel: 'private' as const,
-        createdAt: now,
-        updatedAt: now,
-        version: 1,
-        references: [],
-        accessCount: 0,
-        lastAccessedAt: now,
-      };
-
-      await storage.store(entry);
-      return {
-        success: true, key: op.key, stored: true,
-        storedAt: new Date().toISOString(),
-        hasEmbedding: !!embedding, embeddingDimensions: embedding?.length || null,
-      };
     }
 
     case 'search': {
       // Generate embedding from query text
       let embedding: Float32Array;
+      let adaptiveThreshold: number | undefined;
       try {
-        const adapterMod = await import('@claude-flow/memory/embedding-adapter.js' as string)
-          .catch(() => import('../../../memory/src/embedding-adapter.js'));
+        const adapterMod = await import('@claude-flow/memory/embedding-adapter' as string);
         const result = await adapterMod.generateEmbedding(op.query || '', { intent: 'query' });
         embedding = new Float32Array(result.embedding);
+        // FB-004: Use adaptive threshold based on embedding provider (hash-fallback = 0.05, ONNX = 0.3)
+        if (adapterMod.getAdaptiveThreshold) {
+          adaptiveThreshold = await adapterMod.getAdaptiveThreshold(op.threshold);
+        }
       } catch (e) {
         return { success: false, error: 'Embedding generation failed: ' + (e instanceof Error ? e.message : String(e)) };
       }
 
-      const namespace = op.namespace === 'all' ? undefined : op.namespace;
-      const results = await storage.search(embedding, {
-        limit: op.limit || 10,
-        threshold: op.threshold || 0.3,
-        namespace,
-      });
-      return { success: true, results, total: results.length };
+      try {
+        const namespace = op.namespace === 'all' ? undefined : op.namespace;
+        // ADR-0086 fix: map router params to SearchOptions (k, filters.namespace)
+        const raw = await storage.search(embedding, {
+          k: op.limit || 10,
+          threshold: adaptiveThreshold ?? op.threshold ?? 0.3,
+          filters: namespace ? { namespace } : undefined,
+        });
+        // Flatten SearchResult { entry, score, distance } to { key, score, namespace, content }
+        const results = raw.map((r: { entry: { key: string; namespace: string; content: string }; score: number }) => ({
+          key: r.entry.key,
+          score: r.score,
+          namespace: r.entry.namespace,
+          content: r.entry.content,
+        }));
+        return { success: true, results, total: results.length };
+      } catch (e) {
+        return { success: false, error: `search failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
 
     case 'get': {
-      const entry = await storage.getByKey(op.namespace || 'default', op.key || '');
-      return {
-        success: true,
-        found: !!entry,
-        entry: entry || null,
-      };
+      try {
+        const entry = await storage.getByKey(op.namespace || 'default', op.key || '');
+        return {
+          success: true,
+          found: !!entry,
+          entry: entry || null,
+        };
+      } catch (e) {
+        return { success: false, error: `get failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
 
     case 'delete': {
-      const entry = await storage.getByKey(op.namespace || 'default', op.key || '');
-      if (entry) {
-        await storage.delete(entry.id);
-        return { success: true, deleted: true };
+      try {
+        const entry = await storage.getByKey(op.namespace || 'default', op.key || '');
+        if (entry) {
+          await storage.delete(entry.id);
+          return { success: true, deleted: true };
+        }
+        return { success: true, deleted: false };
+      } catch (e) {
+        return { success: false, error: `delete failed: ${e instanceof Error ? e.message : String(e)}` };
       }
-      return { success: true, deleted: false };
     }
 
     case 'list': {
-      const namespace = op.namespace === 'all' ? undefined : op.namespace;
-      const entries = await storage.query({
-        type: 'prefix',
-        namespace: namespace || 'default',
-        limit: op.limit || 50,
-        offset: op.offset || 0,
-      });
-      const total = await storage.count(namespace);
-      return { success: true, entries, total };
+      try {
+        const namespace = op.namespace === 'all' ? undefined : op.namespace;
+        const entries = await storage.query({
+          type: 'prefix',
+          namespace: namespace || 'default',
+          limit: op.limit || 50,
+          offset: op.offset || 0,
+        });
+        const total = await storage.count(namespace);
+        return { success: true, entries, total };
+      } catch (e) {
+        return { success: false, error: `list failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
 
     case 'stats': {
-      const stats = await storage.getStats();
-      const health = await storage.healthCheck();
-      const namespaceList = await storage.listNamespaces();
-      const namespaces: Record<string, number> = {};
-      for (const ns of namespaceList) {
-        namespaces[ns] = await storage.count(ns);
+      try {
+        const stats = await storage.getStats();
+        const health = await storage.healthCheck();
+        const namespaceList = await storage.listNamespaces();
+        const namespaces: Record<string, number> = {};
+        for (const ns of namespaceList) {
+          namespaces[ns] = await storage.count(ns);
+        }
+        return {
+          success: true,
+          initialized: (health as any).status === 'healthy',
+          totalEntries: stats.totalEntries ?? 0,
+          entriesWithEmbeddings: stats.entriesWithEmbeddings ?? stats.totalEntries ?? 0,
+          namespaces,
+        };
+      } catch (e) {
+        return { success: false, error: `stats failed: ${e instanceof Error ? e.message : String(e)}` };
       }
-      return {
-        success: true,
-        initialized: (health as any).status === 'healthy',
-        totalEntries: stats.totalEntries ?? 0,
-        entriesWithEmbeddings: stats.totalEntries ?? 0, // TODO: BackendStats lacks entriesWithEmbeddings; using totalEntries as proxy
-        namespaces,
-      };
     }
 
     case 'count': {
-      const count = await storage.count(op.namespace === 'all' ? undefined : op.namespace);
-      return { success: true, count };
+      try {
+        const count = await storage.count(op.namespace === 'all' ? undefined : op.namespace);
+        return { success: true, count };
+      } catch (e) {
+        return { success: false, error: `count failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
 
     case 'listNamespaces': {
-      const namespaces = await storage.listNamespaces();
-      return { success: true, namespaces };
+      try {
+        const namespaces = await storage.listNamespaces();
+        return { success: true, namespaces };
+      } catch (e) {
+        return { success: false, error: `listNamespaces failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'bulkDelete': {
+      if (!op.ids || op.ids.length === 0) {
+        return { success: false, error: 'bulkDelete requires ids array' };
+      }
+      try {
+        // ADR-0086 B2: bulkDelete was missing from router switch
+        await storage.bulkDelete(op.ids);
+        return { success: true, deleted: op.ids.length };
+      } catch (e) {
+        return { success: false, error: `bulkDelete failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'clearNamespace': {
+      const ns = op.namespace;
+      if (!ns) {
+        return { success: false, error: 'clearNamespace requires namespace' };
+      }
+      try {
+        // ADR-0086 B2: clearNamespace was missing from router switch
+        await storage.clearNamespace(ns);
+        return { success: true, cleared: true, namespace: ns };
+      } catch (e) {
+        return { success: false, error: `clearNamespace failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
 
     default:
@@ -809,37 +877,57 @@ export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
   switch (op.type) {
     // ADR-0086 T2.4: Embedding ops route through adapter directly
     case 'generate': {
-      const adapter = await import('@claude-flow/memory/embedding-adapter.js' as string)
-        .catch(() => import('../../../memory/src/embedding-adapter.js'));
-      return { success: true, ...(await adapter.generateEmbedding(op.text, op.data)) };
+      try {
+        const adapter = await import('@claude-flow/memory/embedding-adapter' as string);
+        return { success: true, ...(await adapter.generateEmbedding(op.text, op.data)) };
+      } catch (e) {
+        return { success: false, error: `generate failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
     case 'generateBatch': {
-      const adapter = await import('@claude-flow/memory/embedding-adapter.js' as string)
-        .catch(() => import('../../../memory/src/embedding-adapter.js'));
-      return { success: true, ...(await adapter.generateBatchEmbeddings(op.texts, op.data)) };
+      try {
+        const adapter = await import('@claude-flow/memory/embedding-adapter' as string);
+        return { success: true, ...(await adapter.generateBatchEmbeddings(op.texts, op.data)) };
+      } catch (e) {
+        return { success: false, error: `generateBatch failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
     case 'loadModel': {
-      const adapter = await import('@claude-flow/memory/embedding-adapter.js' as string)
-        .catch(() => import('../../../memory/src/embedding-adapter.js'));
-      return { success: true, ...(await adapter.loadEmbeddingModel(op.data)) };
+      try {
+        const adapter = await import('@claude-flow/memory/embedding-adapter' as string);
+        return { success: true, ...(await adapter.loadEmbeddingModel(op.data)) };
+      } catch (e) {
+        return { success: false, error: `loadModel failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
     case 'getThreshold': {
-      const adapter = await import('@claude-flow/memory/embedding-adapter.js' as string)
-        .catch(() => import('../../../memory/src/embedding-adapter.js'));
-      return { success: true, threshold: await adapter.getAdaptiveThreshold(op.data as number | undefined) };
+      try {
+        const adapter = await import('@claude-flow/memory/embedding-adapter' as string);
+        return { success: true, threshold: await adapter.getAdaptiveThreshold(op.data as number | undefined) };
+      } catch (e) {
+        return { success: false, error: `getThreshold failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
     // ADR-0086 Phase 3: HNSW ops via RvfBackend (IStorageContract)
     case 'hnswSearch': {
       if (!_storage) return { success: false, error: 'Storage not initialized' };
-      const vec = op.vector instanceof Float32Array ? op.vector
-        : new Float32Array(op.vector as number[]);
-      const results = await _storage.search(vec, { limit: op.k || op.limit || 10 });
-      return { success: true, results, total: results.length };
+      try {
+        const vec = op.vector instanceof Float32Array ? op.vector
+          : new Float32Array(op.vector as number[]);
+        const results = await _storage.search(vec, { k: op.k || op.limit || 10 });
+        return { success: true, results, total: results.length };
+      } catch (e) {
+        return { success: false, error: `hnswSearch failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
     case 'hnswStatus': {
       if (!_storage) return { success: false, error: 'Storage not initialized' };
-      const stats = await _storage.getStats();
-      return { success: true, ...stats };
+      try {
+        const stats = await _storage.getStats();
+        return { success: true, ...stats };
+      } catch (e) {
+        return { success: false, error: `hnswStatus failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
     case 'hnswAdd': {
       return { success: false, error: 'Direct HNSW add not supported — entries are indexed automatically on store()' };
@@ -1307,8 +1395,7 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
 
 // Embedding re-exports (ADR-0086 Phase 3: from adapter, not initializer)
 async function _loadAdapter() {
-  return import('@claude-flow/memory/embedding-adapter.js' as string)
-    .catch(() => import('../../../memory/src/embedding-adapter.js'));
+  return import('@claude-flow/memory/embedding-adapter' as string);
 }
 export const loadEmbeddingModel = async (...args: unknown[]) => (await _loadAdapter()).loadEmbeddingModel(...(args as [any]));
 export const generateEmbedding = async (...args: unknown[]) => (await _loadAdapter()).generateEmbedding(...(args as [any, any]));
@@ -1354,6 +1441,7 @@ export function resetRouter(): void {
   _interceptMod = null;
   _initialized = false;
   _initPromise = null;
+  _initFailed = false; // ADR-0086 I2: allow retry after reset
   // ADR-0085: Reset registry state
   _registryInstance = null;
   _registryPromise = null;

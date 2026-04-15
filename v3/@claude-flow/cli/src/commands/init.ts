@@ -318,13 +318,8 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
     // ML-002: Chain memory init into init --full
     if (full) {
       try {
-        const { initializeMemoryDatabase } = await import('../memory/memory-initializer.js');
-        await initializeMemoryDatabase({
-          backend: 'hybrid',
-          dbPath: undefined,
-          force: false,
-          verbose: false,
-        });
+        const { ensureRouter } = await import('../memory/memory-router.js'); // ADR-0086 T2.6: import from router (was memory-initializer)
+        await ensureRouter();
       } catch {
         // Memory init is best-effort during full init
       }

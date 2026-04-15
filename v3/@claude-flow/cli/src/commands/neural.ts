@@ -56,7 +56,7 @@ const trainCommand: Command = {
     try {
       // Import RuVector training service
       const ruvector = await import('../services/ruvector-training.js');
-      const { generateEmbedding } = await import('../memory/memory-initializer.js');
+      const { generateEmbedding } = await import('../memory/memory-router.js'); // ADR-0086 T2.6: import from router (was memory-initializer)
       const {
         initializeIntelligence,
         recordStep,
@@ -419,13 +419,13 @@ const statusCommand: Command = {
     try {
       // Import real implementations
       const { getIntelligenceStats, initializeIntelligence, benchmarkAdaptation } = await import('../memory/intelligence.js');
-      const { getHNSWIndex, getHNSWStatus, loadEmbeddingModel } = await import('../memory/memory-initializer.js');
+      const { routeEmbeddingOp, loadEmbeddingModel } = await import('../memory/memory-router.js'); // ADR-0086 T2.6: import from router (was memory-initializer)
       const ruvector = await import('../services/ruvector-training.js');
 
       // Initialize if needed and get real stats
       await initializeIntelligence();
       const stats = getIntelligenceStats();
-      const hnswStatus = getHNSWStatus();
+      const hnswStatus = await routeEmbeddingOp({ type: 'hnswStatus' });
 
       // Quick benchmark for actual adaptation time
       const adaptBench = benchmarkAdaptation(100);
@@ -437,7 +437,7 @@ const statusCommand: Command = {
       if (!ruvector.getTrainingStats().initialized) {
         await ruvector.initializeTraining({ useSona: true }).catch(() => {}); /* UI-002: optional init */
       }
-      await getHNSWIndex().catch(() => null); /* UI-002: optional init */
+      await routeEmbeddingOp({ type: 'hnswStatus' }).catch(() => null); /* UI-002: optional init */
       // Check RuVector WASM status
       const ruvectorStats = ruvector.getTrainingStats();
       const sonaAvailable = ruvector.isSonaAvailable();

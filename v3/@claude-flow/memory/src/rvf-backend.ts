@@ -12,7 +12,6 @@ import type {
   HealthCheckResult,
   MemoryType,
 } from './types.js';
-import type { IStorageContract } from './storage.js';
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
 import { deriveHNSWParams } from './hnsw-utils.js';
 
@@ -59,9 +58,9 @@ const DEFAULT_EF_CONSTRUCTION = 200;
 const DEFAULT_MAX_ELEMENTS = 100000;
 const DEFAULT_PERSIST_INTERVAL = 30000;
 
-// ADR-0086 T2.1: IStorageContract ≡ IMemoryBackend (16 methods, verified by
-// adr0086-storage-contract.test.mjs). Explicit implements added for Phase 2 wiring.
-export class RvfBackend implements IMemoryBackend, IStorageContract {
+// ADR-0086 Debt 1: IStorageContract is now a type alias for IMemoryBackend,
+// so the redundant implements clause has been removed.
+export class RvfBackend implements IMemoryBackend {
   private entries = new Map<string, MemoryEntry>();
   private keyIndex = new Map<string, string>();
   private hnswIndex: HnswLite | null = null;
@@ -73,9 +72,11 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
   private persistTimer: ReturnType<typeof setInterval> | null = null;
   private queryTimes: number[] = [];
   private searchTimes: number[] = [];
+  private _capacityWarned = false;
 
   // WAL state (Phase 1)
   private walPath = '';
+  private lockPath = '';
   private walEntryCount = 0;
 
   // Native ID mapping (Phase 3)
@@ -104,21 +105,26 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     };
     validatePath(this.config.databasePath);
     this.walPath = this.config.databasePath === ':memory:' ? '' : this.config.databasePath + '.wal';
+    this.lockPath = this.config.databasePath === ':memory:' ? '' : this.config.databasePath + '.lock';
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    const useNative = await this.tryNativeInit();
-    if (!useNative) {
+    const hasNative = await this.tryNativeInit();
+
+    // Only create HnswLite when native is NOT available (Debt 8)
+    if (!hasNative) {
       this.hnswIndex = new HnswLite(
         this.config.dimensions,
         this.config.hnswM,
         this.config.hnswEfConstruction,
         this.config.metric,
       );
-      await this.loadFromDisk();
     }
+
+    // Always load metadata from disk (native only handles vectors)
+    await this.loadFromDisk();
 
     if (this.config.autoPersistInterval > 0 && this.config.databasePath !== ':memory:') {
       this.persistTimer = setInterval(() => {
@@ -162,23 +168,30 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     this.keyIndex.clear();
     this.hnswIndex = null;
     this.initialized = false;
+
+    // Clean up advisory lock file
+    if (this.lockPath) {
+      try { await unlink(this.lockPath); } catch {}
+    }
   }
 
   async store(entry: MemoryEntry): Promise<void> {
+    this.checkCapacity();
     const ns = entry.namespace || this.config.defaultNamespace;
     const e = ns !== entry.namespace ? { ...entry, namespace: ns } : entry;
     this.entries.set(e.id, e);
     this.keyIndex.set(this.compositeKey(e.namespace, e.key), e.id);
-    if (e.embedding && this.hnswIndex) {
-      this.hnswIndex.add(e.id, e.embedding);
-    }
-    // Native vector routing: ingest into NAPI backend when available
-    if (e.embedding && this.nativeDb) {
-      const numId = this.assignNativeId(e.id);
-      try {
-        this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
-      } catch (err) {
-        if (this.config.verbose) console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+    // Index in ONE backend, not both (Debt 8)
+    if (e.embedding) {
+      if (this.nativeDb) {
+        const numId = this.assignNativeId(e.id);
+        try {
+          this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
+        } catch (err) {
+          if (this.config.verbose) console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+        }
+      } else if (this.hnswIndex) {
+        this.hnswIndex.add(e.id, e.embedding);
       }
     }
     this.dirty = true;
@@ -215,20 +228,20 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
       version: entry.version + 1,
     };
     this.entries.set(id, updated);
-    // Re-ingest into native if embedding changed
-    if (updated.embedding && this.nativeDb) {
-      const numId = this.assignNativeId(id);
-      try {
-        this.nativeDb.delete([numId]);
-        this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId]);
-      } catch (err) {
-        if (this.config.verbose) console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
+    // Re-index in ONE backend, not both (Debt 8)
+    if (updated.embedding) {
+      if (this.nativeDb) {
+        const numId = this.assignNativeId(id);
+        try {
+          this.nativeDb.delete([numId]);
+          this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId]);
+        } catch (err) {
+          if (this.config.verbose) console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
+        }
+      } else if (this.hnswIndex) {
+        this.hnswIndex.remove(id);
+        this.hnswIndex.add(id, updated.embedding);
       }
-    }
-    // Re-index in HNSW if embedding changed
-    if (updated.embedding && this.hnswIndex) {
-      this.hnswIndex.remove(id);
-      this.hnswIndex.add(id, updated.embedding);
     }
     this.dirty = true;
     await this.appendToWal(updated);
@@ -263,6 +276,7 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
       this.walEntryCount = 0;
     }
     await this.persistToDisk();
+    this._capacityWarned = false;
     return true;
   }
 
@@ -270,26 +284,38 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     const start = performance.now();
     let results = Array.from(this.entries.values());
 
-    if (q.namespace) results = results.filter(e => e.namespace === q.namespace);
-    if (q.key) results = results.filter(e => e.key === q.key);
-    if (q.keyPrefix) results = results.filter(e => e.key.startsWith(q.keyPrefix!));
-    if (q.tags?.length) results = results.filter(e => q.tags!.every(t => e.tags.includes(t)));
-    if (q.memoryType) results = results.filter(e => e.type === q.memoryType);
-    if (q.accessLevel) results = results.filter(e => e.accessLevel === q.accessLevel);
-    if (q.ownerId) results = results.filter(e => e.ownerId === q.ownerId);
-    if (q.createdAfter) results = results.filter(e => e.createdAt > q.createdAfter!);
-    if (q.createdBefore) results = results.filter(e => e.createdAt < q.createdBefore!);
-    if (q.updatedAfter) results = results.filter(e => e.updatedAt > q.updatedAfter!);
-    if (q.updatedBefore) results = results.filter(e => e.updatedAt < q.updatedBefore!);
-    if (!q.includeExpired) {
-      const now = Date.now();
-      results = results.filter(e => !e.expiresAt || e.expiresAt > now);
-    }
+    // Single-pass filter (Debt 13) — replaces 12 sequential .filter() calls
+    results = results.filter(e => {
+      if (q.namespace && e.namespace !== q.namespace) return false;
+      if (q.key && e.key !== q.key) return false;
+      if (q.keyPrefix && !e.key.startsWith(q.keyPrefix)) return false;
+      if (q.tags?.length && !q.tags.every(t => e.tags.includes(t))) return false;
+      if (q.memoryType && e.type !== q.memoryType) return false;
+      if (q.accessLevel && e.accessLevel !== q.accessLevel) return false;
+      if (q.ownerId && e.ownerId !== q.ownerId) return false;
+      if (q.createdAfter && e.createdAt <= q.createdAfter) return false;
+      if (q.createdBefore && e.createdAt >= q.createdBefore) return false;
+      if (q.updatedAfter && e.updatedAt <= q.updatedAfter) return false;
+      if (q.updatedBefore && e.updatedAt >= q.updatedBefore) return false;
+      if (!q.includeExpired) {
+        if (e.expiresAt && e.expiresAt <= Date.now()) return false;
+      }
+      return true;
+    });
 
-    if (q.type === 'semantic' && q.embedding && this.hnswIndex) {
-      const searchResults = this.hnswIndex.search(q.embedding, q.limit, q.threshold);
-      const idSet = new Set(searchResults.map(r => r.id));
-      results = results.filter(e => idSet.has(e.id));
+    // Semantic search via native or HnswLite (Debt 8 — exclusive, not both)
+    if (q.type === 'semantic' && q.embedding) {
+      let semanticIds: Set<string>;
+      if (this.nativeDb) {
+        const raw = this.nativeDb.query(new Float32Array(q.embedding), q.limit * 2, {});
+        semanticIds = new Set(raw.map((r: any) => this.nativeReverseMap.get(r.id)).filter(Boolean));
+      } else if (this.hnswIndex) {
+        const searchResults = this.hnswIndex.search(q.embedding, q.limit, q.threshold);
+        semanticIds = new Set(searchResults.map(r => r.id));
+      } else {
+        semanticIds = new Set();
+      }
+      results = results.filter(e => semanticIds.has(e.id));
     }
 
     const offset = q.offset ?? 0;
@@ -357,14 +383,19 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
   }
 
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
+    this.checkCapacity(entries.length);
     for (const entry of entries) {
       this.entries.set(entry.id, entry);
       this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
-      if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
-      if (entry.embedding && this.nativeDb) {
-        const numId = this.assignNativeId(entry.id);
-        try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
-          if (this.config.verbose) console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
+      // Index in ONE backend, not both (Debt 8)
+      if (entry.embedding) {
+        if (this.nativeDb) {
+          const numId = this.assignNativeId(entry.id);
+          try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
+            if (this.config.verbose) console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
+          }
+        } else if (this.hnswIndex) {
+          this.hnswIndex.add(entry.id, entry.embedding);
         }
       }
       await this.appendToWal(entry);
@@ -445,6 +476,7 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
       }
       await this.persistToDisk();
     }
+    this._capacityWarned = false;
     return toDelete.length;
   }
 
@@ -476,12 +508,16 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     const entriesByNamespace: Record<string, number> = {};
     const entriesByType: Record<string, number> = {};
     let memoryUsage = 0;
+    let entriesWithEmbeddings = 0;
 
     for (const entry of this.entries.values()) {
       entriesByNamespace[entry.namespace] = (entriesByNamespace[entry.namespace] ?? 0) + 1;
       entriesByType[entry.type] = (entriesByType[entry.type] ?? 0) + 1;
       memoryUsage += entry.content.length * 2;
-      if (entry.embedding) memoryUsage += entry.embedding.byteLength;
+      if (entry.embedding) {
+        memoryUsage += entry.embedding.byteLength;
+        entriesWithEmbeddings++;
+      }
     }
 
     const avgQuery = this.avg(this.queryTimes);
@@ -489,6 +525,7 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
 
     return {
       totalEntries: this.entries.size,
+      entriesWithEmbeddings,
       entriesByNamespace,
       entriesByType: entriesByType as Record<MemoryType, number>,
       memoryUsage,
@@ -548,13 +585,12 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
           efConstruction: this.config.hnswEfConstruction,
         });
       }
-      // Native handles vectors only — still need pure-TS index + disk load for
-      // metadata, so we set up hnswIndex and load entries below in initialize().
-      // The native path augments (not replaces) the pure-TS path.
+      // Native handles vectors — HnswLite is skipped when native is active (Debt 8).
+      // Metadata is still loaded from disk via loadFromDisk() in initialize().
       if (this.config.verbose) {
         console.log('[RvfBackend] Native @ruvector/rvf-node loaded successfully');
       }
-      return false; // return false so initialize() still sets up hnswIndex + loadFromDisk
+      return true;
     } catch {
       if (this.config.verbose) {
         console.log('[RvfBackend] @ruvector/rvf-node not available, using pure-TS fallback');
@@ -575,6 +611,45 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     this.nativeIdMap.set(stringId, numId);
     this.nativeReverseMap.set(numId, stringId);
     return numId;
+  }
+
+  /** Acquire advisory lock (PID-based lockfile). Retries up to 3 times with 50ms delay. */
+  private async acquireLock(): Promise<void> {
+    if (!this.lockPath) return; // :memory: mode
+    const { writeFile: wf, readFile: rf, unlink: ul } = await import('node:fs/promises');
+    const maxRetries = 5;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        await wf(this.lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
+        return; // Lock acquired
+      } catch (e: any) {
+        if (e.code !== 'EEXIST') throw e;
+        // Lock exists — check if holder is alive
+        try {
+          const content = await rf(this.lockPath, 'utf-8');
+          const { pid, ts } = JSON.parse(content);
+          const staleMs = 5000; // 5s stale threshold (CLI processes are short-lived)
+          let pidAlive = true;
+          try { process.kill(pid, 0); } catch { pidAlive = false; }
+          if (!pidAlive || Date.now() - ts > staleMs) {
+            try { await ul(this.lockPath); } catch {}
+            continue; // Retry after removing stale lock
+          }
+        } catch {
+          try { await ul(this.lockPath); } catch {}
+          continue; // Corrupt lock file — remove and retry
+        }
+        // Lock holder is alive — wait and retry
+        if (i < maxRetries - 1) await new Promise(r => setTimeout(r, 100));
+      }
+    }
+    throw new Error('Failed to acquire advisory lock after retries');
+  }
+
+  /** Release advisory lock */
+  private async releaseLock(): Promise<void> {
+    if (!this.lockPath) return;
+    try { await unlink(this.lockPath); } catch {}
   }
 
   private bruteForceSearch(embedding: Float32Array, options: SearchOptions): SearchResult[] {
@@ -598,6 +673,25 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
 
   private avg(arr: number[]): number {
     return arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  }
+
+  /** Check if adding entries would exceed maxElements capacity */
+  private checkCapacity(count: number = 1): void {
+    const projected = this.entries.size + count;
+    if (projected > this.config.maxElements) {
+      throw new Error(
+        `RvfBackend capacity exceeded: ${projected} entries would exceed maxElements=${this.config.maxElements}. ` +
+        `Increase maxElements in config or delete entries.`
+      );
+    }
+    // Warn at 90% capacity
+    if (projected > this.config.maxElements * 0.9 && !this._capacityWarned) {
+      this._capacityWarned = true;
+      console.warn(
+        `[RvfBackend] Warning: ${this.entries.size} of ${this.config.maxElements} entries used ` +
+        `(${Math.round((this.entries.size / this.config.maxElements) * 100)}%). Approaching capacity limit.`
+      );
+    }
   }
 
   // ===== P6-B: Copy-on-Write branching =====
@@ -790,7 +884,12 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     lenBuf.writeUInt32LE(json.length, 0);
     const dir = dirname(this.walPath);
     if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-    await appendFile(this.walPath, Buffer.concat([lenBuf, json]));
+    await this.acquireLock();
+    try {
+      await appendFile(this.walPath, Buffer.concat([lenBuf, json]));
+    } finally {
+      await this.releaseLock();
+    }
     this.walEntryCount++;
   }
 
@@ -863,11 +962,16 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
   /** Compact WAL: rewrite main .rvf with all entries, then delete WAL */
   private async compactWal(): Promise<void> {
     if (this.persisting) return; // Another persist is in flight; retry on next trigger
-    await this.persistToDisk();
-    if (this.walPath) {
-      try { await unlink(this.walPath); } catch {}
+    await this.acquireLock();
+    try {
+      await this.persistToDiskInner();
+      if (this.walPath) {
+        try { await unlink(this.walPath); } catch {}
+      }
+      this.walEntryCount = 0;
+    } finally {
+      await this.releaseLock();
     }
-    this.walEntryCount = 0;
   }
 
   private async loadFromDisk(): Promise<void> {
@@ -876,72 +980,90 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     // Determine which file to load metadata from:
     // 1. Try the .meta sidecar (used when native DB owns the main path)
     // 2. Fall back to the main path (pre-native or native not active)
+    // 3. If neither exists, skip main file load but STILL replay WAL
+    //    (the WAL may contain entries from a prior process that exited
+    //    before compaction — e.g. short-lived CLI invocations).
     const metaPath = this.config.databasePath + '.meta';
-    let loadPath: string;
+    let loadPath: string | null = null;
     if (existsSync(metaPath)) {
       loadPath = metaPath;
     } else if (existsSync(this.config.databasePath)) {
       loadPath = this.config.databasePath;
-    } else {
-      return;
     }
+    // No early return — fall through to replayWal() even when main file is absent
 
-    try {
-      const raw = await readFile(loadPath);
-      if (raw.length < 8) return;
-
-      const magic = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
-      if (magic !== MAGIC) return;
-
-      const headerLen = raw.readUInt32LE(4);
-      const MAX_HEADER_SIZE = 10 * 1024 * 1024; // 10MB max header
-      if (headerLen > MAX_HEADER_SIZE || 8 + headerLen > raw.length) return;
-      const headerJson = raw.subarray(8, 8 + headerLen).toString('utf-8');
-      let header: RvfHeader;
+    // Load entries from the main RVF file (if it exists and is valid).
+    // WAL replay runs unconditionally afterward — the WAL may contain
+    // entries from a prior process that exited before compaction (e.g.
+    // short-lived CLI invocations where store writes to WAL then exits).
+    if (loadPath) {
       try {
-        header = JSON.parse(headerJson);
-      } catch {
-        if (this.config.verbose) console.error('[RvfBackend] Corrupt RVF header');
-        return;
-      }
-      if (!header || typeof header.entryCount !== 'number' || typeof header.version !== 'number') return;
+        const raw = await readFile(loadPath);
+        if (raw.length >= 8) {
+          const magic = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
+          if (magic === MAGIC) {
+            const headerLen = raw.readUInt32LE(4);
+            const MAX_HEADER_SIZE = 10 * 1024 * 1024; // 10MB max header
+            if (headerLen <= MAX_HEADER_SIZE && 8 + headerLen <= raw.length) {
+              const headerJson = raw.subarray(8, 8 + headerLen).toString('utf-8');
+              let header: RvfHeader | null = null;
+              try {
+                header = JSON.parse(headerJson);
+              } catch {
+                if (this.config.verbose) console.error('[RvfBackend] Corrupt RVF header');
+              }
+              if (header && typeof header.entryCount === 'number' && typeof header.version === 'number') {
+                let offset = 8 + headerLen;
+                for (let i = 0; i < header.entryCount; i++) {
+                  if (offset + 4 > raw.length) break;
+                  const entryLen = raw.readUInt32LE(offset);
+                  offset += 4;
+                  if (offset + entryLen > raw.length) break;
 
-      let offset = 8 + headerLen;
-      for (let i = 0; i < header.entryCount; i++) {
-        if (offset + 4 > raw.length) break;
-        const entryLen = raw.readUInt32LE(offset);
-        offset += 4;
-        if (offset + entryLen > raw.length) break;
+                  const entryJson = raw.subarray(offset, offset + entryLen).toString('utf-8');
+                  offset += entryLen;
 
-        const entryJson = raw.subarray(offset, offset + entryLen).toString('utf-8');
-        offset += entryLen;
+                  const parsed = JSON.parse(entryJson);
+                  if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
 
-        const parsed = JSON.parse(entryJson);
-        if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
-
-        const entry: MemoryEntry = parsed;
-        this.entries.set(entry.id, entry);
-        this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
-        if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
-        if (entry.embedding && this.nativeDb) {
-          const numId = this.assignNativeId(entry.id);
-          try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
-            if (this.config.verbose) console.error('[RvfBackend] Native ingest on load failed:', (err as Error).message);
+                  const entry: MemoryEntry = parsed;
+                  this.entries.set(entry.id, entry);
+                  this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
+                  if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
+                  if (entry.embedding && this.nativeDb) {
+                    const numId = this.assignNativeId(entry.id);
+                    try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
+                      if (this.config.verbose) console.error('[RvfBackend] Native ingest on load failed:', (err as Error).message);
+                    }
+                  }
+                }
+              }
+            }
           }
         }
-      }
-    } catch (err) {
-      if (this.config.verbose) {
-        console.error('[RvfBackend] Error loading from disk:', err);
+      } catch (err) {
+        if (this.config.verbose) {
+          console.error('[RvfBackend] Error loading from disk:', err);
+        }
       }
     }
 
-    // Replay any WAL entries written after the last compaction
+    // Always replay WAL — even if the main file is missing, corrupt, or empty.
+    // The WAL is the authoritative source for uncommitted writes.
     await this.replayWal();
   }
 
   private async persistToDisk(): Promise<void> {
     if (this.config.databasePath === ':memory:') return;
+    await this.acquireLock();
+    try {
+      await this.persistToDiskInner();
+    } finally {
+      await this.releaseLock();
+    }
+  }
+
+  private async persistToDiskInner(): Promise<void> {
     if (this.persisting) return; // Prevent concurrent persist calls
     this.persisting = true;
 
@@ -993,6 +1115,15 @@ export class RvfBackend implements IMemoryBackend, IStorageContract {
     const tmpPath = target + '.tmp';
     await writeFile(tmpPath, output);
     await rename(tmpPath, target);
+
+    // fsync directory entry for power-crash durability (Debt 12)
+    try {
+      const { open } = await import('node:fs/promises');
+      const dirHandle = await open(dir, 'r');
+      await dirHandle.datasync();
+      await dirHandle.close();
+    } catch {} // Best-effort — not all platforms support dir fsync
+
     this.dirty = false;
     } finally {
       this.persisting = false;

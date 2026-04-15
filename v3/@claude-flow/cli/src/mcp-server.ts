@@ -319,34 +319,29 @@ export class MCPServerManager extends EventEmitter {
       `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Starting in stdio mode`
     );
 
-    // Auto-initialize memory database before tools are registered (#1524)
-    // This ensures memory_store and other memory tools work immediately
-    // without waiting for the first tool call to trigger lazy init.
+    // ADR-0086 T2.7 + B3: router healthCheck replaces SQLite-based check
+    // ensureRouter() initialises RvfBackend; healthCheck() verifies it.
+    // Old checkMemoryInitialization() checked SQLite tables that RVF never
+    // creates, so it always returned { initialized: false } — bug B3.
     try {
-      const { initializeMemoryDatabase, checkMemoryInitialization } = await import('./memory/memory-initializer.js');
-      const status = await checkMemoryInitialization();
-      if (!status.initialized) {
+      const { ensureRouter, healthCheck } = await import('./memory/memory-router.js');
+      const status = await healthCheck() as { available?: boolean; controllers?: number; error?: string };
+      if (!status.available) {
         console.error(
-          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Auto-initializing memory database...`
+          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Auto-initializing memory router...`
         );
-        const result = await initializeMemoryDatabase({ force: false, verbose: false });
-        if (result.success) {
-          console.error(
-            `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory database initialized at ${result.dbPath}`
-          );
-        } else if (result.error && !result.error.includes('already exists')) {
-          console.error(
-            `[${new Date().toISOString()}] WARN [claude-flow-mcp] (${sessionId}) Memory database init returned: ${result.error}`
-          );
-        }
+        await ensureRouter();
+        console.error(
+          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory router initialized`
+        );
       } else {
         console.error(
-          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory database already initialized (v${status.version || 'unknown'})`
+          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory router already available (${status.controllers ?? 0} controllers)`
         );
       }
     } catch (memInitError) {
       // Graceful degradation: server continues even if memory init fails.
-      // Memory tools will attempt lazy init on first call via ensureInitialized().
+      // Memory tools will attempt lazy init on first call via ensureRouter().
       console.error(
         `[${new Date().toISOString()}] WARN [claude-flow-mcp] (${sessionId}) Memory auto-init failed (tools will retry on first call): ${memInitError instanceof Error ? memInitError.message : String(memInitError)}`
       );

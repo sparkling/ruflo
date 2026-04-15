@@ -1,27 +1,14 @@
 /**
  * IStorage — Unified storage abstraction for the V3 memory system (ADR-0076 Phase 3)
  *
- * Reduces 7 backend types to a single interface.  Two implementations:
- *   - NativeStorage  (RvfBackend with native Rust HNSW when binaries exist)
- *   - PureTsStorage  (RvfBackend falling back to HnswLite + JSON)
- *
- * IStorage starts as a type alias for IMemoryBackend so existing call-sites
- * keep compiling.  IStorageContract documents the 16 methods controllers
- * actually call and will replace IMemoryBackend once all consumers migrate.
+ * Both IStorage and IStorageContract are type aliases for IMemoryBackend.
+ * ADR-0086 Debt 1 collapsed the duplicate interface declaration; downstream
+ * consumers that import either name continue to work unchanged.
  *
  * @module @claude-flow/memory/storage
  */
 
-import type {
-  IMemoryBackend,
-  MemoryEntry,
-  MemoryEntryUpdate,
-  MemoryQuery,
-  SearchOptions,
-  SearchResult,
-  BackendStats,
-  HealthCheckResult,
-} from './types.js';
+import type { IMemoryBackend } from './types.js';
 
 /**
  * IStorage — drop-in alias for IMemoryBackend.
@@ -33,57 +20,10 @@ import type {
 export type IStorage = IMemoryBackend;
 
 /**
- * IStorageContract — all methods controllers call.
+ * IStorageContract — type alias for IMemoryBackend (ADR-0086 Debt 1).
  *
- * This is the narrow interface that all future storage implementations
- * must satisfy.  It is a strict subset of IMemoryBackend.
+ * The two interfaces were identical (16 methods, matching signatures).
+ * Collapsed to a type alias so downstream consumers keep working while
+ * the codebase converges on a single name.
  */
-export interface IStorageContract {
-  /** Initialize the storage backend */
-  initialize(): Promise<void>;
-
-  /** Gracefully shut down the storage backend */
-  shutdown(): Promise<void>;
-
-  /** Persist a memory entry */
-  store(entry: MemoryEntry): Promise<void>;
-
-  /** Retrieve a memory entry by its unique id */
-  get(id: string): Promise<MemoryEntry | null>;
-
-  /** Retrieve a memory entry by namespace + key */
-  getByKey(namespace: string, key: string): Promise<MemoryEntry | null>;
-
-  /** Apply a partial update to an existing entry */
-  update(id: string, update: MemoryEntryUpdate): Promise<MemoryEntry | null>;
-
-  /** Delete an entry by id, returning true if it existed */
-  delete(id: string): Promise<boolean>;
-
-  /** Semantic vector search using a pre-computed embedding */
-  search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]>;
-
-  /** Structured query with filters */
-  query(query: MemoryQuery): Promise<MemoryEntry[]>;
-
-  /** Bulk insert entries */
-  bulkInsert(entries: MemoryEntry[]): Promise<void>;
-
-  /** Bulk delete entries by id */
-  bulkDelete(ids: string[]): Promise<number>;
-
-  /** Count entries, optionally scoped to a namespace */
-  count(namespace?: string): Promise<number>;
-
-  /** List all namespaces */
-  listNamespaces(): Promise<string[]>;
-
-  /** Clear all entries in a namespace */
-  clearNamespace(namespace: string): Promise<number>;
-
-  /** Get backend statistics */
-  getStats(): Promise<BackendStats>;
-
-  /** Perform health check */
-  healthCheck(): Promise<HealthCheckResult>;
-}
+export type IStorageContract = IMemoryBackend;

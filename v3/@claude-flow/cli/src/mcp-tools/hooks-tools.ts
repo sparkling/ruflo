@@ -9,7 +9,8 @@ import type { MCPTool } from './types.js';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
-// Real vector search functions - lazy loaded to avoid circular imports
+// ADR-0086 T2.7: search via routeMemoryOp (was memory-initializer searchEntries)
+// Lazy-loaded wrapper preserves the same call-site signature.
 let searchEntriesFn: ((options: {
   query: string;
   namespace?: string;
@@ -25,8 +26,18 @@ let searchEntriesFn: ((options: {
 async function getRealSearchFunction() {
   if (!searchEntriesFn) {
     try {
-      const { searchEntries } = await import('../memory/memory-initializer.js');
-      searchEntriesFn = searchEntries;
+      // ADR-0086 T2.7: import from router (was memory-initializer)
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
+      searchEntriesFn = async (opts) => {
+        const t0 = Date.now();
+        const result = await routeMemoryOp({ type: 'search', query: opts.query, namespace: opts.namespace, limit: opts.limit });
+        return {
+          success: result.success,
+          results: (result as { results?: { id: string; key: string; content: string; score: number; namespace: string }[] }).results || [],
+          searchTime: Date.now() - t0,
+          error: result.error as string | undefined,
+        };
+      };
     } catch {
       searchEntriesFn = null;
     }
@@ -34,7 +45,8 @@ async function getRealSearchFunction() {
   return searchEntriesFn;
 }
 
-// Real store function - lazy loaded
+// ADR-0086 T2.7: store via routeMemoryOp (was memory-initializer storeEntry)
+// Lazy-loaded wrapper preserves the same call-site signature.
 let storeEntryFn: ((options: {
   key: string;
   value: string;
@@ -52,8 +64,17 @@ let storeEntryFn: ((options: {
 async function getRealStoreFunction() {
   if (!storeEntryFn) {
     try {
-      const { storeEntry } = await import('../memory/memory-initializer.js');
-      storeEntryFn = storeEntry;
+      // ADR-0086 T2.7: import from router (was memory-initializer)
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
+      storeEntryFn = async (opts) => {
+        const result = await routeMemoryOp({ type: 'store', key: opts.key, value: opts.value, namespace: opts.namespace, tags: opts.tags });
+        return {
+          success: result.success,
+          id: (result as { id?: string }).id || '',
+          embedding: (result as { embedding?: { dimensions: number; model: string } }).embedding,
+          error: result.error as string | undefined,
+        };
+      };
     } catch {
       storeEntryFn = null;
     }
@@ -879,23 +900,21 @@ export const hooksPostCommand: MCPTool = {
     const timestamp = new Date().toISOString();
     const cmdId = `cmd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    // HK-002b: Persist command record via memory-initializer bridge (ADR-049)
+    // HK-002b: Persist command record via memory-router (ADR-049 / ADR-0086 T2.7)
     let storeResult = { success: false };
     try {
-      const mi = await import('../memory/memory-initializer.js');
-      const storeFn = mi.storeEntry || (mi.default as Record<string, unknown>)?.storeEntry;
-      if (storeFn) {
-        storeResult = await (storeFn as unknown as (opts: Record<string, unknown>) => Promise<{ success: boolean }>)({
-          key: cmdId,
-          value: JSON.stringify({ command, exitCode, success, timestamp }),
-          namespace: 'commands',
-          generateEmbeddingFlag: true,
-          tags: [success ? 'success' : 'failure', 'command'],
-        });
-      }
+      // ADR-0086 T2.7: import from router (was memory-initializer)
+      const mi = await import('../memory/memory-router.js');
+      storeResult = await mi.routeMemoryOp({
+        type: 'store',
+        key: cmdId,
+        value: JSON.stringify({ command, exitCode, success, timestamp }),
+        namespace: 'commands',
+        tags: [success ? 'success' : 'failure', 'command'],
+      });
     } catch (e) {
       throw new Error(
-        `HK-002b: store via memory-initializer failed: ${(e as Error)?.message}\n` +
+        `HK-002b: store via memory-router failed: ${(e as Error)?.message}\n` +
         `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json`
       );
     }
@@ -2489,7 +2508,7 @@ export const hooksPatternStore: MCPTool = {
       // Router not available
     }
 
-    // Fallback: persist using memory-initializer store
+    // Fallback: persist using memory-router store (ADR-0086 T2.7)
     let storeResult: { success: boolean; id?: string; embedding?: { dimensions: number; model: string }; error?: string } = { success: false };
     if (!reasoningResult) {
       const storeFn = await getRealStoreFunction();
@@ -2596,7 +2615,7 @@ export const hooksPatternSearch: MCPTool = {
       // Router not available — fall through
     }
 
-    // Fallback: Try real vector search via memory-initializer
+    // Fallback: Try real vector search via memory-router (ADR-0086 T2.7)
     const searchFn = await getRealSearchFunction();
 
     if (searchFn) {
