@@ -568,6 +568,12 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   private async tryNativeInit(): Promise<boolean> {
+    // :memory: mode — native backend not compatible with in-memory sentinel
+    // (RvfDatabase.create would write a literal `:memory:` file to cwd).
+    // Fall back to pure-TS HnswLite for in-memory operation.
+    if (this.config.databasePath === ':memory:') {
+      return false;
+    }
     try {
       const rvf = await import('@ruvector/rvf-node' as string);
       const { existsSync: fileExists } = await import('node:fs');
