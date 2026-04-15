@@ -472,7 +472,7 @@ export const INIT_LEVELS: InitLevel[] = [
   ] as ControllerName[] },
   // Level 1: Core intelligence
   { level: 1, controllers: [
-    'reasoningBank', 'hierarchicalMemory', 'learningBridge', 'hybridSearch', 'tieredCache',
+    'reasoningBank', 'hierarchicalMemory', 'learningBridge', 'tieredCache',
     'solverBandit', 'attentionMetrics', 'metadataFilter',
   ] as ControllerName[] },
   // Level 2: Graph, security & attention
@@ -482,9 +482,10 @@ export const INIT_LEVELS: InitLevel[] = [
     'flashAttentionService', 'moeAttentionService', 'nativeAccelerator', 'queryOptimizer',
   ] as ControllerName[] },
   // Level 3: Specialization (causalGraph moved here from L4 -- ADR-0062 P0-1: nightlyLearner depends on it)
+  // hybridSearch moved here from L1 -- depends on vectorBackend (L2), see sparkling/ruflo#29
   { level: 3, controllers: [
     'skills', 'explainableRecall', 'reflexion', 'attestationLog', 'batchOperations',
-    'memoryConsolidation',
+    'memoryConsolidation', 'hybridSearch',
     'enhancedEmbeddingService', 'auditLogger', 'causalGraph',
   ] as ControllerName[] },
   // Level 4: Routing & self-learning
