@@ -203,9 +203,7 @@ export class DaemonIPCServer {
   }
 }
 
-// ===== Client =====
-//
-// ADR-0088: DaemonIPCClient deleted. Had zero in-tree callers and contradicted
-// ADR-050 (hot path is file-based, no daemon). DaemonIPCServer remains for
-// future non-memory RPC methods; memory ops are in-process only via
+// ADR-0088: client class removed. It had zero in-tree callers and contradicted
+// ADR-050 (hot path is file-based, no daemon). The server class above remains
+// for future non-memory RPC methods; memory ops are in-process only via
 // memory-router.ts per ADR-0086.
