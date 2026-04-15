@@ -8,7 +8,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync as _readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import {
   MigrationConfig,
@@ -31,8 +31,8 @@ import { AgentDBAdapter } from './agentdb-adapter.js';
 // for bulk operations). Override via config.json memory.migrationBatchSize.
 const _configBatchSize = (() => {
   try {
-    const cfg = JSON.parse(require('fs').readFileSync(
-      require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const cfg = JSON.parse(_readFileSync(
+      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
     const val = cfg?.memory?.migrationBatchSize;
     if (typeof val === 'number' && val > 0) return val;
   } catch { /* use default */ }

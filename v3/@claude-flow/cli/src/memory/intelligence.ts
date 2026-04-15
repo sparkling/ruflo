@@ -330,20 +330,19 @@ class LocalSonaCoordinator {
     try {
       const ewcModule = await import('./ewc-consolidation.js');
       // ADR-0069: pass config-chain embedding dimension to EWC
+      // Uses ESM imports (existsSync, readFileSync, dirname, join) already at top of file
       let ewcDim = 768;
       try {
-        const _fs = require('fs');
-        const _path = require('path');
         let _dir = process.cwd();
         let _embPath = '';
         // Walk up to find .claude-flow/embeddings.json
-        while (_dir !== _path.dirname(_dir)) {
-          const candidate = _path.join(_dir, '.claude-flow', 'embeddings.json');
-          if (_fs.existsSync(candidate)) { _embPath = candidate; break; }
-          _dir = _path.dirname(_dir);
+        while (_dir !== dirname(_dir)) {
+          const candidate = join(_dir, '.claude-flow', 'embeddings.json');
+          if (existsSync(candidate)) { _embPath = candidate; break; }
+          _dir = dirname(_dir);
         }
         if (_embPath) {
-          const c = JSON.parse(_fs.readFileSync(_embPath, 'utf-8'));
+          const c = JSON.parse(readFileSync(_embPath, 'utf-8'));
           ewcDim = c?.dimension ?? 768;
         }
       } catch { if (!_embeddingsJsonWarned) { _embeddingsJsonWarned = true; console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.'); } }

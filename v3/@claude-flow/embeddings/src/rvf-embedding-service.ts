@@ -22,6 +22,8 @@
  */
 
 import { EventEmitter } from 'events';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import type {
   EmbeddingProvider,
   EmbeddingResult,
@@ -51,8 +53,8 @@ const DEFAULT_DIMENSIONS = 384;
 /** Default in-memory LRU cache size — ADR-0069: wire embeddingCacheSize consumer */
 const DEFAULT_CACHE_SIZE = (() => {
   try {
-    const cfg = JSON.parse(require('fs').readFileSync(
-      require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const cfg = JSON.parse(readFileSync(
+      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
     return cfg?.memory?.embeddingCacheSize ?? 1000;
   } catch { return 1000; }
 })();

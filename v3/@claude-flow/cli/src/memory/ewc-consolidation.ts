@@ -153,20 +153,18 @@ const DEFAULT_EWC_CONFIG: EWCConfig = {
   importanceThreshold: 0.3,
   storagePath: path.join(process.cwd(), '.swarm', 'ewc-fisher.json'),
   onlineMode: true,
-  // ADR-0069: config-chain embedding dimension
+  // ADR-0069: config-chain embedding dimension (uses ESM imports — fs/path already imported at top)
   dimensions: (() => { try {
-    const _fs = require('fs');
-    const _path = require('path');
     let _dir = process.cwd();
     let _embPath = '';
     // Walk up to find .claude-flow/embeddings.json
-    while (_dir !== _path.dirname(_dir)) {
-      const candidate = _path.join(_dir, '.claude-flow', 'embeddings.json');
-      if (_fs.existsSync(candidate)) { _embPath = candidate; break; }
-      _dir = _path.dirname(_dir);
+    while (_dir !== path.dirname(_dir)) {
+      const candidate = path.join(_dir, '.claude-flow', 'embeddings.json');
+      if (fs.existsSync(candidate)) { _embPath = candidate; break; }
+      _dir = path.dirname(_dir);
     }
     if (_embPath) {
-      const c = JSON.parse(_fs.readFileSync(_embPath, 'utf-8'));
+      const c = JSON.parse(fs.readFileSync(_embPath, 'utf-8'));
       return c?.dimension ?? 768;
     }
     return 768;
