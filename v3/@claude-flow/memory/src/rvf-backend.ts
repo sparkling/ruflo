@@ -619,12 +619,29 @@ export class RvfBackend implements IMemoryBackend {
     return numId;
   }
 
-  /** Acquire advisory lock (PID-based lockfile). Retries up to 3 times with 50ms delay. */
+  /** Acquire advisory lock (PID-based lockfile).
+   *
+   *  Time-budgeted retry: gives up after `maxWaitMs` regardless of attempt
+   *  count. Uses exponential backoff with jitter to reduce thundering-herd
+   *  when multiple writers race for the same lock. Stale locks (dead holder
+   *  or ts > 5s) are cleared without waiting.
+   *
+   *  The pre-ADR-0090 implementation used a fixed 5-retry × 100ms budget
+   *  (500ms total), which starved 3-of-8 writers under N=8 concurrent
+   *  in-process contention (verified by scripts/diag-rvf-inproc-race.mjs
+   *  in ruflo-patch). The 5s budget here accommodates realistic multi-
+   *  writer workflows (hook dispatch fan-out, swarm init, multi-pane
+   *  CLI) without being so large that genuinely stuck processes hang.
+   */
   private async acquireLock(): Promise<void> {
     if (!this.lockPath) return; // :memory: mode
     const { writeFile: wf, readFile: rf, unlink: ul } = await import('node:fs/promises');
-    const maxRetries = 5;
-    for (let i = 0; i < maxRetries; i++) {
+    const maxWaitMs = 5000; // total budget for lock acquisition
+    const baseDelayMs = 20;
+    const maxDelayMs = 500;
+    const startTime = Date.now();
+    let attempt = 0;
+    while (Date.now() - startTime < maxWaitMs) {
       try {
         await wf(this.lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
         return; // Lock acquired
@@ -639,17 +656,23 @@ export class RvfBackend implements IMemoryBackend {
           try { process.kill(pid, 0); } catch { pidAlive = false; }
           if (!pidAlive || Date.now() - ts > staleMs) {
             try { await ul(this.lockPath); } catch {}
-            continue; // Retry after removing stale lock
+            continue; // Retry immediately after removing stale lock
           }
         } catch {
           try { await ul(this.lockPath); } catch {}
           continue; // Corrupt lock file — remove and retry
         }
-        // Lock holder is alive — wait and retry
-        if (i < maxRetries - 1) await new Promise(r => setTimeout(r, 100));
+        // Lock holder is alive — exponential backoff with jitter
+        const expDelay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+        const jitter = expDelay * 0.5 * Math.random();
+        const delayMs = expDelay + jitter;
+        await new Promise(r => setTimeout(r, delayMs));
+        attempt++;
       }
     }
-    throw new Error('Failed to acquire advisory lock after retries');
+    throw new Error(
+      `Failed to acquire advisory lock after ${attempt} attempts over ${Date.now() - startTime}ms (budget=${maxWaitMs}ms)`,
+    );
   }
 
   /** Release advisory lock */
@@ -1069,11 +1092,113 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
+  /** Merge peer on-disk state into this.entries before a persist.
+   *
+   *  Called under the advisory lock at the top of persistToDiskInner. Re-reads
+   *  `.rvf` / `.meta` and replays `.rvf.wal` using set-if-absent semantics for
+   *  the disk read (our writes win on conflict) and standard replayWal for the
+   *  WAL (chronological last-write-wins, which matches the natural ordering
+   *  of appendToWal calls across processes).
+   *
+   *  HNSW/native vector indexes are intentionally NOT updated here: this is
+   *  the final persist for this instance (compactWal/shutdown path or
+   *  autoPersistInterval), and the additional entries are only needed for
+   *  durability, not for in-process query correctness. Skipping index
+   *  updates avoids double-add hazards (`loadFromDisk` doesn't do
+   *  alreadyLoaded checks on the index path) and reduces per-persist cost.
+   */
+  private async mergePeerStateBeforePersist(): Promise<void> {
+    if (this.config.databasePath === ':memory:') return;
+
+    // Step 1: re-read the compacted main file. If a peer process compacted
+    // their WAL since our initialize(), their entries are now in `.rvf` and
+    // not in the WAL. Missing this step is the primary data-loss vector.
+    const metaPath = this.config.databasePath + '.meta';
+    let loadPath: string | null = null;
+    if (existsSync(metaPath)) {
+      loadPath = metaPath;
+    } else if (existsSync(this.config.databasePath)) {
+      loadPath = this.config.databasePath;
+    }
+
+    if (loadPath) {
+      try {
+        const raw = await readFile(loadPath);
+        if (raw.length >= 8) {
+          const magic = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
+          if (magic === MAGIC) {
+            const headerLen = raw.readUInt32LE(4);
+            const MAX_HEADER_SIZE = 10 * 1024 * 1024;
+            if (headerLen <= MAX_HEADER_SIZE && 8 + headerLen <= raw.length) {
+              const headerJson = raw.subarray(8, 8 + headerLen).toString('utf-8');
+              let header: RvfHeader | null = null;
+              try { header = JSON.parse(headerJson); } catch { header = null; }
+              if (header && typeof header.entryCount === 'number') {
+                let offset = 8 + headerLen;
+                for (let i = 0; i < header.entryCount; i++) {
+                  if (offset + 4 > raw.length) break;
+                  const entryLen = raw.readUInt32LE(offset);
+                  offset += 4;
+                  if (offset + entryLen > raw.length) break;
+                  const entryJson = raw.subarray(offset, offset + entryLen).toString('utf-8');
+                  offset += entryLen;
+                  try {
+                    const parsed = JSON.parse(entryJson);
+                    if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
+                    const entry: MemoryEntry = parsed;
+                    // Set-if-absent: preserve our in-memory writes on key
+                    // conflict. Peer entries we don't have are merged.
+                    if (!this.entries.has(entry.id)) {
+                      this.entries.set(entry.id, entry);
+                      this.keyIndex.set(
+                        this.compositeKey(entry.namespace, entry.key),
+                        entry.id,
+                      );
+                    }
+                  } catch { /* corrupt entry — skip */ }
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // Read error — fall back to in-memory state. Worst case we repeat
+        // the pre-fix behavior for this one persist; not a regression.
+      }
+    }
+
+    // Step 2: replay the current WAL. It may contain un-compacted entries
+    // from peer processes that called appendToWal but have not yet compacted.
+    // replayWal() uses standard set() which gives chronological last-write-
+    // wins, the correct ordering for concurrent appendToWal calls under the
+    // advisory lock.
+    if (this.walPath && existsSync(this.walPath)) {
+      await this.replayWal();
+    }
+  }
+
   private async persistToDiskInner(): Promise<void> {
     if (this.persisting) return; // Prevent concurrent persist calls
     this.persisting = true;
 
     try {
+    // Multi-writer convergence (ADR-0090 Tier B7 fix).
+    //
+    // Callers always hold the advisory lock when they reach this method
+    // (compactWal / persistToDisk both acquire it first). Before dumping
+    // `this.entries` to disk, re-read on-disk state and replay the WAL so
+    // we pick up any entries committed by peer processes since our
+    // `initialize()` snapshot. Without this merge, shutdown silently
+    // overwrites peer writes with our stale in-memory map. Verified
+    // deterministic (50/75/87.5% data loss at N=2/4/8) by
+    // ruflo-patch/scripts/diag-rvf-inproc-race.mjs.
+    //
+    // Semantics: our in-memory entries win on key conflict (set-if-absent
+    // merge); peer entries we didn't have are added; WAL replay uses
+    // chronological last-write-wins via the existing `replayWal()` path,
+    // which is the correct ordering for entries appended after our init.
+    await this.mergePeerStateBeforePersist();
+
     const target = this.metadataPath;
     const dir = dirname(target);
     if (!existsSync(dir)) await mkdir(dir, { recursive: true });
