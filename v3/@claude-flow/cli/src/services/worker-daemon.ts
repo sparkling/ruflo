@@ -133,8 +133,13 @@ export class WorkerDaemon extends EventEmitter {
   private headlessExecutor: HeadlessWorkerExecutor | null = null;
   private headlessAvailable: boolean = false;
 
-  // ADR-0059 Phase 4: IPC server for hook<->daemon communication
+  // ADR-0088: IPC server kept for future non-memory RPC; memory handlers removed.
   private ipcServer: DaemonIPCServer | null = null;
+
+  // ADR-0088: capability detection — 'headless' if `claude` CLI is on PATH
+  // (9 of 12 workers can invoke Claude Code for real AI analysis), otherwise
+  // 'local' (those 9 workers write placeholder metrics). Set once during start().
+  private _aiMode: 'headless' | 'local' = 'local';
 
   // Preserve the original constructor config so we can detect explicit overrides
   // during state restoration (R1: constructor config takes priority over stale state)
@@ -553,6 +558,30 @@ export class WorkerDaemon extends EventEmitter {
   }
 
   /**
+   * ADR-0088: Get the current AI mode — 'headless' when `claude` CLI is
+   * available, 'local' otherwise. Read by `daemon status` command.
+   */
+  public get aiMode(): 'headless' | 'local' {
+    return this._aiMode;
+  }
+
+  /**
+   * ADR-0088: Detect whether `claude` CLI is on PATH. 'headless' means
+   * 9 of 12 workers can invoke Claude Code for real AI analysis; 'local'
+   * means those workers will write placeholder metrics.
+   */
+  private detectClaudeCapability(): 'headless' | 'local' {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { execSync } = require('node:child_process');
+      execSync('which claude', { stdio: 'ignore' });
+      return 'headless';
+    } catch {
+      return 'local';
+    }
+  }
+
+  /**
    * Start the daemon and all enabled workers
    */
   async start(): Promise<void> {
@@ -560,6 +589,11 @@ export class WorkerDaemon extends EventEmitter {
       this.emit('warning', 'Daemon already running');
       return;
     }
+
+    // ADR-0088: Detect AI capability up-front so `this._aiMode` is valid even
+    // if we end up bailing out in the singleton guard below (the status
+    // command reads aiMode via the in-process singleton).
+    this._aiMode = this.detectClaudeCapability();
 
     // PID singleton enforcement (#1395 Bug 3): prevent daemon accumulation
     const existingPid = this.checkExistingDaemon();
@@ -569,63 +603,35 @@ export class WorkerDaemon extends EventEmitter {
       return;
     }
 
+    // ADR-0088: Emit exactly one honest startup line. Headless mode means
+    // 9 of 12 workers can invoke Claude Code; local mode means those
+    // workers will write placeholder metrics.
+    if (this._aiMode === 'headless') {
+      this.log('info', '[Daemon] Starting in headless mode — AI workers will invoke Claude Code for analysis.');
+    } else {
+      this.log('info', '[Daemon] Starting in local mode — 9 of 12 workers will write placeholder metrics. Install Claude Code CLI for AI-powered background analysis.');
+    }
+
     this.running = true;
     this.startedAt = new Date();
     this.writePidFile();
     this.emit('started', { pid: process.pid, startedAt: this.startedAt });
 
-    // ADR-0059 Phase 4: Start IPC server for hook<->daemon communication
+    // ADR-0088: IPC server stays up for future non-memory RPC methods, but
+    // memory.* handlers and the pre-warm step are gone — memory ops are
+    // in-process only per ADR-050/ADR-0086. No handlers are currently
+    // registered; add them via this.ipcServer.registerMethod() when a
+    // concrete non-memory use case arrives.
     try {
       this.ipcServer = new DaemonIPCServer({
         socketPath: getDaemonSocketPath(this.projectRoot),
         projectRoot: this.projectRoot,
       });
-      // Register memory method handlers (ADR-0084 Phase 3: routed via memory-router)
-      this.ipcServer.registerMethod('memory.store', async (params) => {
-        const { routeMemoryOp } = await import('../memory/memory-router.js');
-        return routeMemoryOp({ ...(params as any), type: 'store' });
-      });
-      this.ipcServer.registerMethod('memory.search', async (params) => {
-        const { routeMemoryOp } = await import('../memory/memory-router.js');
-        return routeMemoryOp({ ...(params as any), type: 'search' });
-      });
-      this.ipcServer.registerMethod('memory.count', async (params) => {
-        const { routeMemoryOp } = await import('../memory/memory-router.js');
-        const result = await routeMemoryOp({ ...(params as any), type: 'list' });
-        return (result as any)?.total ?? 0;
-      });
-      this.ipcServer.registerMethod('memory.list', async (params) => {
-        const { routeMemoryOp } = await import('../memory/memory-router.js');
-        return routeMemoryOp({ ...(params as any), type: 'list' });
-      });
-      this.ipcServer.registerMethod('memory.bulkInsert', async (params: any) => {
-        const { routeMemoryOp } = await import('../memory/memory-router.js');
-        const entries = params.entries || [];
-        let stored = 0;
-        for (const entry of entries) {
-          const r = await routeMemoryOp({ ...entry, type: 'store' });
-          if (r?.success) stored++;
-        }
-        return { stored, total: entries.length };
-      });
       await this.ipcServer.start();
       this.log('info', `IPC server listening on ${this.ipcServer.socketPath}`);
-
-      // ADR-0064: Pre-warm the memory router AND embedder so first IPC call
-      // doesn't pay cold-start penalty. routeMemoryOp exercises the full
-      // path: ControllerRegistry + AgentDB + Transformers.js init + first
-      // embed() call (ONNX/WASM JIT warmup). Without this, the first
-      // memory.search call takes 8-15s, exceeding typical IPC timeouts.
-      try {
-        const { routeMemoryOp } = await import('../memory/memory-router.js');
-        await routeMemoryOp({ type: 'search', query: 'warmup', limit: 1 });
-        this.log('info', 'Memory router pre-warmed (including embedder)');
-      } catch {
-        this.log('info', 'Memory router pre-warm skipped (non-fatal)');
-      }
     } catch (err: any) {
       this.log('warn', `IPC server failed to start: ${err.message}`);
-      // Non-fatal: daemon still works, hooks fall back to direct RVF
+      // Non-fatal: daemon scheduler still runs without IPC
     }
 
     // Schedule all enabled workers

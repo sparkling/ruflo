@@ -6,7 +6,7 @@
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { WorkerDaemon, getDaemon, startDaemon, stopDaemon, type WorkerType, type DaemonConfig } from '../services/worker-daemon.js';
-import { getDaemonSocketPath } from '../services/daemon-ipc.js';
+// ADR-0088: getDaemonSocketPath import removed — status output no longer probes the socket.
 import { spawn, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve, isAbsolute } from 'path';
@@ -484,9 +484,24 @@ const statusCommand: Command = {
       const statusText = isRunning ? output.success('RUNNING') : output.error('STOPPED');
       const mode = bgRunning ? output.dim(' (background)') : status.running ? output.dim(' (foreground)') : '';
 
-      // IPC status
-      const socketPath = getDaemonSocketPath(projectRoot);
-      const socketExists = fs.existsSync(socketPath);
+      // ADR-0088: AI Mode replaces the old "IPC Socket: LISTENING" line
+      // (which was file-existence theatre, not a real probe). Prefer the
+      // live in-process daemon's aiMode when this process started it; when
+      // the daemon runs in the background, re-run the capability check so
+      // the answer reflects current PATH state.
+      let aiMode: 'headless' | 'local';
+      if (status.running && typeof (daemon as any).aiMode === 'string') {
+        aiMode = (daemon as any).aiMode;
+      } else {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { execSync } = require('node:child_process');
+          execSync('which claude', { stdio: 'ignore' });
+          aiMode = 'headless';
+        } catch {
+          aiMode = 'local';
+        }
+      }
 
       output.printBox(
         [
@@ -497,8 +512,7 @@ const statusCommand: Command = {
           `Max Concurrent: ${status.config.maxConcurrent}`,
           `Max CPU Load: ${status.config.resourceThresholds.maxCpuLoad}`,
           `Min Free Memory: ${status.config.resourceThresholds.minFreeMemoryPercent}%`,
-          `IPC Socket:    ${socketExists ? 'LISTENING' : 'inactive'}`,
-          socketExists ? `Socket Path:   ${socketPath}` : '',
+          `AI Mode:       ${aiMode}`,
         ].filter(Boolean).join('\n'),
         'RuFlo Daemon'
       );
