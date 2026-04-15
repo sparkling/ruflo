@@ -63,6 +63,15 @@ const DEFAULT_PERSIST_INTERVAL = 30000;
 export class RvfBackend implements IMemoryBackend {
   private entries = new Map<string, MemoryEntry>();
   private keyIndex = new Map<string, string>();
+  // ADR-0090 B7 followup: tracks every entry ID this instance has ever
+  // seen (initial load + stores). Deletes do NOT remove from this set —
+  // that is the point. `mergePeerStateBeforePersist` consults this set
+  // so that an entry we explicitly bulkDelete()d does not get
+  // resurrected by re-reading our own pre-delete state from disk under
+  // "set-if-absent" semantics. Without this tombstone, the merge treats
+  // "we deleted this" identically to "peer wrote this", which turns
+  // every bulkDelete into a no-op during the persist path.
+  private seenIds = new Set<string>();
   private hnswIndex: HnswLite | null = null;
   private nativeDb: any = null;
   private config: Required<RvfBackendConfig>;
@@ -165,6 +174,7 @@ export class RvfBackend implements IMemoryBackend {
     }
 
     this.entries.clear();
+    this.seenIds.clear();
     this.keyIndex.clear();
     this.hnswIndex = null;
     this.initialized = false;
@@ -180,6 +190,7 @@ export class RvfBackend implements IMemoryBackend {
     const ns = entry.namespace || this.config.defaultNamespace;
     const e = ns !== entry.namespace ? { ...entry, namespace: ns } : entry;
     this.entries.set(e.id, e);
+    this.seenIds.add(e.id);
     this.keyIndex.set(this.compositeKey(e.namespace, e.key), e.id);
     // Index in ONE backend, not both (Debt 8)
     if (e.embedding) {
@@ -386,6 +397,7 @@ export class RvfBackend implements IMemoryBackend {
     this.checkCapacity(entries.length);
     for (const entry of entries) {
       this.entries.set(entry.id, entry);
+      this.seenIds.add(entry.id);
       this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
       // Index in ONE backend, not both (Debt 8)
       if (entry.embedding) {
@@ -956,6 +968,7 @@ export class RvfBackend implements IMemoryBackend {
             }
           }
           this.entries.set(entry.id, entry);
+          this.seenIds.add(entry.id);
           this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
           if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
           if (entry.embedding && this.nativeDb) {
@@ -1057,6 +1070,7 @@ export class RvfBackend implements IMemoryBackend {
 
                   const entry: MemoryEntry = parsed;
                   this.entries.set(entry.id, entry);
+                  this.seenIds.add(entry.id);
                   this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
                   if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
                   if (entry.embedding && this.nativeDb) {
@@ -1146,10 +1160,19 @@ export class RvfBackend implements IMemoryBackend {
                     const parsed = JSON.parse(entryJson);
                     if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
                     const entry: MemoryEntry = parsed;
-                    // Set-if-absent: preserve our in-memory writes on key
-                    // conflict. Peer entries we don't have are merged.
-                    if (!this.entries.has(entry.id)) {
+                    // ADR-0090 B7 followup: set-if-not-seen. We preserve
+                    // our in-memory writes on key conflict AND we do not
+                    // resurrect entries we explicitly deleted this session.
+                    // The `seenIds` tombstone remembers every ID that ever
+                    // entered `this.entries` (initial load + stores + WAL
+                    // replay), regardless of whether a subsequent delete
+                    // removed it. Using `!this.entries.has(id)` alone would
+                    // treat "we deleted this" identically to "peer wrote
+                    // this" and silently un-delete bulkDelete() calls on
+                    // the next persist.
+                    if (!this.seenIds.has(entry.id)) {
                       this.entries.set(entry.id, entry);
+                      this.seenIds.add(entry.id);
                       this.keyIndex.set(
                         this.compositeKey(entry.namespace, entry.key),
                         entry.id,
