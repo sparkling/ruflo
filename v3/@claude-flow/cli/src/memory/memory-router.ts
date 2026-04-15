@@ -376,8 +376,17 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
           void Promise.resolve().then(() => {
             setTimeout(_restoreConsole, 500);
           });
-        } catch {
+        } catch (e) {
           _restoreConsole();
+          // ADR-0090 Tier B1: embedding dimension mismatch is a FATAL regression
+          // signal, not a best-effort controller-init failure. If the user's
+          // stored vectors are incompatible with the configured model, we must
+          // NOT silently disable the registry (that is the exact ADR-0082
+          // silent-fallback pattern). Preserve the original error so the
+          // outer catch can recognize it and re-throw.
+          if (e && (e as Error).name === 'EmbeddingDimensionError') {
+            throw e;
+          }
           throw new Error('registry init failed');
         }
 
@@ -401,9 +410,15 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
         }
         _ensureExitHook();
         return registry;
-      } catch {
+      } catch (e) {
         _registryAvailable = false;
         _registryPromise = null;
+        // ADR-0090 Tier B1: re-throw EmbeddingDimensionError. The caller
+        // (_doInit) has its own best-effort wrapper, but it also must not
+        // swallow this specific error type — see the matching guard there.
+        if (e && (e as Error).name === 'EmbeddingDimensionError') {
+          throw e;
+        }
         return null;
       }
     })();
@@ -515,10 +530,20 @@ async function _doInit(): Promise<void> {
   }
 
   // ADR-0085: Bootstrap ControllerRegistry (best-effort — non-fatal)
+  // ADR-0090 Tier B1 exception: EmbeddingDimensionError is FATAL. A stored-
+  // vs-configured dimension mismatch means the user's persisted embeddings
+  // are unreadable and any search/store would produce garbage results.
+  // Silently disabling controllers in that case would mask a real data-loss
+  // regression (ADR-0082). Re-throw so the CLI exits non-zero with a clear
+  // diagnostic.
   try {
     await initControllerRegistry();
-  } catch {
-    // Registry init is best-effort — storage still works without it
+  } catch (e) {
+    if (e && (e as Error).name === 'EmbeddingDimensionError') {
+      throw e;
+    }
+    // Other registry errors: best-effort — storage still works without the
+    // auxiliary controllers.
   }
 
   _initialized = true;
