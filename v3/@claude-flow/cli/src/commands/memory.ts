@@ -1491,10 +1491,149 @@ const initMemoryCommand: Command = {
 };
 
 // Migrate command — ADR-0030 S6 (OPT-011): Backfill legacy embeddings
+// ADR-0086: Legacy SQLite -> RVF migration helper.
+// Reads .swarm/memory.db via better-sqlite3 (dynamic, optional dep) and bulk-inserts
+// into .claude-flow/memory.rvf via RvfBackend.bulkInsert(). Preserves source row IDs
+// so reruns are idempotent (entries.set + keyIndex.set on same id replace, never duplicate).
+async function runFromSqlite(ctx: CommandContext): Promise<CommandResult> {
+  const cwd = process.cwd();
+  const sourcePath = (ctx.flags.source as string) || `${cwd}/.swarm/memory.db`;
+  const destPath = (ctx.flags.dest as string) || `${cwd}/.claude-flow/memory.rvf`;
+  const dryRun = ctx.flags['dry-run'] as boolean;
+
+  output.writeln();
+  output.writeln(output.bold('SQLite -> RVF Migration (ADR-0086)'));
+  output.writeln();
+  output.writeln(`  Source: ${sourcePath}`);
+  output.writeln(`  Dest:   ${destPath}`);
+  if (dryRun) output.printInfo('Dry-run mode: no writes will be performed');
+  output.writeln();
+
+  // Verify source exists
+  const { existsSync } = await import('node:fs');
+  if (!existsSync(sourcePath)) {
+    output.printError(`Source SQLite file not found: ${sourcePath}`);
+    output.printInfo('Hint: pre-ADR-0086 installs stored memory at .swarm/memory.db');
+    return { success: false, exitCode: 1 };
+  }
+
+  // Dry-run: count rows directly via better-sqlite3 (no RVF write path).
+  if (dryRun) {
+    let Database: any = null;
+    try {
+      const mod: any = await import('better-sqlite3' as string);
+      Database = mod.default ?? mod;
+    } catch {
+      output.printError('better-sqlite3 is required for SQLite migration but is not installed.');
+      output.printInfo('Install it (one-time, only needed for migration):');
+      output.writeln('    npm install better-sqlite3');
+      return { success: false, exitCode: 1 };
+    }
+    try {
+      const db = new Database(sourcePath, { readonly: true });
+      try {
+        const row = db.prepare('SELECT COUNT(*) AS n FROM memory_entries').get() as { n: number };
+        output.printSuccess(`Dry-run: found ${row.n} entries in ${sourcePath}`);
+        return { success: true, data: { dryRun: true, total: row.n, source: sourcePath, dest: destPath } };
+      } finally {
+        db.close();
+      }
+    } catch (e) {
+      output.printError(`Failed to read SQLite database: ${e instanceof Error ? e.message : String(e)}`);
+      return { success: false, exitCode: 1 };
+    }
+  }
+
+  // Real migration: delegate to RvfMigrator.fromSqlite (handles batching, normalization).
+  // The migrator uses dynamic import of better-sqlite3 internally and throws a clear
+  // error if it is missing, which we surface here.
+  const spinner = output.createSpinner({ text: 'Reading SQLite database...', spinner: 'dots' });
+  spinner.start();
+  try {
+    const { RvfMigrator }: any = await import('@claude-flow/memory');
+    const result = await RvfMigrator.fromSqlite(sourcePath, destPath, {
+      verbose: ctx.flags.verbose as boolean,
+      onProgress: (p: { current: number; total: number; phase: string }) => {
+        spinner.setText(`${p.phase}: ${p.current}/${p.total}`);
+      },
+    });
+
+    if (!result.success) {
+      const firstError = result.errors[0] || 'Unknown error';
+      const isMissingDriver = /better-sqlite3|sql\.js/i.test(firstError);
+      if (isMissingDriver) {
+        spinner.fail('SQLite driver missing');
+        output.printError('better-sqlite3 is required for SQLite migration but is not installed.');
+        output.printInfo('Install it (one-time, only needed for migration):');
+        output.writeln('    npm install better-sqlite3');
+      } else {
+        spinner.fail('Migration failed');
+        for (const err of result.errors) output.printError(err);
+      }
+      return { success: false, exitCode: 1 };
+    }
+
+    spinner.succeed(`Migrated ${result.entriesMigrated} entries in ${result.durationMs}ms`);
+    output.writeln();
+    output.printTable({
+      columns: [
+        { key: 'metric', header: 'Metric', width: 22 },
+        { key: 'value', header: 'Value', width: 30 }
+      ],
+      data: [
+        { metric: 'Source', value: sourcePath },
+        { metric: 'Destination', value: destPath },
+        { metric: 'Migrated', value: String(result.entriesMigrated) },
+        { metric: 'Errors', value: String(result.errors.length) },
+        { metric: 'Duration', value: `${result.durationMs}ms` }
+      ]
+    });
+    output.writeln();
+    output.printSuccess('SQLite migration complete. Restart any running daemon to pick up the new RVF data.');
+    return {
+      success: true,
+      data: {
+        migrated: result.entriesMigrated,
+        skipped: 0,
+        errors: result.errors,
+        source: sourcePath,
+        dest: destPath,
+        durationMs: result.durationMs,
+      },
+    };
+  } catch (e) {
+    spinner.fail('Migration failed');
+    output.printError(`Failed to migrate: ${e instanceof Error ? e.message : String(e)}`);
+    return { success: false, exitCode: 1 };
+  }
+}
+
 const migrateCommand: Command = {
   name: 'migrate',
-  description: 'Backfill embeddings for legacy memory entries',
+  description: 'Migrate legacy memory data (embeddings backfill or SQLite import)',
   options: [
+    {
+      name: 'from-sqlite',
+      description: 'Migrate from a legacy .swarm/memory.db SQLite file into RVF (ADR-0086)',
+      type: 'boolean',
+      default: false
+    },
+    {
+      name: 'source',
+      description: 'SQLite source path for --from-sqlite (default: .swarm/memory.db)',
+      type: 'string'
+    },
+    {
+      name: 'dest',
+      description: 'RVF destination path for --from-sqlite (default: .claude-flow/memory.rvf)',
+      type: 'string'
+    },
+    {
+      name: 'dry-run',
+      description: 'Count entries without writing (only with --from-sqlite)',
+      type: 'boolean',
+      default: false
+    },
     {
       name: 'force',
       short: 'f',
@@ -1525,9 +1664,20 @@ const migrateCommand: Command = {
   examples: [
     { command: 'claude-flow memory migrate', description: 'Backfill missing embeddings' },
     { command: 'claude-flow memory migrate --force', description: 'Regenerate all embeddings' },
-    { command: 'claude-flow memory migrate --batch-size 100 --model text-embedding-3-small', description: 'Custom batch size and model' }
+    { command: 'claude-flow memory migrate --batch-size 100 --model text-embedding-3-small', description: 'Custom batch size and model' },
+    { command: 'claude-flow memory migrate --from-sqlite', description: 'Import legacy .swarm/memory.db into .claude-flow/memory.rvf (ADR-0086)' },
+    { command: 'claude-flow memory migrate --from-sqlite --source ./old.db --dest ./new.rvf --dry-run', description: 'Count entries in a legacy DB without writing' }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
+    // ADR-0086: --from-sqlite branch — import a legacy .swarm/memory.db into RVF.
+    // Pre-ADR-0086 installs wrote entries to SQLite via Hybrid/SQLite backends.
+    // After ADR-0086 the CLI only reads RVF, so users upgrading silently lose data
+    // unless they run this command. better-sqlite3 is loaded dynamically (it is
+    // NOT in CLI dependencies — Debt 7) and a clear install hint is shown if missing.
+    if (ctx.flags['from-sqlite']) {
+      return runFromSqlite(ctx);
+    }
+
     const force = ctx.flags.force as boolean;
     const batchSize = (ctx.flags['batch-size'] as number) || 50;
     const model = ctx.flags.model as string | undefined;
@@ -1707,7 +1857,7 @@ export const memoryCommand: Command = {
       `${output.highlight('compress')}   - Compress database`,
       `${output.highlight('export')}     - Export memory to file`,
       `${output.highlight('import')}     - Import from file`,
-      `${output.highlight('migrate')}    - Backfill legacy embeddings`
+      `${output.highlight('migrate')}    - Backfill embeddings or import legacy SQLite (--from-sqlite)`
     ]);
 
     return { success: true };
