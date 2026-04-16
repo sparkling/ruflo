@@ -1038,34 +1038,101 @@ export class RvfBackend implements IMemoryBackend {
     // WAL replay runs unconditionally afterward — the WAL may contain
     // entries from a prior process that exited before compaction (e.g.
     // short-lived CLI invocations where store writes to WAL then exits).
+    //
+    // ADR-0090 Tier B2: corruption fail-loud.
+    //
+    // Previously every parse-failure branch silently skipped the load and
+    // returned an empty backend. If the user later stored new data, the
+    // silent-zero starting state caused the corrupt file to be overwritten
+    // with only the new entry — SILENT DATA LOSS.
+    //
+    // Fix: track whether we DETECTED corruption (file existed, had bytes,
+    // but we couldn't extract entries). After WAL replay, if we detected
+    // corruption AND no entries were recovered from WAL either, throw a
+    // loud `RvfCorruptError`. The CLI surfaces this as a non-zero exit
+    // with a diagnostic pointing to the corrupt path — the user can then
+    // decide to delete or migrate, rather than continuing with empty state.
+    //
+    // Cases that still work (non-throwing):
+    //   - File doesn't exist at all → normal cold start (no corruption detected)
+    //   - File exists but is empty (0 bytes) → truncated-to-zero (no corruption)
+    //   - File exists AND is corrupt AND WAL recovery yields >= 1 entries
+    //     → WAL is the recovery path by design, use it
+    let loadFailed = false;
+    let loadFailReason = '';
     if (loadPath) {
       try {
         const raw = await readFile(loadPath);
-        if (raw.length >= 8) {
+        if (raw.length === 0) {
+          // Empty file — treat as cold start, not corruption
+        } else if (raw.length < 8) {
+          loadFailed = true;
+          loadFailReason = `file is shorter than the 8-byte RVF header (${raw.length} bytes)`;
+        } else {
           const magic = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
-          if (magic === MAGIC) {
+          if (magic !== MAGIC) {
+            loadFailed = true;
+            loadFailReason = `bad magic bytes (expected '${MAGIC.replace(/\0/g, '\\0')}', got ${JSON.stringify(magic)})`;
+          } else {
             const headerLen = raw.readUInt32LE(4);
             const MAX_HEADER_SIZE = 10 * 1024 * 1024; // 10MB max header
-            if (headerLen <= MAX_HEADER_SIZE && 8 + headerLen <= raw.length) {
+            if (headerLen > MAX_HEADER_SIZE) {
+              loadFailed = true;
+              loadFailReason = `header length ${headerLen} exceeds MAX_HEADER_SIZE (${MAX_HEADER_SIZE})`;
+            } else if (8 + headerLen > raw.length) {
+              loadFailed = true;
+              loadFailReason = `truncated header (expected ${8 + headerLen} bytes, got ${raw.length})`;
+            } else {
               const headerJson = raw.subarray(8, 8 + headerLen).toString('utf-8');
               let header: RvfHeader | null = null;
               try {
                 header = JSON.parse(headerJson);
-              } catch {
-                if (this.config.verbose) console.error('[RvfBackend] Corrupt RVF header');
+              } catch (e) {
+                loadFailed = true;
+                loadFailReason = `header JSON parse failed: ${(e as Error).message}`;
               }
               if (header && typeof header.entryCount === 'number' && typeof header.version === 'number') {
                 let offset = 8 + headerLen;
+                let loaded = 0;
                 for (let i = 0; i < header.entryCount; i++) {
-                  if (offset + 4 > raw.length) break;
+                  if (offset + 4 > raw.length) {
+                    // Truncated mid-entry — set corruption flag only if we
+                    // haven't loaded anything (otherwise the prefix is usable)
+                    if (loaded === 0) {
+                      loadFailed = true;
+                      loadFailReason = `truncated entry-length prefix at offset ${offset} (expected ${header.entryCount} entries, got 0 before truncation)`;
+                    } else if (this.config.verbose) {
+                      console.error(`[RvfBackend] Truncated at entry ${i}/${header.entryCount}, loaded ${loaded} entries`);
+                    }
+                    break;
+                  }
                   const entryLen = raw.readUInt32LE(offset);
                   offset += 4;
-                  if (offset + entryLen > raw.length) break;
+                  if (offset + entryLen > raw.length) {
+                    if (loaded === 0) {
+                      loadFailed = true;
+                      loadFailReason = `truncated entry body at offset ${offset} (need ${entryLen} bytes, have ${raw.length - offset})`;
+                    } else if (this.config.verbose) {
+                      console.error(`[RvfBackend] Truncated entry body at entry ${i}/${header.entryCount}, loaded ${loaded} entries`);
+                    }
+                    break;
+                  }
 
                   const entryJson = raw.subarray(offset, offset + entryLen).toString('utf-8');
                   offset += entryLen;
 
-                  const parsed = JSON.parse(entryJson);
+                  let parsed: MemoryEntry;
+                  try {
+                    parsed = JSON.parse(entryJson);
+                  } catch (e) {
+                    if (loaded === 0) {
+                      loadFailed = true;
+                      loadFailReason = `entry ${i} JSON parse failed: ${(e as Error).message}`;
+                    } else if (this.config.verbose) {
+                      console.error(`[RvfBackend] Corrupt entry ${i}/${header.entryCount}, loaded ${loaded}`);
+                    }
+                    break;
+                  }
                   if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
 
                   const entry: MemoryEntry = parsed;
@@ -1079,21 +1146,42 @@ export class RvfBackend implements IMemoryBackend {
                       if (this.config.verbose) console.error('[RvfBackend] Native ingest on load failed:', (err as Error).message);
                     }
                   }
+                  loaded++;
                 }
+              } else if (!loadFailed) {
+                loadFailed = true;
+                loadFailReason = `header missing required fields (entryCount, version)`;
               }
             }
           }
         }
       } catch (err) {
-        if (this.config.verbose) {
-          console.error('[RvfBackend] Error loading from disk:', err);
-        }
+        // Read error (permissions, EIO, etc.) — treat as corruption signal.
+        loadFailed = true;
+        loadFailReason = `read failed: ${(err as Error).message}`;
       }
     }
 
     // Always replay WAL — even if the main file is missing, corrupt, or empty.
     // The WAL is the authoritative source for uncommitted writes.
     await this.replayWal();
+
+    // ADR-0090 Tier B2: if we detected corruption AND neither the main
+    // file load NOR the WAL replay yielded any entries, fail loud. This
+    // is the ADR-0082 "no silent fallback" rule applied at the storage
+    // layer: a corrupt file that resolves to an empty backend silently
+    // invites subsequent stores to overwrite the corrupt data with a new
+    // empty file, destroying any chance of recovery.
+    if (loadFailed && this.entries.size === 0) {
+      const err = new Error(
+        `RVF storage at ${loadPath} is corrupt: ${loadFailReason}. ` +
+        `No WAL recovery data available. Refusing to start with empty state ` +
+        `to prevent silent overwrite of the corrupt file on next persist. ` +
+        `Move or delete the file to start fresh, or restore from a backup.`,
+      );
+      err.name = 'RvfCorruptError';
+      throw err;
+    }
   }
 
   private async persistToDisk(): Promise<void> {

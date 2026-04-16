@@ -522,6 +522,17 @@ async function _doInit(): Promise<void> {
     // ADR-0086 B4: circuit breaker — storage creation failed
     _storage = null;
     _initFailed = true; // ADR-0086 I2: prevent retry storm
+    // ADR-0090 Tier B2: preserve RvfCorruptError so the CLI can surface
+    // a corruption-specific diagnostic (not just a generic storage-init
+    // failure). The message text is still wrapped for context, but the
+    // original Error's name and stack propagate. If we wrapped into a
+    // plain Error, downstream handlers (and ADR-0090 acceptance checks)
+    // would lose the ability to distinguish "corrupt file" from "other
+    // storage init error", and the user-facing diagnostic from
+    // RvfBackend.loadFromDisk would be truncated.
+    if (e && (e as Error).name === 'RvfCorruptError') {
+      throw e;
+    }
     throw new Error('Storage initialization failed: ' + (e instanceof Error ? e.message : String(e)));
   }
 
