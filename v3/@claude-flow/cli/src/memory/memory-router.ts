@@ -814,6 +814,16 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
  * (e.g. neural.enabled=false), not as an independent controller source.
  */
 export async function getController<T = unknown>(name: string): Promise<T | undefined> {
+  // ADR-0090 Tier B5 fix: MCP tool handlers (agentdb_reflexion_store,
+  // agentdb_skill_create, etc.) call `getController` as the first
+  // memory-router touch-point in a fresh CLI process. Without
+  // `ensureRouter()`, `_registryInstance` is null and we fall straight
+  // through to `intercept.getExisting`, which returns undefined because
+  // nothing has populated the pool yet. Every controller-specific tool
+  // would return `"<Controller> not available"` — observed across all
+  // 15 Tier B5 verifiers before this fix. `ensureRouter` is idempotent
+  // (short-circuits on `_initialized`) and inexpensive.
+  try { await ensureRouter(); } catch { /* init failed; falls through below */ }
   // Primary: router-local registry (populated by initControllerRegistry)
   if (_registryInstance && typeof _registryInstance.get === 'function') {
     try {
