@@ -847,8 +847,21 @@ export async function hasController(name: string): Promise<boolean> {
 /**
  * List all registered controller names and info.
  * Same shared-singleton contract as getController — see its JSDoc.
+ *
+ * ADR-0090 Tier B5 fix: ensure the router is initialized before querying
+ * the registry. Previously this function was called directly by the
+ * `agentdb_controllers` / `agentdb_health` MCP handlers, which don't
+ * themselves touch `ensureRouter()` — so on a cold `cli mcp exec
+ * --tool agentdb_controllers` invocation, `_registryInstance` was null
+ * and the intercept pool was empty, returning `[]` even though the
+ * controllers had been initialized on a prior memory op. The 12-agent
+ * B5 swarm (2026-04-16) observed `controllers: 0, active: 0` for every
+ * controller across every cold invocation and traced the gap here.
+ * Calling `ensureRouter()` is idempotent and inexpensive after first
+ * init (short-circuits on `_initialized`).
  */
 export async function listControllerInfo(): Promise<unknown[]> {
+  try { await ensureRouter(); } catch { /* surface via empty list below */ }
   if (_registryInstance && typeof _registryInstance.listControllers === 'function') {
     try {
       const controllers = _registryInstance.listControllers();
@@ -880,8 +893,13 @@ export async function waitForDeferred(): Promise<void> {
 /**
  * Controller health check.
  * Same shared-singleton contract as getController — see its JSDoc.
+ *
+ * ADR-0090 Tier B5 fix: call `ensureRouter()` so the registry is
+ * populated even on a cold `cli mcp exec --tool agentdb_health`
+ * invocation. See listControllerInfo() for the full rationale.
  */
 export async function healthCheck(): Promise<unknown> {
+  try { await ensureRouter(); } catch { /* surface via "available: false" below */ }
   if (_registryInstance && typeof _registryInstance.listControllers === 'function') {
     try {
       const controllers = _registryInstance.listControllers();
@@ -993,8 +1011,34 @@ export async function routePatternOp(op: PatternOp): Promise<MemoryResult> {
       const reasoningBank = await getController<any>('reasoningBank');
       const patternId = generateId('pattern');
 
-      // OPT-001: Probe for callable store method across binding patterns
-      const storeFn = getCallableMethod(reasoningBank, 'store', 'storePattern', 'add');
+      // OPT-001: Probe for callable store method across binding patterns.
+      // Prefer `storePattern` over `store`/`add` — the agentdb v3
+      // ReasoningBank controller exposes only `storePattern`, and its
+      // schema shape (`{taskType, approach, successRate, ...}`) does
+      // NOT match the legacy `{content, type, confidence}` shape. ADR-0090
+      // Tier B5 verifier (reasoningBank) traced a NOT-NULL constraint
+      // failure on `reasoning_patterns.task_type` to this exact mismatch:
+      // every call was silently failing, 0 rows landed. Map the fields
+      // when we hit `storePattern` so the write actually lands in
+      // `reasoning_patterns`. If a future controller re-introduces a
+      // legacy `store(obj)` or `add(obj)` shape, those paths still get
+      // the unchanged legacy payload.
+      const storePatternFn = getCallableMethod(reasoningBank, 'storePattern');
+      if (storePatternFn) {
+        try {
+          await storePatternFn({
+            taskType: op.patternType || 'general',
+            approach: op.pattern || '',
+            successRate: op.confidence ?? 1.0,
+            tags: op.patternType ? [op.patternType] : undefined,
+            metadata: op.metadata,
+          });
+          return { success: true, patternId, controller: 'reasoningBank' };
+        } catch (e: unknown) {
+          return { success: false, patternId: '', controller: '', error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+      const storeFn = getCallableMethod(reasoningBank, 'store', 'add');
       if (storeFn) {
         try {
           await storeFn({
