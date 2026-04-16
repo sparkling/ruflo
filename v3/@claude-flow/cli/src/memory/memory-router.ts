@@ -467,7 +467,7 @@ function generateId(prefix: string): string {
  * Inlined from memory-bridge getCallableMethod (OPT-001/OPT-002).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getCallableMethod(obj: any, ...names: string[]): ((...args: any[]) => any) | null {
+export function getCallableMethod(obj: any, ...names: string[]): ((...args: any[]) => any) | null {
   if (!obj) return null;
   for (const name of names) {
     if (typeof obj[name] === 'function') return obj[name].bind(obj);

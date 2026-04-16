@@ -50,6 +50,7 @@ import {
   waitForDeferred,
   healthCheck,
   listControllerInfo,
+  getCallableMethod,
 } from '../memory/memory-router.js';
 
 import {
@@ -571,7 +572,11 @@ export const agentdbReflexionRetrieve: MCPTool = {
       const task = validateString(params.task, 'task', 10_000);
       if (!task) return { success: false, results: [], error: 'task is required (non-empty string, max 10KB)' };
       const reflexion = await getController<any>('reflexion');
-      if (!reflexion || typeof reflexion.retrieve !== 'function') {
+      // ADR-0090 B5 fix: v3 agentdb ReflexionMemory renamed `.retrieve`
+      // to `.retrieveRelevant`. Use getCallableMethod so old and new
+      // names both work.
+      const retrieveFn = getCallableMethod(reflexion, 'retrieveRelevant', 'retrieve');
+      if (!reflexion || !retrieveFn) {
         return { success: false, results: [], error: 'ReflexionMemory not available' };
       }
       const k = validatePositiveInt(params.k, 5, MAX_TOP_K);
@@ -579,7 +584,7 @@ export const agentdbReflexionRetrieve: MCPTool = {
         setTimeout(() => reject(new Error('reflexion_retrieve timeout (2s)')), 2000),
       );
       const results = await Promise.race([
-        reflexion.retrieve(task, k),
+        retrieveFn(task, { k }),
         timeoutPromise,
       ]);
       return {
@@ -616,18 +621,24 @@ export const agentdbReflexionStore: MCPTool = {
       if (!task) return { success: false, error: 'task is required (non-empty string, max 10KB)' };
       const reward = validateScore(params.reward, 0.5);
       const reflexion = await getController<any>('reflexion');
-      if (!reflexion || typeof reflexion.store !== 'function') {
+      // ADR-0090 B5 fix: v3 agentdb ReflexionMemory renamed `.store`
+      // to `.storeEpisode` and the param shape changed from
+      // snake_case {session_id, task, reward, success} to camelCase.
+      const storeFn = getCallableMethod(reflexion, 'storeEpisode', 'store');
+      if (!reflexion || !storeFn) {
         return { success: false, error: 'ReflexionMemory not available' };
       }
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('reflexion_store timeout (2s)')), 2000),
       );
       await Promise.race([
-        reflexion.store({
-          session_id: sessionId,
+        storeFn({
+          sessionId,
           task,
           reward,
           success: params.success === true,
+          // legacy names preserved in case the controller predates the rename
+          session_id: sessionId,
         }),
         timeoutPromise,
       ]);
@@ -681,12 +692,19 @@ export const agentdbCausalQuery: MCPTool = {
       });
 
       try {
-        if (cause && typeof causal.getEffects === 'function') {
-          results = await Promise.race([causal.getEffects(cause, k), timeoutPromise]) as unknown[];
-        } else if (effect && typeof causal.getCauses === 'function') {
-          results = await Promise.race([causal.getCauses(effect, k), timeoutPromise]) as unknown[];
-        } else if (typeof causal.query === 'function') {
-          results = await Promise.race([causal.query(params), timeoutPromise]) as unknown[];
+        // ADR-0090 B5 fix: v3 CausalMemoryGraph renamed getEffects/
+        // getCauses/query to queryCausalEffects/getCausalChain/
+        // findSimilarCausalPatterns. Probe old + new names so legacy
+        // and current builds both work.
+        const getEffectsFn = getCallableMethod(causal, 'queryCausalEffects', 'getEffects');
+        const getCausesFn = getCallableMethod(causal, 'getCausalChain', 'getCauses');
+        const queryFn = getCallableMethod(causal, 'findSimilarCausalPatterns', 'query');
+        if (cause && getEffectsFn) {
+          results = await Promise.race([getEffectsFn(cause, k), timeoutPromise]) as unknown[];
+        } else if (effect && getCausesFn) {
+          results = await Promise.race([getCausesFn(effect, k), timeoutPromise]) as unknown[];
+        } else if (queryFn) {
+          results = await Promise.race([queryFn(params), timeoutPromise]) as unknown[];
         }
       } finally {
         clearTimeout(timerId);
@@ -1376,7 +1394,9 @@ export const agentdbExperienceRecord: MCPTool = {
       const reward = validateScore(params.reward, 0.5);
       const succeeded = params.success === true;
       const reflexion = await getController<any>('reflexion');
-      if (!reflexion || typeof reflexion.store !== 'function') {
+      // ADR-0090 B5 fix: same rename as agentdb_reflexion_store.
+      const storeFn = getCallableMethod(reflexion, 'storeEpisode', 'store');
+      if (!reflexion || !storeFn) {
         return { success: false, error: 'ReflexionMemory controller not available' };
       }
       const sessionId = `exp-${Date.now()}`;
@@ -1384,7 +1404,7 @@ export const agentdbExperienceRecord: MCPTool = {
         setTimeout(() => reject(new Error('experience-record timeout (2s)')), 2000),
       );
       await Promise.race([
-        reflexion.store({ session_id: sessionId, task, input, output, reward, success: succeeded }),
+        storeFn({ sessionId, session_id: sessionId, task, input, output, reward, success: succeeded }),
         timeoutPromise,
       ]);
       return { success: true, episodeId: sessionId };
