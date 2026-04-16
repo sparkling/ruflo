@@ -1027,10 +1027,26 @@ export class RvfBackend implements IMemoryBackend {
     //    before compaction — e.g. short-lived CLI invocations).
     const metaPath = this.config.databasePath + '.meta';
     let loadPath: string | null = null;
-    if (existsSync(metaPath)) {
-      loadPath = metaPath;
-    } else if (existsSync(this.config.databasePath)) {
-      loadPath = this.config.databasePath;
+    if (this.nativeDb) {
+      // ADR-0090 Tier B2 + ADR-0092: when native is active, the main
+      // path `this.config.databasePath` holds the native binary format
+      // (magic `SFVR`), NOT the pure-TS RVF format (magic `RVF\0`). We
+      // must ONLY look at the `.meta` sidecar for pure-TS metadata —
+      // attempting to parse the native file as pure-TS would trip the
+      // fail-loud corruption check on every init (native's
+      // `RvfDatabase.create()` writes SFVR to `dbPath` during
+      // tryNativeInit, which runs *before* loadFromDisk).
+      if (existsSync(metaPath)) loadPath = metaPath;
+    } else {
+      // Pure-TS mode: .meta may exist from a prior native session — if
+      // so prefer it (it has the richer header). Otherwise fall back to
+      // the main path, which pure-TS owns exclusively when no native
+      // file was ever written.
+      if (existsSync(metaPath)) {
+        loadPath = metaPath;
+      } else if (existsSync(this.config.databasePath)) {
+        loadPath = this.config.databasePath;
+      }
     }
     // No early return — fall through to replayWal() even when main file is absent
 
@@ -1215,9 +1231,16 @@ export class RvfBackend implements IMemoryBackend {
     // Step 1: re-read the compacted main file. If a peer process compacted
     // their WAL since our initialize(), their entries are now in `.rvf` and
     // not in the WAL. Missing this step is the primary data-loss vector.
+    //
+    // ADR-0090 Tier B2 + ADR-0092: when native is active, skip the main
+    // path — it holds native binary format, NOT pure-TS RVF format.
+    // Reading it as pure-TS would be silently ignored (magic mismatch)
+    // and, in worse cases, could parse valid-looking but wrong bytes.
     const metaPath = this.config.databasePath + '.meta';
     let loadPath: string | null = null;
-    if (existsSync(metaPath)) {
+    if (this.nativeDb) {
+      if (existsSync(metaPath)) loadPath = metaPath;
+    } else if (existsSync(metaPath)) {
       loadPath = metaPath;
     } else if (existsSync(this.config.databasePath)) {
       loadPath = this.config.databasePath;
