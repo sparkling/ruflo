@@ -821,6 +821,21 @@ export async function getController<T = unknown>(name: string): Promise<T | unde
       if (ctrl) return ctrl as T;
     } catch { /* fall through to intercept */ }
   }
+  // ADR-0090 Tier B5 fix: if the registry is up but doesn't have this
+  // name yet, wait for deferred init to finish. Level 2+ controllers
+  // (reflexion, skills, causalGraph, etc. — 13 of 15 B5 targets)
+  // register lazily in the background; MCP tool handlers that resolve
+  // them directly (agentdb_reflexion_store, agentdb_skill_create, etc.)
+  // would otherwise race the deferred init and get undefined.
+  if (_registryInstance && typeof _registryInstance.waitForDeferred === 'function') {
+    try {
+      await _registryInstance.waitForDeferred();
+      if (typeof _registryInstance.get === 'function') {
+        const ctrl = _registryInstance.get(name);
+        if (ctrl) return ctrl as T;
+      }
+    } catch { /* deferred init failed; fall through to intercept */ }
+  }
   // Fallback: controller-intercept reads from the same shared registry.
   // Only reached when _registryInstance is null (init failed / neural disabled).
   const intercept = await loadIntercept();
