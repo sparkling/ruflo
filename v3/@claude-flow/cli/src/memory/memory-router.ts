@@ -881,9 +881,38 @@ export async function listControllerInfo(): Promise<unknown[]> {
 
 /**
  * Wait for deferred (Level 2+) controller initialization.
- * ADR-0084 Phase 3: bridge fallback removed — controller-intercept handles deferred init.
+ *
+ * ADR-0090 Tier B5 fix (2026-04-16): the prior implementation only
+ * delegated to `controller-intercept.waitForDeferred()` which does NOT
+ * exist on the intercept module (it only exposes the singleton pool
+ * — getOrCreate / getExisting / listControllers). The net effect was
+ * a silent no-op: callers assumed Level 2+ controllers (reflexion,
+ * skills, causalGraph, causalRecall, learningSystem, memoryConsolidation,
+ * attentionService, gnnService, semanticRouter, graphAdapter,
+ * sonaTrajectory, nightlyLearner, explainableRecall — 13 of 15 B5
+ * controllers) were init'd, but only Level 0-1 had actually landed.
+ * The B5 swarm verifiers observed `"<Controller> not available"` for
+ * every Level 2+ tool invocation because deferred init never completed
+ * by the time the MCP handler tried to resolve the controller.
+ *
+ * Correct behavior: ensure the router is up (to instantiate the
+ * registry), then await the registry instance's own `waitForDeferred()`.
+ * That promise resolves when ALL deferred levels (2-6) finish
+ * initController() calls — at which point `getController('reflexion')`
+ * etc. will return the real controller via the agentdb fallback in
+ * ControllerRegistry.get.
  */
 export async function waitForDeferred(): Promise<void> {
+  try { await ensureRouter(); } catch { /* registry will stay null; fall through */ }
+  if (_registryInstance && typeof _registryInstance.waitForDeferred === 'function') {
+    try {
+      await _registryInstance.waitForDeferred();
+    } catch { /* deferred init failed — controllers that depend on it will surface via getController falling back to intercept.getExisting → null */ }
+    return;
+  }
+  // Legacy fallback: if a future intercept module grows a waitForDeferred
+  // export, honor it. Current controller-intercept.ts does not expose
+  // one — kept for forward compatibility.
   const intercept = await loadIntercept();
   if (intercept && typeof (intercept as Record<string, unknown>).waitForDeferred === 'function') {
     await (intercept as Record<string, (...args: unknown[]) => Promise<void>>).waitForDeferred();
