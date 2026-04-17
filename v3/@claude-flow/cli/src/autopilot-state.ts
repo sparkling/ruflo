@@ -8,6 +8,11 @@
  * Security: Addresses prototype pollution, NaN bypass, input validation
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
+
 // ── Constants ─────────────────────────────────────────────────
 
 export const STATE_DIR = '.claude-flow/data';
@@ -113,7 +118,6 @@ export function validateTaskSources(sources: unknown): string[] {
 // ── State Management ──────────────────────────────────────────
 
 export function getDefaultState(): AutopilotState {
-  const crypto = require('crypto') as typeof import('crypto');
   return {
     sessionId: crypto.randomUUID(),
     enabled: false,
@@ -128,8 +132,6 @@ export function getDefaultState(): AutopilotState {
 }
 
 export function loadState(): AutopilotState {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
   const filePath = path.resolve(STATE_FILE);
   const defaults = getDefaultState();
   try {
@@ -154,8 +156,6 @@ export function loadState(): AutopilotState {
 }
 
 export function saveState(state: AutopilotState): void {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
   const dir = path.resolve(STATE_DIR);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   // Cap history before saving
@@ -168,8 +168,6 @@ export function saveState(state: AutopilotState): void {
 }
 
 export function appendLog(entry: AutopilotLogEntry): void {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
   const filePath = path.resolve(LOG_FILE);
   const dir = path.resolve(STATE_DIR);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -190,8 +188,6 @@ export function appendLog(entry: AutopilotLogEntry): void {
 }
 
 export function loadLog(): AutopilotLogEntry[] {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
   const filePath = path.resolve(LOG_FILE);
   try {
     if (fs.existsSync(filePath)) {
@@ -207,9 +203,6 @@ export function loadLog(): AutopilotLogEntry[] {
 // ── Task Discovery ────────────────────────────────────────────
 
 export function discoverTasks(sources: string[]): TaskInfo[] {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  const os = require('os') as typeof import('os');
   const tasks: TaskInfo[] = [];
 
   // Only process valid sources

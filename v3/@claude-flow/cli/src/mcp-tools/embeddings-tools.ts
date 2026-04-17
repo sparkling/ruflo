@@ -59,11 +59,43 @@ function ensureConfigDir(): void {
   }
 }
 
+// ADR-0094: init writes a minimal embeddings.json shape (model/dimension/hnsw only),
+// while the MCP tools expect the richer shape written by `embeddings_init`.
+// Merge on-disk config with full defaults so nested access (config.hyperbolic.enabled,
+// config.neural.features) never throws "Cannot read properties of undefined".
+function applyDefaults(raw: Partial<EmbeddingsConfig> & Record<string, unknown>): EmbeddingsConfig {
+  const model = (raw.model as string) || 'Xenova/all-mpnet-base-v2';
+  const dimension = (raw.dimension as number) || (model.includes('MiniLM') ? 384 : EMBEDDING_DIM);
+  const rawHyperbolic = (raw.hyperbolic as Partial<EmbeddingsConfig['hyperbolic']> | undefined) ?? {};
+  const rawNeural = (raw.neural as Partial<EmbeddingsConfig['neural']> | undefined) ?? {};
+  return {
+    model,
+    modelPath: (raw.modelPath as string) || resolve(join(CONFIG_DIR, MODELS_DIR)),
+    dimension,
+    cacheSize: (raw.cacheSize as number) ?? 256,
+    hyperbolic: {
+      enabled: rawHyperbolic.enabled ?? false,
+      curvature: rawHyperbolic.curvature ?? -1,
+      epsilon: rawHyperbolic.epsilon ?? 1e-15,
+      maxNorm: rawHyperbolic.maxNorm ?? 1 - 1e-5,
+    },
+    neural: {
+      enabled: rawNeural.enabled ?? true,
+      driftThreshold: rawNeural.driftThreshold ?? 0.3,
+      decayRate: rawNeural.decayRate ?? 0.01,
+      ruvector: rawNeural.ruvector,
+      features: rawNeural.features,
+    },
+    initialized: (raw.initialized as string) || new Date(0).toISOString(),
+  };
+}
+
 function loadConfig(): EmbeddingsConfig | null {
   try {
     const path = getConfigPath();
     if (existsSync(path)) {
-      return JSON.parse(readFileSync(path, 'utf-8'));
+      const raw = JSON.parse(readFileSync(path, 'utf-8'));
+      return applyDefaults(raw);
     }
   } catch {
     // Return null on error

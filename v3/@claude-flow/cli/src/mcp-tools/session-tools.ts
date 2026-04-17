@@ -35,9 +35,42 @@ function getSessionDir(): string {
 }
 
 function getSessionPath(sessionId: string): string {
+  // Fail loud on missing/invalid IDs rather than reading .replace on undefined.
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw new Error(
+      `getSessionPath: sessionId must be a non-empty string (got ${typeof sessionId})`,
+    );
+  }
   // Sanitize sessionId to prevent path traversal
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
   return join(getSessionDir(), `${safeId}.json`);
+}
+
+/**
+ * Resolve a session handle (sessionId OR name) to a concrete SessionRecord.
+ * Returns null if the handle cannot be resolved.
+ */
+function resolveSessionHandle(input: { sessionId?: unknown; name?: unknown }): SessionRecord | null {
+  const sessionId = typeof input.sessionId === 'string' && input.sessionId.length > 0
+    ? input.sessionId
+    : undefined;
+  const name = typeof input.name === 'string' && input.name.length > 0
+    ? input.name
+    : undefined;
+
+  // Prefer sessionId if provided.
+  if (sessionId) {
+    const byId = loadSession(sessionId);
+    if (byId) return byId;
+  }
+
+  // Fall back to name-based lookup.
+  if (name) {
+    const match = listSessions().find(s => s.name === name);
+    if (match) return match;
+  }
+
+  return null;
 }
 
 function ensureSessionDir(): void {
@@ -309,30 +342,52 @@ export const sessionTools: MCPTool[] = [
   },
   {
     name: 'session_delete',
-    description: 'Delete a saved session',
+    description: 'Delete a saved session (by sessionId or name)',
     category: 'session',
     inputSchema: {
       type: 'object',
       properties: {
         sessionId: { type: 'string', description: 'Session ID to delete' },
+        name: { type: 'string', description: 'Session name to delete (alternative to sessionId)' },
       },
-      required: ['sessionId'],
+      // Neither field is strictly required at the schema level because either is accepted;
+      // the handler fails loud if both are missing.
     },
     handler: async (input) => {
-      const sessionId = input.sessionId as string;
-      const path = getSessionPath(sessionId);
+      const sessionIdInput = typeof input.sessionId === 'string' ? input.sessionId : undefined;
+      const nameInput = typeof input.name === 'string' ? input.name : undefined;
 
+      if (!sessionIdInput && !nameInput) {
+        throw new Error(
+          "session_delete: must provide either 'sessionId' or 'name' (both were missing or empty)",
+        );
+      }
+
+      const session = resolveSessionHandle({ sessionId: sessionIdInput, name: nameInput });
+      if (!session) {
+        return {
+          sessionId: sessionIdInput,
+          name: nameInput,
+          deleted: false,
+          error: 'Session not found',
+        };
+      }
+
+      const path = getSessionPath(session.sessionId);
       if (existsSync(path)) {
         unlinkSync(path);
         return {
-          sessionId,
+          sessionId: session.sessionId,
+          name: session.name,
           deleted: true,
           deletedAt: new Date().toISOString(),
         };
       }
 
+      // Record exists in listing but file is gone — still a "not found" from caller's POV.
       return {
-        sessionId,
+        sessionId: session.sessionId,
+        name: session.name,
         deleted: false,
         error: 'Session not found',
       };
@@ -340,21 +395,29 @@ export const sessionTools: MCPTool[] = [
   },
   {
     name: 'session_info',
-    description: 'Get detailed session information',
+    description: 'Get detailed session information (by sessionId or name)',
     category: 'session',
     inputSchema: {
       type: 'object',
       properties: {
         sessionId: { type: 'string', description: 'Session ID' },
+        name: { type: 'string', description: 'Session name (alternative to sessionId)' },
       },
-      required: ['sessionId'],
     },
     handler: async (input) => {
-      const sessionId = input.sessionId as string;
-      const session = loadSession(sessionId);
+      const sessionIdInput = typeof input.sessionId === 'string' ? input.sessionId : undefined;
+      const nameInput = typeof input.name === 'string' ? input.name : undefined;
+
+      if (!sessionIdInput && !nameInput) {
+        throw new Error(
+          "session_info: must provide either 'sessionId' or 'name' (both were missing or empty)",
+        );
+      }
+
+      const session = resolveSessionHandle({ sessionId: sessionIdInput, name: nameInput });
 
       if (session) {
-        const path = getSessionPath(sessionId);
+        const path = getSessionPath(session.sessionId);
         const stat = statSync(path);
 
         return {
@@ -374,7 +437,8 @@ export const sessionTools: MCPTool[] = [
       }
 
       return {
-        sessionId,
+        sessionId: sessionIdInput,
+        name: nameInput,
         error: 'Session not found',
       };
     },

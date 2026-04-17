@@ -215,7 +215,24 @@ export class RvfBackend implements IMemoryBackend {
     // Persist immediately so data survives process exit (the 30s auto-persist
     // timer may never fire in short-lived CLI invocations).
     await this.appendToWal(e);
-    if (this.walEntryCount >= this.config.walCompactionThreshold) {
+    // ADR-0090 Tier A4 / B7 concurrent-write fix: always compact after
+    // every store, not just when walCompactionThreshold (default 100) is
+    // hit. Under concurrent CLI writers (the T3-2 acceptance scenario) the
+    // process.exit(0) in @sparkleideas/cli's exit hook can fire BEFORE the
+    // beforeExit-registered shutdownRouter, leaving writers B..F with
+    // entries only in the WAL while writer A's lucky beforeExit rolled
+    // .meta forward to entryCount=1. Compacting under the lock on every
+    // store uses mergePeerStateBeforePersist() to merge every peer's
+    // on-disk state + every peer's in-flight WAL entry into .meta, so
+    // entryCount always reflects the current durable state across all
+    // concurrent writers — not just this process's snapshot. The
+    // compaction is already serialized by the advisory lock, so this
+    // trades a marginal per-store latency cost for a disk header that is
+    // always consistent with what `memory list` (or a fresh process)
+    // would see via replayWal. Fail-loud on lock failure is preserved
+    // because the compaction path still throws on lock starvation after
+    // the 5s budget — no silent fallback was introduced.
+    if (this.walPath) {
       await this.compactWal();
     }
   }

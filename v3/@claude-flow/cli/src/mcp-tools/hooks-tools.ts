@@ -1177,17 +1177,25 @@ export const hooksRoute: MCPTool = {
     }
 
     // WM-104b: Query causal history for routing context (ADR-068)
+    // Signature: CausalRecall.recall(queryId, queryText, k, requirements?, accessLevel?)
+    // (NOT recall(task, optsObject) — options object gets fed into embedder as
+    // queryText and crashes with "queryText.toLowerCase is not a function").
+    // Prefer search({ query, k }) which is the ergonomic wrapper memory-router uses.
     let causalContext: unknown = null;
     try {
       const cr = await getCausalRecallInstance();
-      if (cr && typeof (cr as Record<string, unknown>).recall === 'function') {
-        causalContext = await (cr as { recall: (task: string, opts: { k: number; minConfidence: number }) => Promise<unknown> }).recall(task, { k: 5, minConfidence: 0.5 });
+      if (cr && typeof (cr as Record<string, unknown>).search === 'function') {
+        causalContext = await (cr as { search: (p: { query: string; k?: number }) => Promise<unknown> }).search({ query: task, k: 5 });
+      } else if (cr && typeof (cr as Record<string, unknown>).recall === 'function') {
+        // Fallback to positional recall(queryId, queryText, k)
+        const queryId = `hooks_route:${Date.now()}`;
+        causalContext = await (cr as { recall: (queryId: string, queryText: string, k: number) => Promise<unknown> }).recall(queryId, task, 5);
       }
     } catch (e) {
-      throw new Error(
-        `CausalRecall.recall failed: ${(e as Error)?.message}\n` +
-        `Fix: set "memory.agentdb.enableLearning": false in .claude-flow/config.json`
-      );
+      // Best-effort: causal context is routing metadata enrichment, not a fatal
+      // dependency. Swallow (don't re-throw) so routing still returns a
+      // recommended_agent from keyword/semantic fallback above.
+      causalContext = { error: (e as Error)?.message || String(e) };
     }
 
     // Determine complexity
