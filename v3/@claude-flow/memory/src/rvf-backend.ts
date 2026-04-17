@@ -51,6 +51,12 @@ interface RvfHeader {
 }
 
 const MAGIC = 'RVF\0';
+// Native @ruvector/rvf-node file format (written by RvfDatabase.create()).
+// When the pure-TS backend initializes on a project that previously used the
+// native backend, the main `.rvf` path holds `SFVR` bytes and pure-TS metadata
+// was written to the `.meta` sidecar. Treat this as a valid native-owned file,
+// NOT corruption.
+const NATIVE_MAGIC = 'SFVR';
 const VERSION = 1;
 const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_M = 16;
@@ -952,21 +958,33 @@ export class RvfBackend implements IMemoryBackend {
           if (parsed.embedding) parsed.embedding = new Float32Array(parsed.embedding);
           const entry: MemoryEntry = parsed;
           const alreadyLoaded = this.entries.has(entry.id);
-          // Remove stale HNSW edges before re-adding (entry may already be
-          // in the index from loadFromDisk — re-add without remove corrupts
-          // the graph's reverse-edge pointers).
-          if (entry.embedding && this.hnswIndex && alreadyLoaded) {
-            this.hnswIndex.remove(entry.id);
+
+          // ADR-0082 + ADR-0092 single-writer durability fix. When this
+          // process owns the WAL entry (it just wrote it via store() and is
+          // now hitting replayWal via mergePeerStateBeforePersist), the
+          // entry is already:
+          //   - in `this.entries` (set by store())
+          //   - in `this.hnswIndex` (added by store(), pure-TS mode)
+          //   - in `this.nativeDb` (ingested by store(), native mode)
+          // Re-ingesting into the native SFVR backend creates a second vec
+          // segment and bumps the epoch WITHOUT re-running HNSW index
+          // construction. Observed effect on shutdown-kill (CLI exits
+          // before .meta.tmp → .meta rename completes): the native file
+          // ends up with N orphan vec segments but `indexedVectors: 0,
+          // needsRebuild: true`, and every subsequent search returns empty
+          // — the exact ADR-0082 silent-empty signature.
+          //
+          // Fix: for entries already owned by this instance, update only
+          // the metadata dictionary (entries/seenIds/keyIndex). Skip the
+          // index writes entirely — they're already current. Newly-seen
+          // peer entries still fall through to the full index path below.
+          if (alreadyLoaded) {
+            this.entries.set(entry.id, entry);
+            this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
+            count++;
+            continue;
           }
-          // Remove stale native vector before re-ingest (same logic)
-          if (entry.embedding && this.nativeDb && alreadyLoaded) {
-            const oldNumId = this.nativeIdMap.get(entry.id);
-            if (oldNumId !== undefined) {
-              try { this.nativeDb.delete([oldNumId]); } catch (err) {
-                if (this.config.verbose) console.error('[RvfBackend] Native delete on WAL replay failed:', (err as Error).message);
-              }
-            }
-          }
+
           this.entries.set(entry.id, entry);
           this.seenIds.add(entry.id);
           this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
@@ -1042,10 +1060,45 @@ export class RvfBackend implements IMemoryBackend {
       // so prefer it (it has the richer header). Otherwise fall back to
       // the main path, which pure-TS owns exclusively when no native
       // file was ever written.
+      //
+      // EDGE CASE: the main path may hold native-format bytes (magic
+      // `SFVR`) written by a *previous* process that had the native
+      // backend loaded. If the current process couldn't load native
+      // (binding unavailable, platform mismatch, install race), we must
+      // NOT try to parse those SFVR bytes as pure-TS RVF — that would
+      // trip the fail-loud corruption path with "bad magic bytes". Peek
+      // the first 4 bytes; if they're SFVR, ignore the main file and
+      // load only from `.meta` (if present) or start clean.
       if (existsSync(metaPath)) {
         loadPath = metaPath;
       } else if (existsSync(this.config.databasePath)) {
-        loadPath = this.config.databasePath;
+        let isNativeFile = false;
+        try {
+          const { openSync, readSync, closeSync } = await import('node:fs');
+          const fd = openSync(this.config.databasePath, 'r');
+          try {
+            const head = Buffer.alloc(4);
+            const bytesRead = readSync(fd, head, 0, 4, 0);
+            if (bytesRead === 4) {
+              const peek = String.fromCharCode(head[0], head[1], head[2], head[3]);
+              if (peek === NATIVE_MAGIC) isNativeFile = true;
+            }
+          } finally {
+            closeSync(fd);
+          }
+        } catch {
+          // Peek failed — fall through and let the full reader error out
+          // loudly below (ADR-0082: never silent-pass on read failures).
+        }
+        if (!isNativeFile) {
+          loadPath = this.config.databasePath;
+        } else if (this.config.verbose) {
+          console.log(
+            `[RvfBackend] Main path ${this.config.databasePath} holds native (SFVR) ` +
+            `bytes from a prior native-backend session but current process is pure-TS. ` +
+            `Loading metadata from sidecar if present; skipping main file.`,
+          );
+        }
       }
     }
     // No early return — fall through to replayWal() even when main file is absent

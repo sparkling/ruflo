@@ -1373,13 +1373,13 @@ export const agentdbLearningPredict: MCPTool = {
 
 export const agentdbExperienceRecord: MCPTool = {
   name: 'agentdb_experience_record',
-  description: 'Record a learning experience (episode) with outcome via ReflexionMemory',
+  description: 'Record a learning experience (episode) in the learning_experiences table via LearningSystem',
   inputSchema: {
     type: 'object',
     properties: {
-      task: { type: 'string', description: 'Task description' },
-      input: { type: 'string', description: 'Task input or context' },
-      output: { type: 'string', description: 'Task output or result' },
+      task: { type: 'string', description: 'Task description (stored as `action`)' },
+      input: { type: 'string', description: 'Task input or context (stored in metadata)' },
+      output: { type: 'string', description: 'Task output or result (stored in metadata)' },
       reward: { type: 'number', description: 'Reward signal (0-1)' },
       success: { type: 'boolean', description: 'Whether the task succeeded' },
     },
@@ -1393,21 +1393,52 @@ export const agentdbExperienceRecord: MCPTool = {
       const output = validateString(params.output, 'output', MAX_STRING_LENGTH) ?? '';
       const reward = validateScore(params.reward, 0.5);
       const succeeded = params.success === true;
-      const reflexion = await getController<any>('reflexion');
-      // ADR-0090 B5 fix: same rename as agentdb_reflexion_store.
-      const storeFn = getCallableMethod(reflexion, 'storeEpisode', 'store');
-      if (!reflexion || !storeFn) {
-        return { success: false, error: 'ReflexionMemory controller not available' };
+
+      // ADR-0090 Tier B5 + ADR-0082 follow-up: the prior implementation called
+      // `reflexion.storeEpisode` which writes to the `episodes` table — NOT the
+      // `learning_experiences` table the tool name promises. This tool is the
+      // MCP surface for the LearningSystem controller's `recordExperience()`
+      // method; wire it to the correct controller so the write lands in the
+      // SQLite table the test harness (and anyone reading the `action` column)
+      // expects. Falls back loudly if LearningSystem is missing — no silent
+      // in-memory persistence (ADR-0082).
+      const learning = await getController<any>('learningSystem');
+      const recordFn = getCallableMethod(learning, 'recordExperience');
+      const startSessionFn = getCallableMethod(learning, 'startSession');
+      if (!learning || !recordFn || !startSessionFn) {
+        return { success: false, error: 'LearningSystem controller not available' };
       }
-      const sessionId = `exp-${Date.now()}`;
+      // `learning_experiences.session_id` has a FOREIGN KEY to
+      // `learning_sessions(id)`. Without a pre-existing session the INSERT
+      // fails with "FOREIGN KEY constraint failed" and the row is never
+      // written — classic silent-failure shape. Create a short-lived session
+      // synchronously so the experience row is durable and auditable. The
+      // session row also gives downstream analytics a real session envelope
+      // to group rewards by, rather than a synthetic loose `exp-<ts>` id.
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('experience-record timeout (2s)')), 2000),
+        setTimeout(() => reject(new Error('experience-record timeout (5s)')), 5000),
       );
-      await Promise.race([
-        storeFn({ sessionId, session_id: sessionId, task, input, output, reward, success: succeeded }),
+      const sessionId: string = await Promise.race([
+        startSessionFn('mcp-user', 'q-learning', { agent: 'mcp-experience-record' }),
         timeoutPromise,
       ]);
-      return { success: true, episodeId: sessionId };
+      const experienceId = await Promise.race([
+        recordFn({
+          sessionId,
+          toolName: 'mcp',
+          // The test harness and public contract expect the `task` string to
+          // land in the `action` column. recordExperience() maps its `outcome`
+          // argument into `action`, so pass task as outcome. `action` is used
+          // internally to build the `state` representation.
+          action: 'record',
+          outcome: task,
+          reward,
+          success: succeeded,
+          metadata: { input, output },
+        }),
+        timeoutPromise,
+      ]);
+      return { success: true, experienceId, sessionId };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
