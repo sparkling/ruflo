@@ -99,6 +99,12 @@ export class RvfBackend implements IMemoryBackend {
   private nativeReverseMap = new Map<number, string>();
   private nextNativeId = 1;
 
+  // ADR-0095 amendment (ruflo-patch commit 2d12bb1): per-instance counter for
+  // unique tmp paths during atomic writes. Combined with process.pid, this
+  // guarantees disjoint tmp filenames across concurrent writers so one
+  // writer's rename cannot clobber another writer's in-flight tmp file.
+  private _tmpCounter = 0;
+
   constructor(config: RvfBackendConfig) {
     const dimensions = config.dimensions ?? DEFAULT_DIMENSIONS;
     if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 10000) {
@@ -125,6 +131,12 @@ export class RvfBackend implements IMemoryBackend {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+
+    // ADR-0095 amendment (ruflo-patch 2d12bb1): reap stale *.tmp.* files
+    // left by crashed writers. This runs before native init so the
+    // directory state is clean when the native backend peeks at it.
+    // Non-fatal — failures here should not block init.
+    await this.reapStaleTmpFiles().catch(() => {});
 
     const hasNative = await this.tryNativeInit();
 
@@ -609,34 +621,201 @@ export class RvfBackend implements IMemoryBackend {
     if (this.config.databasePath === ':memory:') {
       return false;
     }
+
+    // ADR-0095 amendment (ruflo-patch commit 2d12bb1): replace the silent
+    // catch-all (ADR-0082 violation — 5 of 6 writers were falling silently to
+    // pure-TS when the native file was momentarily mid-write) with typed
+    // error discrimination. Invariant: once SFVR bytes exist on the main
+    // path, all subsequent opens must be native-or-refuse. A pure-TS reader
+    // cannot be allowed to silently take over a native-owned file.
+    //
+    // Decision tree:
+    //   1. Module resolution — if @ruvector/rvf-node isn't installed at all,
+    //      this is benign; pure-TS is the intended path. Return false.
+    //   2. SFVR peek — read first 4 bytes of the main path. If they're
+    //      'SFVR', the file is native-owned and we MUST open it with the
+    //      native backend. Failure here is FATAL (except benign ENOENT on
+    //      a cold-start race).
+    //   3. Cold start (no file) — pure `create` attempt; errors here are
+    //      still typed (ENOENT for missing parent dir is surfaced; other
+    //      errors are fatal).
+    //   4. Open-retry — for the SFVR-present case, retry up to 3×50ms to
+    //      tolerate the mid-write gap between `writeFile(tmp)` and
+    //      `rename(tmp, target)` on a concurrent writer.
+
+    let rvf: any;
     try {
-      const rvf = await import('@ruvector/rvf-node' as string);
-      const { existsSync: fileExists } = await import('node:fs');
-      // Remap metric names to NAPI format
-      const nativeMetric = this.config.metric === 'euclidean' ? 'l2'
-        : this.config.metric === 'dot' ? 'inner_product'
-        : 'cosine';
-      if (fileExists(this.config.databasePath)) {
-        this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
-      } else {
-        this.nativeDb = rvf.RvfDatabase.create(this.config.databasePath, {
-          dimension: this.config.dimensions,
-          metric: nativeMetric,
-          m: this.config.hnswM,
-          efConstruction: this.config.hnswEfConstruction,
-        });
+      rvf = await import('@ruvector/rvf-node' as string);
+    } catch (err: any) {
+      // Benign: module not installed (optional dependency). Fall through to
+      // pure-TS without noise. Any other import failure is surfaced —
+      // MODULE_NOT_FOUND is the only shape we treat as benign here.
+      const code = err?.code ?? err?.cause?.code;
+      if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') {
+        if (this.config.verbose) {
+          console.log('[RvfBackend] @ruvector/rvf-node not installed, using pure-TS fallback');
+        }
+        return false;
       }
-      // Native handles vectors — HnswLite is skipped when native is active (Debt 8).
-      // Metadata is still loaded from disk via loadFromDisk() in initialize().
-      if (this.config.verbose) {
-        console.log('[RvfBackend] Native @ruvector/rvf-node loaded successfully');
+      throw new Error(
+        `[RvfBackend] Native binding @ruvector/rvf-node failed to load ` +
+        `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
+      );
+    }
+
+    const { existsSync: fileExists, openSync, readSync, closeSync } = await import('node:fs');
+    const nativeMetric = this.config.metric === 'euclidean' ? 'l2'
+      : this.config.metric === 'dot' ? 'inner_product'
+      : 'cosine';
+
+    // SFVR magic peek: is the main path already a native-owned file?
+    let hasNativeMagic = false;
+    if (fileExists(this.config.databasePath)) {
+      try {
+        const fd = openSync(this.config.databasePath, 'r');
+        try {
+          const head = Buffer.alloc(4);
+          const bytesRead = readSync(fd, head, 0, 4, 0);
+          if (bytesRead === 4) {
+            const peek = String.fromCharCode(head[0], head[1], head[2], head[3]);
+            if (peek === NATIVE_MAGIC) hasNativeMagic = true;
+          }
+        } finally {
+          closeSync(fd);
+        }
+      } catch (err: any) {
+        const code = err?.code;
+        // ENOENT here = TOCTOU race (file existed at existsSync, gone by
+        // openSync). Treat as cold start.
+        if (code !== 'ENOENT') {
+          throw new Error(
+            `[RvfBackend] Failed to peek native header at ${this.config.databasePath} ` +
+            `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
+          );
+        }
       }
-      return true;
-    } catch {
+    }
+
+    if (hasNativeMagic) {
+      // Native file detected — must open-or-refuse. Retry up to 3×50ms to
+      // absorb the mid-write gap on a concurrent writer.
+      let lastErr: any = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
+          if (this.config.verbose) {
+            console.log(
+              `[RvfBackend] Native @ruvector/rvf-node loaded (SFVR file opened` +
+              (attempt > 0 ? `, attempt ${attempt + 1}/3` : '') + ')',
+            );
+          }
+          return true;
+        } catch (err: any) {
+          lastErr = err;
+          if (attempt < 2) {
+            await new Promise(res => setTimeout(res, 50));
+          }
+        }
+      }
+      // All 3 attempts exhausted — FATAL. We cannot silently fall through
+      // to pure-TS because the file is native-format and pure-TS cannot
+      // parse it (would corrupt or misread). ADR-0095 invariant:
+      // "once SFVR bytes exist on main path, always native-or-refuse".
+      throw new Error(
+        `[RvfBackend] Native file at ${this.config.databasePath} has SFVR ` +
+        `magic but RvfDatabase.open failed 3×50ms retries: ` +
+        `${lastErr?.message ?? lastErr}`,
+      );
+    }
+
+    // Cold start: no file yet, or file without SFVR magic (pure-TS-owned).
+    // If it's pure-TS-owned (RVF\0 magic or any non-SFVR content), pure-TS
+    // is the correct path — return false and let loadFromDisk handle it.
+    if (fileExists(this.config.databasePath)) {
       if (this.config.verbose) {
-        console.log('[RvfBackend] @ruvector/rvf-node not available, using pure-TS fallback');
+        console.log(
+          `[RvfBackend] Main path ${this.config.databasePath} exists without SFVR ` +
+          `magic; using pure-TS backend (native will not clobber pure-TS file)`,
+        );
       }
       return false;
+    }
+
+    // Truly cold start: file doesn't exist at all. Create a new native DB.
+    try {
+      this.nativeDb = rvf.RvfDatabase.create(this.config.databasePath, {
+        dimension: this.config.dimensions,
+        metric: nativeMetric,
+        m: this.config.hnswM,
+        efConstruction: this.config.hnswEfConstruction,
+      });
+      if (this.config.verbose) {
+        console.log('[RvfBackend] Native @ruvector/rvf-node created new SFVR file');
+      }
+      return true;
+    } catch (err: any) {
+      const code = err?.code;
+      // ENOENT on create = parent dir missing; benign cold-start race. Let
+      // pure-TS handle it (it does its own mkdir recursively). Any other
+      // error while we own a clean slate is fatal.
+      if (code === 'ENOENT') {
+        if (this.config.verbose) {
+          console.log('[RvfBackend] Native create hit ENOENT (cold start race); using pure-TS fallback');
+        }
+        return false;
+      }
+      throw new Error(
+        `[RvfBackend] Native RvfDatabase.create failed at ${this.config.databasePath} ` +
+        `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  /**
+   * ADR-0095 amendment (ruflo-patch 2d12bb1): reap crash-leaked *.tmp.* files.
+   *
+   * The persist path writes to a unique tmp path (`target.tmp.<pid>.<counter>`)
+   * and atomically renames into place. If a writer crashes between writeFile
+   * and rename, the tmp file is orphaned. This reaper cleans any tmp file
+   * whose mtime is older than 10 minutes — well beyond the longest sane
+   * write — without racing a live writer.
+   *
+   * Scope: only sibling files of `databasePath` whose name starts with the
+   * basename + '.tmp.'. Non-fatal: any I/O error is swallowed (the worst
+   * case is a stale tmp file sticks around until next init).
+   */
+  private async reapStaleTmpFiles(): Promise<void> {
+    if (this.config.databasePath === ':memory:') return;
+    const { readdir, stat, unlink: ul } = await import('node:fs/promises');
+    const { basename } = await import('node:path');
+    const dir = dirname(this.config.databasePath) || '.';
+    const baseName = basename(this.config.databasePath);
+    const prefix = `${baseName}.tmp.`;
+    const staleThresholdMs = 10 * 60 * 1000; // 10 minutes
+    const now = Date.now();
+
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return; // dir doesn't exist yet — cold start, nothing to reap
+    }
+
+    for (const name of entries) {
+      if (!name.startsWith(prefix)) continue;
+      const full = `${dir}/${name}`;
+      try {
+        const st = await stat(full);
+        if (now - st.mtimeMs > staleThresholdMs) {
+          await ul(full);
+          if (this.config.verbose) {
+            console.log(`[RvfBackend] Reaped stale tmp file: ${full}`);
+          }
+        }
+      } catch {
+        // File vanished mid-scan (another process reaped it, or it was the
+        // target of a concurrent rename). Safe to ignore.
+      }
     }
   }
 
@@ -1446,8 +1625,12 @@ export class RvfBackend implements IMemoryBackend {
 
     const output = Buffer.concat([magicBuf, headerLenBuf, headerBuf, ...entryBuffers]);
 
-    // Atomic write: write to temp file then rename (crash-safe)
-    const tmpPath = target + '.tmp';
+    // Atomic write: write to temp file then rename (crash-safe).
+    // ADR-0095 amendment (ruflo-patch 2d12bb1): unique tmp path per writer
+    // (pid + per-instance counter) so concurrent writers never collide on
+    // the same tmp filename. Crash-leaked tmp files are cleaned by the
+    // reaper invoked from initialize() (`reapStaleTmpFiles`).
+    const tmpPath = `${target}.tmp.${process.pid}.${this._tmpCounter++}`;
     await writeFile(tmpPath, output);
     await rename(tmpPath, target);
 

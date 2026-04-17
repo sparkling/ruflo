@@ -11,8 +11,27 @@
  * @module @claude-flow/memory/storage-factory
  */
 
+import { existsSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import type { IStorage } from './storage.js';
 import type { ResolvedConfig } from './resolve-config.js';
+
+// ADR-0095 amendment (ruflo-patch 2d12bb1): module-scope cache keyed by
+// `path.resolve(dbPath)`. Investigator observed `tryNativeInit` ran 2× per
+// CLI invocation because two separate RvfBackend instances were being
+// constructed for the same resolved path. Deduping at the factory pinches
+// that redundant init off for every caller that routes through
+// createStorage / createStorageFromConfig — which is all production callers
+// today (controller-registry, memory-router, etc.).
+//
+// Keyed on the RESOLVED path (absolute, normalized) because two callers
+// may pass different relative paths that resolve to the same file.
+// `:memory:` is NEVER cached — it's a per-instance sentinel.
+//
+// Invalidation: if the cached backend's file is deleted out from under us
+// (ENOENT at lookup), drop the entry so the next caller gets a fresh
+// backend.
+const backendCache = new Map<string, IStorage>();
 
 /**
  * Configuration accepted by createStorage().
@@ -75,6 +94,34 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
     ? ':memory:'
     : databasePath.replace(/\.(db|json)$/, '.rvf');
 
+  // ADR-0095 amendment (ruflo-patch 2d12bb1): dedupe by resolved path.
+  // :memory: is NEVER cached (per-instance sentinel; two callers asking for
+  // ':memory:' expect two independent stores).
+  const cacheKey = rvfPath === ':memory:' ? null : resolvePath(rvfPath);
+  if (cacheKey !== null) {
+    const cached = backendCache.get(cacheKey);
+    if (cached !== undefined) {
+      // Invalidate if the backing file was deleted out from under us.
+      // Without this, a subsequent caller would get a backend pointing at a
+      // vanished file and fail on the first operation.
+      if (!existsSync(cacheKey)) {
+        backendCache.delete(cacheKey);
+      } else if ((cached as any).initialized === false) {
+        // Previous owner called shutdown(). The RvfBackend drops all state
+        // and flips `initialized` back to false. Do NOT hand out a closed
+        // instance — re-create.
+        backendCache.delete(cacheKey);
+      } else {
+        if (verbose) {
+          console.log(
+            `[StorageFactory] Reusing cached RvfBackend for ${cacheKey} (ADR-0095 dedup)`,
+          );
+        }
+        return cached;
+      }
+    }
+  }
+
   try {
     const { RvfBackend } = await import('./rvf-backend.js');
 
@@ -97,6 +144,9 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
       );
     }
 
+    if (cacheKey !== null) {
+      backendCache.set(cacheKey, backend);
+    }
     return backend;
   } catch (primaryError: unknown) {
     // RvfBackend failed — do NOT silently fall back to InMemoryStore.
