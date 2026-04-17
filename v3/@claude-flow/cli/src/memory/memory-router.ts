@@ -432,14 +432,20 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
 // ---------------------------------------------------------------------------
 
 // ADR-0086 T2.2: RvfBackend replaces loadStorageFns
+// ADR-0095 amendment d2 (ruflo-patch): route through storage-factory so both
+// CLI and controller-registry hit the same resolved-path cache and the
+// `tryNativeInit` work collapses from 2× to 1× per CLI invocation. Also
+// `path.resolve()` here so a relative path passed to createStorage yields
+// the same cache key as the absolute path passed by controller-registry.
 async function createStorage(config: { databasePath: string; dimensions?: number }): Promise<IStorageContract> {
-  const memMod = await import('@claude-flow/memory/rvf-backend' as string);
-  const backend = new memMod.RvfBackend({
-    databasePath: config.databasePath,
+  const memMod = await import('@claude-flow/memory/storage-factory' as string);
+  const backend = await memMod.createStorage({
+    databasePath: path.resolve(config.databasePath),
     dimensions: config.dimensions,
   });
-  await backend.initialize();
-  return backend;
+  // IStorage and IStorageContract are both aliases for IMemoryBackend
+  // (memory/storage.ts lines 20 & 29). Single cast hop, not a real conversion.
+  return backend as IStorageContract;
 }
 
 async function loadIntercept() {

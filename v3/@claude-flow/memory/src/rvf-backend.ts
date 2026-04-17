@@ -132,26 +132,48 @@ export class RvfBackend implements IMemoryBackend {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // ADR-0095 amendment (ruflo-patch 2d12bb1): reap stale *.tmp.* files
-    // left by crashed writers. This runs before native init so the
-    // directory state is clean when the native backend peeks at it.
-    // Non-fatal — failures here should not block init.
-    await this.reapStaleTmpFiles().catch(() => {});
+    // ADR-0095 amendment d1 (ruflo-patch): serialize the entire init sequence
+    // through the PID-based advisory lock. Previously `reapStaleTmpFiles →
+    // tryNativeInit → loadFromDisk` ran unlocked, so a second process starting
+    // up concurrently could race the first in the native create/open and the
+    // pure-TS reader paths. Wrapping them under the same advisory lock that
+    // persistToDisk / compactWal / appendToWal use makes init serialize
+    // against both other initializers AND live writers. :memory: mode is a
+    // no-op in the lock path (lockPath is ''), so the guard is free there.
+    //
+    // Re-entrancy note: reapStaleTmpFiles, tryNativeInit, loadFromDisk
+    // (including its replayWal call) do NOT themselves take the lock — all
+    // three existing lock-taking sites are in appendToWal/compactWal/
+    // persistToDisk, none of which fire during init. Verified against
+    // rvf-backend.ts at the time of this change.
+    //
+    // The lock primitive has a 5s budget + throws on timeout; we let that
+    // propagate rather than swallowing — if init can't claim the lock within
+    // budget, something upstream is deeply wrong and the caller should see it.
+    await this.acquireLock();
+    try {
+      // Reap stale *.tmp.* files left by crashed writers before native init
+      // so the directory state is clean when the native backend peeks at it.
+      // Non-fatal — failures here should not block init.
+      await this.reapStaleTmpFiles().catch(() => {});
 
-    const hasNative = await this.tryNativeInit();
+      const hasNative = await this.tryNativeInit();
 
-    // Only create HnswLite when native is NOT available (Debt 8)
-    if (!hasNative) {
-      this.hnswIndex = new HnswLite(
-        this.config.dimensions,
-        this.config.hnswM,
-        this.config.hnswEfConstruction,
-        this.config.metric,
-      );
+      // Only create HnswLite when native is NOT available (Debt 8)
+      if (!hasNative) {
+        this.hnswIndex = new HnswLite(
+          this.config.dimensions,
+          this.config.hnswM,
+          this.config.hnswEfConstruction,
+          this.config.metric,
+        );
+      }
+
+      // Always load metadata from disk (native only handles vectors)
+      await this.loadFromDisk();
+    } finally {
+      await this.releaseLock();
     }
-
-    // Always load metadata from disk (native only handles vectors)
-    await this.loadFromDisk();
 
     if (this.config.autoPersistInterval > 0 && this.config.databasePath !== ':memory:') {
       this.persistTimer = setInterval(() => {
