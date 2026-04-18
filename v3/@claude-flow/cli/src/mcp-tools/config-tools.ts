@@ -2,6 +2,19 @@
  * Config MCP Tools for CLI
  *
  * Tool definitions for configuration management with file persistence.
+ *
+ * Shape tolerance (ADR-0094 Phase 8 INV-6):
+ *   • "mcp"     → flat top-level {values:{…}, scopes:{…}, version, updatedAt}
+ *                 — historical shape written by these tools themselves.
+ *   • "legacy"  → the whole parsed JSON IS the value tree (as emitted by
+ *                 `init` / `config-template.ts` / `ConfigFileManager`:
+ *                 {version, swarm:{…}, memory:{…}, …}).
+ *
+ * `loadConfigStore()` detects which shape is on disk and records it on the
+ * returned store via the non-enumerable `__shape` property. `saveConfigStore()`
+ * preserves whichever shape was loaded, so we never silently rewrite an
+ * init-generated nested config as a flat MCP shape (which would break
+ * `config set` CLI callers that read the nested tree).
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -12,11 +25,15 @@ import { type MCPTool, getProjectCwd } from './types.js';
 const STORAGE_DIR = '.claude-flow';
 const CONFIG_FILE = 'config.json';
 
+type ConfigShape = 'mcp' | 'legacy';
+
 interface ConfigStore {
   values: Record<string, unknown>;
   scopes: Record<string, Record<string, unknown>>;
   version: string;
   updatedAt: string;
+  /** Original on-disk shape — preserved through save. Not persisted. */
+  __shape?: ConfigShape;
 }
 
 const DEFAULT_CONFIG: Record<string, unknown> = {
@@ -48,28 +65,95 @@ function ensureConfigDir(): void {
   }
 }
 
-function loadConfigStore(): ConfigStore {
+/**
+ * Heuristic: an "MCP" shape has BOTH `values` and `scopes` as plain objects at
+ * the top level. Anything else (e.g. init's nested `{version, swarm, memory}`)
+ * is treated as legacy and exposed to the handlers as `store.values = parsed`.
+ */
+function detectShape(parsed: unknown): ConfigShape {
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed)
+  ) {
+    const obj = parsed as Record<string, unknown>;
+    const hasValues =
+      obj.values !== null &&
+      typeof obj.values === 'object' &&
+      !Array.isArray(obj.values);
+    const hasScopes =
+      obj.scopes !== null &&
+      typeof obj.scopes === 'object' &&
+      !Array.isArray(obj.scopes);
+    if (hasValues && hasScopes) return 'mcp';
+  }
+  return 'legacy';
+}
+
+export function loadConfigStore(): ConfigStore {
   try {
     const path = getConfigPath();
     if (existsSync(path)) {
       const data = readFileSync(path, 'utf-8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      const shape = detectShape(parsed);
+      if (shape === 'mcp') {
+        const mcp = parsed as Partial<ConfigStore>;
+        return {
+          values: (mcp.values as Record<string, unknown>) ?? { ...DEFAULT_CONFIG },
+          scopes: (mcp.scopes as Record<string, Record<string, unknown>>) ?? {},
+          version: (mcp.version as string) ?? '3.0.0',
+          updatedAt: (mcp.updatedAt as string) ?? new Date().toISOString(),
+          __shape: 'mcp',
+        };
+      }
+      // legacy — the parsed tree IS the values. `scopes` is irrelevant
+      // for init-generated configs; keep an empty map so handlers that
+      // reference `store.scopes` don't NPE.
+      const tree = parsed as Record<string, unknown>;
+      return {
+        values: tree,
+        scopes: {},
+        version: (tree.version as string) ?? '3.0.0',
+        updatedAt:
+          (tree.updatedAt as string) ??
+          (tree.__updatedAt as string) ??
+          new Date().toISOString(),
+        __shape: 'legacy',
+      };
     }
   } catch {
-    // Return default store on error
+    // Fall through to defaults below.
   }
   return {
     values: { ...DEFAULT_CONFIG },
     scopes: {},
     version: '3.0.0',
     updatedAt: new Date().toISOString(),
+    __shape: 'mcp',
   };
 }
 
-function saveConfigStore(store: ConfigStore): void {
+export function saveConfigStore(store: ConfigStore): void {
   ensureConfigDir();
   store.updatedAt = new Date().toISOString();
-  writeFileSync(getConfigPath(), JSON.stringify(store, null, 2), 'utf-8');
+  const shape: ConfigShape = store.__shape ?? 'mcp';
+  let payload: Record<string, unknown>;
+  if (shape === 'legacy') {
+    // Persist the nested tree exactly as handlers have mutated it.
+    // Drop MCP-only bookkeeping fields that leaked in.
+    payload = { ...store.values };
+    // If the tree already carried a version key we keep it; otherwise
+    // leave the tree unmodified (some init templates deliberately omit it).
+  } else {
+    payload = {
+      values: store.values,
+      scopes: store.scopes,
+      version: store.version,
+      updatedAt: store.updatedAt,
+    };
+  }
+  writeFileSync(getConfigPath(), JSON.stringify(payload, null, 2), 'utf-8');
 }
 
 function getNestedValue(obj: Record<string, unknown>, key: string): unknown {
@@ -119,6 +203,20 @@ function setNestedValue(obj: Record<string, unknown>, key: string, value: unknow
   current[parts[parts.length - 1]] = value;
 }
 
+/**
+ * Resolve a key against a values tree tolerating both shapes:
+ *   • MCP flat (`{"swarm.topology":"mesh"}`): direct key lookup first, then
+ *     fall back to nested walk (handles operators who stored dotted keys
+ *     both ways).
+ *   • Legacy nested (`{swarm:{topology:"mesh"}}`): nested walk.
+ */
+function resolveValue(values: Record<string, unknown>, key: string): unknown {
+  if (Object.prototype.hasOwnProperty.call(values, key)) {
+    return values[key];
+  }
+  return getNestedValue(values, key);
+}
+
 export const configTools: MCPTool[] = [
   {
     name: 'config_get',
@@ -138,16 +236,29 @@ export const configTools: MCPTool[] = [
       const scope = (input.scope as string) || 'default';
 
       let value: unknown;
+      let source: 'scope' | 'stored' | 'default' | 'none' = 'none';
 
-      // Check scope first, then default values
+      // Check scope first (only meaningful for MCP shape), then values, then defaults.
       if (scope !== 'default' && store.scopes[scope]) {
-        value = store.scopes[scope][key];
+        const scoped = store.scopes[scope];
+        if (Object.prototype.hasOwnProperty.call(scoped, key)) {
+          value = scoped[key];
+          source = 'scope';
+        } else {
+          const nested = getNestedValue(scoped, key);
+          if (nested !== undefined) {
+            value = nested;
+            source = 'scope';
+          }
+        }
       }
       if (value === undefined) {
-        value = store.values[key];
+        value = resolveValue(store.values, key);
+        if (value !== undefined) source = 'stored';
       }
       if (value === undefined) {
         value = DEFAULT_CONFIG[key];
+        if (value !== undefined) source = 'default';
       }
 
       return {
@@ -155,7 +266,7 @@ export const configTools: MCPTool[] = [
         value,
         scope,
         exists: value !== undefined,
-        source: value !== undefined ? (store.values[key] !== undefined ? 'stored' : 'default') : 'none',
+        source,
       };
     },
   },
@@ -178,15 +289,28 @@ export const configTools: MCPTool[] = [
       const value = input.value;
       const scope = (input.scope as string) || 'default';
 
-      const previousValue = store.values[key];
+      const previousValue = resolveValue(store.values, key);
 
       if (scope === 'default') {
-        store.values[key] = value;
+        if (store.__shape === 'legacy') {
+          // Write into the nested tree so `claude-flow config get swarm.topology`
+          // and subsequent MCP reads agree.
+          setNestedValue(store.values, key, value);
+        } else {
+          store.values[key] = value;
+        }
       } else {
         if (!store.scopes[scope]) {
           store.scopes[scope] = {};
         }
-        store.scopes[scope][key] = value;
+        // Scopes are primarily an MCP-shape concept; set by flat key. If the
+        // caller is using dotted paths (scope + nested), setNestedValue keeps
+        // the nesting consistent with config_get's resolution.
+        if (key.includes('.')) {
+          setNestedValue(store.scopes[scope], key, value);
+        } else {
+          store.scopes[scope][key] = value;
+        }
       }
 
       saveConfigStore(store);
@@ -198,6 +322,7 @@ export const configTools: MCPTool[] = [
         previousValue,
         scope,
         path: getConfigPath(),
+        shape: store.__shape ?? 'mcp',
       };
     },
   },
@@ -219,19 +344,36 @@ export const configTools: MCPTool[] = [
       const prefix = input.prefix as string;
       const includeDefaults = input.includeDefaults !== false;
 
-      // Merge stored values with defaults
-      let configs: Record<string, unknown> = {};
+      // Flatten both legacy nested trees and MCP flat values into a single
+      // key-set so callers get consistent dotted keys regardless of shape.
+      const flatten = (
+        src: Record<string, unknown>,
+        out: Record<string, unknown>,
+        parent = '',
+      ): void => {
+        for (const [k, v] of Object.entries(src)) {
+          const full = parent ? `${parent}.${k}` : k;
+          if (
+            v !== null &&
+            typeof v === 'object' &&
+            !Array.isArray(v)
+          ) {
+            // If the key itself is already dotted (flat-mcp shape) keep it
+            // as-is at this level; otherwise recurse.
+            flatten(v as Record<string, unknown>, out, full);
+          } else {
+            out[full] = v;
+          }
+        }
+      };
 
+      const configs: Record<string, unknown> = {};
       if (includeDefaults) {
-        configs = { ...DEFAULT_CONFIG };
+        Object.assign(configs, DEFAULT_CONFIG);
       }
-
-      // Add stored values
-      Object.assign(configs, store.values);
-
-      // Add scope-specific values
+      flatten(store.values, configs);
       if (scope !== 'default' && store.scopes[scope]) {
-        Object.assign(configs, store.scopes[scope]);
+        flatten(store.scopes[scope], configs);
       }
 
       // Filter by prefix
@@ -247,10 +389,12 @@ export const configTools: MCPTool[] = [
         configs: entries.map(([key, value]) => ({
           key,
           value,
-          source: store.values[key] !== undefined ? 'stored' : 'default',
+          source:
+            resolveValue(store.values, key) !== undefined ? 'stored' : 'default',
         })),
         total: entries.length,
         scope,
+        shape: store.__shape ?? 'mcp',
         updatedAt: store.updatedAt,
       };
     },
@@ -279,6 +423,18 @@ export const configTools: MCPTool[] = [
           if (key in store.values) {
             delete store.values[key];
             resetKeys.push(key);
+          } else if (store.__shape === 'legacy' && getNestedValue(store.values, key) !== undefined) {
+            // Delete via nested walk
+            const parts = key.split('.');
+            let cur: Record<string, unknown> = store.values;
+            for (let i = 0; i < parts.length - 1; i++) {
+              cur = cur[parts[i]] as Record<string, unknown>;
+              if (!cur) break;
+            }
+            if (cur) {
+              delete cur[parts[parts.length - 1]];
+              resetKeys.push(key);
+            }
           }
         } else if (store.scopes[scope] && key in store.scopes[scope]) {
           delete store.scopes[scope][key];
@@ -287,8 +443,15 @@ export const configTools: MCPTool[] = [
       } else {
         // Reset all keys in scope
         if (scope === 'default') {
-          resetKeys = Object.keys(store.values);
-          store.values = { ...DEFAULT_CONFIG };
+          if (store.__shape === 'legacy') {
+            // Preserve shape: wipe the tree but keep it a plain object.
+            resetKeys = Object.keys(store.values);
+            for (const k of resetKeys) delete store.values[k];
+            Object.assign(store.values, DEFAULT_CONFIG);
+          } else {
+            resetKeys = Object.keys(store.values);
+            store.values = { ...DEFAULT_CONFIG };
+          }
         } else if (store.scopes[scope]) {
           resetKeys = Object.keys(store.scopes[scope]);
           delete store.scopes[scope];
@@ -338,6 +501,7 @@ export const configTools: MCPTool[] = [
         config: exportData,
         scope,
         version: store.version,
+        shape: store.__shape ?? 'mcp',
         exportedAt: new Date().toISOString(),
         count: Object.keys(exportData).length,
       };
