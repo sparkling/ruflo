@@ -3,13 +3,103 @@
  *
  * Exposes @ruvector/ruvllm-wasm operations via MCP protocol.
  * All tools gracefully degrade when the WASM package is not installed.
+ *
+ * W2-I2: Router/SONA/MicroLoRA state is persisted under
+ * `.claude-flow/ruvllm/{hnsw,sona,microlora}-store.json` so that a
+ * create-then-operate lifecycle survives across one-shot `cli mcp exec`
+ * process boundaries. See ruvllm-store.ts for the journal/replay design.
  */
 
 import type { MCPTool } from './types.js';
 import type { ChatMessage } from '../ruvector/ruvllm-wasm.js';
+import {
+  persistHnswCreate,
+  persistHnswAdd,
+  getHnswRecord,
+  persistSonaCreate,
+  persistSonaAdapt,
+  getSonaRecord,
+  persistMicroLoraCreate,
+  persistMicroLoraAdapt,
+  getMicroLoraRecord,
+} from './ruvllm-store.js';
 
 async function loadRuvllmWasm() {
   return import('../ruvector/ruvllm-wasm.js');
+}
+
+// ── Instance Registries (in-process, short-lived) ─────────────────
+// One process may create+operate in-memory (fast path). Cross-process
+// flows fall back to on-disk persistence + replay (see rebuild* helpers).
+
+type HnswRouter = Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createHnswRouter>>;
+type SonaInstant = Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createSonaInstant>>;
+type MicroLora = Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createMicroLora>>;
+
+const hnswRouters = new Map<string, HnswRouter>();
+const sonaInstances = new Map<string, SonaInstant>();
+const loraInstances = new Map<string, MicroLora>();
+
+// ── Replay helpers ────────────────────────────────────────────────
+
+async function rebuildHnswRouter(id: string): Promise<HnswRouter | undefined> {
+  const rec = getHnswRecord(id);
+  if (!rec) return undefined;
+  const mod = await loadRuvllmWasm();
+  const router = await mod.createHnswRouter(rec.config);
+  // Replay journal
+  for (const entry of rec.journal) {
+    if (entry.op === 'add') {
+      router.addPattern({
+        name: entry.name,
+        embedding: new Float32Array(entry.embedding),
+        metadata: entry.metadata,
+      });
+    }
+  }
+  hnswRouters.set(id, router);
+  return router;
+}
+
+async function rebuildSona(id: string): Promise<SonaInstant | undefined> {
+  const rec = getSonaRecord(id);
+  if (!rec) return undefined;
+  const mod = await loadRuvllmWasm();
+  const sona = await mod.createSonaInstant(rec.config);
+  for (const entry of rec.journal) {
+    if (entry.op === 'adapt') {
+      sona.adapt(entry.quality);
+    } else if (entry.op === 'recordPattern') {
+      sona.recordPattern(entry.embedding, entry.success);
+    }
+  }
+  sonaInstances.set(id, sona);
+  return sona;
+}
+
+async function rebuildMicroLora(id: string): Promise<MicroLora | undefined> {
+  const rec = getMicroLoraRecord(id);
+  if (!rec) return undefined;
+  const mod = await loadRuvllmWasm();
+  const lora = await mod.createMicroLora(rec.config);
+  for (const entry of rec.journal) {
+    if (entry.op === 'adapt') {
+      lora.adapt(entry.quality, entry.learningRate, entry.success);
+    }
+  }
+  loraInstances.set(id, lora);
+  return lora;
+}
+
+// Registry lookup with disk fallback
+async function getOrRebuildHnsw(id: string): Promise<HnswRouter | undefined> {
+  return hnswRouters.get(id) ?? (await rebuildHnswRouter(id));
+}
+async function getOrRebuildSona(id: string): Promise<SonaInstant | undefined> {
+  return sonaInstances.get(id) ?? (await rebuildSona(id));
+}
+async function getOrRebuildMicroLora(id: string): Promise<MicroLora | undefined> {
+  return loraInstances.get(id) ?? (await rebuildMicroLora(id));
 }
 
 export const ruvllmWasmTools: MCPTool[] = [
@@ -29,12 +119,12 @@ export const ruvllmWasmTools: MCPTool[] = [
   },
   {
     name: 'ruvllm_hnsw_create',
-    description: 'Create a WASM HNSW router for semantic pattern routing. Max ~11 patterns (v2.0.1 limit).',
+    description: 'Create a WASM HNSW router for semantic pattern routing. State persists under .claude-flow/ruvllm/.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         dimensions: { type: 'number', description: 'Embedding dimensions (e.g., 64, 128, 384)' },
-        maxPatterns: { type: 'number', description: 'Max patterns capacity (limit ~11 in v2.0.1)' },
+        maxPatterns: { type: 'number', description: 'Max patterns capacity (limit ~1024 in v2.0.2)' },
         efSearch: { type: 'number', description: 'HNSW ef search parameter (higher = more accurate, slower)' },
       },
       required: ['dimensions', 'maxPatterns'],
@@ -42,15 +132,14 @@ export const ruvllmWasmTools: MCPTool[] = [
     handler: async (args: Record<string, unknown>) => {
       try {
         const mod = await loadRuvllmWasm();
-        const router = await mod.createHnswRouter({
-          dimensions: args.dimensions as number,
-          maxPatterns: args.maxPatterns as number,
-          efSearch: args.efSearch as number | undefined,
-        });
-        // Store router in module-level registry
-        const id = `hnsw-${Date.now().toString(36)}`;
+        const dimensions = args.dimensions as number;
+        const maxPatterns = args.maxPatterns as number;
+        const efSearch = args.efSearch as number | undefined;
+        const router = await mod.createHnswRouter({ dimensions, maxPatterns, efSearch });
+        const id = `hnsw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         hnswRouters.set(id, router);
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, routerId: id, dimensions: args.dimensions, maxPatterns: args.maxPatterns }) }] };
+        persistHnswCreate(id, { dimensions, maxPatterns, efSearch });
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, routerId: id, dimensions, maxPatterns, persisted: true }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
@@ -58,7 +147,7 @@ export const ruvllmWasmTools: MCPTool[] = [
   },
   {
     name: 'ruvllm_hnsw_add',
-    description: 'Add a pattern to an HNSW router. Embedding must match router dimensions.',
+    description: 'Add a pattern to an HNSW router. Embedding must match router dimensions. Persists across processes.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -71,14 +160,23 @@ export const ruvllmWasmTools: MCPTool[] = [
     },
     handler: async (args: Record<string, unknown>) => {
       try {
-        const router = hnswRouters.get(args.routerId as string);
-        if (!router) return { content: [{ type: 'text', text: JSON.stringify({ error: `Router not found: ${args.routerId}` }) }], isError: true };
-        const embedding = new Float32Array(args.embedding as number[]);
+        const routerId = args.routerId as string;
+        const router = await getOrRebuildHnsw(routerId);
+        if (!router) return { content: [{ type: 'text', text: JSON.stringify({ error: `Router not found: ${routerId}` }) }], isError: true };
+        const embeddingArr = args.embedding as number[];
         const ok = router.addPattern({
           name: args.name as string,
-          embedding,
+          embedding: new Float32Array(embeddingArr),
           metadata: args.metadata as Record<string, unknown>,
         });
+        if (ok) {
+          persistHnswAdd(
+            routerId,
+            args.name as string,
+            embeddingArr,
+            args.metadata as Record<string, unknown> | undefined,
+          );
+        }
         return { content: [{ type: 'text', text: JSON.stringify({ success: ok, patternCount: router.patternCount() }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
@@ -87,7 +185,7 @@ export const ruvllmWasmTools: MCPTool[] = [
   },
   {
     name: 'ruvllm_hnsw_route',
-    description: 'Route a query embedding to nearest patterns in HNSW index.',
+    description: 'Route a query embedding to nearest patterns in HNSW index. Reads persisted state.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -99,11 +197,12 @@ export const ruvllmWasmTools: MCPTool[] = [
     },
     handler: async (args: Record<string, unknown>) => {
       try {
-        const router = hnswRouters.get(args.routerId as string);
-        if (!router) return { content: [{ type: 'text', text: JSON.stringify({ error: `Router not found: ${args.routerId}` }) }], isError: true };
+        const routerId = args.routerId as string;
+        const router = await getOrRebuildHnsw(routerId);
+        if (!router) return { content: [{ type: 'text', text: JSON.stringify({ error: `Router not found: ${routerId}` }) }], isError: true };
         const query = new Float32Array(args.query as number[]);
         const results = router.route(query, (args.k as number) ?? 3);
-        return { content: [{ type: 'text', text: JSON.stringify({ results }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ results, patternCount: router.patternCount() }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
@@ -111,7 +210,7 @@ export const ruvllmWasmTools: MCPTool[] = [
   },
   {
     name: 'ruvllm_sona_create',
-    description: 'Create a SONA instant adaptation loop (<1ms adaptation cycles).',
+    description: 'Create a SONA instant adaptation loop (<1ms adaptation cycles). State persists under .claude-flow/ruvllm/.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -123,14 +222,16 @@ export const ruvllmWasmTools: MCPTool[] = [
     handler: async (args: Record<string, unknown>) => {
       try {
         const mod = await loadRuvllmWasm();
-        const sona = await mod.createSonaInstant({
+        const config = {
           hiddenDim: args.hiddenDim as number | undefined,
           learningRate: args.learningRate as number | undefined,
           patternCapacity: args.patternCapacity as number | undefined,
-        });
-        const id = `sona-${Date.now().toString(36)}`;
+        };
+        const sona = await mod.createSonaInstant(config);
+        const id = `sona-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         sonaInstances.set(id, sona);
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, sonaId: id }) }] };
+        persistSonaCreate(id, config);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, sonaId: id, persisted: true }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
@@ -138,7 +239,7 @@ export const ruvllmWasmTools: MCPTool[] = [
   },
   {
     name: 'ruvllm_sona_adapt',
-    description: 'Run SONA instant adaptation with a quality signal.',
+    description: 'Run SONA instant adaptation with a quality signal. Persists across processes.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -149,10 +250,15 @@ export const ruvllmWasmTools: MCPTool[] = [
     },
     handler: async (args: Record<string, unknown>) => {
       try {
-        const sona = sonaInstances.get(args.sonaId as string);
-        if (!sona) return { content: [{ type: 'text', text: JSON.stringify({ error: `SONA not found: ${args.sonaId}` }) }], isError: true };
-        sona.adapt(args.quality as number);
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, stats: sona.stats() }) }] };
+        const sonaId = args.sonaId as string;
+        const sona = await getOrRebuildSona(sonaId);
+        if (!sona) return { content: [{ type: 'text', text: JSON.stringify({ error: `SONA not found: ${sonaId}` }) }], isError: true };
+        const quality = args.quality as number;
+        const statsBefore = sona.stats();
+        sona.adapt(quality);
+        const statsAfter = sona.stats();
+        persistSonaAdapt(sonaId, quality);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, stats: statsAfter, statsChanged: statsBefore !== statsAfter }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
@@ -160,7 +266,7 @@ export const ruvllmWasmTools: MCPTool[] = [
   },
   {
     name: 'ruvllm_microlora_create',
-    description: 'Create a MicroLoRA adapter (ultra-lightweight LoRA, ranks 1-4).',
+    description: 'Create a MicroLoRA adapter (ultra-lightweight LoRA, ranks 1-4). State persists under .claude-flow/ruvllm/.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -174,15 +280,17 @@ export const ruvllmWasmTools: MCPTool[] = [
     handler: async (args: Record<string, unknown>) => {
       try {
         const mod = await loadRuvllmWasm();
-        const lora = await mod.createMicroLora({
+        const config = {
           inputDim: args.inputDim as number,
           outputDim: args.outputDim as number,
           rank: args.rank as number | undefined,
           alpha: args.alpha as number | undefined,
-        });
-        const id = `lora-${Date.now().toString(36)}`;
+        };
+        const lora = await mod.createMicroLora(config);
+        const id = `lora-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         loraInstances.set(id, lora);
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, loraId: id }) }] };
+        persistMicroLoraCreate(id, config);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, loraId: id, persisted: true }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
@@ -190,7 +298,7 @@ export const ruvllmWasmTools: MCPTool[] = [
   },
   {
     name: 'ruvllm_microlora_adapt',
-    description: 'Adapt MicroLoRA weights with quality feedback.',
+    description: 'Adapt MicroLoRA weights with quality feedback. Persists across processes.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -203,14 +311,17 @@ export const ruvllmWasmTools: MCPTool[] = [
     },
     handler: async (args: Record<string, unknown>) => {
       try {
-        const lora = loraInstances.get(args.loraId as string);
-        if (!lora) return { content: [{ type: 'text', text: JSON.stringify({ error: `MicroLoRA not found: ${args.loraId}` }) }], isError: true };
-        lora.adapt(
-          args.quality as number,
-          args.learningRate as number | undefined,
-          args.success as boolean | undefined,
-        );
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, stats: lora.stats() }) }] };
+        const loraId = args.loraId as string;
+        const lora = await getOrRebuildMicroLora(loraId);
+        if (!lora) return { content: [{ type: 'text', text: JSON.stringify({ error: `MicroLoRA not found: ${loraId}` }) }], isError: true };
+        const quality = args.quality as number;
+        const learningRate = args.learningRate as number | undefined;
+        const success = args.success as boolean | undefined;
+        const statsBefore = lora.stats();
+        lora.adapt(quality, learningRate, success);
+        const statsAfter = lora.stats();
+        persistMicroLoraAdapt(loraId, quality, learningRate, success);
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, stats: statsAfter, statsChanged: statsBefore !== statsAfter }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
@@ -274,9 +385,3 @@ export const ruvllmWasmTools: MCPTool[] = [
     },
   },
 ];
-
-// ── Instance Registries ──────────────────────────────────────
-
-const hnswRouters = new Map<string, Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createHnswRouter>>>();
-const sonaInstances = new Map<string, Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createSonaInstant>>>();
-const loraInstances = new Map<string, Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createMicroLora>>>();
