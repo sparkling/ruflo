@@ -151,16 +151,30 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
   } catch (primaryError: unknown) {
     // RvfBackend failed — do NOT silently fall back to InMemoryStore.
     // Surface the error so the caller can diagnose and fix.
-    const msg = primaryError instanceof Error ? primaryError.message : String(primaryError);
-    throw new Error(
-      `[StorageFactory] Failed to create storage backend.\n` +
+    //
+    // ADR-0095 Pass 3 (H9): preserve err.cause + err.code on the wrapped
+    // error. The original rewrap dropped `.cause` and `.code`, which made
+    // upstream catchers unable to discriminate ENOENT-on-parent-dir from
+    // EACCES-on-permissions from a genuine data-integrity refusal. Now the
+    // wrapped error carries both the human-readable chain AND the
+    // structured fields so callers can branch on `.code` / walk `.cause`.
+    const errCode = (primaryError as any)?.code;
+    const errMsg = primaryError instanceof Error
+      ? primaryError.message
+      : String(primaryError);
+    const wrapped: Error & { code?: string } = new Error(
+      `[StorageFactory] Failed to create storage backend ` +
+      `(${errCode ?? 'unknown'}).\n` +
       `  Path: ${rvfPath}\n` +
       `  Dimensions: ${dimensions}\n` +
-      `  Cause: ${msg}\n` +
+      `  Underlying: ${errMsg}\n` +
       `\n` +
       `Both native Rust HNSW and pure-TS fallback failed.  ` +
       `Verify the database path is writable and dependencies are installed.`,
     );
+    wrapped.cause = primaryError;
+    if (errCode !== undefined) wrapped.code = errCode;
+    throw wrapped;
   }
 }
 

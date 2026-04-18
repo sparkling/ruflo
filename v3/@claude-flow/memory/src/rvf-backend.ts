@@ -691,16 +691,24 @@ export class RvfBackend implements IMemoryBackend {
       : 'cosine';
 
     // SFVR magic peek: is the main path already a native-owned file?
+    // ADR-0095 Pass 3 (d4): capture bytesRead + peek for the non-SFVR branch
+    // so it can discriminate RVF\0 (legitimate pure-TS) from zero-byte /
+    // partial-write / unknown-magic (all unsafe for pure-TS fallback).
     let hasNativeMagic = false;
+    let fileOnDisk = false;
+    let peekBytesRead = 0;
+    let peekStr = '';
     if (fileExists(this.config.databasePath)) {
+      fileOnDisk = true;
       try {
         const fd = openSync(this.config.databasePath, 'r');
         try {
           const head = Buffer.alloc(4);
           const bytesRead = readSync(fd, head, 0, 4, 0);
+          peekBytesRead = bytesRead;
           if (bytesRead === 4) {
-            const peek = String.fromCharCode(head[0], head[1], head[2], head[3]);
-            if (peek === NATIVE_MAGIC) hasNativeMagic = true;
+            peekStr = String.fromCharCode(head[0], head[1], head[2], head[3]);
+            if (peekStr === NATIVE_MAGIC) hasNativeMagic = true;
           }
         } finally {
           closeSync(fd);
@@ -708,8 +716,11 @@ export class RvfBackend implements IMemoryBackend {
       } catch (err: any) {
         const code = err?.code;
         // ENOENT here = TOCTOU race (file existed at existsSync, gone by
-        // openSync). Treat as cold start.
-        if (code !== 'ENOENT') {
+        // openSync). Treat as cold start — clear `fileOnDisk` so the d4
+        // invariant below doesn't fire on a vanished file.
+        if (code === 'ENOENT') {
+          fileOnDisk = false;
+        } else {
           throw new Error(
             `[RvfBackend] Failed to peek native header at ${this.config.databasePath} ` +
             `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
@@ -750,14 +761,48 @@ export class RvfBackend implements IMemoryBackend {
       );
     }
 
-    // Cold start: no file yet, or file without SFVR magic (pure-TS-owned).
-    // If it's pure-TS-owned (RVF\0 magic or any non-SFVR content), pure-TS
-    // is the correct path — return false and let loadFromDisk handle it.
-    if (fileExists(this.config.databasePath)) {
+    // ADR-0095 Pass 3 (d4) invariant: non-SFVR branch.
+    //
+    // Previous logic accepted any non-SFVR on-disk state as "pure-TS owns
+    // this" and returned false. That bundled three very different shapes:
+    //   1. Valid 'RVF\0'  — legitimate pure-TS file, safe to fall through.
+    //   2. Zero-byte / partial (<4 bytes read) — a peer is mid-`RvfDatabase
+    //      .create()` (the native file is written header-first; a 0-byte
+    //      placeholder exists briefly before the magic lands). Handing this
+    //      to pure-TS would let it clobber the file before the peer's
+    //      header write completes.
+    //   3. Unknown 4-byte magic — corrupt or foreign format. Pure-TS
+    //      cannot parse it and must not silently write over it.
+    //
+    // Per ADR-0082 (no silent fallback on data-integrity failures), cases
+    // 2 and 3 throw loudly. Only genuine 'RVF\0' or file-absent qualifies
+    // as legitimate pure-TS.
+    if (fileOnDisk && peekBytesRead < 4) {
+      throw new Error(
+        `[RvfBackend] Native init refuses ${this.config.databasePath}: file ` +
+        `exists but only ${peekBytesRead}/4 magic bytes present — peer ` +
+        `RvfDatabase.create is mid-write. Retry once peer releases or ` +
+        `inspect the file.`,
+      );
+    }
+
+    const isRVFNull = peekStr === 'RVF\0';
+    if (fileOnDisk && peekBytesRead === 4 && !isRVFNull) {
+      // Not SFVR (that path returned earlier) and not RVF\0 — unknown magic.
+      throw new Error(
+        `[RvfBackend] Native init refuses ${this.config.databasePath}: ` +
+        `unknown magic ${JSON.stringify(peekStr)} — not 'SFVR' (native) or ` +
+        `'RVF\\0' (pure-TS). File is corrupt or from an unknown format.`,
+      );
+    }
+
+    if (fileOnDisk) {
+      // Genuine 'RVF\0' — legitimate pure-TS file. Return false and let
+      // loadFromDisk handle it (pure-TS is the correct path).
       if (this.config.verbose) {
         console.log(
-          `[RvfBackend] Main path ${this.config.databasePath} exists without SFVR ` +
-          `magic; using pure-TS backend (native will not clobber pure-TS file)`,
+          `[RvfBackend] Main path ${this.config.databasePath} is pure-TS ` +
+          `'RVF\\0' format; using pure-TS backend (native will not clobber)`,
         );
       }
       return false;
@@ -871,7 +916,21 @@ export class RvfBackend implements IMemoryBackend {
    */
   private async acquireLock(): Promise<void> {
     if (!this.lockPath) return; // :memory: mode
-    const { writeFile: wf, readFile: rf, unlink: ul } = await import('node:fs/promises');
+    const { writeFile: wf, readFile: rf, unlink: ul, mkdir: mk } = await import('node:fs/promises');
+    // ADR-0095 Pass 3 (d3): ensure lockfile parent directory exists before the
+    // open-wx below. acquireLock is called from initialize/persist/delete
+    // paths, some of which fire before any file on the parent path is created
+    // (cold-start race or peer-first-persist). Without this mkdir the
+    // writeFile below throws ENOENT and the whole operation aborts.
+    const lockDir = dirname(this.lockPath);
+    try {
+      await mk(lockDir, { recursive: true });
+    } catch (err: any) {
+      // `{recursive:true}` handles EEXIST internally; any other error is
+      // load-bearing — the wx open below will fail anyway if mkdir couldn't
+      // create the path, so surface it here per ADR-0082 (no silent swallow).
+      if (err?.code && err.code !== 'EEXIST') throw err;
+    }
     const maxWaitMs = 5000; // total budget for lock acquisition
     const baseDelayMs = 20;
     const maxDelayMs = 500;
