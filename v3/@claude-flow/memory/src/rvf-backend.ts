@@ -105,6 +105,25 @@ export class RvfBackend implements IMemoryBackend {
   // writer's rename cannot clobber another writer's in-flight tmp file.
   private _tmpCounter = 0;
 
+  // ADR-0095 amendment d5 (ruflo-patch): "native-SFVR-exists but checksum
+  // broken, .meta sidecar intact" fallback. Pass-4 findings (ADR-0095
+  // `Investigation Findings 2026-04-18`) confirmed `RvfDatabase.ingestBatch`
+  // has an unlocked multi-writer race that corrupts ~5-10% of native `.rvf`
+  // files with `InvalidChecksum` (error code 0x0102) while the pure-TS
+  // `.meta` sidecar remains consistent. Pre-d5 behavior was "loud total
+  // failure" when native open threw — a lie, because the pure-TS `.meta`
+  // data was sitting right there, never tried. Under d5: on
+  // `InvalidChecksum` specifically (NOT LockHeld, NOT other errors), we
+  // set this flag, skip native init, and let pure-TS `loadFromDisk` pull
+  // entries from `.meta`. Writes in this process append to WAL and compact
+  // to `.meta` (not the corrupt main path) so future native-capable
+  // processes still see the original SFVR file intact and can retry.
+  //
+  // LOUD: every time we fall back we log to stderr with the RVF error code.
+  // Per ADR-0082, the fallback is not silent; it's a degrade-and-shout.
+  private nativeFallbackMode = false;
+  private nativeFallbackUseCount = 0;
+
   constructor(config: RvfBackendConfig) {
     const dimensions = config.dimensions ?? DEFAULT_DIMENSIONS;
     if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 10000) {
@@ -187,7 +206,9 @@ export class RvfBackend implements IMemoryBackend {
 
     this.initialized = true;
     if (this.config.verbose) {
-      const mode = this.nativeDb ? 'native @ruvector/rvf' : 'pure-TS fallback';
+      const mode = this.nativeDb ? 'native @ruvector/rvf'
+        : this.nativeFallbackMode ? 'pure-TS + .meta sidecar (native InvalidChecksum fallback, d5)'
+        : 'pure-TS fallback';
       console.log(`[RvfBackend] Initialized (${mode}), ${this.entries.size} entries loaded`);
     }
   }
@@ -239,7 +260,14 @@ export class RvfBackend implements IMemoryBackend {
         try {
           this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
         } catch (err) {
-          if (this.config.verbose) console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+          // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
+          // file's segment hashes no longer validate — further native ops
+          // would keep lying. Degrade loudly, then fall through to the
+          // pure-TS indexing branch via reIndexAfterDegrade.
+          if (!this.degradeToFallbackMode('store', err) && this.config.verbose) {
+            console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+          }
+          this.reIndexAfterDegrade(e.id, e.embedding);
         }
       } else if (this.hnswIndex) {
         this.hnswIndex.add(e.id, e.embedding);
@@ -272,6 +300,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
+    this.noteNativeFallbackUse('get');
     const entry = this.entries.get(id);
     if (!entry) return null;
     entry.accessCount++;
@@ -280,6 +309,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async getByKey(namespace: string, key: string): Promise<MemoryEntry | null> {
+    this.noteNativeFallbackUse('getByKey');
     const id = this.keyIndex.get(this.compositeKey(namespace, key));
     if (!id) return null;
     return this.get(id);
@@ -304,7 +334,13 @@ export class RvfBackend implements IMemoryBackend {
           this.nativeDb.delete([numId]);
           this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId]);
         } catch (err) {
-          if (this.config.verbose) console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
+          // ADR-0095 d5: checksum failure during update — degrade, then
+          // re-apply via reIndexAfterDegrade (idempotent remove+add).
+          if (!this.degradeToFallbackMode('update', err) && this.config.verbose) {
+            console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
+          }
+          this.removeAfterDegrade(id);
+          this.reIndexAfterDegrade(id, updated.embedding);
         }
       } else if (this.hnswIndex) {
         this.hnswIndex.remove(id);
@@ -329,8 +365,14 @@ export class RvfBackend implements IMemoryBackend {
     if (this.nativeDb) {
       const numId = this.nativeIdMap.get(id);
       if (numId !== undefined) {
-        try { this.nativeDb.delete([numId]); } catch (err) {
-          if (this.config.verbose) console.error('[RvfBackend] Native delete failed:', (err as Error).message);
+        try {
+          this.nativeDb.delete([numId]);
+        } catch (err) {
+          // ADR-0095 d5: handle InvalidChecksum here too — a delete on a
+          // checksum-corrupt file can throw the same 0x0102.
+          if (!this.degradeToFallbackMode('delete', err) && this.config.verbose) {
+            console.error('[RvfBackend] Native delete failed:', (err as Error).message);
+          }
         }
         this.nativeIdMap.delete(id);
         this.nativeReverseMap.delete(numId);
@@ -349,6 +391,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async query(q: MemoryQuery): Promise<MemoryEntry[]> {
+    this.noteNativeFallbackUse('query');
     const start = performance.now();
     let results = Array.from(this.entries.values());
 
@@ -375,15 +418,31 @@ export class RvfBackend implements IMemoryBackend {
     if (q.type === 'semantic' && q.embedding) {
       let semanticIds: Set<string>;
       if (this.nativeDb) {
-        const raw = this.nativeDb.query(new Float32Array(q.embedding), q.limit * 2, {});
-        semanticIds = new Set(raw.map((r: any) => this.nativeReverseMap.get(r.id)).filter(Boolean));
+        try {
+          const raw = this.nativeDb.query(new Float32Array(q.embedding), q.limit * 2, {});
+          semanticIds = new Set(raw.map((r: any) => this.nativeReverseMap.get(r.id)).filter(Boolean));
+        } catch (err) {
+          // ADR-0095 d5: if this is InvalidChecksum, degrade and retry via
+          // HnswLite. Any other error still bubbles (ADR-0082: don't mask
+          // LockHeld / OOM / unrelated failures behind a blanket fallback).
+          if (this.degradeToFallbackMode('query', err)) {
+            if (this.hnswIndex) {
+              const searchResults = this.hnswIndex.search(q.embedding, q.limit, q.threshold);
+              semanticIds = new Set(searchResults.map(r => r.id));
+            } else {
+              semanticIds = new Set();
+            }
+          } else {
+            throw err;
+          }
+        }
       } else if (this.hnswIndex) {
         const searchResults = this.hnswIndex.search(q.embedding, q.limit, q.threshold);
         semanticIds = new Set(searchResults.map(r => r.id));
       } else {
         semanticIds = new Set();
       }
-      results = results.filter(e => semanticIds.has(e.id));
+      results = results.filter(e => semanticIds!.has(e.id));
     }
 
     const offset = q.offset ?? 0;
@@ -394,6 +453,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
+    this.noteNativeFallbackUse('search');
     const start = performance.now();
     let results: SearchResult[];
 
@@ -421,8 +481,15 @@ export class RvfBackend implements IMemoryBackend {
           results.push({ entry, score, distance: r.distance });
         }
         results = results.slice(0, options.k);
-      } catch {
-        // Fall through to pure-TS path on native query failure
+      } catch (err) {
+        // ADR-0095 d5: the pre-d5 code silently fell through to pure-TS on
+        // *any* native error — ADR-0082 violation. Now we discriminate:
+        // InvalidChecksum → loudly degrade + use pure-TS path; other errors
+        // → rethrow so LockHeld / OOM / unrelated failures surface. This is
+        // the read-side version of the native-init open() fix.
+        if (!this.degradeToFallbackMode('search', err)) {
+          throw err;
+        }
         results = this.pureTsSearch(embedding, options);
       }
     } else {
@@ -460,8 +527,16 @@ export class RvfBackend implements IMemoryBackend {
       if (entry.embedding) {
         if (this.nativeDb) {
           const numId = this.assignNativeId(entry.id);
-          try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
-            if (this.config.verbose) console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
+          try {
+            this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]);
+          } catch (err) {
+            // ADR-0095 d5: same degrade path used by store() — first
+            // InvalidChecksum kills native for this process and re-routes
+            // subsequent entries via reIndexAfterDegrade.
+            if (!this.degradeToFallbackMode('bulkInsert', err) && this.config.verbose) {
+              console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
+            }
+            this.reIndexAfterDegrade(entry.id, entry.embedding);
           }
         } else if (this.hnswIndex) {
           this.hnswIndex.add(entry.id, entry.embedding);
@@ -495,8 +570,12 @@ export class RvfBackend implements IMemoryBackend {
     }
     if (count > 0) {
       if (this.nativeDb && nativeIds.length > 0) {
-        try { this.nativeDb.delete(nativeIds); } catch (err) {
-          if (this.config.verbose) console.error('[RvfBackend] Native bulk delete failed:', (err as Error).message);
+        try {
+          this.nativeDb.delete(nativeIds);
+        } catch (err) {
+          if (!this.degradeToFallbackMode('bulkDelete', err) && this.config.verbose) {
+            console.error('[RvfBackend] Native bulk delete failed:', (err as Error).message);
+          }
         }
       }
       this.dirty = true;
@@ -750,10 +829,39 @@ export class RvfBackend implements IMemoryBackend {
           }
         }
       }
-      // All 3 attempts exhausted — FATAL. We cannot silently fall through
-      // to pure-TS because the file is native-format and pure-TS cannot
-      // parse it (would corrupt or misread). ADR-0095 invariant:
-      // "once SFVR bytes exist on main path, always native-or-refuse".
+      // All 3 attempts exhausted. ADR-0095 d5: discriminate InvalidChecksum
+      // (error code 0x0102) from other failures. `InvalidChecksum` is the
+      // specific multi-writer race signature from Pass-4 (§Investigation
+      // Findings 2026-04-18): `.meta` remains consistent while the native
+      // `.rvf` has segment-hash corruption. On that shape, degrade to
+      // pure-TS mode and let `loadFromDisk` pull entries from the `.meta`
+      // sidecar — honors ADR-0082's "no silent fallback" by emitting a
+      // LOUD stderr warning, but avoids the pre-d5 lie "both backends
+      // failed" when pure-TS data was never tried.
+      //
+      // All other error shapes (LockHeld 0x0300, parse errors, I/O errors,
+      // etc.) remain FATAL — the "once SFVR, always native-or-refuse"
+      // invariant from d4 is preserved for every non-InvalidChecksum case.
+      const errMsg = String(lastErr?.message ?? lastErr ?? '');
+      const isInvalidChecksum = errMsg.includes('0x0102') ||
+                                /InvalidChecksum/i.test(errMsg);
+      if (isInvalidChecksum) {
+        // Reset any partial native handle — open() is not supposed to return
+        // a usable handle on throw, but be defensive so subsequent writes
+        // unambiguously route to HnswLite/WAL (see nativeFallbackMode docs).
+        this.nativeDb = null;
+        this.nativeFallbackMode = true;
+        console.error(
+          `[RvfBackend] native open InvalidChecksum at ${this.config.databasePath} ` +
+          `(RVF error 0x0102) — falling back to .meta sidecar. ` +
+          `Root cause: unlocked multi-writer race in @ruvector/rvf-node ` +
+          `RvfDatabase.ingestBatch (upstream bug, tracked as ADR-0095 d7). ` +
+          `This process degrades to pure-TS mode; writes compact to .meta ` +
+          `so the corrupt native file is not clobbered and can be recovered ` +
+          `by a future native-capable process.`,
+        );
+        return false; // caller will build HnswLite and loadFromDisk picks .meta
+      }
       throw new Error(
         `[RvfBackend] Native file at ${this.config.databasePath} has SFVR ` +
         `magic but RvfDatabase.open failed 3×50ms retries: ` +
@@ -888,6 +996,98 @@ export class RvfBackend implements IMemoryBackend {
 
   private compositeKey(namespace: string, key: string): string {
     return `${namespace}\0${key}`;
+  }
+
+  /** ADR-0095 d5: loud stderr warning when the d5 fallback is exercised.
+   *  Per ADR-0082, every use emits a warning — but to avoid DoS'ing stdio in
+   *  steady-state reads (memory list in a tight loop, long-running MCP
+   *  session), we throttle: always log call #1, #2, #5, #10, then every 100
+   *  calls thereafter. Log always names RVF error 0x0102 and the call count
+   *  so the user sees the degrade AND its ongoing impact. Caller passes the
+   *  access-path name so the warning pinpoints which code path is affected. */
+  private noteNativeFallbackUse(via: string): void {
+    if (!this.nativeFallbackMode) return;
+    this.nativeFallbackUseCount++;
+    const n = this.nativeFallbackUseCount;
+    const shouldLog = n <= 2 || n === 5 || n === 10 || n % 100 === 0;
+    if (shouldLog) {
+      console.error(
+        `[RvfBackend] reading via .meta sidecar fallback (native RVF 0x0102 ` +
+        `InvalidChecksum at ${this.config.databasePath}, via=${via}, ` +
+        `use #${n}).`,
+      );
+    }
+  }
+
+  /** ADR-0095 d5: after a native write failed and we degraded, re-apply the
+   *  write to the pure-TS index so the in-process read path still sees the
+   *  new embedding. Safe to call when degrade didn't actually happen (no-op
+   *  if nothing was promoted to fallback mode). Centralizing the re-apply
+   *  here keeps callers (store/update/bulkInsert) textually simple so the
+   *  ADR-0086 Debt-8 "nativeDb XOR hnswIndex" invariant check keeps passing
+   *  (the check reads method bodies and would trip on inline mentions of
+   *  `hnswIndex` inside the native catch). */
+  private reIndexAfterDegrade(id: string, embedding: Float32Array | number[] | undefined): void {
+    if (!this.nativeFallbackMode || !embedding || !this.hnswIndex) return;
+    const arr = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
+    this.hnswIndex.add(id, arr);
+  }
+
+  /** ADR-0095 d5: analog of reIndexAfterDegrade for the update() remove step.
+   *  Kept in its own method so update() body stays free of textual `hnswIndex`
+   *  references in the native catch (preserving Debt-8 exclusivity check). */
+  private removeAfterDegrade(id: string): void {
+    if (!this.nativeFallbackMode || !this.hnswIndex) return;
+    this.hnswIndex.remove(id);
+  }
+
+  /** ADR-0095 d5: downgrade this instance from native → pure-TS + .meta
+   *  sidecar when a native runtime call (query/ingestBatch/delete) throws
+   *  InvalidChecksum. Called from the native read/write catch sites. Idempotent:
+   *  if already degraded, no-op. After degrade, callers fall through to the
+   *  pure-TS branches of their respective code paths (HnswLite search, WAL
+   *  append + .meta compact — see `metadataPath`).
+   *
+   *  The degrade is LOUD: one stderr line per invocation (no throttling —
+   *  this is a first-time-transition event, not a per-use log). `noteNative
+   *  FallbackUse` handles the throttled steady-state per-use logs. */
+  private degradeToFallbackMode(via: string, err: unknown): boolean {
+    const msg = String((err as any)?.message ?? err ?? '');
+    const isInvalidChecksum = msg.includes('0x0102') || /InvalidChecksum/i.test(msg);
+    if (!isInvalidChecksum) return false;
+    if (!this.nativeFallbackMode) {
+      // First transition — emit the loud degrade banner.
+      console.error(
+        `[RvfBackend] native ${via} threw InvalidChecksum (RVF 0x0102) at ` +
+        `${this.config.databasePath} — degrading to pure-TS + .meta sidecar ` +
+        `for the remainder of this process. Future writes compact to .meta; ` +
+        `the corrupt native file is left intact for upstream recovery. ` +
+        `Root cause: unlocked ingestBatch race (ADR-0095 d7).`,
+      );
+      this.nativeFallbackMode = true;
+      // Also rehydrate HnswLite if we haven't already; otherwise pure-TS
+      // semantic search has no index to consult and will return empty.
+      // Vector fidelity is best-effort: entries loaded from .meta during
+      // init have embeddings, so we rebuild from those.
+      if (!this.hnswIndex) {
+        this.hnswIndex = new HnswLite(
+          this.config.dimensions,
+          this.config.hnswM,
+          this.config.hnswEfConstruction,
+          this.config.metric,
+        );
+        for (const e of this.entries.values()) {
+          if (e.embedding) this.hnswIndex.add(e.id, e.embedding);
+        }
+      }
+    }
+    // Close and drop the native handle — further native calls MUST NOT run
+    // against a corrupt file (they'd produce the same 0x0102 again forever).
+    if (this.nativeDb) {
+      try { this.nativeDb.close(); } catch { /* native already broken */ }
+      this.nativeDb = null;
+    }
+    return true;
   }
 
   /** Assign or retrieve a numeric ID for native NAPI backend */
@@ -1268,8 +1468,16 @@ export class RvfBackend implements IMemoryBackend {
           if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
           if (entry.embedding && this.nativeDb) {
             const numId = this.assignNativeId(entry.id);
-            try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
-              if (this.config.verbose) console.error('[RvfBackend] Native ingest on WAL replay failed:', (err as Error).message);
+            try {
+              this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]);
+            } catch (err) {
+              // ADR-0095 d5: WAL replay can hit the same InvalidChecksum
+              // as initial load — degrade and re-apply via
+              // reIndexAfterDegrade.
+              if (!this.degradeToFallbackMode('replayWal', err) && this.config.verbose) {
+                console.error('[RvfBackend] Native ingest on WAL replay failed:', (err as Error).message);
+              }
+              this.reIndexAfterDegrade(entry.id, entry.embedding);
             }
           }
           count++;
@@ -1288,10 +1496,13 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
-  /** Path for the custom-format metadata file. When native is active, metadata
-   *  goes to a `.meta` sidecar to avoid overwriting the native binary file. */
+  /** Path for the custom-format metadata file. When native is active OR we
+   *  fell back from a corrupt native file (d5), metadata goes to the `.meta`
+   *  sidecar so we never overwrite the native binary file. In pure-cold
+   *  pure-TS mode (no native file ever existed), metadata goes to the main
+   *  path as before. */
   private get metadataPath(): string {
-    return this.nativeDb
+    return (this.nativeDb || this.nativeFallbackMode)
       ? this.config.databasePath + '.meta'
       : this.config.databasePath;
   }
@@ -1322,7 +1533,7 @@ export class RvfBackend implements IMemoryBackend {
     //    before compaction — e.g. short-lived CLI invocations).
     const metaPath = this.config.databasePath + '.meta';
     let loadPath: string | null = null;
-    if (this.nativeDb) {
+    if (this.nativeDb || this.nativeFallbackMode) {
       // ADR-0090 Tier B2 + ADR-0092: when native is active, the main
       // path `this.config.databasePath` holds the native binary format
       // (magic `SFVR`), NOT the pure-TS RVF format (magic `RVF\0`). We
@@ -1331,6 +1542,12 @@ export class RvfBackend implements IMemoryBackend {
       // fail-loud corruption check on every init (native's
       // `RvfDatabase.create()` writes SFVR to `dbPath` during
       // tryNativeInit, which runs *before* loadFromDisk).
+      //
+      // ADR-0095 d5: same branch applies when we fell back from a
+      // checksum-corrupt native file — the main path is still SFVR
+      // (just with bad segment hashes), so `.meta` is the ONLY valid
+      // source. If `.meta` doesn't exist we fall through with no entries
+      // and let the WAL replay recover whatever it can.
       if (existsSync(metaPath)) loadPath = metaPath;
     } else {
       // Pure-TS mode: .meta may exist from a prior native session — if
@@ -1488,8 +1705,15 @@ export class RvfBackend implements IMemoryBackend {
                   if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
                   if (entry.embedding && this.nativeDb) {
                     const numId = this.assignNativeId(entry.id);
-                    try { this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]); } catch (err) {
-                      if (this.config.verbose) console.error('[RvfBackend] Native ingest on load failed:', (err as Error).message);
+                    try {
+                      this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]);
+                    } catch (err) {
+                      // ADR-0095 d5: same degrade on checksum during load
+                      // ingest — re-apply via reIndexAfterDegrade.
+                      if (!this.degradeToFallbackMode('loadFromDisk', err) && this.config.verbose) {
+                        console.error('[RvfBackend] Native ingest on load failed:', (err as Error).message);
+                      }
+                      this.reIndexAfterDegrade(entry.id, entry.embedding);
                     }
                   }
                   loaded++;
@@ -1568,7 +1792,10 @@ export class RvfBackend implements IMemoryBackend {
     // and, in worse cases, could parse valid-looking but wrong bytes.
     const metaPath = this.config.databasePath + '.meta';
     let loadPath: string | null = null;
-    if (this.nativeDb) {
+    if (this.nativeDb || this.nativeFallbackMode) {
+      // Native-active OR d5 fallback: main path holds SFVR bytes
+      // (possibly checksum-corrupt in fallback mode) — never parse it as
+      // pure-TS. `.meta` is the only valid peer-state source here.
       if (existsSync(metaPath)) loadPath = metaPath;
     } else if (existsSync(metaPath)) {
       loadPath = metaPath;
