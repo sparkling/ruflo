@@ -15,6 +15,24 @@ import { commands, commandsByCategory, commandRegistry, getCommand, getCommandAs
 import { suggestCommand } from './suggest.js';
 import { runStartupUpdateCheck } from './update/index.js';
 
+/**
+ * ADR-0094 Sprint 1.4 (d6): lazy import of the memory-router shutdown so
+ * this module doesn't pay the import cost on commands that never touch
+ * storage. The router has `process.on('exit', _syncShutdown)` as a backstop
+ * — this async call drives the full `RvfBackend.shutdown()` path (final
+ * persist + native DB close + lock release).
+ */
+async function cliShutdownRouter(): Promise<void> {
+  try {
+    const mod = await import('./memory/memory-router.js');
+    if (typeof mod.shutdownRouter === 'function') {
+      await mod.shutdownRouter();
+    }
+  } catch {
+    // best effort — sync `exit` handler still runs to release the lock
+  }
+}
+
 // Read version from package.json at runtime
 function getPackageVersion(): string {
   try {
@@ -239,6 +257,12 @@ export class CLI {
         }
 
         if (result && !result.success) {
+          // ADR-0094 Sprint 1.4 (d6): flush router before error-path exit.
+          // Otherwise the `.rvf.lock` + native DB handle leak to the next
+          // process (LockHeld for up to 5s). Fire-and-forget async shutdown
+          // then hard-exit — the `process.on('exit')` sync handler in
+          // memory-router.ts catches any remaining lock-file residue.
+          try { await cliShutdownRouter(); } catch { /* best effort */ }
           process.exit(result.exitCode || 1);
         }
 
@@ -246,7 +270,16 @@ export class CLI {
         // embedding operations. Force-exit after a short delay to allow
         // final I/O to flush. This replaces the per-command workaround
         // that was only applied to `memory init`.
-        setTimeout(() => process.exit(0), 500).unref();
+        // ADR-0094 Sprint 1.4 (d6): BEFORE the hard exit, flush the memory
+        // router so `RvfBackend.shutdown()` runs (closes native DB handle,
+        // releases `.rvf.lock` cleanly). `process.exit(0)` skips `beforeExit`,
+        // so the async shutdown hook we register there never fires for
+        // normal CLI commands. The `process.on('exit')` sync handler still
+        // acts as a backstop for any paths that don't go through here.
+        setTimeout(async () => {
+          try { await cliShutdownRouter(); } catch { /* best effort */ }
+          process.exit(0);
+        }, 500).unref();
       } else {
         // No action - show command help
         this.showCommandHelp(commandName);
@@ -257,7 +290,9 @@ export class CLI {
       if (errorMessage && errorMessage.startsWith('process.exit:')) {
         throw error; // Re-throw so tests can capture the exit code
       }
-      this.handleError(error as Error);
+      // ADR-0094 Sprint 1.4 (d6): await so the async shutdown pass in
+      // handleError gets to run before the process exits.
+      await this.handleError(error as Error);
     }
   }
 
@@ -483,8 +518,15 @@ export class CLI {
 
   /**
    * Handle errors
+   *
+   * ADR-0094 Sprint 1.4 (d6): `process.exit(N)` bypasses `beforeExit`, so
+   * without this async shutdown pass the router's `.rvf.lock` + native DB
+   * handle leak and the next CLI invocation hits LockHeld for up to 5s.
+   * We fire cliShutdownRouter() and then hard-exit — the sync handler
+   * registered in memory-router.ts (`process.on('exit')`) runs
+   * unconditionally afterwards as a backstop.
    */
-  private handleError(error: Error): void {
+  private async handleError(error: Error): Promise<void> {
     if ('code' in error) {
       // CLIError
       const cliError = error as CLIError;
@@ -494,6 +536,7 @@ export class CLI {
         this.output.writeln(this.output.dim(JSON.stringify(cliError.details, null, 2)));
       }
 
+      try { await cliShutdownRouter(); } catch { /* best effort */ }
       process.exit(cliError.exitCode);
     } else {
       // Generic error
@@ -504,6 +547,7 @@ export class CLI {
         this.output.writeln(this.output.dim(error.stack || ''));
       }
 
+      try { await cliShutdownRouter(); } catch { /* best effort */ }
       process.exit(1);
     }
   }

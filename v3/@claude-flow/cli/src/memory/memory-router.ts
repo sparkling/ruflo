@@ -189,6 +189,16 @@ let _registryAvailable: boolean | null = null;
 let _exitHookRegistered = false;
 let _embeddingsJsonWarned = false;
 
+// ADR-0094 Sprint 1.4 (d6): advisory-lock path tracked so `process.on('exit')`
+// sync handler can release it. `_storage.shutdown()` is async-only, but
+// `process.exit(N)` skips `beforeExit` entirely — meaning the async handler
+// never runs on the normal CLI exit path. Without a sync fallback, the
+// `.rvf.lock` file lingers and the next CLI invocation hits `LockHeld`
+// until the 5s budget runs out. Observed in e2e-semantic + e2e-0083-roundtrip
+// sequential failures (Pass 4 root cause). Captured at _doInit time so the
+// path is available even if `_storage` gets nulled out later.
+let _lockPath: string | null = null;
+
 function _findProjectRoot(): string {
   let dir = process.cwd();
   while (dir !== path.dirname(dir)) {
@@ -250,12 +260,66 @@ function _getDbPath(customPath?: string): string {
   return resolved;
 }
 
+/**
+ * ADR-0094 Sprint 1.4 (d6): sync shutdown for `process.on('exit')`.
+ *
+ * `beforeExit` only fires when Node's event loop drains naturally. Any call
+ * to `process.exit(N)` — including the `setTimeout(process.exit(0), 500)`
+ * in CLIApp.run() and the error-path exits in handleError — skips beforeExit
+ * entirely. The `exit` event fires on BOTH paths but handlers must be
+ * synchronous (no promises awaited).
+ *
+ * This handler does the minimum sync cleanup to avoid lock leaks:
+ *  1. Release the `.rvf.lock` file (unlinkSync) if it belongs to this PID
+ *  2. Log LOUDLY to stderr on failure (ADR-0082 — never swallow silently)
+ *
+ * `nativeDb.close()` cannot be called here: we only have a reference to
+ * IStorageContract, and the native handle is an internal implementation
+ * detail of RvfBackend. The lock release is the critical one — a dangling
+ * native handle is freed by process death, but a dangling lock file blocks
+ * the next CLI invocation for up to 5s.
+ */
+function _syncShutdown(): void {
+  if (!_lockPath) return;
+  try {
+    // Only release if the lock belongs to us (PID match). This prevents a
+    // racing process from having its lock yanked when we exit.
+    if (fs.existsSync(_lockPath)) {
+      let isOurs = false;
+      try {
+        const content = fs.readFileSync(_lockPath, 'utf-8');
+        const parsed = JSON.parse(content) as { pid?: number };
+        isOurs = parsed.pid === process.pid;
+      } catch {
+        // Corrupt or unreadable lock file — treat as ours (we're exiting anyway).
+        isOurs = true;
+      }
+      if (isOurs) {
+        fs.unlinkSync(_lockPath);
+      }
+    }
+  } catch (err) {
+    // ADR-0082: surface loudly to stderr, do NOT swallow. Next process
+    // will hit LockHeld on the stale lock — operator needs to see this.
+    process.stderr.write(
+      `[memory-router] sync shutdown failed to release lock ${_lockPath} ` +
+      `(pid=${process.pid}): ${(err as Error).message}\n`
+    );
+  }
+}
+
 function _ensureExitHook(): void {
   if (_exitHookRegistered) return;
   _exitHookRegistered = true;
+  // `beforeExit` fires on natural event-loop drain and can be async.
   process.on('beforeExit', async () => {
     try { await shutdownRouter(); } catch { /* best effort */ }
   });
+  // ADR-0094 Sprint 1.4 (d6): `exit` fires on BOTH natural drain AND
+  // `process.exit(N)`. Handler must be synchronous. This is the critical
+  // path for CLI lock-leak prevention since CLIApp.run() calls
+  // `setTimeout(process.exit(0), 500).unref()` on every successful command.
+  process.on('exit', _syncShutdown);
 }
 
 /**
@@ -522,6 +586,8 @@ async function _doInit(): Promise<void> {
   }
 
   // ADR-0086 T2.2: Create RvfBackend (IStorageContract) instead of SQLite initializer
+  // ADR-0094 Sprint 1.4 (d6): capture lockPath for sync shutdown path.
+  if (databasePath && databasePath !== ':memory:') _lockPath = databasePath + '.lock';
   try {
     _storage = await createStorage({ databasePath, dimensions });
   } catch (e) {
@@ -1595,4 +1661,7 @@ export function resetRouter(): void {
   _registryPromise = null;
   _registryAvailable = null;
   _exitHookRegistered = false;
+  // ADR-0094 Sprint 1.4 (d6): clear lockPath so a subsequent init
+  // recaptures it from the (possibly new) storage config.
+  _lockPath = null;
 }
