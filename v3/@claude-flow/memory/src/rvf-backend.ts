@@ -124,6 +124,42 @@ export class RvfBackend implements IMemoryBackend {
   private nativeFallbackMode = false;
   private nativeFallbackUseCount = 0;
 
+  // ADR-0094 Sprint 1.4 d8 (ruflo-patch): lazy native re-ingest after load.
+  //
+  // Pre-fix behavior: loadFromDisk() and replayWal() unconditionally called
+  // `nativeDb.ingestBatch()` for every entry they loaded, even though the
+  // native SFVR file ALREADY contains those vectors (they were written
+  // there by the prior process's `store()` call, which persists
+  // synchronously via the native library). This caused .rvf to grow by
+  // ~(N_entries × dim × 4) bytes on EVERY process init — observed as
+  // ~3.6KB/list on a 1-entry, 768-dim setup. Running `memory list` 100
+  // times inflated `.rvf` by ~360KB of orphan vector segments that nothing
+  // points to (the HNSW index inside the native file was not rebuilt to
+  // include them — see ADR-0092 comment in replayWal).
+  //
+  // The re-ingest is only NEEDED for one path: `search()` via
+  // `nativeDb.query()` returns numeric IDs that must be mapped back to
+  // string IDs via `nativeReverseMap`. The map is populated by
+  // `assignNativeId` during ingestBatch. If we never ingest, the map is
+  // empty for cross-process entries and semantic queries silently return
+  // nothing.
+  //
+  // Fix: defer the re-ingest until semantic search is actually requested.
+  // `memory list`, `memory store`, and all prefix/filter queries don't
+  // need the map and so don't pay the re-ingest cost. On first `search()`
+  // or `query(semantic)` in a process, `ensureNativeSemanticReady()`
+  // rehydrates the native index once by iterating `this.entries`. This
+  // still causes one-time growth per process that performs semantic
+  // search, but zero growth for pure-read/pure-write CLI flows.
+  //
+  // `_pendingNativeIngest` holds (stringId, embedding) pairs collected
+  // during loadFromDisk/replayWal when nativeDb is present but the
+  // ingestBatch is deferred. `_nativeRehydrated` is set to true after
+  // `ensureNativeSemanticReady()` completes so we do the work at most
+  // once per process.
+  private _pendingNativeIngest: Array<{ id: string; embedding: Float32Array }> = [];
+  private _nativeRehydrated = false;
+
   constructor(config: RvfBackendConfig) {
     const dimensions = config.dimensions ?? DEFAULT_DIMENSIONS;
     if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 10000) {
@@ -416,6 +452,9 @@ export class RvfBackend implements IMemoryBackend {
 
     // Semantic search via native or HnswLite (Debt 8 — exclusive, not both)
     if (q.type === 'semantic' && q.embedding) {
+      // ADR-0094 Sprint 1.4 d8: rehydrate nativeReverseMap before the first
+      // semantic query in this process. See `ensureNativeSemanticReady`.
+      this.ensureNativeSemanticReady();
       let semanticIds: Set<string>;
       if (this.nativeDb) {
         try {
@@ -458,6 +497,9 @@ export class RvfBackend implements IMemoryBackend {
     let results: SearchResult[];
 
     if (this.nativeDb) {
+      // ADR-0094 Sprint 1.4 d8: rehydrate nativeReverseMap before the first
+      // semantic search in this process. See `ensureNativeSemanticReady`.
+      this.ensureNativeSemanticReady();
       // Native NAPI vector search — fast ANN lookup, then filter metadata
       try {
         const raw: Array<{ id: number; distance: number }> = this.nativeDb.query(
@@ -809,27 +851,54 @@ export class RvfBackend implements IMemoryBackend {
     }
 
     if (hasNativeMagic) {
-      // Native file detected — must open-or-refuse. Retry up to 3×50ms to
-      // absorb the mid-write gap on a concurrent writer.
+      // Native file detected — must open-or-refuse.
+      //
+      // ADR-0094 Sprint 1.4 d10 (ruflo-patch): time-budgeted retry (5s
+      // budget, exponential backoff) instead of fixed 3×50ms. The native
+      // library holds an internal file lock during open() and writes;
+      // under N>=8 concurrent processes with CPU contention the lock is
+      // held longer than the old 150ms budget, producing spurious
+      // `RVF error 0x0300: LockHeld` failures that matched the observed
+      // write-loss pattern at N=12 (11/12) and N=20 (18/20). LockHeld is
+      // transient by design — the peer will release on exit of its
+      // open/ingestBatch call — so treating it as a recoverable error
+      // rather than fatal matches what `acquireLock()` does for our own
+      // advisory lock (ADR-0090 Tier B7, 5s budget with exponential
+      // backoff). Other error shapes (InvalidChecksum, parse, I/O) take
+      // their own branches below and are NOT retried — they are
+      // genuinely fatal and must surface immediately.
       let lastErr: any = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      const maxOpenWaitMs = 5000;
+      const openStartTime = Date.now();
+      const baseDelayMs = 20;
+      const maxDelayMs = 400;
+      let attempt = 0;
+      while (Date.now() - openStartTime < maxOpenWaitMs) {
         try {
           this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
           if (this.config.verbose) {
             console.log(
               `[RvfBackend] Native @ruvector/rvf-node loaded (SFVR file opened` +
-              (attempt > 0 ? `, attempt ${attempt + 1}/3` : '') + ')',
+              (attempt > 0 ? `, attempt ${attempt + 1} after ${Date.now() - openStartTime}ms` : '') + ')',
             );
           }
           return true;
         } catch (err: any) {
           lastErr = err;
-          if (attempt < 2) {
-            await new Promise(res => setTimeout(res, 50));
-          }
+          // Only retry the transient LockHeld shape (0x0300). Every other
+          // error falls through to the fatal/InvalidChecksum branch below.
+          const msg = String(err?.message ?? err ?? '');
+          const isLockHeld = msg.includes('0x0300') || /LockHeld/i.test(msg);
+          if (!isLockHeld) break;
+          const expDelay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+          const jitter = expDelay * 0.5 * Math.random();
+          const delayMs = expDelay + jitter;
+          await new Promise(res => setTimeout(res, delayMs));
+          attempt++;
         }
       }
-      // All 3 attempts exhausted. ADR-0095 d5: discriminate InvalidChecksum
+      // Retry loop exhausted (either LockHeld exceeded the 5s budget or the
+      // error was non-transient). ADR-0095 d5: discriminate InvalidChecksum
       // (error code 0x0102) from other failures. `InvalidChecksum` is the
       // specific multi-writer race signature from Pass-4 (§Investigation
       // Findings 2026-04-18): `.meta` remains consistent while the native
@@ -839,9 +908,14 @@ export class RvfBackend implements IMemoryBackend {
       // LOUD stderr warning, but avoids the pre-d5 lie "both backends
       // failed" when pure-TS data was never tried.
       //
-      // All other error shapes (LockHeld 0x0300, parse errors, I/O errors,
-      // etc.) remain FATAL — the "once SFVR, always native-or-refuse"
-      // invariant from d4 is preserved for every non-InvalidChecksum case.
+      // ADR-0094 Sprint 1.4 d10 (ruflo-patch): LockHeld (0x0300) is now
+      // retried with exponential backoff up to the 5s budget at the top
+      // of the retry loop. If we get here with LockHeld, the budget was
+      // exhausted — FATAL (a peer holding the lock for >5s is a genuine
+      // hang, not transient contention). Parse errors, I/O errors, and
+      // unknown native errors remain FATAL with no retry — the "once
+      // SFVR, always native-or-refuse" invariant from d4 is preserved for
+      // every non-InvalidChecksum case.
       const errMsg = String(lastErr?.message ?? lastErr ?? '');
       const isInvalidChecksum = errMsg.includes('0x0102') ||
                                 /InvalidChecksum/i.test(errMsg);
@@ -864,7 +938,8 @@ export class RvfBackend implements IMemoryBackend {
       }
       throw new Error(
         `[RvfBackend] Native file at ${this.config.databasePath} has SFVR ` +
-        `magic but RvfDatabase.open failed 3×50ms retries: ` +
+        `magic but RvfDatabase.open failed after ${attempt} attempt(s) over ` +
+        `${Date.now() - openStartTime}ms (budget ${maxOpenWaitMs}ms): ` +
         `${lastErr?.message ?? lastErr}`,
       );
     }
@@ -1098,6 +1173,55 @@ export class RvfBackend implements IMemoryBackend {
     this.nativeIdMap.set(stringId, numId);
     this.nativeReverseMap.set(numId, stringId);
     return numId;
+  }
+
+  /** ADR-0094 Sprint 1.4 d8 (ruflo-patch): lazy native re-ingest gate.
+   *
+   *  Called from `search()` and `query(semantic)` before the
+   *  `nativeDb.query()` call. On first invocation per process, walks
+   *  `_pendingNativeIngest` and ingests every embedding so
+   *  `nativeReverseMap` is complete for cross-process entries. Subsequent
+   *  calls are O(1) noops.
+   *
+   *  No-op when nativeDb is null (pure-TS mode — HnswLite was already
+   *  populated in loadFromDisk/replayWal).
+   *
+   *  WHY lazy: `memory list`, `memory store`, and filter-only queries
+   *  don't need the reverseMap. Pre-fix, every init paid the ingest cost
+   *  AND grew `.rvf` with orphan vector segments (see the
+   *  `_pendingNativeIngest` field-level comment for the full analysis).
+   *  After the fix, only processes that actually perform semantic search
+   *  pay the cost, and they pay it exactly once.
+   *
+   *  Note on orphan growth: this method still APPENDS vectors to the
+   *  native file with fresh numIds. The growth-per-semantic-search-process
+   *  is unchanged from pre-fix — what the fix eliminates is the
+   *  growth-per-read-or-write-process, which was the observed bug. A
+   *  future change that persists numIds in `.meta` could remove this
+   *  orphan-on-semantic-search cost entirely, but is out of scope for d8.
+   */
+  private ensureNativeSemanticReady(): void {
+    if (!this.nativeDb || this._nativeRehydrated) return;
+    this._nativeRehydrated = true;
+    if (this._pendingNativeIngest.length === 0) return;
+    for (const { id, embedding } of this._pendingNativeIngest) {
+      const numId = this.assignNativeId(id);
+      try {
+        this.nativeDb.ingestBatch(new Float32Array(embedding), [numId]);
+      } catch (err) {
+        // ADR-0095 d5: same degrade discriminator as store/update/load.
+        if (!this.degradeToFallbackMode('ensureNativeSemanticReady', err)) {
+          if (this.config.verbose) {
+            console.error(
+              '[RvfBackend] Native lazy re-ingest failed:',
+              (err as Error).message,
+            );
+          }
+        }
+        this.reIndexAfterDegrade(id, embedding);
+      }
+    }
+    this._pendingNativeIngest = []; // release memory
   }
 
   /** Acquire advisory lock (PID-based lockfile).
@@ -1467,18 +1591,18 @@ export class RvfBackend implements IMemoryBackend {
           this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
           if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
           if (entry.embedding && this.nativeDb) {
-            const numId = this.assignNativeId(entry.id);
-            try {
-              this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]);
-            } catch (err) {
-              // ADR-0095 d5: WAL replay can hit the same InvalidChecksum
-              // as initial load — degrade and re-apply via
-              // reIndexAfterDegrade.
-              if (!this.degradeToFallbackMode('replayWal', err) && this.config.verbose) {
-                console.error('[RvfBackend] Native ingest on WAL replay failed:', (err as Error).message);
-              }
-              this.reIndexAfterDegrade(entry.id, entry.embedding);
-            }
+            // ADR-0094 Sprint 1.4 d8 (ruflo-patch): defer native ingestBatch
+            // to first semantic query. Peer's store() already persisted
+            // this vector to the native SFVR file before appending to WAL,
+            // so our RvfDatabase.open has it. Unconditional re-ingest
+            // appended orphan segments on every process init — this was
+            // the write-amplification observed in `memory list` (d8).
+            // See the `_pendingNativeIngest` field comment for the full
+            // analysis.
+            this._pendingNativeIngest.push({
+              id: entry.id,
+              embedding: entry.embedding,
+            });
           }
           count++;
         } catch {
@@ -1704,17 +1828,24 @@ export class RvfBackend implements IMemoryBackend {
                   this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
                   if (entry.embedding && this.hnswIndex) this.hnswIndex.add(entry.id, entry.embedding);
                   if (entry.embedding && this.nativeDb) {
-                    const numId = this.assignNativeId(entry.id);
-                    try {
-                      this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]);
-                    } catch (err) {
-                      // ADR-0095 d5: same degrade on checksum during load
-                      // ingest — re-apply via reIndexAfterDegrade.
-                      if (!this.degradeToFallbackMode('loadFromDisk', err) && this.config.verbose) {
-                        console.error('[RvfBackend] Native ingest on load failed:', (err as Error).message);
-                      }
-                      this.reIndexAfterDegrade(entry.id, entry.embedding);
-                    }
+                    // ADR-0094 Sprint 1.4 d8 (ruflo-patch): defer native
+                    // ingestBatch to first semantic query. The native SFVR
+                    // file ALREADY contains this vector (the prior process's
+                    // store() persisted it to the same path we just opened
+                    // with RvfDatabase.open). Unconditional re-ingest at
+                    // load time was growing `.rvf` by ~(N × dim × 4) bytes
+                    // per process init — observed as ~3.6KB/list at 1
+                    // entry/768-dim — because each re-ingest appends a new
+                    // vec segment rather than overwriting. See the
+                    // `_pendingNativeIngest` field comment for the full
+                    // analysis and `ensureNativeSemanticReady` for the
+                    // deferred-ingest gate. The hnswIndex branch above
+                    // remains unconditional because HnswLite is pure-TS
+                    // in-memory; there is no "already-loaded" shortcut.
+                    this._pendingNativeIngest.push({
+                      id: entry.id,
+                      embedding: entry.embedding,
+                    });
                   }
                   loaded++;
                 }
