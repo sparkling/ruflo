@@ -13,7 +13,7 @@
  * dispatch the op. After state-changing ops we re-snapshot. All writes are
  * atomic (tmp + rename) and fail loudly on I/O errors (no silent swallow).
  */
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MCPTool } from './types.js';
 import { getProjectCwd } from './types.js';
@@ -101,6 +101,79 @@ function saveStore(store: WasmStore): void {
   const body = JSON.stringify(store, null, 2);
   writeFileSync(tmp, body, 'utf-8');
   renameSync(tmp, target);
+}
+
+/**
+ * Run cb under exclusive advisory-lock on the store's sibling .lock file.
+ * Without this, parallel `wasm_agent_create` processes race on the
+ * load→mutate→save sequence: two processes read the same pre-image, each
+ * adds its agent, saveStore clobbers whichever rename lands last — the
+ * "lost update" class. atomic rename protects per-write but not against
+ * concurrent read-modify-write.
+ *
+ * Same advisory-lock pattern as rvf-backend's acquireLock (ADR-0095). PID
+ * is recorded in the lock file so a crashed writer's stale lock can be
+ * detected + force-unlocked. 5s budget, exponential backoff with jitter,
+ * fails loudly on timeout.
+ */
+function withStoreLock<T>(cb: () => T): T {
+  ensureWasmDir();
+  const lockPath = getStorePath() + '.lock';
+  const budgetMs = 5000;
+  const deadline = Date.now() + budgetMs;
+  let waitMs = 10;
+  while (true) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lockPath, 'wx'); // O_CREAT|O_EXCL — atomic
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+      closeSync(fd); fd = undefined;
+      try {
+        return cb();
+      } finally {
+        try { unlinkSync(lockPath); } catch { /* already gone */ }
+      }
+    } catch (err: any) {
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch {}
+      }
+      if (err?.code !== 'EEXIST') throw err;
+      // Someone else holds the lock. Detect stale (dead PID) and force.
+      let stale = false;
+      try {
+        const existing = JSON.parse(readFileSync(lockPath, 'utf-8'));
+        if (typeof existing?.pid === 'number' && existing.pid !== process.pid) {
+          try { process.kill(existing.pid, 0); } catch { stale = true; }
+        }
+      } catch { stale = true; }
+      if (stale) {
+        try { unlinkSync(lockPath); } catch {}
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `[wasm-agent-tools] store lock contention: could not acquire ${lockPath} within ${budgetMs}ms`
+        );
+      }
+      // Backoff with small jitter. Bounded by deadline.
+      const jitter = Math.floor(Math.random() * waitMs);
+      const sleepMs = Math.min(waitMs + jitter, Math.max(1, deadline - Date.now()));
+      const end = Date.now() + sleepMs;
+      // Busy-wait (no async await path available for this sync API).
+      while (Date.now() < end) { /* noop */ }
+      waitMs = Math.min(waitMs * 2, 400);
+    }
+  }
+}
+
+// Convenience wrapper — run load → mutate → save under the lock.
+function mutateStore(mutator: (s: WasmStore) => void): WasmStore {
+  return withStoreLock(() => {
+    const s = loadStore();
+    mutator(s);
+    saveStore(s);
+    return s;
+  });
 }
 
 function snapshotAgent(wasm: Awaited<ReturnType<typeof loadAgentWasm>>, id: string, config: PersistedAgent['config']): PersistedAgent {
@@ -195,10 +268,13 @@ export const wasmAgentTools: MCPTool[] = [
           info = await wasm.createWasmAgent(config);
         }
 
-        // Persist — writes must fail loudly (see saveStore).
-        const store = loadStore();
-        store.agents[info.id] = snapshotAgent(wasm, info.id, config);
-        saveStore(store);
+        // Persist under advisory lock — prevents the read-modify-write race
+        // when multiple `wasm_agent_create` processes run concurrently.
+        withStoreLock(() => {
+          const store = loadStore();
+          store.agents[info!.id] = snapshotAgent(wasm, info!.id, config);
+          saveStore(store);
+        });
 
         const payload: Record<string, unknown> = { success: true, agent: info };
         if (source === 'gallery') payload.source = 'gallery';
@@ -224,12 +300,14 @@ export const wasmAgentTools: MCPTool[] = [
         const wasm = await ensureLive(args.agentId as string);
         const result = await wasm.promptWasmAgent(args.agentId as string, args.input as string);
         // Re-snapshot after a prompt run — state/turnCount advanced.
-        const store = loadStore();
-        const existing = store.agents[args.agentId as string];
-        if (existing) {
-          store.agents[args.agentId as string] = snapshotAgent(wasm, args.agentId as string, existing.config);
-          saveStore(store);
-        }
+        withStoreLock(() => {
+          const store = loadStore();
+          const existing = store.agents[args.agentId as string];
+          if (existing) {
+            store.agents[args.agentId as string] = snapshotAgent(wasm, args.agentId as string, existing.config);
+            saveStore(store);
+          }
+        });
         return { content: [{ type: 'text', text: result }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
@@ -257,12 +335,14 @@ export const wasmAgentTools: MCPTool[] = [
         };
         const result = await wasm.executeWasmTool(args.agentId as string, toolCall);
         // Re-snapshot after tool execution — fileCount/state may have advanced.
-        const store = loadStore();
-        const existing = store.agents[args.agentId as string];
-        if (existing) {
-          store.agents[args.agentId as string] = snapshotAgent(wasm, args.agentId as string, existing.config);
-          saveStore(store);
-        }
+        withStoreLock(() => {
+          const store = loadStore();
+          const existing = store.agents[args.agentId as string];
+          if (existing) {
+            store.agents[args.agentId as string] = snapshotAgent(wasm, args.agentId as string, existing.config);
+            saveStore(store);
+          }
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
@@ -304,12 +384,15 @@ export const wasmAgentTools: MCPTool[] = [
         let ok = false;
         try { ok = wasm.terminateWasmAgent(args.agentId as string); } catch { ok = false; }
         // Always delete the persisted record — this is the authoritative removal.
-        const store = loadStore();
-        const hadRecord = !!store.agents[args.agentId as string];
-        if (hadRecord) {
-          delete store.agents[args.agentId as string];
-          saveStore(store);
-        }
+        const hadRecord = withStoreLock(() => {
+          const store = loadStore();
+          const present = !!store.agents[args.agentId as string];
+          if (present) {
+            delete store.agents[args.agentId as string];
+            saveStore(store);
+          }
+          return present;
+        });
         return { content: [{ type: 'text', text: JSON.stringify({ success: ok || hadRecord }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
@@ -411,9 +494,11 @@ export const wasmAgentTools: MCPTool[] = [
           instructions: info.config.instructions,
           maxTurns: info.config.maxTurns,
         };
-        const store = loadStore();
-        store.agents[info.id] = snapshotAgent(wasm, info.id, config);
-        saveStore(store);
+        withStoreLock(() => {
+          const store = loadStore();
+          store.agents[info.id] = snapshotAgent(wasm, info.id, config);
+          saveStore(store);
+        });
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, agent: info, template: args.template }, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
@@ -427,6 +512,8 @@ export const _wasmPersistence = {
   getStorePath,
   loadStore,
   saveStore,
+  withStoreLock,
+  mutateStore,
   snapshotAgent,
   ensureLive,
 };
