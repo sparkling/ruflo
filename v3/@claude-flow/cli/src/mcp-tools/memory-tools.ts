@@ -482,7 +482,15 @@ export const memoryTools: MCPTool[] = [
     handler: async (input) => {
       await ensureInitialized();
 
-      const namespace = (input.namespace as string) || 'all';
+      // ADR-0094 Sprint 1.4 (d9): when `input.namespace` is undefined/empty,
+      // the previous `|| 'all'` default passed the literal string 'all' to the
+      // router. The router did convert 'all' → undefined (line 723), but then
+      // `undefined || 'default'` at the storage.query call filtered to only the
+      // 'default' namespace. Pass undefined through so the list-handler treats
+      // the missing filter as "no namespace filter" (all namespaces). Scoped
+      // calls still work because a provided namespace survives the cast.
+      const rawNamespace = input.namespace as string | undefined;
+      const namespace = rawNamespace && rawNamespace.length > 0 ? rawNamespace : undefined;
       const limit = (input.limit as number) || 50;
       const offset = (input.offset as number) || 0;
 

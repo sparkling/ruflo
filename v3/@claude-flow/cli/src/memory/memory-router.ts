@@ -720,10 +720,18 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
 
     case 'list': {
       try {
+        // ADR-0094 Sprint 1.4 (d9): preserve undefined through to storage.query.
+        // Previously `namespace || 'default'` coerced an unscoped list request
+        // to only the 'default' namespace, while the count() call below used
+        // the correct undefined-means-all semantics — resulting in the
+        // {entries:[], total:6} mismatch B observed in Pass 4.
+        // storage.query's namespace filter is skipped when namespace is falsy
+        // (rvf-backend line 357), so passing undefined here returns all
+        // namespaces. The 'all' sentinel is kept for back-compat callers.
         const namespace = op.namespace === 'all' ? undefined : op.namespace;
         const entries = await storage.query({
           type: 'prefix',
-          namespace: namespace || 'default',
+          namespace,
           limit: op.limit || 50,
           offset: op.offset || 0,
         });
