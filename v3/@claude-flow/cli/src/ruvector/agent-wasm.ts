@@ -213,6 +213,32 @@ export function terminateWasmAgent(agentId: string): boolean {
 }
 
 /**
+ * Re-key a live agent entry from `oldId` to `newId`.
+ *
+ * Used by the MCP persistence layer (wasm-agent-tools.ts) to rehydrate an
+ * agent across CLI invocations: a fresh `WasmAgent` is created with an
+ * auto-generated id, then re-registered under the caller's original id so
+ * that subsequent `getWasmAgent(newId)`, `executeWasmTool(newId, ...)`,
+ * etc. resolve to the live handle. No-op if `oldId === newId`.
+ *
+ * Throws if `oldId` is not present in the live registry or if `newId` is
+ * already taken (caller must terminate the old record first).
+ */
+export function rehydrateWasmAgent(oldId: string, newId: string): void {
+  if (oldId === newId) return;
+  const entry = agents.get(oldId);
+  if (!entry) {
+    throw new Error(`rehydrateWasmAgent: source id '${oldId}' not in live registry`);
+  }
+  if (agents.has(newId)) {
+    throw new Error(`rehydrateWasmAgent: target id '${newId}' already registered (live) — terminate it first`);
+  }
+  entry.info.id = newId;
+  agents.set(newId, entry);
+  agents.delete(oldId);
+}
+
+/**
  * Get agent state (messages, turn count, etc.)
  */
 export function getWasmAgentState(agentId: string): unknown {
