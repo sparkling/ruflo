@@ -54,6 +54,12 @@ async function checkNodeVersion(): Promise<HealthCheck> {
 }
 
 // Check npm version (async with proper env inheritance)
+// Discriminate error types to avoid false "not found" assertions under load:
+// ENOENT (binary actually missing) → fail; everything else (timeout, transient
+// spawn errors under parallel load) → warn with accurate message. Reporting
+// "npm not found" when npm IS installed but slow is an ADR-0082-style false
+// assertion that also flips the process exit to 1 and breaks acceptance
+// runners that interpret exit 1 as "real product regression".
 async function checkNpmVersion(): Promise<HealthCheck> {
   try {
     const version = await runCommand('npm --version');
@@ -63,8 +69,29 @@ async function checkNpmVersion(): Promise<HealthCheck> {
     } else {
       return { name: 'npm Version', status: 'warn', message: `v${version} (>= 9 recommended)`, fix: 'npm install -g npm@latest' };
     }
-  } catch {
-    return { name: 'npm Version', status: 'fail', message: 'npm not found', fix: 'Install Node.js from https://nodejs.org' };
+  } catch (err: unknown) {
+    const e = err as { code?: string; killed?: boolean; signal?: string } | undefined;
+    // Real "not found": spawn failed with ENOENT (binary missing from PATH).
+    if (e?.code === 'ENOENT') {
+      return { name: 'npm Version', status: 'fail', message: 'npm not found', fix: 'Install Node.js from https://nodejs.org' };
+    }
+    // Timeout / killed: transient, don't assert "not found". execAsync sets
+    // `killed: true` and `signal: 'SIGTERM'` when the timeout option fires.
+    if (e?.killed || e?.signal) {
+      return {
+        name: 'npm Version',
+        status: 'warn',
+        message: `npm --version timed out (likely system under load)`,
+        fix: 'Retry after concurrent processes settle',
+      };
+    }
+    // Any other error (permission, transient spawn failure): warn, not fail.
+    return {
+      name: 'npm Version',
+      status: 'warn',
+      message: `npm --version failed: ${e?.code || 'unknown error'}`,
+      fix: 'Verify npm is on PATH: npm --version',
+    };
   }
 }
 
