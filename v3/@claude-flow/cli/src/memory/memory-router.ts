@@ -420,6 +420,16 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
               explainableRecall: true,
               nightlyLearner: true,
               semanticRouter: true,
+              // sparkling/ruflo W5-A3: sonaTrajectory (SonaTrajectoryService) is
+              // opt-in in @claude-flow/memory's ControllerRegistry
+              // (isControllerEnabled returns false by default, line 1125-1126).
+              // W2-I5's agentdb_sona_trajectory_store MCP tool dispatches to
+              // getController('sonaTrajectory') and surfaced "SonaTrajectoryService
+              // controller not available" because the registry never initialized
+              // the controller. Enable it here so the standard ControllerRegistry
+              // pipeline (Level 5 init → createController case 'sonaTrajectory'
+              // → agentdb.getController('sonaTrajectory')) wires a real instance.
+              sonaTrajectory: true,
               ...(cfgJson.controllers?.enabled ?? {}),
             },
             nightlyLearner: cfgJson.controllers?.nightlyLearner,
