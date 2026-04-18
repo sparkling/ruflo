@@ -366,7 +366,7 @@ export const coordinationTools: MCPTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'add', 'remove', 'heartbeat'], description: 'Action to perform' },
+        action: { type: 'string', enum: ['list', 'add', 'remove', 'heartbeat', 'status', 'info'], description: 'Action to perform' },
         nodeId: { type: 'string', description: 'Node ID' },
         status: { type: 'string', description: 'Node status' },
       },
@@ -374,6 +374,47 @@ export const coordinationTools: MCPTool[] = [
     handler: async (input) => {
       const store = loadCoordStore();
       const action = (input.action as string) || 'list';
+
+      // `status` / `info` — return aggregate coordination-node health.
+      // Accepts optional `nodeId` to return a single node's state.
+      if (action === 'status' || action === 'info') {
+        const nodes = Object.values(store.nodes);
+        const nodeId = input.nodeId as string | undefined;
+
+        if (nodeId) {
+          const node = store.nodes[nodeId];
+          if (!node) {
+            return { success: false, error: 'Node not found', nodeId };
+          }
+          return {
+            success: true,
+            status: node.status,
+            node: {
+              id: node.id,
+              status: node.status,
+              load: node.load,
+              lastHeartbeat: node.lastHeartbeat,
+            },
+            ready: node.status === 'active',
+          };
+        }
+
+        const activeCount = nodes.filter(n => n.status === 'active').length;
+        return {
+          success: true,
+          status: activeCount > 0 || nodes.length === 0 ? 'healthy' : 'degraded',
+          ready: true,
+          online: activeCount,
+          total: nodes.length,
+          active: activeCount,
+          nodes: nodes.map(n => ({
+            id: n.id,
+            status: n.status,
+            load: n.load,
+            lastHeartbeat: n.lastHeartbeat,
+          })),
+        };
+      }
 
       if (action === 'list') {
         const nodes = Object.values(store.nodes);
