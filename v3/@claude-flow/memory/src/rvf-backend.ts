@@ -64,6 +64,12 @@ const DEFAULT_EF_CONSTRUCTION = 200;
 const DEFAULT_MAX_ELEMENTS = 100000;
 const DEFAULT_PERSIST_INTERVAL = 30000;
 
+// Forward declaration: RvfCorruptError is defined at the end of this file
+// (moved below the RvfBackend class so that adr0086-rvf-integration.test.mjs's
+// `extractMethod(rvfSrc, 'constructor')` regex finds the RvfBackend
+// constructor body rather than this error class's constructor. The class is
+// still exported normally from index.ts.)
+
 // ADR-0086 Debt 1: IStorageContract is now a type alias for IMemoryBackend,
 // so the redundant implements clause has been removed.
 export class RvfBackend implements IMemoryBackend {
@@ -160,6 +166,49 @@ export class RvfBackend implements IMemoryBackend {
   private _pendingNativeIngest: Array<{ id: string; embedding: Float32Array }> = [];
   private _nativeRehydrated = false;
 
+  // ADR-0090 Tier B2 (ruflo-patch): deferred corruption signal from
+  // tryNativeInit.
+  //
+  // `tryNativeInit` detects several corruption shapes BEFORE loadFromDisk
+  // runs:
+  //   1. SFVR magic present but `RvfDatabase.open` throws fatally
+  //      (ManifestNotFound, parse errors, non-retriable shapes — line 939).
+  //   2. Partial magic peek (1-3 bytes of a 4-byte magic — line 963). The
+  //      file exists on disk but has fewer than 4 header bytes — either a
+  //      peer is mid-write or the file was truncated post-shutdown.
+  //   3. Unknown magic that is neither SFVR (native) nor RVF\0 (pure-TS)
+  //      — line 975. File is from an unknown format or has a zeroed
+  //      header.
+  //
+  // Pre-fix behavior: `tryNativeInit` threw a plain `Error` at each site
+  // and `initialize()` let it bubble out. This broke two invariants:
+  //
+  //   - `.name` was 'Error', not 'RvfCorruptError' — callers could not
+  //     discriminate corruption from other init failures.
+  //   - `loadFromDisk`'s WAL replay never got a chance to run. When the
+  //     main file was corrupt BUT the WAL had uncompacted entries from a
+  //     prior process, the pre-fix code threw on the native-init side
+  //     before the WAL could recover. The recovery path documented at
+  //     lines 1866-1885 ("always replay WAL ... if WAL has entries, don't
+  //     throw") was unreachable.
+  //
+  // Fix: `tryNativeInit` sets this field to a human-readable reason
+  // string instead of throwing. It returns `false` so `loadFromDisk` runs
+  // with nativeDb=null and pure-TS semantics. `loadFromDisk` then either:
+  //   a. Reads the `.meta` sidecar successfully and ignores the deferred
+  //      reason (native was corrupt but pure-TS metadata survived).
+  //   b. Fails to read any main file AND the WAL yields no entries — in
+  //      which case the final guard at the end of `loadFromDisk` throws
+  //      `RvfCorruptError` using this reason.
+  //   c. Fails to read any main file BUT the WAL replays successfully
+  //      with >=1 entries — no throw, deferred reason is cleared
+  //      (corruption is logically repaired by the WAL).
+  //
+  // The field is cleared at the top of `initialize()` for the first run
+  // and reset to null inside `loadFromDisk` after it's consumed, so a
+  // later retry on the same instance doesn't see stale state.
+  private _deferredCorruptReason: string | null = null;
+
   constructor(config: RvfBackendConfig) {
     const dimensions = config.dimensions ?? DEFAULT_DIMENSIONS;
     if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 10000) {
@@ -186,6 +235,15 @@ export class RvfBackend implements IMemoryBackend {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+
+    // ADR-0090 Tier B2 (ruflo-patch): reset the deferred-corruption
+    // signal at the top of every init. This field is set inside
+    // tryNativeInit when the native binding refuses the on-disk state
+    // (see `_deferredCorruptReason` comment for the full contract) and
+    // consumed by loadFromDisk's final corruption guard. Must be nulled
+    // here so a re-init on the same RvfBackend instance (shutdown →
+    // initialize) starts with a clean slate.
+    this._deferredCorruptReason = null;
 
     // ADR-0095 amendment d1 (ruflo-patch): serialize the entire init sequence
     // through the PID-based advisory lock. Previously `reapStaleTmpFiles →
@@ -936,12 +994,21 @@ export class RvfBackend implements IMemoryBackend {
         );
         return false; // caller will build HnswLite and loadFromDisk picks .meta
       }
-      throw new Error(
-        `[RvfBackend] Native file at ${this.config.databasePath} has SFVR ` +
-        `magic but RvfDatabase.open failed after ${attempt} attempt(s) over ` +
-        `${Date.now() - openStartTime}ms (budget ${maxOpenWaitMs}ms): ` +
-        `${lastErr?.message ?? lastErr}`,
-      );
+      // ADR-0090 Tier B2 (ruflo-patch): defer rather than throw here so
+      // loadFromDisk's WAL replay + .meta sidecar fallback get a chance to
+      // recover. If they both yield no entries, loadFromDisk's final guard
+      // converts this reason into a typed `RvfCorruptError`. If the `.meta`
+      // sidecar is intact (native file corrupt, pure-TS metadata survived)
+      // or the WAL has uncompacted entries, init succeeds silently and
+      // this reason is cleared. Matches the SFVR+ManifestNotFound test
+      // case at adr0090-b2-corruption.test.mjs:211-225 which expects
+      // `/shorter than the 8-byte RVF header|truncated header/` on
+      // `.meta` — loadFromDisk sees those bytes directly.
+      this._deferredCorruptReason =
+        `native file has SFVR magic but RvfDatabase.open failed after ` +
+        `${attempt} attempt(s) over ${Date.now() - openStartTime}ms ` +
+        `(budget ${maxOpenWaitMs}ms): ${lastErr?.message ?? lastErr}`;
+      return false;
     }
 
     // ADR-0095 Pass 3 (d4) invariant: non-SFVR branch.
@@ -960,23 +1027,42 @@ export class RvfBackend implements IMemoryBackend {
     // Per ADR-0082 (no silent fallback on data-integrity failures), cases
     // 2 and 3 throw loudly. Only genuine 'RVF\0' or file-absent qualifies
     // as legitimate pure-TS.
-    if (fileOnDisk && peekBytesRead < 4) {
-      throw new Error(
-        `[RvfBackend] Native init refuses ${this.config.databasePath}: file ` +
-        `exists but only ${peekBytesRead}/4 magic bytes present — peer ` +
-        `RvfDatabase.create is mid-write. Retry once peer releases or ` +
-        `inspect the file.`,
-      );
+    // ADR-0090 Tier B2 (ruflo-patch): guard on `peekBytesRead > 0` so a
+    // truly 0-byte file (peekBytesRead===0) is NOT flagged as partial-magic
+    // corruption. 0-byte files must fall through to pure-TS where
+    // loadFromDisk's `raw.length === 0` branch treats them as cold start
+    // (see adr0090-b2-corruption.test.mjs:304 "file is 0 bytes → cold
+    // start"). Only 1-3 bytes of partial magic indicate a peer mid-write
+    // or a truncated header — both corruption signals.
+    //
+    // Also: defer instead of throw so loadFromDisk's WAL replay gets to
+    // run. If WAL is empty and the file is still unreadable, the final
+    // guard in loadFromDisk converts this reason into `RvfCorruptError`.
+    if (fileOnDisk && peekBytesRead > 0 && peekBytesRead < 4) {
+      this._deferredCorruptReason =
+        `file exists but only ${peekBytesRead}/4 magic bytes present — ` +
+        `peer RvfDatabase.create is mid-write or header was truncated`;
+      return false;
     }
 
     const isRVFNull = peekStr === 'RVF\0';
     if (fileOnDisk && peekBytesRead === 4 && !isRVFNull) {
       // Not SFVR (that path returned earlier) and not RVF\0 — unknown magic.
-      throw new Error(
-        `[RvfBackend] Native init refuses ${this.config.databasePath}: ` +
-        `unknown magic ${JSON.stringify(peekStr)} — not 'SFVR' (native) or ` +
-        `'RVF\\0' (pure-TS). File is corrupt or from an unknown format.`,
-      );
+      //
+      // ADR-0090 Tier B2 (ruflo-patch): defer rather than throw so
+      // loadFromDisk can still replay the WAL. Tests at
+      // adr0090-b2-corruption.test.mjs:313-354 zero the first 4 bytes of
+      // a main file whose WAL has uncompacted entries; the recovery path
+      // is "read from WAL, skip main file". Throwing here made that path
+      // unreachable. If the WAL is empty and no `.meta` sidecar exists,
+      // loadFromDisk's final guard converts this reason into
+      // `RvfCorruptError` with the same `bad magic bytes` wording the
+      // pure-TS loader would have produced (the test regex
+      // `/header JSON parse failed|bad magic|corrupt/i` accepts either).
+      this._deferredCorruptReason =
+        `bad magic bytes ${JSON.stringify(peekStr)} — not 'SFVR' (native) ` +
+        `or 'RVF\\0' (pure-TS). File is corrupt or from an unknown format.`;
+      return false;
     }
 
     if (fileOnDisk) {
@@ -1873,16 +1959,27 @@ export class RvfBackend implements IMemoryBackend {
     // layer: a corrupt file that resolves to an empty backend silently
     // invites subsequent stores to overwrite the corrupt data with a new
     // empty file, destroying any chance of recovery.
-    if (loadFailed && this.entries.size === 0) {
-      const err = new Error(
-        `RVF storage at ${loadPath} is corrupt: ${loadFailReason}. ` +
-        `No WAL recovery data available. Refusing to start with empty state ` +
-        `to prevent silent overwrite of the corrupt file on next persist. ` +
-        `Move or delete the file to start fresh, or restore from a backup.`,
-      );
-      err.name = 'RvfCorruptError';
-      throw err;
+    //
+    // ADR-0090 Tier B2 (ruflo-patch): the `_deferredCorruptReason` from
+    // tryNativeInit is ALSO honored here — three corruption shapes
+    // (SFVR+open-fail, partial magic, unknown magic) are detected BEFORE
+    // loadFromDisk runs and are deferred so WAL replay gets a chance. If
+    // the WAL also yielded nothing, we throw with the deferred reason
+    // using the typed `RvfCorruptError` class so callers can
+    // `err.name === 'RvfCorruptError'`.
+    const combinedFailed = loadFailed || this._deferredCorruptReason !== null;
+    if (combinedFailed && this.entries.size === 0) {
+      const pathForMsg = loadPath ?? this.config.databasePath;
+      const reason = loadFailReason
+        || this._deferredCorruptReason
+        || 'unknown corruption';
+      throw new RvfCorruptError(pathForMsg, reason);
     }
+    // If we got entries (via main file partial load OR WAL replay), clear
+    // the deferred reason — the corruption was effectively repaired by
+    // the surviving data and a successful shutdown will rewrite a clean
+    // main file.
+    this._deferredCorruptReason = null;
   }
 
   private async persistToDisk(): Promise<void> {
@@ -2085,5 +2182,37 @@ export class RvfBackend implements IMemoryBackend {
     } finally {
       this.persisting = false;
     }
+  }
+}
+
+/**
+ * ADR-0090 Tier B2: fail-loud corruption signal for RvfBackend.initialize().
+ *
+ * Thrown when on-disk RVF/SFVR storage is detectably corrupt AND no WAL
+ * recovery data survives. The class is named so callers can
+ * `catch { if (err.name === 'RvfCorruptError') { ... } }` and distinguish
+ * this from generic init errors (ENOENT parent, permission denied, etc.).
+ *
+ * The message always contains the literal substring "is corrupt" so CLI
+ * log scrapers and the unit-test regex `/is corrupt/` can identify the
+ * shape. Constructor takes (path, reason) to preserve the diagnostic
+ * wording that predates the class (pre-fix loadFromDisk stamped
+ * `err.name = 'RvfCorruptError'` on a plain Error with the same message
+ * structure — this class is the typed replacement).
+ *
+ * Placed AFTER the RvfBackend class so that the source-structural test
+ * at tests/unit/adr0086-rvf-integration.test.mjs:87 — which extracts
+ * "the constructor" from rvf-backend.ts — resolves to the RvfBackend
+ * constructor (earlier in the file) and not this error class.
+ */
+export class RvfCorruptError extends Error {
+  constructor(path: string, reason: string) {
+    super(
+      `RVF storage at ${path} is corrupt: ${reason}. ` +
+      `No WAL recovery data available. Refusing to start with empty state ` +
+      `to prevent silent overwrite of the corrupt file on next persist. ` +
+      `Move or delete the file to start fresh, or restore from a backup.`,
+    );
+    this.name = 'RvfCorruptError';
   }
 }

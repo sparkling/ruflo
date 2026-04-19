@@ -187,7 +187,7 @@ export { AgentDBBackend } from './agentdb-backend.js';
 export type { AgentDBBackendConfig } from './agentdb-backend.js';
 export { SQLiteBackend } from './sqlite-backend.js';
 export type { SQLiteBackendConfig } from './sqlite-backend.js';
-export { RvfBackend } from './rvf-backend.js';
+export { RvfBackend, RvfCorruptError } from './rvf-backend.js';
 export type { RvfBackendConfig } from './rvf-backend.js';
 export { HnswLite, cosineSimilarity as hnswCosineSimilarity } from './hnsw-lite.js';
 export type { HnswSearchResult } from './hnsw-lite.js';
