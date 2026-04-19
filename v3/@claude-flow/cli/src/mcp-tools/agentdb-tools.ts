@@ -647,8 +647,16 @@ export const agentdbGraphNodeGet: MCPTool = {
       if (!id) return { success: false, error: 'id is required (non-empty string, max 500 chars)' };
       const ctrl = await getController<any>('graphAdapter');
       if (!ctrl) return { success: false, error: 'graphAdapter not available (controllers.graphAdapter must be enabled in config)' };
-      const result = await ctrl.query(`MATCH (n) WHERE n.id = '${id.replace(/'/g, "\\'")}' RETURN n`);
-      return { success: true, nodes: result?.nodes ?? [], edges: result?.edges ?? [] };
+      // Prefer the direct getNodeById path (O(1), no Cypher parse). Fall back
+      // to the Cypher query surface only when the adapter build predates
+      // the getNodeById method (pre-@ruvector/graph-node 2.1.0).
+      if (typeof ctrl.getNodeById === 'function') {
+        const node = await ctrl.getNodeById(id);
+        return { success: true, nodes: node ? [node] : [], edges: [] };
+      }
+      const result = await ctrl.query('MATCH (n) RETURN n');
+      const match = result?.nodes?.find((n: any) => n.id === id);
+      return { success: true, nodes: match ? [match] : [], edges: [] };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
