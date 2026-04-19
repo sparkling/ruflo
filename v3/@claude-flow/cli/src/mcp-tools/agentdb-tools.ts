@@ -554,6 +554,191 @@ export const agentdbSemanticRoute: MCPTool = {
   },
 };
 
+// ===== agentdb_graph_node_create — Create a node in GraphDatabaseAdapter =====
+
+export const agentdbGraphNodeCreate: MCPTool = {
+  name: 'agentdb_graph_node_create',
+  description: 'Create a node in AgentDB GraphDatabaseAdapter. Requires controllers.graphAdapter=true in config.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id:         { type: 'string', description: 'Unique node ID' },
+      label:      { type: 'string', description: 'Node label (e.g. "Episode", "Skill")' },
+      properties: { type: 'object', description: 'Optional key-value properties (string values)' },
+    },
+    required: ['id', 'label'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const id    = validateString(params.id,    'id',    500);
+      const label = validateString(params.label, 'label', 200);
+      if (!id)    return { success: false, error: 'id is required (non-empty string, max 500 chars)' };
+      if (!label) return { success: false, error: 'label is required (non-empty string, max 200 chars)' };
+      const ctrl = await getController<any>('graphAdapter');
+      if (!ctrl) return { success: false, error: 'graphAdapter not available (controllers.graphAdapter must be enabled in config)' };
+      const properties: Record<string, string> = {};
+      if (params.properties && typeof params.properties === 'object') {
+        for (const [k, v] of Object.entries(params.properties as Record<string, unknown>)) {
+          properties[k] = String(v);
+        }
+      }
+      const nodeId = await ctrl.createNode({ id, labels: [label], embedding: new Float32Array(0), properties });
+      return { success: true, nodeId };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_graph_edge_create — Create an edge in GraphDatabaseAdapter =====
+
+export const agentdbGraphEdgeCreate: MCPTool = {
+  name: 'agentdb_graph_edge_create',
+  description: 'Create an edge between two nodes in AgentDB GraphDatabaseAdapter. Requires controllers.graphAdapter=true in config.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      from:       { type: 'string', description: 'Source node ID' },
+      to:         { type: 'string', description: 'Target node ID' },
+      type:       { type: 'string', description: 'Edge type / description' },
+      properties: { type: 'object', description: 'Optional key-value metadata (string values)' },
+    },
+    required: ['from', 'to', 'type'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const from = validateString(params.from, 'from', 500);
+      const to   = validateString(params.to,   'to',   500);
+      const type = validateString(params.type, 'type', 500);
+      if (!from) return { success: false, error: 'from is required (non-empty string, max 500 chars)' };
+      if (!to)   return { success: false, error: 'to is required (non-empty string, max 500 chars)' };
+      if (!type) return { success: false, error: 'type is required (non-empty string, max 500 chars)' };
+      const ctrl = await getController<any>('graphAdapter');
+      if (!ctrl) return { success: false, error: 'graphAdapter not available (controllers.graphAdapter must be enabled in config)' };
+      const metadata: Record<string, string> = {};
+      if (params.properties && typeof params.properties === 'object') {
+        for (const [k, v] of Object.entries(params.properties as Record<string, unknown>)) {
+          metadata[k] = String(v);
+        }
+      }
+      await ctrl.createEdge({ from, to, description: type, embedding: new Float32Array(0), metadata });
+      return { success: true, from, to, type };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_graph_node_get — Query a node by ID from GraphDatabaseAdapter =====
+
+export const agentdbGraphNodeGet: MCPTool = {
+  name: 'agentdb_graph_node_get',
+  description: 'Query a node by ID from AgentDB GraphDatabaseAdapter using Cypher. Requires controllers.graphAdapter=true in config.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Node ID to retrieve' },
+    },
+    required: ['id'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const id = validateString(params.id, 'id', 500);
+      if (!id) return { success: false, error: 'id is required (non-empty string, max 500 chars)' };
+      const ctrl = await getController<any>('graphAdapter');
+      if (!ctrl) return { success: false, error: 'graphAdapter not available (controllers.graphAdapter must be enabled in config)' };
+      const result = await ctrl.query(`MATCH (n) WHERE n.id = '${id.replace(/'/g, "\\'")}' RETURN n`);
+      return { success: true, nodes: result?.nodes ?? [], edges: result?.edges ?? [] };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_semantic_add_route — Add a named route to SemanticRouter =====
+
+export const agentdbSemanticAddRoute: MCPTool = {
+  name: 'agentdb_semantic_add_route',
+  description: 'Add a named route to AgentDB SemanticRouter for intent classification',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name:        { type: 'string',                    description: 'Unique route name' },
+      description: { type: 'string',                    description: 'Natural-language description of the route' },
+      keywords:    { type: 'array', items: { type: 'string' }, description: 'Optional keywords for this route' },
+    },
+    required: ['name', 'description'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const name        = validateString(params.name,        'name',        500);
+      const description = validateString(params.description, 'description', 5_000);
+      if (!name)        return { success: false, error: 'name is required (non-empty string, max 500 chars)' };
+      if (!description) return { success: false, error: 'description is required (non-empty string, max 5KB)' };
+      const keywords = Array.isArray(params.keywords)
+        ? (params.keywords as unknown[]).filter((k): k is string => typeof k === 'string')
+        : undefined;
+      const ctrl = await getController<any>('semanticRouter');
+      if (!ctrl)             return { success: false, error: 'SemanticRouter not available' };
+      if (typeof ctrl.addRoute !== 'function') return { success: false, error: 'addRoute method not available' };
+      await ctrl.addRoute(name, description, keywords);
+      return { success: true, name, description, keywords: keywords ?? [] };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_semantic_remove_route — Remove a named route from SemanticRouter =====
+
+export const agentdbSemanticRemoveRoute: MCPTool = {
+  name: 'agentdb_semantic_remove_route',
+  description: 'Remove a named route from AgentDB SemanticRouter',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Name of the route to remove' },
+    },
+    required: ['name'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const name = validateString(params.name, 'name', 500);
+      if (!name) return { success: false, error: 'name is required (non-empty string, max 500 chars)' };
+      const ctrl = await getController<any>('semanticRouter');
+      if (!ctrl)                return { success: false, error: 'SemanticRouter not available' };
+      if (typeof ctrl.removeRoute !== 'function') return { success: false, error: 'removeRoute method not available' };
+      await ctrl.removeRoute(name);
+      return { success: true, removed: name };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_semantic_list_routes — List all routes in SemanticRouter =====
+
+export const agentdbSemanticListRoutes: MCPTool = {
+  name: 'agentdb_semantic_list_routes',
+  description: 'List all named routes registered in AgentDB SemanticRouter',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    required: [],
+  },
+  handler: async (_params: Record<string, unknown>) => {
+    try {
+      const ctrl = await getController<any>('semanticRouter');
+      if (!ctrl)               return { success: false, routes: [], error: 'SemanticRouter not available' };
+      if (typeof ctrl.getRoutes !== 'function') return { success: false, routes: [], error: 'getRoutes method not available' };
+      const routes = await ctrl.getRoutes();
+      return { success: true, routes: routes ?? [] };
+    } catch (error) {
+      return { success: false, routes: [], error: sanitizeError(error) };
+    }
+  },
+};
+
 // ===== agentdb_reflexion_retrieve — Recall past task experiences (P3-B) =====
 
 export const agentdbReflexionRetrieve: MCPTool = {
@@ -1768,6 +1953,9 @@ export const agentdbTools: MCPTool[] = [
   agentdbBatch,
   agentdbContextSynthesize,
   agentdbSemanticRoute,
+  agentdbSemanticAddRoute,
+  agentdbSemanticRemoveRoute,
+  agentdbSemanticListRoutes,
   agentdbReflexionRetrieve,
   agentdbReflexionStore,
   agentdbCausalQuery,
@@ -1795,4 +1983,7 @@ export const agentdbTools: MCPTool[] = [
   agentdbExperienceRecord,   // P3: ReflexionMemory
   agentdbNeuralPatterns,     // W2-I4: GNNService telemetry + pattern inspection
   agentdbSonaTrajectoryStore, // W2-I5: SonaTrajectoryService record + stats (in-memory RL)
+  agentdbGraphNodeCreate,    // W2-I6: GraphDatabaseAdapter node create
+  agentdbGraphEdgeCreate,    // W2-I6: GraphDatabaseAdapter edge create
+  agentdbGraphNodeGet,       // W2-I6: GraphDatabaseAdapter node query by ID
 ];
