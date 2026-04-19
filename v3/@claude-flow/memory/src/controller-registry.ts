@@ -1337,12 +1337,43 @@ export class ControllerRegistry extends EventEmitter {
       case 'semanticRouter': {
         // SemanticRouter exported from agentdb 3.0.0-alpha.10 (ADR-062)
         // Constructor: () — requires initialize() after construction
+        //
+        // Cross-process persistence: agentdb's SemanticRouter holds routes
+        // in a process-local Map with no serialization path. Each fresh
+        // CLI `mcp exec` subprocess would otherwise start with an empty
+        // route set, making the MCP addRoute / route tools unusable
+        // across process boundaries. We hydrate from
+        // `.claude-flow/semantic-routes.json` (written by the
+        // agentdb_semantic_add_route handler) on first getController
+        // call so every subprocess sees the same registered routes.
         try {
           const agentdbModule: any = await import('agentdb');
           const SR = agentdbModule.SemanticRouter;
           if (!SR) return null;
           const router = new SR();
           await router.initialize();
+          // Hydrate from on-disk route store (best-effort; absence is not fatal)
+          try {
+            const { existsSync, readFileSync } = await import('node:fs');
+            const { join, dirname } = await import('node:path');
+            // dbPath lives under .claude-flow/; routes file is a sibling.
+            const routesPath = join(dirname(config.dbPath ?? '.claude-flow/'), 'semantic-routes.json');
+            if (existsSync(routesPath)) {
+              const raw = readFileSync(routesPath, 'utf-8');
+              const routes = JSON.parse(raw);
+              if (Array.isArray(routes)) {
+                for (const r of routes) {
+                  if (r && typeof r.name === 'string' && typeof r.description === 'string') {
+                    await router.addRoute(
+                      r.name,
+                      r.description,
+                      Array.isArray(r.keywords) ? r.keywords : [],
+                    );
+                  }
+                }
+              }
+            }
+          } catch { /* hydrate failures fall through to empty router */ }
           return getOrCreate(name, () => router);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));

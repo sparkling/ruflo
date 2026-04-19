@@ -430,6 +430,13 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
               // pipeline (Level 5 init → createController case 'sonaTrajectory'
               // → agentdb.getController('sonaTrajectory')) wires a real instance.
               sonaTrajectory: true,
+              // graphAdapter is opt-in because it requires @ruvector/graph-node
+              // (native binding) to be installed and a persistent storagePath.
+              // Users opt in via `cli config set --key controllers.graphAdapter
+              // --value true`. When true, agentdb is constructed with
+              // enableGraph:true at controller-registry.ts:993 and the native
+              // backend initializes with storagePath = dbPath.
+              graphAdapter: cfgJson.controllers?.graphAdapter === true,
               ...(cfgJson.controllers?.enabled ?? {}),
             },
             nightlyLearner: cfgJson.controllers?.nightlyLearner,

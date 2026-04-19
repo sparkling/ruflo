@@ -656,6 +656,43 @@ export const agentdbGraphNodeGet: MCPTool = {
 };
 
 // ===== agentdb_semantic_add_route — Add a named route to SemanticRouter =====
+//
+// Cross-process persistence: agentdb.SemanticRouter holds routes in a
+// process-local Map. For MCP consumers that spawn a fresh CLI process
+// per tool call (the canonical model), routes added in one process
+// vanish before the next read. We persist each mutation to
+// `.claude-flow/semantic-routes.json`; controller-registry hydrates
+// the router from this file on construction.
+async function _persistSemanticRoutes(
+  action: 'add' | 'remove',
+  entry: { name: string; description?: string; keywords?: string[] },
+): Promise<void> {
+  try {
+    const { existsSync, readFileSync, mkdirSync, writeFileSync } =
+      await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { getProjectCwd } = await import('./types.js');
+    const path = join(getProjectCwd(), '.claude-flow', 'semantic-routes.json');
+    let routes: Array<{ name: string; description?: string; keywords?: string[] }> = [];
+    if (existsSync(path)) {
+      try {
+        const raw = readFileSync(path, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) routes = parsed;
+      } catch { /* corrupt file — overwrite */ }
+    }
+    routes = routes.filter(r => r && r.name !== entry.name);
+    if (action === 'add') {
+      routes.push({
+        name: entry.name,
+        description: entry.description ?? '',
+        keywords: entry.keywords ?? [],
+      });
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(routes, null, 2), 'utf-8');
+  } catch { /* best-effort — in-memory addRoute already succeeded */ }
+}
 
 export const agentdbSemanticAddRoute: MCPTool = {
   name: 'agentdb_semantic_add_route',
@@ -682,6 +719,8 @@ export const agentdbSemanticAddRoute: MCPTool = {
       if (!ctrl)             return { success: false, error: 'SemanticRouter not available' };
       if (typeof ctrl.addRoute !== 'function') return { success: false, error: 'addRoute method not available' };
       await ctrl.addRoute(name, description, keywords);
+      // Persist so subsequent CLI subprocesses see the route after hydrate.
+      await _persistSemanticRoutes('add', { name, description, keywords });
       return { success: true, name, description, keywords: keywords ?? [] };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
@@ -709,6 +748,7 @@ export const agentdbSemanticRemoveRoute: MCPTool = {
       if (!ctrl)                return { success: false, error: 'SemanticRouter not available' };
       if (typeof ctrl.removeRoute !== 'function') return { success: false, error: 'removeRoute method not available' };
       await ctrl.removeRoute(name);
+      await _persistSemanticRoutes('remove', { name });
       return { success: true, removed: name };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
