@@ -1369,7 +1369,7 @@ export class ControllerRegistry extends EventEmitter {
           if (!SR) return null;
           const router = new SR();
           await router.initialize();
-          await this.hydrateSemanticRoutes(router, config.dbPath);
+          await this.hydrateSemanticRoutes(router, this.config.dbPath);
           return getOrCreate(name, () => router);
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
