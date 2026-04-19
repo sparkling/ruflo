@@ -2167,7 +2167,26 @@ export class RvfBackend implements IMemoryBackend {
     // the same tmp filename. Crash-leaked tmp files are cleaned by the
     // reaper invoked from initialize() (`reapStaleTmpFiles`).
     const tmpPath = `${target}.tmp.${process.pid}.${this._tmpCounter++}`;
-    await writeFile(tmpPath, output);
+    // ADR-0095 d11 (Sprint 1.5): explicit fsync on the tmp file BEFORE rename.
+    // writeFile uses open→write→close which does NOT fsync; on APFS under
+    // concurrent I/O load, data blocks can remain in the VFS page cache
+    // after close. rename() is atomic for the directory entry, but peer
+    // processes reading target through a different file descriptor may
+    // see a stale snapshot if the tmp data blocks have not yet hit stable
+    // storage. Mode A silent loss at entryCount=5/6 observed on patch.204
+    // under the mega-parallel acceptance wave (ruflo-patch 2026-04-19).
+    // Without this fsync the advisory lock serializes the acquire ordering
+    // but not the VFS cache flush.
+    {
+      const { open } = await import('node:fs/promises');
+      const fh = await open(tmpPath, 'w');
+      try {
+        await fh.writeFile(output);
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+    }
     await rename(tmpPath, target);
 
     // fsync directory entry for power-crash durability (Debt 12)
