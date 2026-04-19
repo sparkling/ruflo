@@ -117,16 +117,26 @@ function listSessions(): SessionRecord[] {
 }
 
 // Load related stores for session data
-function loadRelatedStores(options: { includeMemory?: boolean; includeTasks?: boolean; includeAgents?: boolean }) {
+async function loadRelatedStores(options: { includeMemory?: boolean; includeTasks?: boolean; includeAgents?: boolean }) {
   const data: SessionRecord['data'] = {};
 
   if (options.includeMemory) {
+    // Route through memory-router so session_save sees the ACTIVE backend
+    // (RVF primary per ADR-0086), not the legacy .claude-flow/memory/store.json
+    // which may be empty or stale. Mirrors session_restore which already uses
+    // routeMemoryOp on the re-populate side.
     try {
-      const memoryPath = join(getProjectCwd(), STORAGE_DIR, 'memory', 'store.json');
-      if (existsSync(memoryPath)) {
-        data.memory = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+      const { routeMemoryOp } = await import('../memory/memory-router.js');
+      const res = await routeMemoryOp({ type: 'list', limit: 100000 });
+      if (res.success && Array.isArray(res.entries)) {
+        const entriesMap: Record<string, unknown> = {};
+        for (const entry of res.entries as Array<{ key?: string; id?: string; namespace?: string; content?: string; value?: string }>) {
+          const k = entry.key ?? entry.id ?? '';
+          if (k) entriesMap[k] = entry;
+        }
+        data.memory = { entries: entriesMap };
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore — fall back to no memory in session */ }
   }
 
   if (options.includeTasks) {
@@ -170,7 +180,7 @@ export const sessionTools: MCPTool[] = [
       const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       // Load related data based on options
-      const data = loadRelatedStores({
+      const data = await loadRelatedStores({
         includeMemory: input.includeMemory as boolean,
         includeTasks: input.includeTasks as boolean,
         includeAgents: input.includeAgents as boolean,
