@@ -209,6 +209,11 @@ function setNestedValue(obj: Record<string, unknown>, key: string, value: unknow
  *     fall back to nested walk (handles operators who stored dotted keys
  *     both ways).
  *   • Legacy nested (`{swarm:{topology:"mesh"}}`): nested walk.
+ *
+ * @remarks Precedence: a literal dotted key (`values["swarm.topology"]`) ALWAYS
+ * shadows a matching nested subtree (`values.swarm.topology`). This matches
+ * existing MCP semantics — callers that stored dotted keys must read them back
+ * verbatim. Do not "fix" this by inverting the order.
  */
 function resolveValue(values: Record<string, unknown>, key: string): unknown {
   if (Object.prototype.hasOwnProperty.call(values, key)) {
@@ -288,6 +293,25 @@ export const configTools: MCPTool[] = [
       const key = input.key as string;
       const value = input.value;
       const scope = (input.scope as string) || 'default';
+
+      // ADR-0082 / ADR-0094 Phase 8 nit BUG-A: a legacy config.json (init-generated
+      // nested tree) has no scope concept at all, and `saveConfigStore`'s legacy
+      // branch only persists `store.values`, not `store.scopes`. Silently
+      // "succeeding" on a scoped write against a legacy file would therefore
+      // drop the value on the next reload. Fail loudly instead so the caller
+      // knows to either init with an MCP shape or drop the scope arg.
+      if (scope !== 'default' && store.__shape === 'legacy') {
+        return {
+          success: false,
+          key,
+          value,
+          scope,
+          path: getConfigPath(),
+          shape: 'legacy',
+          error:
+            'scope writes require MCP shape — legacy (init-generated) config.json cannot persist scoped values',
+        };
+      }
 
       const previousValue = resolveValue(store.values, key);
 
@@ -444,10 +468,18 @@ export const configTools: MCPTool[] = [
         // Reset all keys in scope
         if (scope === 'default') {
           if (store.__shape === 'legacy') {
-            // Preserve shape: wipe the tree but keep it a plain object.
+            // BUG-B (ADR-0094 Phase 8 nit): DEFAULT_CONFIG is a FLAT map of
+            // dotted keys. Assigning it directly to a legacy (nested) tree
+            // would produce a hybrid file where top-level keys are
+            // dotted strings ("swarm.topology") instead of the nested
+            // subtrees init emits. Rebuild via setNestedValue so the file
+            // stays nested and `config_get("swarm.topology")` resolves
+            // through the nested walk as expected.
             resetKeys = Object.keys(store.values);
             for (const k of resetKeys) delete store.values[k];
-            Object.assign(store.values, DEFAULT_CONFIG);
+            for (const [k, v] of Object.entries(DEFAULT_CONFIG)) {
+              setNestedValue(store.values, k, v);
+            }
           } else {
             resetKeys = Object.keys(store.values);
             store.values = { ...DEFAULT_CONFIG };
