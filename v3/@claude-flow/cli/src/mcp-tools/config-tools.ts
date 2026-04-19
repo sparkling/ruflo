@@ -559,11 +559,15 @@ export const configTools: MCPTool[] = [
       const merge = input.merge !== false;
 
       // ADR-0082 / ADR-0094 Phase 8 follow-up (config_import mirror of BUG-A):
-      // saveConfigStore's legacy branch persists ONLY `store.values`, so both
-      // (a) scoped imports (scope !== 'default') and
-      // (b) default-scope imports carrying a nested `scopes` key in the payload
-      // would either silently drop data on reload or corrupt the nested tree.
-      // Refuse loudly with success:false — same pattern as config_set BUG-A.
+      // saveConfigStore's legacy branch persists ONLY `store.values`, so
+      //   (a) scoped imports (scope !== 'default'),
+      //   (b) default-scope imports carrying a non-empty `scopes` key, and
+      //   (c) default-scope imports carrying a top-level `values` key
+      // would either silently drop data on reload or inject an MCP-shape
+      // hybrid into the nested init tree. Refuse loudly with success:false.
+      // Empty `scopes:{}` / `values:{}` are treated as no-op payloads and
+      // allowed — the rejection fires only when the payload carries actual
+      // MCP-shape data that would conflict with the legacy tree.
       if (scope !== 'default' && store.__shape === 'legacy') {
         return {
           success: false,
@@ -574,18 +578,35 @@ export const configTools: MCPTool[] = [
             'scope imports require MCP shape — legacy (init-generated) config.json cannot persist scoped values',
         };
       }
-      if (
-        store.__shape === 'legacy' &&
-        Object.prototype.hasOwnProperty.call(config, 'scopes')
-      ) {
-        return {
-          success: false,
-          scope,
-          shape: 'legacy',
-          path: getConfigPath(),
-          error:
-            'legacy config.json rejects import payloads carrying a top-level `scopes` key — would corrupt the nested tree',
-        };
+      if (store.__shape === 'legacy') {
+        const rawScopes = (config as Record<string, unknown>).scopes;
+        const rawValues = (config as Record<string, unknown>).values;
+        const scopesIsNonEmpty =
+          rawScopes !== undefined &&
+          rawScopes !== null &&
+          typeof rawScopes === 'object' &&
+          !Array.isArray(rawScopes) &&
+          Object.keys(rawScopes as Record<string, unknown>).length > 0;
+        const valuesIsNonEmpty =
+          rawValues !== undefined &&
+          rawValues !== null &&
+          typeof rawValues === 'object' &&
+          !Array.isArray(rawValues) &&
+          Object.keys(rawValues as Record<string, unknown>).length > 0;
+        if (scopesIsNonEmpty || valuesIsNonEmpty) {
+          const offending = [
+            scopesIsNonEmpty ? '`scopes`' : null,
+            valuesIsNonEmpty ? '`values`' : null,
+          ].filter(Boolean).join(' / ');
+          return {
+            success: false,
+            scope,
+            shape: 'legacy',
+            path: getConfigPath(),
+            error:
+              `legacy config.json rejects import payloads carrying a top-level ${offending} key — would corrupt the nested tree`,
+          };
+        }
       }
 
       const importedKeys: string[] = Object.keys(config);
