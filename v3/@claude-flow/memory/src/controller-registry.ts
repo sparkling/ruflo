@@ -950,14 +950,17 @@ export class ControllerRegistry extends EventEmitter {
    */
   /**
    * Hydrate an already-initialized SemanticRouter from the on-disk route
-   * store at `<dbPathDir>/semantic-routes.json`. Best-effort; absence is
-   * non-fatal. Called from createController case 'semanticRouter'.
+   * store at `<cwd>/.claude-flow/semantic-routes.json`. This path must
+   * match the write path used by the `agentdb_semantic_add_route` MCP
+   * handler in @claude-flow/cli — both anchor to the project's
+   * `.claude-flow/` directory (not `.swarm/`, which is the dbPath's
+   * parent). Best-effort; absence is non-fatal.
    */
-  private async hydrateSemanticRoutes(router: any, dbPath?: string): Promise<void> {
+  private async hydrateSemanticRoutes(router: any, _dbPath?: string): Promise<void> {
     try {
       const { existsSync, readFileSync } = await import('node:fs');
-      const { join, dirname } = await import('node:path');
-      const routesPath = join(dirname(dbPath ?? '.claude-flow/'), 'semantic-routes.json');
+      const { join } = await import('node:path');
+      const routesPath = join(process.cwd(), '.claude-flow', 'semantic-routes.json');
       if (!existsSync(routesPath)) return;
       const routes = JSON.parse(readFileSync(routesPath, 'utf-8'));
       if (!Array.isArray(routes)) return;
