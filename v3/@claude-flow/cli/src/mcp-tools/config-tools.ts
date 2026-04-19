@@ -558,6 +558,36 @@ export const configTools: MCPTool[] = [
       const scope = (input.scope as string) || 'default';
       const merge = input.merge !== false;
 
+      // ADR-0082 / ADR-0094 Phase 8 follow-up (config_import mirror of BUG-A):
+      // saveConfigStore's legacy branch persists ONLY `store.values`, so both
+      // (a) scoped imports (scope !== 'default') and
+      // (b) default-scope imports carrying a nested `scopes` key in the payload
+      // would either silently drop data on reload or corrupt the nested tree.
+      // Refuse loudly with success:false — same pattern as config_set BUG-A.
+      if (scope !== 'default' && store.__shape === 'legacy') {
+        return {
+          success: false,
+          scope,
+          shape: 'legacy',
+          path: getConfigPath(),
+          error:
+            'scope imports require MCP shape — legacy (init-generated) config.json cannot persist scoped values',
+        };
+      }
+      if (
+        store.__shape === 'legacy' &&
+        Object.prototype.hasOwnProperty.call(config, 'scopes')
+      ) {
+        return {
+          success: false,
+          scope,
+          shape: 'legacy',
+          path: getConfigPath(),
+          error:
+            'legacy config.json rejects import payloads carrying a top-level `scopes` key — would corrupt the nested tree',
+        };
+      }
+
       const importedKeys: string[] = Object.keys(config);
 
       if (scope === 'default') {
