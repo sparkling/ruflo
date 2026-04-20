@@ -3,7 +3,6 @@
  * Creates .claude/settings.json with V3-optimized hook configurations
  */
 
-import { execSync } from 'node:child_process';
 import type { InitOptions, HooksConfig, PlatformInfo } from './types.js';
 import { detectPlatform } from './types.js';
 
@@ -223,32 +222,6 @@ function autoMemoryCmd(subcommand: string): string {
 }
 
 /**
- * ADR-0088: Detect whether the `claude` CLI is on PATH.
- *
- * The daemon is a headless-AI worker scheduler (ADR-014 / ADR-020). 9 of
- * 12 built-in workers invoke `claude` as a subprocess to run real AI
- * analysis. Without `claude` on PATH they degrade to writing placeholder
- * JSON — so auto-starting the daemon on SessionStart is actively worse
- * than not starting it (misleading state files, wasted boot time).
- *
- * Per ADR-0088 §Decision item 8, the SessionStart auto-start hook is only
- * wired when `claude` is actually installed. Synchronous probe so that
- * `generateSettings()` remains synchronous.
- *
- * Windows uses `where`, POSIX uses `which`. Both return non-zero when the
- * binary is absent, which `execSync` converts into a thrown error.
- */
-function claudeCliAvailable(): boolean {
-  try {
-    const probe = IS_WINDOWS ? 'where claude' : 'which claude';
-    execSync(probe, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Generate statusLine configuration for Claude Code
  * Uses local helper script for cross-platform compatibility (no npx cold-start)
  */
@@ -390,19 +363,20 @@ function generateHooksConfig(config: HooksConfig): object {
       },
     ];
 
-    // ADR-0088 item 8: capability-gated daemon auto-start.
-    // Only wire daemon start when `claude` CLI is on PATH — without it,
-    // 9 of 12 workers degrade to writing placeholder JSON, which is worse
-    // than not starting the daemon at all. Users without `claude` can opt
-    // in manually via `cli daemon start` or the `--start-daemon` init flag.
-    if (claudeCliAvailable()) {
-      sessionStartHooks.push({
-        type: 'command',
-        command: 'npx @claude-flow/cli@latest daemon start --quiet 2>/dev/null || true',
-        timeout: 5000,
-        continueOnError: true,
-      });
-    }
+    // Daemon auto-start — unconditional (ADR-0088 capability gate removed).
+    // Rationale: the `which claude` probe runs at init time, not at hook
+    // invocation time, and the result rots — a user installing Claude Code
+    // after init would never get the daemon started without re-running init.
+    // Conversely, the `|| true` trailer below silently neutralizes a daemon
+    // that cannot start (claude absent, already running, socket collision),
+    // so wiring the hook everywhere is cheap and correct. 2/3 always-useful
+    // workers (consolidate, preload) run regardless of `claude` availability.
+    sessionStartHooks.push({
+      type: 'command',
+      command: 'npx @claude-flow/cli@latest daemon start --quiet 2>/dev/null || true',
+      timeout: 5000,
+      continueOnError: true,
+    });
 
     hooks.SessionStart = [
       {
