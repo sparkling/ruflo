@@ -771,6 +771,37 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
     }
 
     case 'search': {
+      // ADR-0094 Phase 15: cold-start flake fix. Previously, the first
+      // `memory_search` in a fresh process paid the full ONNX-model cold-start
+      // cost (import @xenova/transformers + load all-mpnet-base-v2 + probe
+      // embed) before answering even when the store was empty. Under the
+      // parallel Phase 15 load (6 tools × 3 runs = 18 concurrent `cli mcp
+      // exec` children contending for the same model files + wasm runtime),
+      // that first call could exceed the harness's 15s read-only timeout and
+      // get SIGKILLed — producing the observed (exit_error, success, success)
+      // flake signature while runs 2 & 3 hit the warm in-process pipeline
+      // singleton.
+      //
+      // An empty store has zero possible results regardless of query
+      // semantics, so we can answer correctly without ever loading the
+      // embedding model. storage.count(ns) is an in-memory Map lookup on the
+      // primary RVF backend (O(1) with no namespace, O(n) filter otherwise)
+      // and runs after ensureRouter() has already loaded the persisted state.
+      // This is NOT a silent retry (ADR-0082): the successful `results: []`
+      // response is the semantically correct answer for an empty store — the
+      // fix removes wasted cold-start work, it does not swallow a real error.
+      const searchNamespace = op.namespace === 'all' ? undefined : op.namespace;
+      try {
+        const entryCount = await storage.count(searchNamespace);
+        if (entryCount === 0) {
+          return { success: true, results: [], total: 0 };
+        }
+      } catch {
+        // count() itself should never fail on a live backend; if it does,
+        // fall through to the full search path so the real error surfaces
+        // from storage.search() rather than being masked here.
+      }
+
       // Generate embedding from query text
       let embedding: Float32Array;
       let adaptiveThreshold: number | undefined;
@@ -787,12 +818,12 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
       }
 
       try {
-        const namespace = op.namespace === 'all' ? undefined : op.namespace;
-        // ADR-0086 fix: map router params to SearchOptions (k, filters.namespace)
+        // ADR-0086 fix: map router params to SearchOptions (k, filters.namespace).
+        // Reuses `searchNamespace` resolved above the empty-store short-circuit.
         const raw = await storage.search(embedding, {
           k: op.limit || 10,
           threshold: adaptiveThreshold ?? op.threshold ?? 0.3,
-          filters: namespace ? { namespace } : undefined,
+          filters: searchNamespace ? { namespace: searchNamespace } : undefined,
         });
         // Flatten SearchResult { entry, score, distance } to { key, score, namespace, content }
         const results = raw.map((r: { entry: { key: string; namespace: string; content: string }; score: number }) => ({
