@@ -2404,6 +2404,6 @@ export const HIGH_ACCURACY_LEARNING_CONFIG: LearningConfig = {
   ewcLambda: 0.8,
   maxPatterns: 50000,
   patternExpiryMs: 604800000, // 7 days
-  learningRate: 0.05,
+  learningRate: readLearningRate(0.05),
   momentum: 0.95,
 };

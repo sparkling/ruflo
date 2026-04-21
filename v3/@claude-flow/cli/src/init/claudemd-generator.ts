@@ -84,7 +84,7 @@ function antiDriftConfig(): string {
 - Keep shared memory namespace for all agents
 
 \`\`\`bash
-npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized
+ruflo swarm init --topology hierarchical --max-agents 8 --strategy specialized
 \`\`\``;
 }
 
@@ -125,8 +125,8 @@ function whenToUseWhat(): string {
 |------|-----|
 | Spawn a subagent for parallel work | Agent tool (built-in, \`run_in_background: true\`) |
 | Search or store memory | \`mcp__claude-flow__memory_*\` (load via ToolSearch first) |
-| Initialize a swarm | \`npx @claude-flow/cli@latest swarm init\` via Bash |
-| Run CLI diagnostics | \`npx @claude-flow/cli@latest doctor --fix\` via Bash |
+| Initialize a swarm | \`ruflo swarm init\` via Bash |
+| Run CLI diagnostics | \`ruflo doctor --fix\` via Bash |
 | Invoke a registered skill | Skill tool with the skill name (e.g., \`/commit\`) |`;
 }
 
@@ -154,16 +154,16 @@ function memoryCommands(): string {
 
 \`\`\`bash
 # Store (REQUIRED: --key, --value; OPTIONAL: --namespace, --ttl, --tags)
-npx @claude-flow/cli@latest memory store --key "pattern-auth" --value "JWT with refresh" --namespace patterns
+ruflo memory store --key "pattern-auth" --value "JWT with refresh" --namespace patterns
 
 # Search (REQUIRED: --query; OPTIONAL: --namespace, --limit, --threshold)
-npx @claude-flow/cli@latest memory search --query "authentication patterns"
+ruflo memory search --query "authentication patterns"
 
 # List (OPTIONAL: --namespace, --limit)
-npx @claude-flow/cli@latest memory list --namespace patterns --limit 10
+ruflo memory list --namespace patterns --limit 10
 
 # Retrieve (REQUIRED: --key; OPTIONAL: --namespace)
-npx @claude-flow/cli@latest memory retrieve --key "pattern-auth" --namespace patterns
+ruflo memory retrieve --key "pattern-auth" --namespace patterns
 \`\`\``;
 }
 
@@ -174,7 +174,7 @@ function securityRulesLight(): string {
 - NEVER commit .env files or any file containing secrets
 - Always validate user input at system boundaries
 - Always sanitize file paths to prevent directory traversal
-- Run \`npx @claude-flow/cli@latest security scan\` after security-related changes`;
+- Run \`ruflo security scan\` after security-related changes`;
 }
 
 function buildAndTest(): string {
@@ -218,9 +218,9 @@ function securitySection(): string {
 
 ### Security Scanning
 \`\`\`bash
-npx @claude-flow/cli@latest security scan --depth full
-npx @claude-flow/cli@latest security audit --report
-npx @claude-flow/cli@latest security cve --check
+ruflo security scan --depth full
+ruflo security audit --report
+ruflo security cve --check
 \`\`\`
 
 ### Security Agents
@@ -240,9 +240,9 @@ function performanceSection(): string {
 
 ### Performance Tooling
 \`\`\`bash
-npx @claude-flow/cli@latest performance benchmark --suite all
-npx @claude-flow/cli@latest performance profile --target "[component]"
-npx @claude-flow/cli@latest performance metrics --format table
+ruflo performance benchmark --suite all
+ruflo performance profile --target "[component]"
+ruflo performance metrics --format table
 \`\`\`
 
 ### Performance Agents
@@ -256,8 +256,8 @@ function setupAndBoundary(): string {
 
 \`\`\`bash
 claude mcp add claude-flow -- npx -y @claude-flow/cli@latest
-npx @claude-flow/cli@latest daemon start
-npx @claude-flow/cli@latest doctor --fix
+ruflo daemon start
+ruflo doctor --fix
 \`\`\`
 
 ## Support

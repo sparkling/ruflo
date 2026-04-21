@@ -15,6 +15,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { IStorageContract } from '@claude-flow/memory/storage.js';
@@ -206,6 +207,65 @@ function _findProjectRoot(): string {
     dir = path.dirname(dir);
   }
   return process.cwd();
+}
+
+/**
+ * ADR-0069 Bug #3: when the CLI is invoked outside any `.claude-flow/` project
+ * context (e.g. `cd /tmp/foo && claude-flow memory store ...`), the previous
+ * behavior was to write `./.claude-flow/memory.rvf` relative to whatever
+ * process.cwd() happened to be. Two consequences:
+ *
+ *   1) Each invocation from a different directory wrote to a different file,
+ *      so `store` + `retrieve` in separate shells returned "not found".
+ *   2) Files were scattered across every directory the user ever ran the CLI
+ *      from — invisible, unmanageable, and never cleaned up.
+ *
+ * Fix: when no ancestor `.claude-flow/` is found AND the caller did not
+ * explicitly configure `storage.databasePath`, default to a stable per-user
+ * location at `~/.claude-flow/data/memory.rvf`. Inside a project (any ancestor
+ * with `.claude-flow/`), keep the original relative-to-project-root behavior
+ * so init'd projects still get their own store.
+ *
+ * Never silently in-memory: if the persistent path can't be created the
+ * caller surfaces the error (see _doInit error path) — ADR-0082.
+ *
+ * @param configuredPath - value from resolve-config (may be the hardcoded
+ *   default `.claude-flow/memory.rvf`, may be a user override). If the user
+ *   explicitly set this to a non-default absolute path we honor it verbatim.
+ */
+// Exported for unit tests (ADR-0069 Bug #3). Not part of the public API —
+// treat as internal; signature may change. Named with a `__` prefix to make
+// the intent obvious at import sites.
+export function __resolveDatabasePathForTest(configuredPath: string): string {
+  return _resolveDatabasePath(configuredPath);
+}
+
+function _resolveDatabasePath(configuredPath: string): string {
+  // :memory: sentinel — pass through unchanged
+  if (configuredPath === ':memory:') return configuredPath;
+
+  // Absolute path from config override — honor it verbatim. The caller asked
+  // for this specific location; don't second-guess.
+  if (path.isAbsolute(configuredPath)) return configuredPath;
+
+  // Relative path. Find project root. _findProjectRoot() returns cwd as
+  // fallback when no ancestor `.claude-flow/` exists, so we must also check
+  // that the root we found actually has a `.claude-flow/` directory — that
+  // tells us whether we're inside a project or just sitting in an arbitrary
+  // cwd.
+  const projectRoot = _findProjectRoot();
+  const inProject = fs.existsSync(path.join(projectRoot, '.claude-flow'));
+
+  if (inProject) {
+    // Inside an init'd project — resolve relative to project root so callers
+    // in subdirectories still hit the same store.
+    return path.resolve(projectRoot, configuredPath);
+  }
+
+  // Outside any project context. Use per-user persistent default.
+  // $HOME/.claude-flow/data/memory.rvf — mkdir -p is done in _doInit before
+  // createStorage() runs.
+  return path.join(os.homedir(), '.claude-flow', 'data', 'memory.rvf');
 }
 
 function _readProjectConfig(): Record<string, unknown> {
@@ -602,6 +662,28 @@ async function _doInit(): Promise<void> {
     // Config resolution unavailable -- storage will use its own defaults
   }
 
+  // ADR-0069 Bug #3: resolve the database path to a per-user default when
+  // the CLI is invoked outside any project context, so `memory store` and
+  // `memory retrieve` in separate invocations hit the same file. See
+  // _resolveDatabasePath() for the full decision tree.
+  databasePath = _resolveDatabasePath(databasePath);
+
+  // ADR-0069 Bug #3: ensure the parent directory exists before RvfBackend
+  // tries to open the file. The per-user path `$HOME/.claude-flow/data/`
+  // may not exist on first run. Fail loudly if mkdir fails — no silent
+  // in-memory fallback (ADR-0082).
+  if (databasePath !== ':memory:') {
+    try {
+      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+    } catch (e) {
+      _initFailed = true;
+      throw new Error(
+        `Storage initialization failed: cannot create parent directory for ${databasePath}: ` +
+        (e instanceof Error ? e.message : String(e))
+      );
+    }
+  }
+
   // ADR-0086 T2.2: Create RvfBackend (IStorageContract) instead of SQLite initializer
   // ADR-0094 Sprint 1.4 (d6): capture lockPath for sync shutdown path.
   if (databasePath && databasePath !== ':memory:') _lockPath = databasePath + '.lock';
@@ -802,7 +884,68 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         // from storage.search() rather than being masked here.
       }
 
-      // Generate embedding from query text
+      // Ensure the embedding pipeline is initialized so we can see its
+      // provider. Detect hash-fallback BEFORE generating an embedding so we
+      // can skip wasted work on the lexical path.
+      //
+      // BM25 activation rule: when the pipeline is running in `hash-fallback`
+      // mode (ONNX + ruvector both unavailable), the produced vectors are
+      // deterministic but non-semantic — cosine similarity on them cannot
+      // connect queries like "authentication JWT" to keys like `jwt-auth`.
+      // In that mode we replace the vector search with a BM25 lexical rank
+      // over the full namespace. The embedding path is kept unchanged for
+      // real embedders (mpnet / bge / etc) where cosine is meaningful.
+      let pipelineProvider: string | null = null;
+      try {
+        const pipelineMod = await import('@claude-flow/memory/embedding-pipeline' as string);
+        let pipeline = pipelineMod.getPipeline?.();
+        if (!pipeline || !pipeline.isInitialized?.()) {
+          // Initialize via the adapter's loadEmbeddingModel so we get the
+          // same config resolution (resolve-config.ts) the store path uses.
+          const adapterMod = await import('@claude-flow/memory/embedding-adapter' as string);
+          await adapterMod.loadEmbeddingModel();
+          pipeline = pipelineMod.getPipeline?.();
+        }
+        if (pipeline?.getProvider) pipelineProvider = pipeline.getProvider();
+      } catch (e) {
+        // Provider detection is advisory — fall through to the embedding
+        // path, which will surface its own error if the pipeline is broken.
+        pipelineProvider = null;
+      }
+
+      if (pipelineProvider === 'hash-fallback') {
+        try {
+          // Pull every entry in the (optionally namespaced) store. BM25 needs
+          // to see the whole corpus to compute IDF. `storage.query` with a
+          // large limit is the router-sanctioned way to enumerate; the RVF
+          // backend's prefix query is O(n) over an in-memory Map either way.
+          const BM25_MAX_CORPUS = 10000;
+          const entries = await storage.query({
+            type: 'prefix',
+            namespace: searchNamespace,
+            limit: BM25_MAX_CORPUS,
+            offset: 0,
+          });
+
+          const bm25Mod = await import('@claude-flow/memory/bm25' as string);
+          // bm25Rank throws on empty query tokens — that is the correct
+          // loud-fail behavior (ADR-0082). We do not catch it.
+          const ranked = bm25Mod.bm25Rank(op.query || '', entries, {
+            limit: op.limit || 10,
+          });
+          const results = ranked.map((r: { entry: { key: string; namespace: string; content: string }; score: number }) => ({
+            key: r.entry.key,
+            score: r.score,
+            namespace: r.entry.namespace,
+            content: r.entry.content,
+          }));
+          return { success: true, results, total: results.length };
+        } catch (e) {
+          return { success: false, error: `bm25 search failed: ${e instanceof Error ? e.message : String(e)}` };
+        }
+      }
+
+      // Generate embedding from query text (real embedder path)
       let embedding: Float32Array;
       let adaptiveThreshold: number | undefined;
       try {
