@@ -197,6 +197,20 @@ export const agentTools: MCPTool[] = [
       required: ['agentType'],
     },
     handler: async (input) => {
+      // Input validation (ADR-0094 P11/P12): typeof guard + named error + structural hint
+      if (input.agentType === undefined || input.agentType === null) {
+        return { success: false, error: "'agentType' is required and must be a non-empty string" };
+      }
+      if (typeof input.agentType !== 'string') {
+        return { success: false, error: "'agentType' must be a string (got " + (Array.isArray(input.agentType) ? 'array' : typeof input.agentType) + "); expected a non-empty string type name" };
+      }
+      if (input.agentType.length === 0) {
+        return { success: false, error: "'agentType' is required and must be a non-empty string" };
+      }
+      if (input.agentType.length > 128) {
+        return { success: false, error: "'agentType' must be no more than 128 characters (invalid length: " + input.agentType.length + ")" };
+      }
+
       const store = loadAgentStore();
       const agentId = (input.agentId as string) || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const agentType = input.agentType as string;

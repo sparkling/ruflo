@@ -116,6 +116,26 @@ export const claimsTools: MCPTool[] = [
       required: ['issueId', 'claimant'],
     },
     handler: async (input) => {
+      // Input validation (ADR-0094 P11/P12): typeof guard + named error + structural hint
+      if (input.issueId === undefined || input.issueId === null) {
+        return { success: false, error: "'issueId' is required and must be a string" };
+      }
+      if (typeof input.issueId !== 'string') {
+        return { success: false, error: "'issueId' must be a string (got " + (Array.isArray(input.issueId) ? 'array' : typeof input.issueId) + "); expected a non-empty string identifier" };
+      }
+      if (input.issueId.length === 0) {
+        return { success: false, error: "'issueId' is required and must be a non-empty string" };
+      }
+      if (input.claimant === undefined || input.claimant === null) {
+        return { success: false, error: "'claimant' is required and must be a string (format: human:userId:name or agent:agentId:type)" };
+      }
+      if (typeof input.claimant !== 'string') {
+        return { success: false, error: "'claimant' must be a string (got " + (Array.isArray(input.claimant) ? 'array' : typeof input.claimant) + "); expected format: human:userId:name or agent:agentId:type" };
+      }
+      if (input.context !== undefined && input.context !== null && typeof input.context !== 'string') {
+        return { success: false, error: "'context' must be a string if provided (got " + (Array.isArray(input.context) ? 'array' : typeof input.context) + "); expected an optional free-form string" };
+      }
+
       const issueId = input.issueId as string;
       const claimantStr = input.claimant as string;
       const context = input.context as string | undefined;
