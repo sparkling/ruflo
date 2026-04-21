@@ -817,7 +817,7 @@ export const agentdbReflexionRetrieve: MCPTool = {
         setTimeout(() => reject(new Error('reflexion_retrieve timeout (2s)')), 2000),
       );
       const results = await Promise.race([
-        retrieveFn(task, { k }),
+        retrieveFn({ task, k }),
         timeoutPromise,
       ]);
       return {
@@ -1515,7 +1515,7 @@ export const agentdbSkillSearch: MCPTool = {
       const skills = await getController<any>('skills');
       if (!skills) return { success: false, skills: [], error: 'SkillLibrary controller not available' };
       if (typeof skills.retrieveSkills === 'function') {
-        const results = await skills.retrieveSkills(query, limit);
+        const results = await skills.retrieveSkills({ query, k: limit });
         return { success: true, skills: Array.isArray(results) ? results : [] };
       }
       if (typeof skills.searchSkills === 'function') {

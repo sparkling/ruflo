@@ -289,6 +289,24 @@ export const configTools: MCPTool[] = [
       required: ['key', 'value'],
     },
     handler: async (input) => {
+      // ADR-0094 P11/P12: input validation with named errors. Must fail loudly
+      // (ADR-0082) — silent coercion of wrong-type keys into `setNestedValue`
+      // crashes with the raw `key.split is not a function` TypeError instead
+      // of a structured error.
+      if (typeof input.key !== 'string' || input.key.length === 0) {
+        return {
+          success: false,
+          error: "'key' is required and must be a non-empty string (dot notation supported, e.g. 'swarm.topology')",
+        };
+      }
+      if (input.value === undefined) {
+        return {
+          success: false,
+          key: input.key,
+          error: "'value' is required — pass null explicitly if you intend to clear the key",
+        };
+      }
+
       const store = loadConfigStore();
       const key = input.key as string;
       const value = input.value;

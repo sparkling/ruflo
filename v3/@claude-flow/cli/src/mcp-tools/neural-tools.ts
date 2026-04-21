@@ -187,6 +187,24 @@ export const neuralTools: MCPTool[] = [
       required: ['modelType'],
     },
     handler: async (input) => {
+      // ADR-0094 P11/P12: validate modelType at the handler entry. Without
+      // this, a missing/wrong-type modelType was silently coerced into a
+      // model record with `type: undefined`, which the acceptance harness
+      // correctly flags as a neutral (non-named) error.
+      const validTypes = ['moe', 'transformer', 'classifier', 'embedding'] as const;
+      if (typeof input.modelType !== 'string' || input.modelType.length === 0) {
+        return {
+          success: false,
+          error: `'modelType' is required and must be one of: ${validTypes.join(', ')}`,
+        };
+      }
+      if (!validTypes.includes(input.modelType as typeof validTypes[number])) {
+        return {
+          success: false,
+          error: `'modelType' must be one of: ${validTypes.join(', ')} (got ${JSON.stringify(input.modelType)})`,
+        };
+      }
+
       const store = loadNeuralStore();
       const modelId = (input.modelId as string) || `model-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const modelType = input.modelType as NeuralModel['type'];

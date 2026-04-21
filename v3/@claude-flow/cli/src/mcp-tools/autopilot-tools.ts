@@ -48,15 +48,45 @@ const autopilotEnable: MCPTool = {
   name: 'autopilot_enable',
   description: 'Enable autopilot persistent completion. Agents will be re-engaged when tasks remain incomplete.',
   category: 'autopilot',
-  inputSchema: { type: 'object', properties: {} },
-  handler: async () => {
+  inputSchema: {
+    type: 'object',
+    properties: {
+      mode: { type: 'string', description: 'Optional autopilot mode tag (string if provided)' },
+    },
+  },
+  handler: async (params: Record<string, unknown> = {}) => {
+    // ADR-0094 P11/P12: even though no fields are required, the response must
+    // unambiguously carry `success:true` so the acceptance harness doesn't
+    // flag it as neutral, AND any provided `mode` must be type-checked
+    // loudly (ADR-0082) — silently accepting `{mode:["array"]}` or
+    // `{mode:""}` is a fuzz failure.
+    if (params.mode !== undefined) {
+      if (typeof params.mode !== 'string') {
+        return ok({
+          success: false,
+          error: "'mode' must be a string if provided (got " + JSON.stringify(params.mode) + ")",
+        });
+      }
+      if (params.mode.length === 0) {
+        return ok({
+          success: false,
+          error: "'mode' must be a non-empty string if provided",
+        });
+      }
+    }
     const state = loadState();
     state.enabled = true;
     state.startTime = Date.now();
     state.iterations = 0;
     saveState(state);
     appendLog({ ts: Date.now(), event: 'enabled', sessionId: state.sessionId });
-    return ok({ enabled: true, maxIterations: state.maxIterations, timeoutMinutes: state.timeoutMinutes });
+    return ok({
+      success: true,
+      enabled: true,
+      mode: typeof params.mode === 'string' ? params.mode : undefined,
+      maxIterations: state.maxIterations,
+      timeoutMinutes: state.timeoutMinutes,
+    });
   },
 };
 
