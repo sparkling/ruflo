@@ -5,7 +5,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFile as wfAsync, readFile as rfAsync, unlink as ulAsync, mkdir as mkAsync } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { type MCPTool, getProjectCwd } from './types.js';
 
 // Storage paths
@@ -16,6 +17,7 @@ interface SessionRecord {
   sessionId: string;
   name: string;
   description?: string;
+  value?: string;
   savedAt: string;
   stats: {
     tasks: number;
@@ -28,6 +30,61 @@ interface SessionRecord {
     tasks?: Record<string, unknown>;
     agents?: Record<string, unknown>;
   };
+}
+
+/**
+ * PID-based advisory lock for session_save's read-modify-write sequence.
+ * Mirrors the RVF backend lock pattern (ADR-0090 Tier B7) so concurrent
+ * session_save writers see one-writer-at-a-time semantics and the P9-3
+ * no-interleave invariant holds.
+ */
+async function acquireSessionLock(lockPath: string): Promise<void> {
+  const lockDir = dirname(lockPath);
+  try {
+    await mkAsync(lockDir, { recursive: true });
+  } catch (err: any) {
+    if (err?.code && err.code !== 'EEXIST') throw err;
+  }
+  const maxWaitMs = 5000;
+  const baseDelayMs = 20;
+  const maxDelayMs = 500;
+  const startTime = Date.now();
+  let attempt = 0;
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      await wfAsync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
+      return;
+    } catch (e: any) {
+      if (e.code !== 'EEXIST') throw e;
+      try {
+        const content = await rfAsync(lockPath, 'utf-8');
+        const parsed = JSON.parse(content) as { pid?: number; ts?: number };
+        const pid = typeof parsed.pid === 'number' ? parsed.pid : -1;
+        const ts = typeof parsed.ts === 'number' ? parsed.ts : 0;
+        const staleMs = 5000;
+        let pidAlive = true;
+        try { process.kill(pid, 0); } catch { pidAlive = false; }
+        if (!pidAlive || Date.now() - ts > staleMs) {
+          try { await ulAsync(lockPath); } catch { /* concurrent reaper */ }
+          continue;
+        }
+      } catch {
+        try { await ulAsync(lockPath); } catch { /* concurrent reaper */ }
+        continue;
+      }
+      const expDelay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+      const jitter = expDelay * 0.5 * Math.random();
+      await new Promise(r => setTimeout(r, expDelay + jitter));
+      attempt++;
+    }
+  }
+  throw new Error(
+    `session_save: failed to acquire advisory lock after ${attempt} attempts over ${Date.now() - startTime}ms (budget=${maxWaitMs}ms)`,
+  );
+}
+
+async function releaseSessionLock(lockPath: string): Promise<void> {
+  try { await ulAsync(lockPath); } catch { /* lock may already be gone */ }
 }
 
 function getSessionDir(): string {
@@ -170,6 +227,7 @@ export const sessionTools: MCPTool[] = [
       properties: {
         name: { type: 'string', description: 'Session name' },
         description: { type: 'string', description: 'Session description' },
+        value: { type: 'string', description: 'Opaque session value payload' },
         includeMemory: { type: 'boolean', description: 'Include memory in session' },
         includeTasks: { type: 'boolean', description: 'Include tasks in session' },
         includeAgents: { type: 'boolean', description: 'Include agents in session' },
@@ -177,16 +235,67 @@ export const sessionTools: MCPTool[] = [
       required: ['name'],
     },
     handler: async (input) => {
-      const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // RC-3b: input validation — fail fast BEFORE acquiring any lock so bad
+      // input never competes for the advisory lock (ADR-0094 P11/P12).
+      if (input.name === undefined || input.name === null) {
+        return {
+          success: false,
+          error: "session_save: 'name' is required and must be a non-empty string (missing)",
+        };
+      }
+      if (typeof input.name !== 'string') {
+        return {
+          success: false,
+          error: `session_save: 'name' must be a string (got type ${typeof input.name}) — expected string`,
+        };
+      }
+      if (input.name.length === 0) {
+        return {
+          success: false,
+          error: "session_save: 'name' must be a non-empty string (invalid empty value)",
+        };
+      }
+      if (input.name.length > 255) {
+        return {
+          success: false,
+          error: "session_save: 'name' must be 1..255 chars (invalid length) — expected safe identifier",
+        };
+      }
+      // Path traversal / control-char guard. Allowed: word chars, dot, dash,
+      // space. Reject path separators, NUL, and parent traversal explicitly.
+      if (input.name.includes('..') || /[\/\\\x00]/.test(input.name) || !/^[\w .-]+$/.test(input.name)) {
+        return {
+          success: false,
+          error: "session_save: 'name' must match /^[\\w .-]{1,255}$/ — path traversal and separators are forbidden (invalid name)",
+        };
+      }
 
-      // Load related data based on options
+      // Optional `value` field — if present, must be a string. Silently
+      // ignoring a wrong-type value would be ADR-0082 silent-pass.
+      if (input.value !== undefined && input.value !== null && typeof input.value !== 'string') {
+        return {
+          success: false,
+          error: `session_save: 'value' must be a string when provided (got type ${typeof input.value}) — expected string`,
+        };
+      }
+      if (input.description !== undefined && input.description !== null && typeof input.description !== 'string') {
+        return {
+          success: false,
+          error: `session_save: 'description' must be a string when provided (got type ${typeof input.description}) — expected string`,
+        };
+      }
+
+      const name = input.name;
+      const lockPath = join(getSessionDir(), '.session.lock');
+
+      // Load related data based on options (outside the lock — this is a
+      // read of other stores and doesn't race with session file writes).
       const data = await loadRelatedStores({
         includeMemory: input.includeMemory as boolean,
         includeTasks: input.includeTasks as boolean,
         includeAgents: input.includeAgents as boolean,
       });
 
-      // Calculate stats
       const stats = {
         tasks: data.tasks ? Object.keys((data.tasks as { tasks?: object }).tasks || {}).length : 0,
         agents: data.agents ? Object.keys((data.agents as { agents?: object }).agents || {}).length : 0,
@@ -194,28 +303,47 @@ export const sessionTools: MCPTool[] = [
         totalSize: 0,
       };
 
-      const session: SessionRecord = {
-        sessionId,
-        name: input.name as string,
-        description: input.description as string,
-        savedAt: new Date().toISOString(),
-        stats,
-        data: Object.keys(data).length > 0 ? data : undefined,
-      };
+      // Ensure the session dir exists before taking the lock (acquireSessionLock
+      // does mkdir on the lock's parent, which is the same dir — redundant but
+      // harmless).
+      ensureSessionDir();
+      await acquireSessionLock(lockPath);
+      try {
+        // RC-2: name-reuse lookup under the lock. If a session with the same
+        // name exists, overwrite at its sessionId instead of creating a new
+        // file (idempotent: same name → same sessionId, updated fields).
+        const existing = listSessions().find(s => s.name === name) ?? null;
+        const sessionId = existing?.sessionId
+          ?? `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-      // Calculate size
-      const sessionJson = JSON.stringify(session);
-      session.stats.totalSize = Buffer.byteLength(sessionJson, 'utf-8');
+        const session: SessionRecord = {
+          sessionId,
+          name,
+          description: typeof input.description === 'string' ? input.description : undefined,
+          value: typeof input.value === 'string' ? input.value : undefined,
+          savedAt: new Date().toISOString(),
+          stats,
+          data: Object.keys(data).length > 0 ? data : undefined,
+        };
 
-      saveSession(session);
+        const sessionJson = JSON.stringify(session);
+        session.stats.totalSize = Buffer.byteLength(sessionJson, 'utf-8');
 
-      return {
-        sessionId,
-        name: session.name,
-        savedAt: session.savedAt,
-        stats: session.stats,
-        path: getSessionPath(sessionId),
-      };
+        saveSession(session);
+
+        return {
+          success: true,
+          sessionId,
+          name: session.name,
+          value: session.value,
+          savedAt: session.savedAt,
+          stats: session.stats,
+          path: getSessionPath(sessionId),
+          reused: existing !== null,
+        };
+      } finally {
+        await releaseSessionLock(lockPath);
+      }
     },
   },
   {
