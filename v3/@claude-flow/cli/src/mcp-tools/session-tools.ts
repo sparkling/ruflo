@@ -562,6 +562,10 @@ export const sessionTools: MCPTool[] = [
           sessionId: session.sessionId,
           name: session.name,
           description: session.description,
+          // Echo the opaque `value` payload exactly as stored by session_save
+          // so the P9-3 no-interleave assertion can verify exactly-one-winner
+          // semantics (ADR-0094 P9). Silently dropping it would hide races.
+          value: session.value,
           savedAt: session.savedAt,
           stats: session.stats,
           fileSize: stat.size,

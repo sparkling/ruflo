@@ -315,9 +315,14 @@ export const workflowTools: MCPTool[] = [
       // single critical section. Prevents the concurrent-writer race
       // where all N callers read the same pre-image and the last rename
       // silently wins (ADR-0094 P9).
+      //
+      // Idempotency-by-name (ADR-0094 P9 exactly-one-winner): N parallel
+      // workflow_create calls with the same `name` must converge to a
+      // single stored workflow, not N distinct entries that happen to
+      // share a name. We do the name lookup INSIDE the critical section
+      // so a losing racer observes the winner's insert and returns the
+      // winner's workflowId instead of writing its own.
       // ──────────────────────────────────────────────────────────────
-      const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
       const steps: WorkflowStep[] = (input.steps as Array<{name?: string; type?: string; config?: Record<string, unknown>}>).map((s, i) => ({
         stepId: `step-${i + 1}`,
         name: s.name || `Step ${i + 1}`,
@@ -326,30 +331,51 @@ export const workflowTools: MCPTool[] = [
         status: 'pending' as const,
       }));
 
-      const workflow: WorkflowRecord = {
-        workflowId,
-        name: input.name as string,
-        description: input.description as string,
-        steps,
-        status: steps.length > 0 ? 'ready' : 'draft',
-        currentStep: 0,
-        variables: (input.variables as Record<string, unknown>) || {},
-        createdAt: new Date().toISOString(),
-      };
-
-      withWorkflowLock(() => {
+      const result = withWorkflowLock(() => {
         const store = loadWorkflowStore();
+
+        // Name-based idempotency check. If another racer already inserted
+        // a workflow with the same name, return that one unchanged.
+        const existing = Object.values(store.workflows).find(
+          w => w.name === (input.name as string),
+        );
+        if (existing) {
+          return {
+            workflowId: existing.workflowId,
+            name: existing.name,
+            status: existing.status,
+            stepCount: existing.steps.length,
+            createdAt: existing.createdAt,
+            reused: true,
+          };
+        }
+
+        const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const workflow: WorkflowRecord = {
+          workflowId,
+          name: input.name as string,
+          description: input.description as string,
+          steps,
+          status: steps.length > 0 ? 'ready' : 'draft',
+          currentStep: 0,
+          variables: (input.variables as Record<string, unknown>) || {},
+          createdAt: new Date().toISOString(),
+        };
+
         store.workflows[workflowId] = workflow;
         saveWorkflowStore(store);
+
+        return {
+          workflowId,
+          name: workflow.name,
+          status: workflow.status,
+          stepCount: steps.length,
+          createdAt: workflow.createdAt,
+          reused: false,
+        };
       });
 
-      return {
-        workflowId,
-        name: workflow.name,
-        status: workflow.status,
-        stepCount: steps.length,
-        createdAt: workflow.createdAt,
-      };
+      return result;
     },
   },
   {
