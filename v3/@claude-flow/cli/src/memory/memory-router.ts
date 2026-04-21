@@ -668,42 +668,29 @@ async function _doInit(): Promise<void> {
   // _resolveDatabasePath() for the full decision tree.
   databasePath = _resolveDatabasePath(databasePath);
 
-  // ADR-0069 Bug #3: ensure the parent directory exists before RvfBackend
-  // tries to open the file. The per-user path `$HOME/.claude-flow/data/`
-  // may not exist on first run. Fail loudly if mkdir fails — no silent
-  // in-memory fallback (ADR-0082).
-  if (databasePath !== ':memory:') {
-    try {
-      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-    } catch (e) {
-      _initFailed = true;
-      throw new Error(
-        `Storage initialization failed: cannot create parent directory for ${databasePath}: ` +
-        (e instanceof Error ? e.message : String(e))
-      );
-    }
-  }
-
   // ADR-0086 T2.2: Create RvfBackend (IStorageContract) instead of SQLite initializer
   // ADR-0094 Sprint 1.4 (d6): capture lockPath for sync shutdown path.
   if (databasePath && databasePath !== ':memory:') _lockPath = databasePath + '.lock';
   try {
+    // ADR-0069 Bug #3: ensure the parent directory exists before RvfBackend
+    // tries to open the file. The per-user path `$HOME/.claude-flow/data/`
+    // may not exist on first run. mkdirSync failure propagates into this
+    // catch, which trips the single ADR-0086 circuit-breaker path below —
+    // no secondary _initFailed assignment (honors the "exactly 3 assignments"
+    // state-machine invariant).
+    if (databasePath !== ':memory:') {
+      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+    }
     _storage = await createStorage({ databasePath, dimensions });
   } catch (e) {
-    // ADR-0086 B4: circuit breaker — storage creation failed
+    // ADR-0086 B4: circuit breaker — storage creation failed.
     _storage = null;
-    _initFailed = true; // ADR-0086 I2: prevent retry storm
-    // ADR-0090 Tier B2: preserve RvfCorruptError so the CLI can surface
-    // a corruption-specific diagnostic (not just a generic storage-init
-    // failure). The message text is still wrapped for context, but the
-    // original Error's name and stack propagate. If we wrapped into a
-    // plain Error, downstream handlers (and ADR-0090 acceptance checks)
-    // would lose the ability to distinguish "corrupt file" from "other
-    // storage init error", and the user-facing diagnostic from
-    // RvfBackend.loadFromDisk would be truncated.
-    if (e && (e as Error).name === 'RvfCorruptError') {
-      throw e;
-    }
+    _initFailed = true; // ADR-0086 I2: prevent retry storm.
+    // ADR-0090 Tier B1/B2: preserve fatal error classes so CLI can surface
+    // specific diagnostics (dimension mismatch / corruption). Wrapping
+    // into a plain Error would mask data-loss regressions (ADR-0082).
+    if (e && (e as Error).name === 'EmbeddingDimensionError') throw e;
+    if (e && (e as Error).name === 'RvfCorruptError') throw e;
     throw new Error('Storage initialization failed: ' + (e instanceof Error ? e.message : String(e)));
   }
 
