@@ -281,6 +281,7 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     concurrencyRules,
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
+    (_opts) => setupAndBoundary(),
   ],
   standard: [
     behavioralRules,
@@ -293,6 +294,7 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
+    (_opts) => setupAndBoundary(),
   ],
   full: [
     behavioralRules,
@@ -306,6 +308,7 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
+    (_opts) => setupAndBoundary(),
   ],
   security: [
     behavioralRules,
@@ -318,6 +321,7 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
+    (_opts) => setupAndBoundary(),
   ],
   performance: [
     behavioralRules,
@@ -331,6 +335,7 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
+    (_opts) => setupAndBoundary(),
   ],
   solo: [
     behavioralRules,
@@ -341,6 +346,7 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     concurrencyRules,
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
+    (_opts) => setupAndBoundary(),
   ],
 };
 
