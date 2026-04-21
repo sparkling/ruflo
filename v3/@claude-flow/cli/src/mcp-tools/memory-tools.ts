@@ -30,13 +30,13 @@ const MAX_QUERY_LENGTH = 4096;
 
 function validateMemoryInput(key?: string, value?: string, query?: string): void {
   if (key && key.length > MAX_KEY_LENGTH) {
-    throw new Error(`Key exceeds maximum length of ${MAX_KEY_LENGTH} characters`);
+    throw new Error(`'key' must be a string of at most ${MAX_KEY_LENGTH} characters (invalid: length ${key.length})`);
   }
   if (value && value.length > MAX_VALUE_SIZE) {
-    throw new Error(`Value exceeds maximum size of ${MAX_VALUE_SIZE} bytes`);
+    throw new Error(`'value' must be a string of at most ${MAX_VALUE_SIZE} bytes (invalid: length ${value.length})`);
   }
   if (query && query.length > MAX_QUERY_LENGTH) {
-    throw new Error(`Query exceeds maximum length of ${MAX_QUERY_LENGTH} characters`);
+    throw new Error(`'query' must be a string of at most ${MAX_QUERY_LENGTH} characters (invalid: length ${query.length})`);
   }
 }
 
@@ -76,6 +76,44 @@ export const memoryTools: MCPTool[] = [
     handler: async (input) => {
       await ensureInitialized();
 
+      // ADR-0094 RC-3a: strict input type validation — reject non-string keys and
+      // non-string values rather than silently coercing (ADR-0082 no-silent-pass).
+      if (typeof input.key !== 'string' || input.key.length === 0) {
+        return {
+          success: false,
+          stored: false,
+          hasEmbedding: false,
+          error: "'key' is required and must be a non-empty string",
+        };
+      }
+      if (input.value === undefined || input.value === null) {
+        return {
+          success: false,
+          key: input.key,
+          stored: false,
+          hasEmbedding: false,
+          error: "'value' is required and must be a non-empty string",
+        };
+      }
+      if (typeof input.value !== 'string') {
+        return {
+          success: false,
+          key: input.key,
+          stored: false,
+          hasEmbedding: false,
+          error: "'value' must be a string (got " + typeof input.value + "; arrays/numbers/objects are not silently stringified)",
+        };
+      }
+      if (input.namespace !== undefined && typeof input.namespace !== 'string') {
+        return {
+          success: false,
+          key: input.key,
+          stored: false,
+          hasEmbedding: false,
+          error: "'namespace' must be a string when provided (got " + typeof input.namespace + ")",
+        };
+      }
+
       let key = input.key as string;
 
       // Phase 4: AgentMemoryScope — apply scope prefix to key
@@ -92,19 +130,18 @@ export const memoryTools: MCPTool[] = [
         }
       } catch { /* scope controller unavailable — use unscoped key */ }
       const namespace = (input.namespace as string) || 'default';
-      const rawValue = input.value;
-      const value = typeof rawValue === 'string' ? rawValue : (rawValue !== undefined ? JSON.stringify(rawValue) : '');
+      const value = input.value as string;
       const tags = (input.tags as string[]) || [];
       const ttl = input.ttl as number | undefined;
       const upsert = (input.upsert as boolean) || false;
 
-      if (!value) {
+      if (value.length === 0) {
         return {
           success: false,
           key,
           stored: false,
           hasEmbedding: false,
-          error: 'Value is required and cannot be empty',
+          error: "'value' is required and must be a non-empty string",
         };
       }
 
@@ -177,7 +214,7 @@ export const memoryTools: MCPTool[] = [
       const key = input.key as string;
       const namespace = input.namespace as string;
       if (!namespace || namespace === 'all') {
-        throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+        throw new Error("'namespace' is required and must be a specific string (cannot be \"all\"). Use namespace: \"patterns\", \"solutions\", or \"tasks\"");
       }
 
       validateMemoryInput(key);
@@ -440,7 +477,7 @@ export const memoryTools: MCPTool[] = [
       const key = input.key as string;
       const namespace = input.namespace as string;
       if (!namespace || namespace === 'all') {
-        throw new Error('Namespace is required (cannot be "all"). Use namespace: "patterns", "solutions", or "tasks"');
+        throw new Error("'namespace' is required and must be a specific string (cannot be \"all\"). Use namespace: \"patterns\", \"solutions\", or \"tasks\"");
       }
 
       validateMemoryInput(key);

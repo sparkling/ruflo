@@ -692,10 +692,42 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
           } catch { /* embedding optional — store without it */ }
         }
 
-        // Upsert: check if entry exists
-        if (op.upsert && op.key) {
+        // ADR-0094 RC-2: idempotency guard. Without a pre-check, two back-to-back
+        // `store(key=k, value=v, namespace=n)` calls with `upsert:false` would create
+        // two rows (router always fell through to storage.store()). We now always
+        // look up the existing entry first:
+        //   - same value         → no-op return (idempotent)
+        //   - different value + !upsert → error (use upsert:true to replace)
+        //   - different value + upsert  → update existing row
+        //   - no existing entry  → fall through to the unconditional insert below
+        if (op.key) {
           const existing = await storage.getByKey(namespace, op.key);
           if (existing) {
+            const existingContent = (existing as { content?: string }).content ?? '';
+            const newContent = op.value ?? '';
+            const sameValue = existingContent === newContent;
+
+            if (sameValue) {
+              // Idempotent no-op: same (key, value, namespace) — return existing entry
+              return {
+                success: true, key: op.key, stored: true,
+                storedAt: new Date((existing as { createdAt?: number }).createdAt ?? now).toISOString(),
+                hasEmbedding: !!(existing as { embedding?: unknown }).embedding,
+                embeddingDimensions: (existing as { embedding?: { length?: number } }).embedding?.length ?? null,
+                idempotent: true,
+              };
+            }
+
+            if (!op.upsert) {
+              return {
+                success: false,
+                key: op.key,
+                stored: false,
+                error: "'key' already exists in this namespace with a different value; set upsert:true to replace",
+              };
+            }
+
+            // upsert === true and value differs → overwrite
             await storage.update(existing.id, {
               content: op.value,
               tags: op.tags,
