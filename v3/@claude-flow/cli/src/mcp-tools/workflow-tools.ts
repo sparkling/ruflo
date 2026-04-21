@@ -4,7 +4,7 @@
  * Tool definitions for workflow automation and orchestration.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, getProjectCwd } from './types.js';
 
@@ -74,7 +74,74 @@ function loadWorkflowStore(): WorkflowStore {
 
 function saveWorkflowStore(store: WorkflowStore): void {
   ensureWorkflowDir();
-  writeFileSync(getWorkflowPath(), JSON.stringify(store, null, 2), 'utf-8');
+  // Atomic write: tmp + rename so a crashed writer can't leave truncated JSON.
+  const target = getWorkflowPath();
+  const tmp = `${target}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
+  writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf-8');
+  renameSync(tmp, target);
+}
+
+/**
+ * Run cb under exclusive advisory-lock on the workflow store's sibling .lock
+ * file. Without this, parallel `workflow_create` calls race the load→mutate→
+ * save sequence: all callers read the same pre-image, each appends its own
+ * workflow, and the last writer's rename clobbers the rest — the "lost
+ * update" class (ADR-0094 P9). atomic rename protects per-write but not
+ * against concurrent read-modify-write.
+ *
+ * Same advisory-lock pattern as rvf-backend's acquireLock (ADR-0095) and
+ * wasm-agent-tools' withStoreLock. PID is recorded in the lock file so a
+ * crashed writer's stale lock can be detected + force-unlocked. 5s budget,
+ * exponential backoff with jitter, fails loudly on timeout.
+ */
+function withWorkflowLock<T>(cb: () => T): T {
+  ensureWorkflowDir();
+  const lockPath = getWorkflowPath() + '.lock';
+  const budgetMs = 5000;
+  const deadline = Date.now() + budgetMs;
+  let waitMs = 10;
+  while (true) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lockPath, 'wx'); // O_CREAT|O_EXCL — atomic
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+      closeSync(fd); fd = undefined;
+      try {
+        return cb();
+      } finally {
+        try { unlinkSync(lockPath); } catch { /* already gone */ }
+      }
+    } catch (err: any) {
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch {}
+      }
+      if (err?.code !== 'EEXIST') throw err;
+      // Someone else holds the lock. Detect stale (dead PID) and force.
+      let stale = false;
+      try {
+        const existing = JSON.parse(readFileSync(lockPath, 'utf-8'));
+        if (typeof existing?.pid === 'number' && existing.pid !== process.pid) {
+          try { process.kill(existing.pid, 0); } catch { stale = true; }
+        }
+      } catch { stale = true; }
+      if (stale) {
+        try { unlinkSync(lockPath); } catch {}
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `[workflow-tools] store lock contention: could not acquire ${lockPath} within ${budgetMs}ms`
+        );
+      }
+      // Backoff with small jitter. Bounded by deadline.
+      const jitter = Math.floor(Math.random() * waitMs);
+      const sleepMs = Math.min(waitMs + jitter, Math.max(1, deadline - Date.now()));
+      const end = Date.now() + sleepMs;
+      // Busy-wait (no async await path available for this sync API).
+      while (Date.now() < end) { /* noop */ }
+      waitMs = Math.min(waitMs * 2, 400);
+    }
+  }
 }
 
 export const workflowTools: MCPTool[] = [
@@ -199,13 +266,59 @@ export const workflowTools: MCPTool[] = [
         },
         variables: { type: 'object', description: 'Initial variables' },
       },
-      required: ['name'],
+      required: ['name', 'steps'],
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
+      // ──────────────────────────────────────────────────────────────
+      // Validate FIRST — fail fast without taking the lock (ADR-0094
+      // P11/P12). Every error names the offending field AND carries a
+      // structural hint word so `_p12_expect_named_error` accepts it.
+      // ──────────────────────────────────────────────────────────────
+      if (typeof input.name !== 'string') {
+        return {
+          success: false,
+          error: `'name' is required and must be a string (got ${typeof input.name})`,
+          field: 'name',
+        };
+      }
+      if (input.name.length === 0) {
+        return {
+          success: false,
+          error: `'name' must be a non-empty string (received empty string, expected at least 1 character)`,
+          field: 'name',
+        };
+      }
+      if (input.steps === undefined || input.steps === null) {
+        return {
+          success: false,
+          error: `'steps' is required and must be an array of workflow step objects (missing in input)`,
+          field: 'steps',
+        };
+      }
+      if (!Array.isArray(input.steps)) {
+        return {
+          success: false,
+          error: `'steps' must be an array (got ${typeof input.steps})`,
+          field: 'steps',
+        };
+      }
+      if (input.steps.length === 0) {
+        return {
+          success: false,
+          error: `'steps' must be a non-empty array (received empty array, expected at least 1 step)`,
+          field: 'steps',
+        };
+      }
+
+      // ──────────────────────────────────────────────────────────────
+      // Validation passed — take the lock and do read-modify-write as a
+      // single critical section. Prevents the concurrent-writer race
+      // where all N callers read the same pre-image and the last rename
+      // silently wins (ADR-0094 P9).
+      // ──────────────────────────────────────────────────────────────
       const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-      const steps: WorkflowStep[] = ((input.steps as Array<{name?: string; type?: string; config?: Record<string, unknown>}>) || []).map((s, i) => ({
+      const steps: WorkflowStep[] = (input.steps as Array<{name?: string; type?: string; config?: Record<string, unknown>}>).map((s, i) => ({
         stepId: `step-${i + 1}`,
         name: s.name || `Step ${i + 1}`,
         type: (s.type as WorkflowStep['type']) || 'task',
@@ -224,8 +337,11 @@ export const workflowTools: MCPTool[] = [
         createdAt: new Date().toISOString(),
       };
 
-      store.workflows[workflowId] = workflow;
-      saveWorkflowStore(store);
+      withWorkflowLock(() => {
+        const store = loadWorkflowStore();
+        store.workflows[workflowId] = workflow;
+        saveWorkflowStore(store);
+      });
 
       return {
         workflowId,
