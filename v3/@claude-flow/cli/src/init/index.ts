@@ -50,6 +50,7 @@ export {
   generateWindowsDaemonManager,
   generateWindowsBatchWrapper,
   generateCrossPlatformSessionManager,
+  generateCheckPatchesScript,
 } from './helpers-generator.js';
 
 export {

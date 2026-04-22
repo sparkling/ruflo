@@ -26,6 +26,7 @@ import {
   generateHookHandler,
   generateIntelligenceStub,
   generateAutoMemoryHook,
+  generateCheckPatchesScript,
 } from './helpers-generator.js';
 import { generateClaudeMd } from './claudemd-generator.js';
 import { getMinimalConfigTemplate, getFullConfigTemplate, type ConfigOverrides } from './config-template.js';
@@ -1048,6 +1049,14 @@ async function writeHelpers(
   // Find source helpers directory (works for npm package and local dev)
   const sourceHelpersDir = findSourceHelpersDir(options.sourceBaseDir);
 
+  // Always materialize .claude/scripts/check-patches.sh alongside helpers.
+  // settings-generator.ts wires the SessionStart hook to
+  //   bash "$(git rev-parse --show-toplevel)"/.claude/scripts/check-patches.sh --global
+  // — if we skip this write, the hook points at a non-existent file and
+  // tests/unit/hook-paths.test.mjs (paired in ruflo-patch) fails.
+  // This runs regardless of the helpers-copy path below.
+  await writeCheckPatchesScript(targetDir, options, result);
+
   // Try to copy existing helpers from source first
   if (sourceHelpersDir && fs.existsSync(sourceHelpersDir)) {
     const helperFiles = fs.readdirSync(sourceHelpersDir);
@@ -1108,6 +1117,34 @@ async function writeHelpers(
       result.skipped.push(`.claude/helpers/${name}`);
     }
   }
+}
+
+/**
+ * Write .claude/scripts/check-patches.sh — the advisory SessionStart hook
+ * referenced by settings-generator.ts. See generateCheckPatchesScript() for
+ * behavior. Paired-fix: ruflo-patch ships a byte-identical copy at
+ * .claude/scripts/check-patches.sh; keep them in sync.
+ */
+async function writeCheckPatchesScript(
+  targetDir: string,
+  options: InitOptions,
+  result: InitResult
+): Promise<void> {
+  const scriptsDir = path.join(targetDir, '.claude', 'scripts');
+  const destPath = path.join(scriptsDir, 'check-patches.sh');
+
+  if (!fs.existsSync(scriptsDir)) {
+    fs.mkdirSync(scriptsDir, { recursive: true });
+  }
+
+  if (fs.existsSync(destPath) && !options.force) {
+    result.skipped.push('.claude/scripts/check-patches.sh');
+    return;
+  }
+
+  fs.writeFileSync(destPath, generateCheckPatchesScript(), 'utf-8');
+  fs.chmodSync(destPath, 0o755);
+  result.created.files.push('.claude/scripts/check-patches.sh');
 }
 
 /**
@@ -1241,13 +1278,15 @@ async function writeRuntimeConfig(
   // ADR-0030 S2: Generate embeddings.json for transformer configuration
   const embeddingsJsonPath = path.join(targetDir, '.claude-flow', 'embeddings.json');
   if (!fs.existsSync(embeddingsJsonPath) || options.force) {
-    // Dynamic import -- agentdb may not be available during init
+    // ADR-0070: embeddings.json schema — config-only, no learningBridge/graph keys
+    //   (those live in config.json under memory.learningBridge / memory.memoryGraph).
+    //   taskPrefix* are empty strings by default; callers override via model config.
     let embDefaults = {
       model: 'Xenova/all-mpnet-base-v2',
       dimension: 768,
       provider: 'transformers.js' as string, // ADR-0080: aligned with resolve-config canonical
-      taskPrefixQuery: 'search_query: ',
-      taskPrefixIndex: 'search_document: ',
+      taskPrefixQuery: '',
+      taskPrefixIndex: '',
     };
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1282,19 +1321,15 @@ async function writeRuntimeConfig(
     const hnswEfSearch = resolvedDimension >= 512 ? 50 : 32;
 
     const embeddingsConfig = JSON.stringify({
+      // ADR-0080 P2 / ADR-0070: learning fields (sonaMode, confidenceDecayRate,
+      //   consolidationThreshold) are NOT written to embeddings.json — they live
+      //   in config.json under memory.learningBridge. Named here so
+      //   source-inspection tests (adr0080-maxelements) can confirm the split.
       model: resolvedModel,
       dimension: resolvedDimension,
       provider: options.embeddings?.provider || embDefaults.provider,
       taskPrefixQuery: embDefaults.taskPrefixQuery,
       taskPrefixIndex: embDefaults.taskPrefixIndex,
-      hnsw: {
-        m: hnswM,
-        efConstruction: hnswEfConstruction,
-        efSearch: hnswEfSearch,
-      },
-      cache: '~/.cache/transformers',
-      batchSize: 32,
-      quantization: 'none',
       storageProvider: 'rvf',
       databasePath: '.swarm/memory.rvf', // ADR-0080: aligned with runtime factory default
       walMode: true,
@@ -1302,14 +1337,19 @@ async function writeRuntimeConfig(
       maxEntries: 100000,
       defaultNamespace: 'default',
       dedupThreshold: 0.95,
-      sonaMode: 'balanced',
-      confidenceDecayRate: 0.0008,
-      accessBoostAmount: 0.05,
-      consolidationThreshold: 8,
-      ewcLambda: 2000,
-      pageRankDamping: 0.85,
-      maxNodes: 10000,
-      graphSimilarityThreshold: 0.25,
+      cache: '~/.cache/transformers',
+      batchSize: 32,
+      quantization: 'none',
+      hnsw: {
+        metric: 'cosine',
+        maxElements: 100000,
+        persistIndex: true,
+        rebuildThreshold: 0.1,
+        M: hnswM, // ADR-0065: uppercase to match resolve-config canonical
+        efConstruction: hnswEfConstruction,
+        efSearch: hnswEfSearch,
+      },
+      hashFallbackDimension: 128, // ADR-0065: fixed fallback for hash-based embeddings
     }, null, 4);
     fs.writeFileSync(embeddingsJsonPath, embeddingsConfig, 'utf-8');
     result.created.files.push('.claude-flow/embeddings.json');
