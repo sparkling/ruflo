@@ -230,11 +230,24 @@ const initCommand: Command = {
       description: 'Coordination strategy',
       type: 'string',
       choices: STRATEGIES.map(s => s.value)
+    },
+    {
+      name: 'new',
+      description: 'Force create a new swarm even if a matching running one exists (ADR-0098)',
+      type: 'boolean',
+      default: false
+    },
+    {
+      name: 'reason',
+      description: 'Rationale for --new (advisory, logged for audit)',
+      type: 'string'
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     let topology = ctx.flags.topology as string;
     const maxAgents = ctx.flags.maxAgents as number || 15;
+    const forceNew = ctx.flags.new === true;
+    const reason = ctx.flags.reason as string | undefined;
 
     // Interactive topology selection
     if (!topology && ctx.interactive) {
@@ -249,11 +262,12 @@ const initCommand: Command = {
     output.printInfo('Initializing swarm...');
 
     try {
-      // Call MCP tool to initialize swarm
+      // Call MCP tool to initialize swarm (ADR-0098: may reuse existing)
       const result = await callMCPTool<{
         swarmId: string;
         topology: string;
         initializedAt: string;
+        reused?: boolean;
         config: {
           topology: string;
           maxAgents: number;
@@ -264,6 +278,9 @@ const initCommand: Command = {
       }>('swarm_init', {
         topology: topology as 'hierarchical' | 'mesh' | 'adaptive' | 'collective' | 'hierarchical-mesh',
         maxAgents,
+        strategy: ctx.flags.strategy || 'specialized',
+        force: forceNew,
+        reason,
         config: {
           communicationProtocol: 'message-bus',
           consensusMechanism: 'majority',
@@ -301,7 +318,13 @@ const initCommand: Command = {
       });
 
       output.writeln();
-      output.printSuccess('Swarm initialized successfully');
+      if (result.reused) {
+        // ADR-0098: reused an existing swarm; don't pretend we created a new one.
+        output.printInfo(`Reusing existing swarm ${result.swarmId} (same config, status: running)`);
+        output.writeln(output.dim('  Pass --new to force a fresh swarm with the same config.'));
+      } else {
+        output.printSuccess('Swarm initialized successfully');
+      }
 
       // Save swarm state locally for status command to read
       // ADR-0069: config-chain swarmDir
@@ -428,7 +451,10 @@ const startCommand: Command = {
     }
 
     // Initialize swarm via MCP and persist state (#1423: was stub-only, no actual execution)
-    const swarmId = `swarm-${Date.now().toString(36)}`;
+    // ADR-0098: honor the MCP-returned swarmId (may be a reused swarm) instead of minting
+    // a client-side ID that would diverge from the persistent record.
+    let swarmId = `swarm-${Date.now().toString(36)}`; // fallback if MCP call fails
+    let reused = false;
     const totalAgents = agentPlan.reduce((sum: number, a: { count: number }) => sum + a.count, 0);
 
     output.writeln();
@@ -436,13 +462,20 @@ const startCommand: Command = {
     spinner.start();
 
     try {
-      // Actually call MCP to initialize the swarm
-      const initResult = await callMCPTool('swarm_init', {
+      const initResult = await callMCPTool<{ swarmId?: string; reused?: boolean }>('swarm_init', {
         topology: 'hierarchical',
         maxAgents: totalAgents,
         strategy: strategy === 'development' ? 'specialized' : strategy,
       });
-      spinner.succeed('Swarm initialized via MCP');
+      if (initResult && typeof initResult.swarmId === 'string') {
+        swarmId = initResult.swarmId;
+        reused = initResult.reused === true;
+      }
+      spinner.succeed(
+        reused
+          ? `Reused existing swarm ${swarmId} via MCP (same config)`
+          : 'Swarm initialized via MCP',
+      );
     } catch (err) {
       spinner.fail('MCP swarm_init failed — swarm metadata saved locally only');
       output.writeln(output.dim(`  Error: ${err instanceof Error ? err.message : String(err)}`));

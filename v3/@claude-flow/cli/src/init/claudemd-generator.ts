@@ -63,29 +63,39 @@ function concurrencyRules(): string {
 }
 
 function agentOrchestration(): string {
+  // ADR-0098: the Agent tool is the default for multi-agent work. claude-flow
+  // swarm state should only be created when the user explicitly asks for it.
   return `## Agent Orchestration
 
-- Use the Agent tool to spawn subagents for multi-file or cross-module tasks
+- DEFAULT: use Claude Code's built-in \`Agent\` tool for multi-file or cross-module tasks.
+  It spawns subagents with ZERO coordination state, ZERO setup, ZERO cleanup.
 - ALWAYS set \`run_in_background: true\` when spawning agents
 - Put ALL agent spawns in a single message for parallel execution
 - After spawning agents, STOP and wait for results — do not poll or check status
-- Use CLI tools (via Bash) for coordination: swarm init, memory, hooks
+- DO NOT call \`swarm_init\`, \`hive-mind_spawn\`, or \`ruflo swarm init\` reflexively
+  at the start of tasks. Only when:
+    (a) the user explicitly asks for claude-flow coordination, or
+    (b) persistent cross-session coordination state is actually required.
+- If you DO need a claude-flow swarm: the CLI now reuses matching running swarms
+  automatically (ADR-0098 config-fingerprint dedupe). Pass \`--new\` only when
+  you genuinely need a parallel swarm with the same config.
 - NEVER use CLI tools as a substitute for Agent tool subagents`;
 }
 
 function antiDriftConfig(): string {
-  return `## Swarm Configuration & Anti-Drift
+  // ADR-0098: removed the "ALWAYS use swarm init" worked example. Keeping only
+  // the configuration guidance that applies when a swarm IS needed.
+  return `## Swarm Configuration (when explicitly required)
 
-- ALWAYS use hierarchical topology for coding swarms
+These apply ONLY when the user has asked for a claude-flow swarm. For routine
+multi-agent work, use the built-in \`Agent\` tool instead — see §"Agent Orchestration".
+
+- Prefer hierarchical topology for coding swarms
 - Keep maxAgents at 6-8 for tight coordination
 - Use specialized strategy for clear role boundaries
 - Use \`raft\` consensus for hive-mind (leader maintains authoritative state)
 - Run frequent checkpoints via \`post-task\` hooks
-- Keep shared memory namespace for all agents
-
-\`\`\`bash
-ruflo swarm init --topology hierarchical --max-agents 8 --strategy specialized
-\`\`\``;
+- Keep shared memory namespace for all agents`;
 }
 
 function mcpToolDiscovery(): string {
@@ -119,13 +129,15 @@ If \`[INFO] Router not available\` appears, proceed normally without routing.`;
 }
 
 function whenToUseWhat(): string {
+  // ADR-0098: the default "multi-agent work" path is the built-in Agent tool,
+  // not claude-flow swarms. Swarm init stays in the table but gated on explicit need.
   return `## When to Use What
 
 | Need | Use |
 |------|-----|
-| Spawn a subagent for parallel work | Agent tool (built-in, \`run_in_background: true\`) |
+| Multi-agent work on one task | \`Agent\` tool (built-in, \`run_in_background: true\`) — NOT a claude-flow swarm |
 | Search or store memory | \`mcp__claude-flow__memory_*\` (load via ToolSearch first) |
-| Initialize a swarm | \`ruflo swarm init\` via Bash |
+| Persistent swarm coordination (rare, explicit) | \`ruflo swarm init\` via Bash — reuses matching running swarms (ADR-0098) |
 | Run CLI diagnostics | \`ruflo doctor --fix\` via Bash |
 | Invoke a registered skill | Skill tool with the skill name (e.g., \`/commit\`) |`;
 }

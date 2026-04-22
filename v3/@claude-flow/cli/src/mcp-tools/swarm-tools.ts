@@ -5,7 +5,19 @@
  * Replaces previous stub implementations with real state tracking.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  openSync,
+  closeSync,
+  writeSync,
+  unlinkSync,
+  statSync,
+  constants as fsConstants,
+} from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, getProjectCwd } from './types.js';
 
@@ -57,8 +69,62 @@ function loadSwarmStore(): SwarmStore {
 }
 
 function saveSwarmStore(store: SwarmStore): void {
+  // ADR-0098: atomic write (temp + rename) — prevents partial writes under the lock
   ensureSwarmDir();
-  writeFileSync(getSwarmStatePath(), JSON.stringify(store, null, 2), 'utf-8');
+  const path = getSwarmStatePath();
+  const tmp = `${path}.tmp.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf-8');
+  renameSync(tmp, path);
+}
+
+// ADR-0098: cross-process file lock for swarm-state.json read-modify-write.
+// Uses O_EXCL sentinel with stale-lock recovery (no external dep).
+async function withSwarmStoreLock<T>(fn: () => Promise<T>): Promise<T> {
+  const lockPath = `${getSwarmStatePath()}.lock`;
+  const MAX_WAIT_MS = 5000;
+  const POLL_MS = 50;
+  const STALE_LOCK_MS = 30_000;
+  const deadline = Date.now() + MAX_WAIT_MS;
+
+  ensureSwarmDir();
+
+  // Acquire
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const fd = openSync(
+        lockPath,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+        0o600,
+      );
+      writeSync(fd, `${process.pid}\n${Date.now()}\n`);
+      closeSync(fd);
+      break;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'EEXIST') {
+        try {
+          const stat = statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+            try { unlinkSync(lockPath); } catch { /* ignore */ }
+            continue;
+          }
+        } catch { /* lockfile vanished between check and stat — retry */ }
+        if (Date.now() > deadline) {
+          throw new Error(`Timeout waiting for swarm-state lock after ${MAX_WAIT_MS}ms`);
+        }
+        await new Promise(r => setTimeout(r, POLL_MS));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try { unlinkSync(lockPath); } catch { /* already removed */ }
+  }
 }
 
 // Input validation
@@ -66,10 +132,13 @@ const VALID_TOPOLOGIES = new Set([
   'hierarchical', 'mesh', 'hierarchical-mesh', 'ring', 'star', 'hybrid', 'adaptive',
 ]);
 
+// ADR-0098: dedupe TTL — only reuse running swarms updated within this window
+const SWARM_REUSE_TTL_MS = 7 * 24 * 3600 * 1000;
+
 export const swarmTools: MCPTool[] = [
   {
     name: 'swarm_init',
-    description: 'Initialize a swarm with persistent state tracking',
+    description: 'Initialize a swarm with persistent state tracking. ADR-0098: reuses an existing running swarm with matching {topology, maxAgents, strategy} within 7-day TTL unless force=true.',
     category: 'swarm',
     inputSchema: {
       type: 'object',
@@ -78,6 +147,8 @@ export const swarmTools: MCPTool[] = [
         maxAgents: { type: 'number', description: 'Maximum number of agents (1-50)' },
         strategy: { type: 'string', description: 'Agent strategy (specialized, balanced, adaptive)' },
         config: { type: 'object', description: 'Additional swarm configuration' },
+        force: { type: 'boolean', description: 'Force create a new swarm even if a matching running one exists within TTL (default: false)' },
+        reason: { type: 'string', description: 'Optional rationale when force=true — advisory, logged for audit' },
       },
     },
     handler: async (input) => {
@@ -85,6 +156,8 @@ export const swarmTools: MCPTool[] = [
       const maxAgents = Math.min(Math.max((input.maxAgents as number) || 15, 1), 50);
       const strategy = (input.strategy as string) || 'specialized';
       const config = (input.config || {}) as Record<string, unknown>;
+      const force = input.force === true;
+      const reason = input.reason as string | undefined;
 
       if (!VALID_TOPOLOGIES.has(topology)) {
         return {
@@ -93,42 +166,90 @@ export const swarmTools: MCPTool[] = [
         };
       }
 
-      const swarmId = `swarm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const now = new Date().toISOString();
+      if (force && !reason) {
+        // Advisory warning — ADR-0098 Flaw 4 mitigation: force=true without reason is a drift smell
+        process.stderr.write(
+          '[WARN] swarm_init called with force=true but no reason — ' +
+          'prefer passing reason="..." to document why a fresh swarm is required\n',
+        );
+      }
 
-      const swarmState: SwarmState = {
-        swarmId,
-        topology,
-        maxAgents,
-        status: 'running',
-        agents: [],
-        tasks: [],
-        config: {
+      return withSwarmStoreLock(async () => {
+        const store = loadSwarmStore();
+        const now = new Date().toISOString();
+        const nowMs = Date.now();
+
+        // ADR-0098: config-fingerprint dedupe.
+        // Find the most-recently-updated running swarm matching {topology, maxAgents, strategy}
+        // within the TTL window. Skipped entirely when force=true.
+        if (!force) {
+          const candidates = Object.values(store.swarms)
+            .filter(s =>
+              s.status === 'running' &&
+              s.topology === topology &&
+              s.maxAgents === maxAgents &&
+              (s.config as { strategy?: string }).strategy === strategy &&
+              (nowMs - new Date(s.updatedAt).getTime()) < SWARM_REUSE_TTL_MS,
+            )
+            .sort(
+              (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+            );
+
+          if (candidates.length > 0) {
+            const existing = candidates[0];
+            existing.updatedAt = now;
+            store.swarms[existing.swarmId] = existing;
+            saveSwarmStore(store);
+            return {
+              success: true,
+              swarmId: existing.swarmId,
+              topology: existing.topology,
+              strategy: (existing.config as { strategy?: string }).strategy ?? strategy,
+              maxAgents: existing.maxAgents,
+              initializedAt: existing.createdAt,
+              config: existing.config,
+              persisted: true,
+              reused: true,
+            };
+          }
+        }
+
+        // No reuse candidate (or force=true): mint a new swarm.
+        const swarmId = `swarm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const swarmState: SwarmState = {
+          swarmId,
           topology,
           maxAgents,
+          status: 'running',
+          agents: [],
+          tasks: [],
+          config: {
+            topology,
+            maxAgents,
+            strategy,
+            communicationProtocol: (config.communicationProtocol as string) || 'message-bus',
+            autoScaling: (config.autoScaling as boolean) ?? true,
+            consensusMechanism: (config.consensusMechanism as string) || 'majority',
+          },
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        store.swarms[swarmId] = swarmState;
+        saveSwarmStore(store);
+
+        return {
+          success: true,
+          swarmId,
+          topology,
           strategy,
-          communicationProtocol: (config.communicationProtocol as string) || 'message-bus',
-          autoScaling: (config.autoScaling as boolean) ?? true,
-          consensusMechanism: (config.consensusMechanism as string) || 'majority',
-        },
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      const store = loadSwarmStore();
-      store.swarms[swarmId] = swarmState;
-      saveSwarmStore(store);
-
-      return {
-        success: true,
-        swarmId,
-        topology,
-        strategy,
-        maxAgents,
-        initializedAt: now,
-        config: swarmState.config,
-        persisted: true,
-      };
+          maxAgents,
+          initializedAt: now,
+          config: swarmState.config,
+          persisted: true,
+          reused: false,
+        };
+      });
     },
   },
   {
