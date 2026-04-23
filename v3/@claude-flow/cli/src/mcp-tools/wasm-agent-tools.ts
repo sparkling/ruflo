@@ -16,7 +16,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MCPTool } from './types.js';
-import { getProjectCwd } from './types.js';
+import { findProjectRoot } from './types.js';
 
 async function loadAgentWasm() {
   const mod = await import('../ruvector/agent-wasm.js');
@@ -58,7 +58,7 @@ interface WasmStore {
 }
 
 function getWasmDir(): string {
-  return join(getProjectCwd(), STORAGE_DIR, WASM_DIR);
+  return join(findProjectRoot(), STORAGE_DIR, WASM_DIR);
 }
 
 function getStorePath(): string {

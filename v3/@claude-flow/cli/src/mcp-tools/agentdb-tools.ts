@@ -679,8 +679,8 @@ async function _persistSemanticRoutes(
     const { existsSync, readFileSync, mkdirSync, writeFileSync } =
       await import('node:fs');
     const { join, dirname } = await import('node:path');
-    const { getProjectCwd } = await import('./types.js');
-    const path = join(getProjectCwd(), '.claude-flow', 'semantic-routes.json');
+    const { findProjectRoot } = await import('./types.js');
+    const path = join(findProjectRoot(), '.claude-flow', 'semantic-routes.json');
     let routes: Array<{ name: string; description?: string; keywords?: string[] }> = [];
     if (existsSync(path)) {
       try {

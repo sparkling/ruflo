@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { type MCPTool, getProjectCwd } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -37,7 +37,7 @@ interface AgentStore {
 }
 
 function getAgentDir(): string {
-  return join(getProjectCwd(), STORAGE_DIR, AGENT_DIR);
+  return join(findProjectRoot(), STORAGE_DIR, AGENT_DIR);
 }
 
 function getAgentPath(): string {

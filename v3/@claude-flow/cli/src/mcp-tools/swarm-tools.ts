@@ -19,7 +19,7 @@ import {
   constants as fsConstants,
 } from 'node:fs';
 import { join } from 'node:path';
-import { type MCPTool, getProjectCwd } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 
 // Swarm state persistence
 // ADR-0069 A4: standardized on .swarm (was .claude-flow/swarm)
@@ -44,7 +44,9 @@ interface SwarmStore {
 }
 
 function getSwarmDir(): string {
-  return join(getProjectCwd(), SWARM_DIR);
+  // ADR-0100: findProjectRoot walks up to the project root marker, NOT process.cwd().
+  // Claude Code CWD drift was landing .swarm/ inside subdirectories (see ADR-0100).
+  return join(findProjectRoot(), SWARM_DIR);
 }
 
 function getSwarmStatePath(): string {

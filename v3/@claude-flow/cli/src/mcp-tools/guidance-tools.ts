@@ -7,46 +7,13 @@
  * @module @claude-flow/cli/mcp-tools/guidance
  */
 
-import { type MCPTool, getProjectCwd } from './types.js';
+// ADR-0100: use centralized findProjectRoot from types.ts. Local walk-up
+// (previously 28 lines here, cached at module load via `const findProjectRoot()`)
+// was a regression-prone pattern — cached root stales under Claude Code CWD
+// drift. Call findProjectRoot() per-invocation instead.
+import { type MCPTool, findProjectRoot } from './types.js';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const CLI_ROOT = join(__dirname, '../../..');
-
-/**
- * Find the project root by looking for .claude/ directory.
- * Tries CWD first (most common), then walks up from the CLI package location.
- */
-function findProjectRoot(): string {
-  // Strategy 1: CWD (most reliable when invoked by user)
-  if (existsSync(join(getProjectCwd(), '.claude'))) {
-    return getProjectCwd();
-  }
-
-  // Strategy 2: Walk up from CLI package location
-  // CLI is at v3/@claude-flow/cli/ — project root is 4 levels up
-  const fromPackage = join(CLI_ROOT, '../../../..');
-  if (existsSync(join(fromPackage, '.claude'))) {
-    return fromPackage;
-  }
-
-  // Strategy 3: Walk up from CWD
-  let dir = getProjectCwd();
-  for (let i = 0; i < 10; i++) {
-    if (existsSync(join(dir, '.claude'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  // Fallback: CWD
-  return getProjectCwd();
-}
-
-const PROJECT_ROOT = findProjectRoot();
+import { join } from 'node:path';
 
 // ── Capability Catalog ──────────────────────────────────────
 
@@ -314,7 +281,7 @@ const WORKFLOW_TEMPLATES: Record<string, { steps: string[]; agents: string[]; to
 // ── Dynamic Discovery ───────────────────────────────────────
 
 function discoverAgents(): string[] {
-  const agentsDir = join(PROJECT_ROOT, '.claude/agents');
+  const agentsDir = join(findProjectRoot(), '.claude/agents');
   if (!existsSync(agentsDir)) return [];
 
   const agents: string[] = [];
@@ -337,7 +304,7 @@ function discoverAgents(): string[] {
 }
 
 function discoverSkills(): string[] {
-  const skillsDir = join(PROJECT_ROOT, '.claude/skills');
+  const skillsDir = join(findProjectRoot(), '.claude/skills');
   if (!existsSync(skillsDir)) return [];
 
   const skills: string[] = [];

@@ -9,7 +9,7 @@
  * - os module for system information
  */
 
-import { type MCPTool, getProjectCwd } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,7 +47,7 @@ interface SystemMetrics {
 }
 
 function getSystemDir(): string {
-  return join(getProjectCwd(), STORAGE_DIR, SYSTEM_DIR);
+  return join(findProjectRoot(), STORAGE_DIR, SYSTEM_DIR);
 }
 
 function getMetricsPath(): string {
@@ -198,7 +198,7 @@ export const systemTools: MCPTool[] = [
       // Fallback: JSON store files (backward compatibility)
       if (_metricsSource === 'none') {
         try {
-          const agentStorePath = join(getProjectCwd(), STORAGE_DIR, 'agents', 'store.json');
+          const agentStorePath = join(findProjectRoot(), STORAGE_DIR, 'agents', 'store.json');
           if (existsSync(agentStorePath)) {
             const agentStore = JSON.parse(readFileSync(agentStorePath, 'utf-8'));
             const agents = Object.values(agentStore.agents || {}) as Array<{ status: string }>;
@@ -210,7 +210,7 @@ export const systemTools: MCPTool[] = [
           }
         } catch { /* agent store not available */ }
         try {
-          const taskStorePath = join(getProjectCwd(), STORAGE_DIR, 'tasks', 'store.json');
+          const taskStorePath = join(findProjectRoot(), STORAGE_DIR, 'tasks', 'store.json');
           if (existsSync(taskStorePath)) {
             const taskStore = JSON.parse(readFileSync(taskStorePath, 'utf-8'));
             const tasks = Object.values(taskStore.tasks || {}) as Array<{ status: string }>;
@@ -293,7 +293,7 @@ export const systemTools: MCPTool[] = [
     handler: async (input) => {
       const metrics = loadMetrics();
       const checks: Array<{ name: string; status: string; latency?: number; message?: string }> = [];
-      const projectCwd = getProjectCwd();
+      const projectCwd = findProjectRoot();
 
       // Memory DB check — verify the store file exists
       {
@@ -426,7 +426,7 @@ export const systemTools: MCPTool[] = [
         platform: process.platform,
         arch: process.arch,
         pid: process.pid,
-        cwd: getProjectCwd(),
+        cwd: findProjectRoot(),
         env: process.env.NODE_ENV || 'development',
         features: {
           swarm: true,
@@ -555,7 +555,7 @@ export const systemTools: MCPTool[] = [
     },
     handler: async () => {
       // Read from the task store file
-      const storePath = join(getProjectCwd(), '.claude-flow', 'tasks', 'store.json');
+      const storePath = join(findProjectRoot(), '.claude-flow', 'tasks', 'store.json');
       let tasks: Array<{ status: string }> = [];
       try {
         if (existsSync(storePath)) {

@@ -6,7 +6,7 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { type MCPTool, getProjectCwd } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -45,7 +45,7 @@ interface WorkflowStore {
 }
 
 function getWorkflowDir(): string {
-  return join(getProjectCwd(), STORAGE_DIR, WORKFLOW_DIR);
+  return join(findProjectRoot(), STORAGE_DIR, WORKFLOW_DIR);
 }
 
 function getWorkflowPath(): string {

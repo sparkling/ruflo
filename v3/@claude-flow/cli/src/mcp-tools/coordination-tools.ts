@@ -9,7 +9,7 @@
  * - Useful for single-machine workflow orchestration
  */
 
-import { type MCPTool, getProjectCwd } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -77,7 +77,7 @@ interface CoordinationStore {
 }
 
 function getCoordDir(): string {
-  return join(getProjectCwd(), STORAGE_DIR, COORD_DIR);
+  return join(findProjectRoot(), STORAGE_DIR, COORD_DIR);
 }
 
 function getCoordPath(): string {

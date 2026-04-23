@@ -9,7 +9,7 @@
  * - For real GitHub operations, use `gh` CLI or GitHub MCP server
  */
 
-import { type MCPTool, getProjectCwd } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -40,7 +40,7 @@ interface GitHubStore {
 }
 
 function getGitHubDir(): string {
-  return join(getProjectCwd(), STORAGE_DIR, GITHUB_DIR);
+  return join(findProjectRoot(), STORAGE_DIR, GITHUB_DIR);
 }
 
 function getGitHubPath(): string {
