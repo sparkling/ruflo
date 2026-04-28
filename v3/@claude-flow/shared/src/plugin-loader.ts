@@ -15,6 +15,7 @@ import type {
 } from './plugin-interface.js';
 import { PluginError } from './plugin-interface.js';
 import type { PluginRegistry } from './plugin-registry.js';
+import { SandboxedPluginRunner } from './plugin-sandbox.js';
 
 /**
  * Plugin loader configuration
@@ -324,10 +325,38 @@ export class PluginLoader {
   private async initializePlugin(plugin: ClaudeFlowPlugin, context: PluginContext): Promise<void> {
     this.registry.updatePluginState(plugin.name, 'initializing');
 
+    // CRIT-02: Route to sandboxed or full context based on trust level.
+    // Hand-merged from upstream f3cc99d8b — Phase D of ADR-0113. Drops the
+    // HIGH-05 env snapshot lines that came with the same hunk: those
+    // reference snapshotProtectedEnv() which is not imported on our W4
+    // HEAD (HIGH-05 is a separate upstream commit, not part of this
+    // cherry-pick).
+    //
+    // Namespace gate: literal `@claude-flow/` here is rewritten to
+    // `@sparkleideas/` by ruflo-patch's codemod at build time (Pass 1
+    // SCOPED_RE in scripts/codemod.mjs). Source stays @claude-flow/ on
+    // fork; published artifact gates on @sparkleideas/.
+    let effectiveContext = context;
+    let trustLevel = plugin.trustLevel ?? 'unverified';
+    if ((trustLevel === 'official' || trustLevel === 'verified') &&
+        !plugin.name.startsWith('@claude-flow/')) {
+      trustLevel = 'unverified';
+    }
+    if (trustLevel === 'community' || trustLevel === 'unverified') {
+      const sandbox = new SandboxedPluginRunner({
+        timeout: this.config.initializationTimeout,
+      });
+      effectiveContext = sandbox.createRestrictedContext(
+        context,
+        plugin.permissions ?? {},
+        plugin.name,
+      );
+    }
+
     try {
       // Run initialization with timeout
       await this.withTimeout(
-        plugin.initialize(context),
+        plugin.initialize(effectiveContext),
         this.config.initializationTimeout,
         `Plugin '${plugin.name}' initialization timed out`
       );
