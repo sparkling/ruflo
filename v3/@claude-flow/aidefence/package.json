@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/aidefence",
-  "version": "3.0.2-patch.230",
+  "version": "3.0.2-patch.365",
   "description": "AI Manipulation Defense System (AIMDS) with self-learning, prompt injection detection, and vector search integration",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "agentdb": "3.0.0-alpha.10-patch.213"
+    "agentdb": "3.0.0-alpha.10-patch.346"
   },
   "peerDependenciesMeta": {
     "agentdb": {
