@@ -19,6 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { IStorageContract } from '@claude-flow/memory/storage.js';
+import { findProjectRoot } from '../mcp-tools/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -201,12 +202,12 @@ let _embeddingsJsonWarned = false;
 let _lockPath: string | null = null;
 
 function _findProjectRoot(): string {
-  let dir = process.cwd();
+  let dir = findProjectRoot();
   while (dir !== path.dirname(dir)) {
     if (fs.existsSync(path.join(dir, '.claude-flow'))) return dir;
     dir = path.dirname(dir);
   }
-  return process.cwd();
+  return findProjectRoot();
 }
 
 /**
@@ -270,7 +271,7 @@ function _resolveDatabasePath(configuredPath: string): string {
 
 function _readProjectConfig(): Record<string, unknown> {
   try {
-    const cfgPath = path.join(process.cwd(), '.claude-flow', 'config.json');
+    const cfgPath = path.join(findProjectRoot(), '.claude-flow', 'config.json');
     if (fs.existsSync(cfgPath)) {
       return JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
     }
@@ -309,11 +310,11 @@ function _getConfigSwarmDir(): string {
 }
 
 function _getDbPath(customPath?: string): string {
-  const swarmDir = path.resolve(process.cwd(), _getConfigSwarmDir());
+  const swarmDir = path.resolve(findProjectRoot(), _getConfigSwarmDir());
   if (!customPath) return path.join(swarmDir, 'memory.db');
   if (customPath === ':memory:') return ':memory:';
   const resolved = path.resolve(customPath);
-  const cwd = process.cwd();
+  const cwd = findProjectRoot();
   if (!resolved.startsWith(cwd)) {
     return path.join(swarmDir, 'memory.db');
   }
