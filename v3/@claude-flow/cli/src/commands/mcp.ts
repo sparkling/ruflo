@@ -103,7 +103,9 @@ const startCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     // ADR-0069 A6: config-chain ports
-    const port = (ctx.flags.port as number) ?? parseInt(process.env.MCP_PORT || '', 10) || 3000;
+    // Parens disambiguate ??/||: use explicit flag, else env (default 3000).
+    // tsc TS5076 + Node SyntaxError without parens.
+    const port = (ctx.flags.port as number) ?? (parseInt(process.env.MCP_PORT || '', 10) || 3000);
     const host = (ctx.flags.host as string) ?? 'localhost';
     const transport = (ctx.flags.transport as 'stdio' | 'http' | 'websocket') ?? 'stdio';
     const tools = (ctx.flags.tools as string) || 'all';

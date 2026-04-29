@@ -42,7 +42,7 @@ interface ClaimsStore {
 }
 
 // File-based persistence
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync } from 'fs';
 import { join, resolve } from 'path';
 
 const CLAIMS_DIR = '.claude-flow/claims';
@@ -74,6 +74,40 @@ function loadClaims(): ClaimsStore {
 function saveClaims(store: ClaimsStore): void {
   ensureClaimsDir();
   writeFileSync(getClaimsPath(), JSON.stringify(store, null, 2), 'utf-8');
+}
+
+// ADR-0094 P9: cross-process mutual exclusion for read-modify-write
+// sequences (claim, release, handoff). Without this, 6 parallel
+// `claims_claim` processes all read an empty store, all write their claim,
+// and all return success=true — violating the "exactly one winner" invariant.
+// Uses O_EXCL lockfile (POSIX-portable atomic test-and-set). Spins with
+// bounded retry; loud failure on lock-acquisition timeout.
+function withClaimsLock<T>(fn: () => T): T {
+  ensureClaimsDir();
+  const lockPath = getClaimsPath() + '.lock';
+  const deadline = Date.now() + 5000; // 5s ceiling
+  let fd: number | undefined;
+  for (;;) {
+    try {
+      fd = openSync(lockPath, 'wx'); // O_WRONLY|O_CREAT|O_EXCL
+      break;
+    } catch (e: any) {
+      if (e?.code !== 'EEXIST') throw e;
+      if (Date.now() >= deadline) {
+        // Stale lock: a previous process crashed without releasing. Steal.
+        try { unlinkSync(lockPath); } catch { /* race lost; retry */ }
+        continue;
+      }
+      // Brief busy-wait — retries are cheap; lock holds are sub-ms.
+      const t = Date.now() + 1; while (Date.now() < t) { /* spin */ }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try { unlinkSync(lockPath); } catch { /* already removed */ }
+  }
 }
 
 function formatClaimant(claimant: Claimant): string {
@@ -145,37 +179,40 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format. Use "human:userId:name" or "agent:agentId:agentType"' };
       }
 
-      const store = loadClaims();
+      // ADR-0094 P9: read-check-write under file lock so 6 parallel
+      // `claims_claim` against the same issue produce exactly one winner.
+      return withClaimsLock(() => {
+        const store = loadClaims();
 
-      // Check if already claimed
-      if (store.claims[issueId]) {
-        const existing = store.claims[issueId];
-        return {
-          success: false,
-          error: `Issue already claimed by ${formatClaimant(existing.claimant)}`,
-          existingClaim: existing,
+        if (store.claims[issueId]) {
+          const existing = store.claims[issueId];
+          return {
+            success: false,
+            error: `Issue already claimed by ${formatClaimant(existing.claimant)}`,
+            existingClaim: existing,
+          };
+        }
+
+        const now = new Date().toISOString();
+        const claim: IssueClaim = {
+          issueId,
+          claimant,
+          claimedAt: now,
+          status: 'active',
+          statusChangedAt: now,
+          progress: 0,
+          context,
         };
-      }
 
-      const now = new Date().toISOString();
-      const claim: IssueClaim = {
-        issueId,
-        claimant,
-        claimedAt: now,
-        status: 'active',
-        statusChangedAt: now,
-        progress: 0,
-        context,
-      };
+        store.claims[issueId] = claim;
+        saveClaims(store);
 
-      store.claims[issueId] = claim;
-      saveClaims(store);
-
-      return {
-        success: true,
-        claim,
-        message: `Issue ${issueId} claimed by ${formatClaimant(claimant)}`,
-      };
+        return {
+          success: true,
+          claim,
+          message: `Issue ${issueId} claimed by ${formatClaimant(claimant)}`,
+        };
+      });
     },
   },
 
