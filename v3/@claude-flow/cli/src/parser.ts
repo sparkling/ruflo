@@ -95,6 +95,18 @@ export class CommandParser {
         description: 'Enable interactive mode',
         type: 'boolean',
         default: true
+      },
+      // ADR-0104 §1: hoisted to globals so the boolean flag set is populated
+      // before lazy-loaded commands (e.g. `hive-mind`) are registered.
+      // Without this, `--non-interactive "obj"` greedy-consumes "obj" as the value.
+      // No `default: false` — that would make applyDefaults inject `nonInteractive: false`
+      // into every command's flags, which trips hard-coded knownFlags allowlists like
+      // `mcp exec` (commands/mcp.ts:567). Absence and `false` are equivalent in callers
+      // that check `flags['non-interactive'] || flags.nonInteractive`.
+      {
+        name: 'non-interactive',
+        description: 'Run in non-interactive mode',
+        type: 'boolean'
       }
     ];
   }

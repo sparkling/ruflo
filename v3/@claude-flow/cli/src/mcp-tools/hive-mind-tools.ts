@@ -4,7 +4,19 @@
  * Tool definitions for collective intelligence and swarm coordination.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+  openSync,
+  closeSync,
+  writeSync,
+  unlinkSync,
+  statSync,
+  constants as fsConstants,
+} from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
 
@@ -189,7 +201,62 @@ function loadHiveState(): HiveState {
 function saveHiveState(state: HiveState): void {
   ensureHiveDir();
   state.updatedAt = new Date().toISOString();
-  writeFileSync(getHivePath(), JSON.stringify(state, null, 2), 'utf-8');
+  // ADR-0104 §5: atomic write (tmp + rename) — prevents partial writes / torn JSON
+  // when contended with concurrent readers. Pairs with withHiveStoreLock for writers.
+  const path = getHivePath();
+  const tmp = `${path}.tmp.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
+  renameSync(tmp, path);
+}
+
+// ADR-0104 §5: cross-process file lock for hive-state.json read-modify-write,
+// modeled on ADR-0098's swarm-state lock. O_EXCL sentinel + stale-lock recovery.
+async function withHiveStoreLock<T>(fn: () => Promise<T>): Promise<T> {
+  const lockPath = `${getHivePath()}.lock`;
+  const MAX_WAIT_MS = 5000;
+  const POLL_MS = 50;
+  const STALE_LOCK_MS = 30_000;
+  const deadline = Date.now() + MAX_WAIT_MS;
+
+  ensureHiveDir();
+
+  // Acquire
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const fd = openSync(
+        lockPath,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+        0o600,
+      );
+      writeSync(fd, `${process.pid}\n${Date.now()}\n`);
+      closeSync(fd);
+      break;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'EEXIST') {
+        try {
+          const stat = statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+            try { unlinkSync(lockPath); } catch { /* ignore */ }
+            continue;
+          }
+        } catch { /* lockfile vanished between check and stat — retry */ }
+        if (Date.now() > deadline) {
+          throw new Error(`Timeout waiting for hive-state lock after ${MAX_WAIT_MS}ms`);
+        }
+        await new Promise(r => setTimeout(r, POLL_MS));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try { unlinkSync(lockPath); } catch { /* already removed */ }
+  }
 }
 
 // Import agent store helpers for spawn functionality
@@ -910,12 +977,13 @@ export const hiveMindTools: MCPTool[] = [
       required: ['action'],
     },
     handler: async (input) => {
-      const state = loadHiveState();
       const action = input.action as string;
       const key = input.key as string;
 
+      // Read-only paths: no lock needed.
       if (action === 'get') {
         if (!key) return { action, error: 'Key required' };
+        const state = loadHiveState();
         return {
           action,
           key,
@@ -924,36 +992,46 @@ export const hiveMindTools: MCPTool[] = [
         };
       }
 
-      if (action === 'set') {
-        if (!key) return { action, error: 'Key required' };
-        state.sharedMemory[key] = input.value;
-        saveHiveState(state);
-        return {
-          action,
-          key,
-          success: true,
-          updatedAt: new Date().toISOString(),
-        };
-      }
-
-      if (action === 'delete') {
-        if (!key) return { action, error: 'Key required' };
-        const existed = key in state.sharedMemory;
-        delete state.sharedMemory[key];
-        saveHiveState(state);
-        return {
-          action,
-          key,
-          deleted: existed,
-        };
-      }
-
       if (action === 'list') {
+        const state = loadHiveState();
         return {
           action,
           keys: Object.keys(state.sharedMemory),
           count: Object.keys(state.sharedMemory).length,
         };
+      }
+
+      // ADR-0104 §5: load → mutate → save under cross-process lock.
+      // §6's parallel Task workers calling hive-mind_memory({action:'set'})
+      // would race-clobber without this.
+      if (action === 'set') {
+        if (!key) return { action, error: 'Key required' };
+        return withHiveStoreLock(async () => {
+          const state = loadHiveState();
+          state.sharedMemory[key] = input.value;
+          saveHiveState(state);
+          return {
+            action,
+            key,
+            success: true,
+            updatedAt: new Date().toISOString(),
+          };
+        });
+      }
+
+      if (action === 'delete') {
+        if (!key) return { action, error: 'Key required' };
+        return withHiveStoreLock(async () => {
+          const state = loadHiveState();
+          const existed = key in state.sharedMemory;
+          delete state.sharedMemory[key];
+          saveHiveState(state);
+          return {
+            action,
+            key,
+            deleted: existed,
+          };
+        });
       }
 
       return { action, error: 'Unknown action' };

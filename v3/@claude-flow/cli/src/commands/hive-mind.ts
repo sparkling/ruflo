@@ -157,12 +157,25 @@ ${workerTypes.map(type => `• ${type}: ${workerGroups[type].length} agents`).jo
 🎯 YOUR OBJECTIVE:
 ${objective}
 
-⚠️ CRITICAL — TOOL PREFERENCE RULES (#1422):
-• You MUST use Ruflo MCP tools (mcp__ruflo__*) for ALL orchestration tasks
-• Do NOT use Claude native Task/Agent tools for swarm coordination — use mcp__ruflo__agent_spawn, mcp__ruflo__task_assign, etc.
-• Native Claude tools (Read, Write, Edit, Bash, Grep, Glob) should ONLY be used for file operations and shell commands
-• All agent spawning, task assignment, memory, and coordination MUST go through mcp__ruflo__* tools
-• If a Ruflo MCP tool exists for an operation, always prefer it over any native equivalent
+🛠️ TOOL USE (ADR-0104 §6 — reverses #1422):
+• Use Claude Code's Task tool to spawn worker agents in this session.
+• Use Ruflo MCP tools (mcp__ruflo__*) for hive coordination: shared memory
+  (hive-mind_memory), consensus (hive-mind_consensus), broadcasts
+  (hive-mind_broadcast), status (hive-mind_status).
+• Native Claude tools (Read, Write, Edit, Bash, Grep, Glob) are available
+  for orchestration logic.
+
+📝 WORKER COORDINATION CONTRACT (v3):
+When spawning a worker via Task tool, include this contract in its prompt
+verbatim:
+  "Before returning, write your structured output to hive shared memory:
+   mcp__ruflo__hive-mind_memory({action:'set',
+     key:'worker-<your-id>-result',
+     value:<your output>})
+   Then return a 1-line summary."
+This contract replaces v2's 'coordinate via hooks' idiom — v3 hooks are
+for learning, not coordination, so workers must write coordination state
+explicitly via MCP.
 
 💡 COORDINATION TIPS:
 • Use mcp__ruflo__hive-mind_broadcast for swarm-wide announcements
@@ -644,8 +657,9 @@ const spawnCommand: Command = {
       });
 
       output.writeln();
-      output.printSuccess(`Spawned ${result.spawned} agent(s)`);
-      output.writeln(output.dim(`  Total workers in hive: ${result.totalWorkers}`));
+      output.printSuccess(`Registered ${result.spawned} worker slot(s) in hive state`);
+      output.writeln(output.dim(`  Total worker slots: ${result.totalWorkers}`));
+      output.writeln(output.dim('  Note: slots are state records — actual worker processes are launched by the Queen via --claude'));
 
       // NEW: Handle --claude flag
       if (launchClaude) {
@@ -659,8 +673,11 @@ const spawnCommand: Command = {
 
         if (!objective) {
           output.writeln();
-          output.printWarning('No objective provided. Using default objective.');
-          objective = 'Coordinate the hive mind workers to complete tasks efficiently.';
+          output.printError('Objective is required when using --claude.');
+          output.writeln(output.dim('  Provide an objective via -o/--objective="..." (recommended) or as a positional argument.'));
+          output.writeln(output.dim('  Note: positional objectives must come BEFORE flags, otherwise the parser may consume them as flag values.'));
+          output.writeln(output.dim('  Example: claude-flow hive-mind spawn -o "Build a REST API" --claude --non-interactive'));
+          return { success: false, exitCode: 1 };
         }
 
         // Get hive status for swarm info
