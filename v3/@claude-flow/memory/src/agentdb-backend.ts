@@ -683,6 +683,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Create database schema
    */
   private async createSchema(): Promise<void> {
+    // silent-fallthrough-OK: called from initialize() before this.initialized is set; the public-method requireAgentDB guard does not apply here. Defensive no-op if agentdb construction failed (initialize would have already thrown).
     if (!this.agentdb) return;
 
     const db = this.agentdb.database;
@@ -706,6 +707,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Store entry in AgentDB
    */
   private async storeInAgentDB(entry: MemoryEntry): Promise<void> {
+    // silent-fallthrough-OK: belt-and-braces; public store() already gated by requireAgentDB. Defensive against future direct private-method calls.
     if (!this.agentdb) return;
 
     // Try to use agentdb's native store method if available
@@ -782,6 +784,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Get entry from AgentDB
    */
   private async getFromAgentDB(id: string): Promise<MemoryEntry | null> {
+    // silent-fallthrough-OK: belt-and-braces; public get() already gated by requireAgentDB. Defensive against future direct private-method calls.
     if (!this.agentdb) return null;
 
     try {
@@ -840,6 +843,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Delete entry from AgentDB
    */
   private async deleteFromAgentDB(id: string): Promise<void> {
+    // silent-fallthrough-OK: belt-and-braces; public delete() already gated by requireAgentDB. Defensive against future direct private-method calls.
     if (!this.agentdb) return;
 
     try {

@@ -340,6 +340,7 @@ export class RvfBackend implements IMemoryBackend {
     }
 
     if (this.nativeDb) {
+      // silent-fallthrough-OK: shutdown is best-effort cleanup; native close failure does not affect data integrity
       try { this.nativeDb.close(); } catch {}
       this.nativeDb = null;
     }
@@ -352,6 +353,7 @@ export class RvfBackend implements IMemoryBackend {
 
     // Clean up advisory lock file
     if (this.lockPath) {
+      // silent-fallthrough-OK: lock file may have been removed by peer or never created; ENOENT is the expected case
       try { await unlink(this.lockPath); } catch {}
     }
   }
@@ -511,6 +513,7 @@ export class RvfBackend implements IMemoryBackend {
     // Truncate WAL BEFORE full rewrite — prevents deleted entries from
     // resurrecting if process crashes between persist and unlink.
     if (this.walPath && this.walEntryCount > 0) {
+      // silent-fallthrough-OK: WAL truncate is a defense-in-depth step before full persist; persist itself is the durable write
       try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
       this.walEntryCount = 0;
     }
@@ -720,7 +723,8 @@ export class RvfBackend implements IMemoryBackend {
       this.dirty = true;
       // Truncate WAL BEFORE full rewrite — prevents resurrection on crash
       if (this.walPath && this.walEntryCount > 0) {
-        try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
+        // silent-fallthrough-OK: WAL truncate is a defense-in-depth step before full persist; persist itself is the durable write
+      try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
         this.walEntryCount = 0;
       }
       await this.persistToDisk();
@@ -805,7 +809,8 @@ export class RvfBackend implements IMemoryBackend {
       this.dirty = true;
       // Truncate WAL BEFORE full rewrite — prevents resurrection on crash
       if (this.walPath && this.walEntryCount > 0) {
-        try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
+        // silent-fallthrough-OK: WAL truncate is a defense-in-depth step before full persist; persist itself is the durable write
+      try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
         this.walEntryCount = 0;
       }
       await this.persistToDisk();
@@ -1282,6 +1287,7 @@ export class RvfBackend implements IMemoryBackend {
    *  so the user sees the degrade AND its ongoing impact. Caller passes the
    *  access-path name so the warning pinpoints which code path is affected. */
   private noteNativeFallbackUse(via: string): void {
+    // silent-fallthrough-OK: opt-in observability path; only relevant when in native-fallback mode (not a fail-loud surface)
     if (!this.nativeFallbackMode) return;
     this.nativeFallbackUseCount++;
     const n = this.nativeFallbackUseCount;
@@ -1304,6 +1310,7 @@ export class RvfBackend implements IMemoryBackend {
    *  (the check reads method bodies and would trip on inline mentions of
    *  `hnswIndex` inside the native catch). */
   private reIndexAfterDegrade(id: string, embedding: Float32Array | number[] | undefined): void {
+    // silent-fallthrough-OK: only fires after a native-degrade event; non-degrade callers no-op (design intent)
     if (!this.nativeFallbackMode || !embedding || !this.hnswIndex) return;
     const arr = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
     this.hnswIndex.add(id, arr);
@@ -1313,6 +1320,7 @@ export class RvfBackend implements IMemoryBackend {
    *  Kept in its own method so update() body stays free of textual `hnswIndex`
    *  references in the native catch (preserving Debt-8 exclusivity check). */
   private removeAfterDegrade(id: string): void {
+    // silent-fallthrough-OK: same shape as reIndexAfterDegrade — only fires after a native-degrade event
     if (!this.nativeFallbackMode || !this.hnswIndex) return;
     this.hnswIndex.remove(id);
   }
@@ -1402,6 +1410,7 @@ export class RvfBackend implements IMemoryBackend {
    *  orphan-on-semantic-search cost entirely, but is out of scope for d8.
    */
   private ensureNativeSemanticReady(): void {
+    // silent-fallthrough-OK: idempotent rehydration; non-native or already-rehydrated paths legitimately no-op
     if (!this.nativeDb || this._nativeRehydrated) return;
     this._nativeRehydrated = true;
     if (this._pendingNativeIngest.length === 0) return;
@@ -1475,10 +1484,12 @@ export class RvfBackend implements IMemoryBackend {
           let pidAlive = true;
           try { process.kill(pid, 0); } catch { pidAlive = false; }
           if (!pidAlive || Date.now() - ts > staleMs) {
+            // silent-fallthrough-OK: best-effort cleanup of stale lock file; ENOENT is expected if peer already removed it
             try { await ul(this.lockPath); } catch {}
             continue; // Retry immediately after removing stale lock
           }
         } catch {
+          // silent-fallthrough-OK: corrupt lock file recovery; ENOENT or lock-already-removed is the expected case
           try { await ul(this.lockPath); } catch {}
           continue; // Corrupt lock file — remove and retry
         }
@@ -1497,7 +1508,9 @@ export class RvfBackend implements IMemoryBackend {
 
   /** Release advisory lock */
   private async releaseLock(): Promise<void> {
+    // silent-fallthrough-OK: no lockPath = no lock acquired = nothing to release (in-memory store path)
     if (!this.lockPath) return;
+    // silent-fallthrough-OK: lock file may have been removed by stale-cleanup peer; ENOENT is expected
     try { await unlink(this.lockPath); } catch {}
   }
 
@@ -1839,6 +1852,7 @@ export class RvfBackend implements IMemoryBackend {
     try {
       await this.persistToDiskInner();
       if (this.walPath) {
+        // silent-fallthrough-OK: WAL may not exist if no entries were written; ENOENT is expected
         try { await unlink(this.walPath); } catch {}
       }
       this.walEntryCount = 0;

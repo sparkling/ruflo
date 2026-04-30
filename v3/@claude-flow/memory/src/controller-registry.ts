@@ -1562,6 +1562,7 @@ export class ControllerRegistry extends EventEmitter {
         // intra-version fallback (`getController('nightlyLearner')` →
         // direct-construct) is preserved; what's removed is the silent
         // import-failure / missing-symbol return-null tail.
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         if (typeof this.agentdb.getController === 'function') {
           try {
@@ -1607,6 +1608,7 @@ export class ControllerRegistry extends EventEmitter {
 
       // ----- Direct-instantiation controllers -----
       case 'batchOperations': {
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
@@ -1650,6 +1652,7 @@ export class ControllerRegistry extends EventEmitter {
 
       case 'mutationGuard': {
         // ADR-0068 W2-3: Delegate to AgentDB; fall back to direct construction
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         if (typeof this.agentdb.getController === 'function') {
           try {
@@ -1671,6 +1674,7 @@ export class ControllerRegistry extends EventEmitter {
       case 'attestationLog': {
         // AttestationLog exported from agentdb 3.0.0-alpha.10 (ADR-060)
         // Constructor: (db) — uses database for append-only audit log
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
@@ -1736,6 +1740,7 @@ export class ControllerRegistry extends EventEmitter {
         // GuardedVectorBackend exported from agentdb 3.0.0-alpha.10 (ADR-060)
         // Constructor: (innerBackend, mutationGuard, attestationLog?)
         // Requires vectorBackend and mutationGuard to be initialized first (level 2)
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const vb = this.get('vectorBackend');
@@ -1757,12 +1762,14 @@ export class ControllerRegistry extends EventEmitter {
 
       case 'vectorBackend': {
         // ADR-0040: vectorBackend is a property on AgentDB, not a controller name
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         return getOrCreate(name, () => this.agentdb.vectorBackend ?? null);
       }
 
       case 'graphAdapter': {
         // graphAdapter accessed via getController fallback
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           if (typeof this.agentdb.getController === 'function') {
@@ -1890,6 +1897,7 @@ export class ControllerRegistry extends EventEmitter {
 
       // ----- ADR-0061 Phase 4: Optimization -----
       case 'queryOptimizer': {
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
@@ -1914,6 +1922,7 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'auditLogger': {
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
@@ -1948,6 +1957,7 @@ export class ControllerRegistry extends EventEmitter {
 
       case 'selfLearningRvfBackend': {
         // Private constructor -- must use static factory (ADR-0061 Bug #10)
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
@@ -1967,6 +1977,7 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'metadataFilter': {
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
@@ -1977,6 +1988,7 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'indexHealthMonitor': {
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');

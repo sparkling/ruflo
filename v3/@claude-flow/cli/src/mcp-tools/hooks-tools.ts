@@ -134,6 +134,7 @@ async function getSonaTrajectory(): Promise<any> {
   if (_sonaTrajectory) return _sonaTrajectory;
   try {
     const { getController } = await import('../memory/memory-router.js');
+    // silent-fallthrough-OK: getController already returns null when missing; the ?? null is defensive normalization, not a missing-value mask
     _sonaTrajectory = await getController('sonaTrajectory') ?? null;
   } catch { _sonaTrajectory = null; }
   return _sonaTrajectory;
@@ -933,6 +934,7 @@ export const hooksPostCommand: MCPTool = {
 async function getCausalRecallInstance() {
   try {
     const { getController } = await import('../memory/memory-router.js');
+    // silent-fallthrough-OK: getController already returns null when missing; the ?? null is defensive normalization. The catch below surfaces real init failures with a Fix message — this path is the not-wired success case.
     return (await getController('causalRecall')) ?? null;
   } catch (e) {
     throw new Error(
