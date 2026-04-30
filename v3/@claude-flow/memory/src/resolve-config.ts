@@ -200,6 +200,10 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
   let pageRankDamping: number = DEFAULT_PAGE_RANK_DAMPING;
   let maxNodes: number = DEFAULT_MAX_NODES;
   let graphSimilarityThreshold: number = DEFAULT_GRAPH_SIMILARITY_THRESHOLD;
+  // HNSW user-overrides (filled from embeddings.json hnsw.{M,efConstruction,efSearch} if present)
+  let hnswMOverride: number | undefined;
+  let hnswEfConstructionOverride: number | undefined;
+  let hnswEfSearchOverride: number | undefined;
 
   // Layer 3: agentdb getEmbeddingConfig() (if available)
   const agentdbCfg = tryAgentdbConfig();
@@ -270,6 +274,12 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
       if (typeof grph.maxNodes === 'number') maxNodes = grph.maxNodes;
       if (typeof grph.similarityThreshold === 'number') graphSimilarityThreshold = grph.similarityThreshold;
     }
+    const hnsw = fileConfig.hnsw as Record<string, unknown> | undefined;
+    if (hnsw) {
+      if (typeof hnsw.M === 'number') hnswMOverride = hnsw.M;
+      if (typeof hnsw.efConstruction === 'number') hnswEfConstructionOverride = hnsw.efConstruction;
+      if (typeof hnsw.efSearch === 'number') hnswEfSearchOverride = hnsw.efSearch;
+    }
   }
 
   // Layer 1: explicit overrides (highest priority)
@@ -300,16 +310,27 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
     }
   }
 
-  // Safety net: never resolve to 384 -- always 768 (ADR-0069)
-  if (dimension === 384) dimension = 768;
+  // Safety net: never resolve to 384 -- always 768 (ADR-0069). When the gate
+  // fires, drop any file-set HNSW overrides too — they were geometrically tied
+  // to the rejected dimension and would mismatch the rewritten 768-dim index.
+  if (dimension === 384) {
+    dimension = 768;
+    hnswMOverride = undefined;
+    hnswEfConstructionOverride = undefined;
+    hnswEfSearchOverride = undefined;
+  }
 
-  // Derive HNSW params from resolved dimension via shared derivation function
+  // Derive HNSW params from resolved dimension via shared derivation function;
+  // user-set values from embeddings.json (hnsw.{M,efConstruction,efSearch}) win.
   const hnswParams: HNSWParams = deriveHNSWParams(dimension, maxEntries);
+  const hnswM = hnswMOverride ?? hnswParams.M;
+  const hnswEfConstruction = hnswEfConstructionOverride ?? hnswParams.efConstruction;
+  const hnswEfSearch = hnswEfSearchOverride ?? hnswParams.efSearch;
 
   const resolved: ResolvedConfig = deepFreeze({
     embedding: { model, dimension, provider },
     storage: { provider: storageProvider, databasePath, walMode, autoPersistInterval },
-    hnsw: { M: hnswParams.M, efConstruction: hnswParams.efConstruction, efSearch: hnswParams.efSearch },
+    hnsw: { M: hnswM, efConstruction: hnswEfConstruction, efSearch: hnswEfSearch },
     memory: { maxEntries, defaultNamespace, dedupThreshold },
     learning: { sonaMode, confidenceDecayRate, accessBoostAmount, consolidationThreshold, ewcLambda },
     graph: { pageRankDamping, maxNodes, similarityThreshold: graphSimilarityThreshold },

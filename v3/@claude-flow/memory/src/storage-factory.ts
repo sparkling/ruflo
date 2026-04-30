@@ -53,6 +53,9 @@ export interface StorageConfig {
   /** HNSW efConstruction — search width during index build */
   hnswEfConstruction?: number;
 
+  /** HNSW efSearch — search width at query time (runtime-tunable) */
+  hnswEfSearch?: number;
+
   /** Max elements the HNSW index can hold (default: 100000) */
   maxElements?: number;
 
@@ -83,6 +86,7 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
     dimensions = 768,
     hnswM,
     hnswEfConstruction,
+    hnswEfSearch,
     maxElements,
     defaultNamespace = 'default',
     autoPersistInterval = 30_000,
@@ -130,6 +134,7 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
       dimensions,
       ...(hnswM !== undefined && { hnswM }),
       ...(hnswEfConstruction !== undefined && { hnswEfConstruction }),
+      ...(hnswEfSearch !== undefined && { hnswEfSearch }),
       ...(maxElements !== undefined && { maxElements }),
       defaultNamespace,
       autoPersistInterval,
@@ -193,6 +198,7 @@ export async function createStorageFromConfig(
     dimensions: resolved.embedding.dimension,
     hnswM: resolved.hnsw.M,
     hnswEfConstruction: resolved.hnsw.efConstruction,
+    hnswEfSearch: resolved.hnsw.efSearch,
     maxElements: resolved.memory.maxEntries,
     defaultNamespace: resolved.memory.defaultNamespace,
     autoPersistInterval: resolved.storage.autoPersistInterval,
