@@ -238,6 +238,33 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
   }
 
   /**
+   * ADR-0112 Phase 2 (AgentDB-backend track): public-method init guard.
+   * Throws AgentDBInitError if `initialize()` has not completed. Applied
+   * at the top of all 9 data-path methods so a caller that forgets to
+   * await initialize() gets a precise error instead of silent in-memory
+   * degradation (the entries Map exists pre-init from the constructor).
+   *
+   * Per Model 1 (ADR-0111 W1.5): a successful initialize() guarantees
+   * this.agentdb is set; failure throws. So after requireAgentDB passes,
+   * `this.agentdb` is guaranteed non-null — the prior `if (!this.agentdb)`
+   * dead branches are now removed.
+   *
+   * The error is named AgentDBInitError so memory-router._isFatalInitError
+   * picks it up via the same name-based discrimination as RvfBackend.
+   */
+  private requireAgentDB(method: string): void {
+    if (!this.initialized || !this.agentdb) {
+      const err = new Error(
+        `AgentDBBackend.${method} called before initialize() — backend is not ` +
+        `initialized. Per ADR-0112, public methods must fail loud rather than ` +
+        `silently degrade to in-memory state. Call initialize() first.`,
+      );
+      err.name = 'AgentDBInitError';
+      throw err;
+    }
+  }
+
+  /**
    * Initialize AgentDB
    *
    * ADR-0111 W1.5 — Model 1 cleanup. Removed the silent
@@ -246,12 +273,12 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * failure indicates a broken install and is fatal.
    *
    * ADR-0111 W1.6 — outer try/catch labels generic Errors as
-   * `AgentDBInitError` so `memory-router.ts` best-effort wrappers (lines
-   * 534/566/698/717) can discriminate and re-throw (instead of swallowing).
-   * Without the label, the W1.5 fail-loud-ness was observable inside this
-   * class but the CLI process never exited non-zero on a broken install.
-   * Pre-existing fatal classes (RvfCorruptError, EmbeddingDimensionError)
-   * keep their names — only generic `Error` instances get relabeled.
+   * `AgentDBInitError` so `memory-router.ts` best-effort wrappers can
+   * discriminate and re-throw (instead of swallowing). Without the label,
+   * the W1.5 fail-loud-ness was observable inside this class but the CLI
+   * process never exited non-zero on a broken install. Pre-existing fatal
+   * classes (RvfCorruptError, EmbeddingDimensionError) keep their names —
+   * only generic `Error` instances get relabeled.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -332,6 +359,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Store a memory entry
    */
   async store(entry: MemoryEntry): Promise<void> {
+    this.requireAgentDB('store');
     // Generate embedding if needed
     if (entry.content && !entry.embedding && this.config.embeddingGenerator) {
       entry.embedding = await this.config.embeddingGenerator(entry.content);
@@ -346,10 +374,9 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
     // Update indexes
     this.updateIndexes(entry);
 
-    // Store in AgentDB if available
-    if (this.agentdb) {
-      await this.storeInAgentDB(entry);
-    }
+    // ADR-0112 Phase 2: requireAgentDB guarantees this.agentdb is set;
+    // dead `if (this.agentdb)` conditional removed.
+    await this.storeInAgentDB(entry);
 
     this.emit('entry:stored', { id: entry.id });
   }
@@ -358,22 +385,20 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Get entry by ID
    */
   async get(id: string): Promise<MemoryEntry | null> {
+    this.requireAgentDB('get');
     // Check in-memory first
     const cached = this.entries.get(id);
     if (cached) return cached;
-
-    // Query AgentDB if available
-    if (this.agentdb) {
-      return this.getFromAgentDB(id);
-    }
-
-    return null;
+    // ADR-0112 Phase 2: requireAgentDB guarantees this.agentdb is set;
+    // dead `if (this.agentdb)` conditional removed.
+    return this.getFromAgentDB(id);
   }
 
   /**
    * Get entry by key
    */
   async getByKey(namespace: string, key: string): Promise<MemoryEntry | null> {
+    this.requireAgentDB('getByKey');
     const keyIndexKey = `${namespace}:${key}`;
     const id = this.keyIndex.get(keyIndexKey);
     if (!id) return null;
@@ -384,6 +409,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Update entry
    */
   async update(id: string, update: MemoryEntryUpdate): Promise<MemoryEntry | null> {
+    this.requireAgentDB('update');
     const entry = this.entries.get(id);
     if (!entry) return null;
 
@@ -419,10 +445,9 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
     entry.updatedAt = Date.now();
     entry.version++;
 
-    // Update in AgentDB
-    if (this.agentdb) {
-      await this.updateInAgentDB(entry);
-    }
+    // ADR-0112 Phase 2: requireAgentDB guarantees this.agentdb is set;
+    // dead `if (this.agentdb)` conditional removed.
+    await this.updateInAgentDB(entry);
 
     this.emit('entry:updated', { id });
     return entry;
@@ -432,6 +457,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Delete entry
    */
   async delete(id: string): Promise<boolean> {
+    this.requireAgentDB('delete');
     const entry = this.entries.get(id);
     if (!entry) return false;
 
@@ -442,10 +468,9 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
     const keyIndexKey = `${entry.namespace}:${entry.key}`;
     this.keyIndex.delete(keyIndexKey);
 
-    // Delete from AgentDB
-    if (this.agentdb) {
-      await this.deleteFromAgentDB(id);
-    }
+    // ADR-0112 Phase 2: requireAgentDB guarantees this.agentdb is set;
+    // dead `if (this.agentdb)` conditional removed.
+    await this.deleteFromAgentDB(id);
 
     this.emit('entry:deleted', { id });
     return true;
@@ -455,6 +480,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Query entries
    */
   async query(query: MemoryQuery): Promise<MemoryEntry[]> {
+    this.requireAgentDB('query');
     const startTime = performance.now();
     let results: MemoryEntry[] = [];
 
@@ -481,15 +507,19 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
     embedding: Float32Array,
     options: SearchOptions
   ): Promise<SearchResult[]> {
+    this.requireAgentDB('search');
     const startTime = performance.now();
 
-    if (!this.agentdb) {
-      // Fallback to brute-force search
-      return this.bruteForceSearch(embedding, options);
-    }
-
+    // ADR-0112 Phase 2: requireAgentDB guarantees this.agentdb is set; the
+    // pre-init "fallback to brute-force" branch removed (was dead under
+    // Model 1).
+    //
+    // Brute-force fallback on AgentDB SEARCH FAILURE (not init failure)
+    // remains: that's intra-store recovery (this.entries is always
+    // synced via store(), so brute-force returns the same data set the
+    // HNSW would have searched). It is NOT a cross-store fallback —
+    // memory.rvf is never consulted from this path.
     try {
-      // Use AgentDB HNSW search
       const results = await this.searchWithAgentDB(embedding, options);
 
       const duration = performance.now() - startTime;
@@ -498,7 +528,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
 
       return results;
     } catch (error) {
-      console.error('AgentDB search failed, falling back to brute-force:', error);
+      console.error('AgentDB search failed, falling back to brute-force (intra-store):', error);
       return this.bruteForceSearch(embedding, options);
     }
   }
@@ -507,6 +537,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Bulk insert
    */
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
+    this.requireAgentDB('bulkInsert');
     for (const entry of entries) {
       await this.store(entry);
     }
@@ -516,6 +547,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * Bulk delete
    */
   async bulkDelete(ids: string[]): Promise<number> {
+    this.requireAgentDB('bulkDelete');
     let deleted = 0;
     for (const id of ids) {
       if (await this.delete(id)) {
