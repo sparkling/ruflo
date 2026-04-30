@@ -1416,18 +1416,17 @@ export async function routePatternOp(op: PatternOp): Promise<MemoryResult> {
         }
       }
 
-      // Fallback: store via routeMemoryOp
-      const result = await routeMemoryOp({
-        type: 'store',
-        key: patternId,
-        value: JSON.stringify({ pattern: op.pattern, type: op.patternType, confidence: op.confidence, metadata: op.metadata }),
-        namespace: 'pattern',
-        generateEmbedding: true,
-        tags: [op.patternType || 'general', 'reasoning-pattern'],
-      });
-      return result.success
-        ? { success: true, patternId, controller: 'router-fallback' }
-        : { success: false, patternId: '', controller: '', error: 'Pattern store unavailable' };
+      // ADR-0112 Phase 1: no silent fallback to RVF when reasoningBank
+      // lacks both `storePattern` and `store`/`add`. The caller invoked an
+      // AgentDB pattern-store tool; routing that write to RVF's `pattern`
+      // namespace violates the per-store partition (cross-store coordination
+      // is forbidden — ADR-0086 §Debt 15 + ADR-0112 §Decision). Fail loud.
+      return {
+        success: false,
+        patternId: '',
+        controller: '',
+        error: 'reasoningBank controller missing both storePattern and store/add methods — pattern store unavailable. Per ADR-0112, no silent fallback to RVF (cross-store coordination forbidden).',
+      };
     }
     case 'search': {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
