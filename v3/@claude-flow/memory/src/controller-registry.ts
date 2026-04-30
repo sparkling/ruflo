@@ -1518,9 +1518,32 @@ export class ControllerRegistry extends EventEmitter {
       case 'learningSystem':
       case 'explainableRecall':
       case 'graphTransformer': {
-        if (!this.agentdb || typeof this.agentdb.getController !== 'function') return null;
+        // ADR-0112 Phase 2 (controller-registry track): in strict mode,
+        // missing-agentdb is a hard failure — silently returning null
+        // masked the data-integrity signal that downstream code (e.g.
+        // memory-router) needs to discriminate. In non-strict mode the
+        // caller-side fallback is preserved (ADR-0085 best-effort
+        // wrappers depend on this).
+        if (!this.agentdb || typeof this.agentdb.getController !== 'function') {
+          if (this.strictMode) {
+            throw new ControllerInitError(
+              name,
+              new Error(`agentdb is unavailable or lacks getController() — required for ${name} controller`),
+            );
+          }
+          return null;
+        }
         try {
-          return getOrCreate(name, () => this.agentdb.getController(name) ?? null);
+          return getOrCreate(name, () => {
+            const ctrl = this.agentdb.getController(name);
+            if (ctrl === null || ctrl === undefined) {
+              if (this.strictMode) {
+                throw new Error(`agentdb.getController('${name}') returned null/undefined`);
+              }
+              return null;
+            }
+            return ctrl;
+          });
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
@@ -1973,27 +1996,40 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       // ----- ADR-0061 Phase 6: Security infrastructure -----
+      // ADR-0112 Phase 2 (controller-registry track): Level-0 mandatory
+      // controllers (resourceTracker, rateLimiter, telemetryManager) MUST
+      // throw on missing-symbol — the system can't function safely without
+      // them. circuitBreaker has its own inline fallback (sibling pattern,
+      // not changed); these three are required to come from agentdb.
       case 'resourceTracker': {
         try {
           const agentdbModule: any = await import('agentdb');
           const RT = agentdbModule.ResourceTracker;
-          if (!RT) return null;
+          if (!RT) {
+            throw new Error('agentdb module loaded but ResourceTracker symbol is missing — version mismatch');
+          }
           return getOrCreate(name, () => new RT());
-        } catch { return null; }
+        } catch (e) {
+          throw new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
+        }
       }
 
       case 'rateLimiter': {
         try {
           const agentdbModule: any = await import('agentdb');
           const RL = agentdbModule.RateLimiter;
-          if (!RL) return null;
+          if (!RL) {
+            throw new Error('agentdb module loaded but RateLimiter symbol is missing — version mismatch');
+          }
           const rlCfg = this.config.rateLimiter || {};
           const maxTokens = rlCfg.maxRequests || 100;
           // ADR-0069 A2: config-chain rate limits
           const windowMs = rlCfg.windowMs || 60000;
           const refillRate = Math.max(1, Math.round(maxTokens / (windowMs / 1000)));
           return getOrCreate(name, () => new RL(maxTokens, refillRate));
-        } catch { return null; }
+        } catch (e) {
+          throw new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
+        }
       }
 
       case 'circuitBreaker': {
@@ -2031,9 +2067,13 @@ export class ControllerRegistry extends EventEmitter {
         try {
           const agentdbModule: any = await import('agentdb');
           const TM = agentdbModule.TelemetryManager;
-          if (!TM) return null;
+          if (!TM) {
+            throw new Error('agentdb module loaded but TelemetryManager symbol is missing — version mismatch');
+          }
           return getOrCreate(name, () => TM.getInstance());
-        } catch { return null; }
+        } catch (e) {
+          throw new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
+        }
       }
 
       default:
