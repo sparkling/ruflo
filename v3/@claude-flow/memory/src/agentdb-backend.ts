@@ -31,6 +31,7 @@ import {
   HNSWStats,
 } from './types.js';
 import { deriveHNSWParams as deriveHNSWParamsShared } from './hnsw-utils.js';
+import { safeJsonParse } from './json-security.js';
 
 // ===== AgentDB Optional Import =====
 
@@ -971,15 +972,15 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
         : undefined,
       type: row.type,
       namespace: row.namespace,
-      tags: JSON.parse(row.tags || '[]'),
-      metadata: JSON.parse(row.metadata || '{}'),
+      tags: safeJsonParse<string[]>(row.tags || '[]'),
+      metadata: safeJsonParse<Record<string, unknown>>(row.metadata || '{}'),
       ownerId: row.owner_id,
       accessLevel: row.access_level,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       expiresAt: row.expires_at,
       version: row.version,
-      references: JSON.parse(row.references || '[]'),
+      references: safeJsonParse<string[]>(row.references || '[]'),
       accessCount: row.access_count || 0,
       lastAccessedAt: row.last_accessed_at || row.created_at,
     };
