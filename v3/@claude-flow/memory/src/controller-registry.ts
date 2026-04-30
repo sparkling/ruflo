@@ -316,6 +316,21 @@ export interface RuntimeConfig {
   /** Embedding model name (default: 'all-mpnet-base-v2') */
   embeddingModel?: string;
 
+  /**
+   * Vector backend selection (ADR-0111 W1.5 — project-rvf-primary).
+   *
+   * - 'ruvector' (preferred): force the native RVF NAPI backend (fail-loud
+   *   if missing — matches RVF-primary stance).
+   * - 'auto': legacy behaviour; agentdb selects based on availability,
+   *   which can silently fall back to hnswlib.
+   * - 'hnswlib': force hnswlib-node (escape hatch for hosts without the
+   *   native binary).
+   *
+   * Default at the registry level: undefined (delegates to agentdb).
+   * Memory-router pins this to 'ruvector'.
+   */
+  vectorBackend?: 'auto' | 'ruvector' | 'hnswlib';
+
   /** HNSW M parameter — max bi-directional links per node (default: 23) */
   hnswM?: number;
 
@@ -977,92 +992,108 @@ export class ControllerRegistry extends EventEmitter {
   }
 
   private async initAgentDB(config: RuntimeConfig): Promise<void> {
-    try {
-      // Validate dbPath to prevent path traversal
-      const dbPath = config.dbPath || ':memory:';
-      if (dbPath !== ':memory:') {
-        // Use dynamic import instead of require() — require() is not defined in ESM
-        // context and silently kills initAgentDB(), disabling all 15+ controllers (#1492).
-        const { resolve: resolvePath } = await import('node:path');
-        const resolved = resolvePath(dbPath);
-        if (resolved.includes('..')) {
-          this.emit('agentdb:unavailable', { reason: 'Invalid dbPath' });
-          return;
-        }
-      }
+    // ADR-0111 W1.5 — Model 1 cleanup. Pre-W1.5 this method wrapped the entire
+    // body in try/catch, emitted 'agentdb:unavailable' on any failure, and
+    // left this.agentdb=null. Per feedback-no-fallbacks, agentdb is a
+    // required dependency and a missing/broken module is FATAL — masking it
+    // here baits the rest of the registry into thinking the no-agentdb path
+    // is load-bearing when it is dead in production.
+    //
+    // Path-traversal validation still emits + returns (genuinely a config
+    // error, not a runtime error). All other failure modes propagate.
 
-      const agentdbModule: any = await import('agentdb');
-      const AgentDBClass = agentdbModule.AgentDB || agentdbModule.default;
-
-      // Cache embedding config for createEmbeddingService() and other consumers
-      if (typeof agentdbModule.getEmbeddingConfig === 'function') {
-        const embCfg = agentdbModule.getEmbeddingConfig();
-        this.embeddingDimension = embCfg.dimension || 0;
-      }
-
-      if (!AgentDBClass) {
-        this.emit('agentdb:unavailable', { reason: 'No AgentDB class found' });
+    // Validate dbPath to prevent path traversal
+    const dbPath = config.dbPath || ':memory:';
+    if (dbPath !== ':memory:') {
+      // Use dynamic import instead of require() — require() is not defined in ESM
+      // context and silently kills initAgentDB(), disabling all 15+ controllers (#1492).
+      const { resolve: resolvePath } = await import('node:path');
+      const resolved = resolvePath(dbPath);
+      if (resolved.includes('..')) {
+        this.emit('agentdb:unavailable', { reason: 'Invalid dbPath' });
         return;
       }
-
-      // ADR-0068 W2-4: Forward full config to AgentDB so it can wire
-      // dimension, embedding model, and HNSW params into its own controllers.
-      // All values read from RuntimeConfig (populated by memory-bridge from
-      // embeddings.json). Fallbacks match the unified all-mpnet-base-v2 model.
-      this.agentdb = new AgentDBClass({
-        dbPath,
-        maxElements: config.maxElements ?? 100000,
-        maxEntries: config.maxEntries ?? 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
-        dimension: config.dimension ?? 768,
-        embeddingModel: config.embeddingModel ?? 'all-mpnet-base-v2',
-        hnswM: config.hnswM ?? 23,
-        hnswEfConstruction: config.hnswEfConstruction ?? 100,
-        hnswEfSearch: config.hnswEfSearch ?? 50,
-        enableGraph: config.controllers?.graphAdapter === true,
-      });
-
-      // Suppress agentdb's noisy info-level output during init
-      // using stderr redirect instead of monkey-patching console.log
-      const origLog = console.log;
-      const suppressFilter = (args: unknown[]) => {
-        const msg = String(args[0] ?? '');
-        return msg.includes('Transformers.js') ||
-               msg.includes('better-sqlite3') ||
-               msg.includes('[AgentDB]');
-      };
-      console.log = (...args: unknown[]) => {
-        if (!suppressFilter(args)) origLog.apply(console, args);
-      };
-      try {
-        await this.agentdb.initialize();
-      } finally {
-        console.log = origLog;
-      }
-      this.emit('agentdb:initialized');
-
-      // ADR-0066: Startup dimension-mismatch detector
-      try {
-        const db = (this.agentdb as any)?.database;
-        if (db) {
-          const row = db.prepare(
-            "SELECT length(embedding) / 4 as dim FROM memory_entries WHERE embedding IS NOT NULL LIMIT 1"
-          ).get() as { dim: number } | undefined;
-          const configuredDim = config.dimension ?? 768;
-          if (row?.dim && row.dim !== configuredDim) {
-            this.emit('controller:warning', {
-              type: 'dimension-mismatch',
-              message: `Existing vectors are ${row.dim}-dim but configured model produces ${configuredDim}-dim. New entries will use ${configuredDim}-dim. Consider re-embedding with: npx @sparkleideas/cli memory migrate --reembed`,
-              existing: row.dim,
-              configured: configuredDim,
-            });
-          }
-        }
-      } catch { /* dimension check non-fatal */ }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.emit('agentdb:unavailable', { reason: msg.substring(0, 200) });
-      this.agentdb = null;
     }
+
+    const agentdbModule: any = await import('agentdb');
+    const AgentDBClass = agentdbModule.AgentDB || agentdbModule.default;
+
+    // Cache embedding config for createEmbeddingService() and other consumers
+    if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+      const embCfg = agentdbModule.getEmbeddingConfig();
+      this.embeddingDimension = embCfg.dimension || 0;
+    }
+
+    if (!AgentDBClass) {
+      // Module loaded but the AgentDB class is absent — this is a version
+      // mismatch with @claude-flow/memory's pin. Fail-loud (Model 1).
+      throw new Error(
+        'agentdb module loaded but did not export an AgentDB class — ' +
+        'package version mismatch (ADR-0111 W1.5)',
+      );
+    }
+
+    // ADR-0068 W2-4: Forward full config to AgentDB so it can wire
+    // dimension, embedding model, and HNSW params into its own controllers.
+    // All values read from RuntimeConfig (populated by memory-bridge from
+    // embeddings.json). Fallbacks match the unified all-mpnet-base-v2 model.
+    this.agentdb = new AgentDBClass({
+      dbPath,
+      maxElements: config.maxElements ?? 100000,
+      maxEntries: config.maxEntries ?? 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
+      dimension: config.dimension ?? 768,
+      embeddingModel: config.embeddingModel ?? 'all-mpnet-base-v2',
+      // ADR-0111 W1.5 — forward vectorBackend pin (project-rvf-primary).
+      // memory-router pins to 'ruvector'; falls through to agentdb default
+      // ('auto') only when no caller forces a value.
+      ...(config.vectorBackend && { vectorBackend: config.vectorBackend }),
+      hnswM: config.hnswM ?? 23,
+      hnswEfConstruction: config.hnswEfConstruction ?? 100,
+      hnswEfSearch: config.hnswEfSearch ?? 50,
+      enableGraph: config.controllers?.graphAdapter === true,
+    });
+
+    // Suppress agentdb's noisy info-level output during init
+    // using stderr redirect instead of monkey-patching console.log
+    const origLog = console.log;
+    const suppressFilter = (args: unknown[]) => {
+      const msg = String(args[0] ?? '');
+      return msg.includes('Transformers.js') ||
+             msg.includes('better-sqlite3') ||
+             msg.includes('[AgentDB]');
+    };
+    console.log = (...args: unknown[]) => {
+      if (!suppressFilter(args)) origLog.apply(console, args);
+    };
+    try {
+      await this.agentdb.initialize();
+    } finally {
+      console.log = origLog;
+    }
+    this.emit('agentdb:initialized');
+
+    // ADR-0066: Startup dimension-mismatch detector — non-fatal observation
+    // path that emits a warning event when persisted vectors don't match the
+    // configured dimension. Catch is deliberate (the SELECT may fail on
+    // legacy schemas, fresh DBs, or non-better-sqlite3 backends — none of
+    // which are fatal init errors).
+    try {
+      const db = (this.agentdb as any)?.database;
+      if (db) {
+        const row = db.prepare(
+          "SELECT length(embedding) / 4 as dim FROM memory_entries WHERE embedding IS NOT NULL LIMIT 1"
+        ).get() as { dim: number } | undefined;
+        const configuredDim = config.dimension ?? 768;
+        if (row?.dim && row.dim !== configuredDim) {
+          this.emit('controller:warning', {
+            type: 'dimension-mismatch',
+            message: `Existing vectors are ${row.dim}-dim but configured model produces ${configuredDim}-dim. New entries will use ${configuredDim}-dim. Consider re-embedding with: npx @sparkleideas/cli memory migrate --reembed`,
+            existing: row.dim,
+            configured: configuredDim,
+          });
+        }
+      }
+    } catch { /* dimension check non-fatal */ }
   }
 
   /**
@@ -1233,7 +1264,11 @@ export class ControllerRegistry extends EventEmitter {
         try {
           const agentdbModule = await import('agentdb');
           const SB = (agentdbModule as any).SolverBandit;
-          if (!SB) return null;
+          // ADR-0111 W1.5 — Model 1: a missing symbol means version mismatch,
+          // which is a fatal install state. Throw explicitly so the outer
+          // strict-mode handler turns it into a ControllerInitError instead
+          // of silently returning null.
+          if (!SB) throw new Error('agentdb does not export SolverBandit (version mismatch)');
           const sbCfg = this.config.solverBandit || {};
           const bandit = new SB({
             costWeight: sbCfg.costWeight ?? 0.01,
@@ -1369,7 +1404,8 @@ export class ControllerRegistry extends EventEmitter {
         try {
           const agentdbModule: any = await import('agentdb');
           const SR = agentdbModule.SemanticRouter;
-          if (!SR) return null;
+          // ADR-0111 W1.5 — Model 1: missing symbol → fatal version mismatch.
+          if (!SR) throw new Error('agentdb does not export SemanticRouter (version mismatch)');
           const router = new SR();
           await router.initialize();
           await this.hydrateSemanticRoutes(router, this.config.dbPath);
@@ -1391,23 +1427,40 @@ export class ControllerRegistry extends EventEmitter {
             if (ctrl) return getOrCreate(name, () => ctrl);
           } catch { /* fall through to direct construction */ }
         }
+        // ADR-0111 W1.5 — Model 1: align with the strict-mode-aware
+        // ControllerInitError pattern used by sibling controllers above.
+        // Pre-W1.5 a missing symbol (`if (!STS) return null`) AND a bare
+        // import-or-construct error (`catch { return null }`) both fell
+        // back silently. Now both surface via ControllerInitError, with
+        // strict-mode-aware throw matching ADR-0049.
         try {
           const agentdbModule: any = await import('agentdb');
           const STS = agentdbModule.SonaTrajectoryService;
-          if (!STS) return null;
+          if (!STS) throw new Error('agentdb does not export SonaTrajectoryService (version mismatch)');
           const svc = new STS();
           if (typeof svc.initialize === 'function') await svc.initialize();
           return getOrCreate(name, () => svc);
-        } catch { return null; }
+        } catch (e) {
+          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
+          this.initErrors.push(err);
+          this.emit('controller:init-error', { name, error: err });
+          if (this.strictMode) throw err;
+          return null;
+        }
 
       case 'hierarchicalMemory': {
         // HierarchicalMemory exported from agentdb 3.0.0-alpha.10 (ADR-066 Phase P2-3)
         // Constructor: (db, embedder, vectorBackend?, graphBackend?, config?)
+        //
+        // ADR-0111 W1.5 — Model 1: missing-symbol returns the in-memory stub
+        // only as a strict-mode-off escape hatch (matches the post-W1.5 catch
+        // semantics). The pre-W1.5 silent `if (!HM) return stub` path is now
+        // a fatal Error in strict mode (default).
         if (!this.agentdb) return this.createTieredMemoryStub();
         try {
           const agentdbModule: any = await import('agentdb');
           const HM = agentdbModule.HierarchicalMemory;
-          if (!HM) return this.createTieredMemoryStub();
+          if (!HM) throw new Error('agentdb does not export HierarchicalMemory (version mismatch)');
           const embedder = this.createEmbeddingService();
           const vb = this.get('vectorBackend');
           const hm = new HM(this.agentdb.database, embedder, vb || undefined);
@@ -1425,14 +1478,19 @@ export class ControllerRegistry extends EventEmitter {
       case 'memoryConsolidation': {
         // MemoryConsolidation exported from agentdb 3.0.0-alpha.10 (ADR-066 Phase P2-3)
         // Constructor: (db, hierarchicalMemory, embedder, vectorBackend?, graphBackend?, config?)
+        //
+        // ADR-0111 W1.5 — Model 1: same treatment as hierarchicalMemory above.
+        // Missing-symbol now throws via the strict-mode-aware path.
         if (!this.agentdb) return this.createConsolidationStub();
         try {
           const agentdbModule: any = await import('agentdb');
           const MC = agentdbModule.MemoryConsolidation;
-          if (!MC) return this.createConsolidationStub();
+          if (!MC) throw new Error('agentdb does not export MemoryConsolidation (version mismatch)');
           // Get the HierarchicalMemory instance (must be initialized at level 1 before us at level 3)
           const hm: any = this.get('hierarchicalMemory');
           if (!hm || typeof hm.recall !== 'function' || typeof hm.store !== 'function') {
+            // hm is missing or stubbed (no recall/store) — log + stub. Not
+            // an agentdb fault, so don't fail-loud here.
             return this.createConsolidationStub();
           }
           const embedder = this.createEmbeddingService();
@@ -1475,6 +1533,12 @@ export class ControllerRegistry extends EventEmitter {
       case 'nightlyLearner': {
         // ADR-0068 W2-3: Delegate to AgentDB first, fall back to direct construction
         // only when AgentDB does not yet expose nightlyLearner.
+        //
+        // ADR-0111 W1.5 — Model 1: align bare-catch silent paths with the
+        // strict-mode-aware ControllerInitError pattern. The ADR-0068 W2-3
+        // intra-version fallback (`getController('nightlyLearner')` →
+        // direct-construct) is preserved; what's removed is the silent
+        // import-failure / missing-symbol return-null tail.
         if (!this.agentdb) return null;
         if (typeof this.agentdb.getController === 'function') {
           try {
@@ -1486,7 +1550,7 @@ export class ControllerRegistry extends EventEmitter {
         try {
           const agentdbModule: any = await import('agentdb');
           const NL = agentdbModule.NightlyLearner;
-          if (!NL) return null;
+          if (!NL) throw new Error('agentdb does not export NightlyLearner (version mismatch)');
           // ADR-0062 P3-4: Enable flash consolidation when AttentionService
           // was successfully initialized at Level 2
           const hasAttention = this.controllers.get('attentionService')?.enabled === true;
@@ -1509,7 +1573,13 @@ export class ControllerRegistry extends EventEmitter {
             this.get('reflexion') || undefined,
             this.get('skills') || undefined,
           ));
-        } catch { return null; }
+        } catch (e) {
+          const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
+          this.initErrors.push(err);
+          this.emit('controller:init-error', { name, error: err });
+          if (this.strictMode) throw err;
+          return null;
+        }
       }
 
       // ----- Direct-instantiation controllers -----

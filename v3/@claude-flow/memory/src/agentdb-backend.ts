@@ -45,16 +45,18 @@ let agentdbImportPromise: Promise<void> | undefined;
 
 function ensureAgentDBImport(): Promise<void> {
   if (!agentdbImportPromise) {
+    // ADR-0111 W1.5 — Model 1: agentdb is a required dependency. The
+    // previous try/catch silently swallowed import failures and degraded to
+    // an in-memory fallback path that was dead in production (the orchestrator
+    // path through /tmp/ruflo-build + Verdaccio install always has agentdb).
+    // Per feedback-no-fallbacks, let import failure propagate so a broken
+    // install fails loudly instead of pretending to work.
     agentdbImportPromise = (async () => {
-      try {
-        const agentdbModule: any = await import('agentdb');
-        AgentDB = agentdbModule.AgentDB || agentdbModule.default;
-        HNSWIndex = agentdbModule.HNSWIndex;
-        isHnswlibAvailable = agentdbModule.isHnswlibAvailable;
-        deriveHNSWParamsFn = agentdbModule.deriveHNSWParams;
-      } catch (error) {
-        // AgentDB not available - will use fallback
-      }
+      const agentdbModule: any = await import('agentdb');
+      AgentDB = agentdbModule.AgentDB || agentdbModule.default;
+      HNSWIndex = agentdbModule.HNSWIndex;
+      isHnswlibAvailable = agentdbModule.isHnswlibAvailable;
+      deriveHNSWParamsFn = agentdbModule.deriveHNSWParams;
     })();
   }
   return agentdbImportPromise;
@@ -140,7 +142,14 @@ function getDefaultConfig(): typeof FALLBACK_CONFIG {
   return FALLBACK_CONFIG;
 }
 
-// Kick off async resolution early (non-blocking)
+// Kick off async resolution early (non-blocking).
+//
+// ADR-0111 W1.5 — module-load-time best-effort: if either `agentdb`
+// (required) or `@claude-flow/agentdb` (optional config-chain helper) is
+// unavailable here, fall back to the in-process FALLBACK_CONFIG and let the
+// per-instance `initialize()` raise the fatal error at the proper site.
+// Throwing at module-load would crash any consumer that imports the file,
+// even ones that never construct an AgentDBBackend.
 (async () => {
   if (_backendResolvePromise) return _backendResolvePromise;
   _backendResolvePromise = (async () => {
@@ -160,7 +169,7 @@ function getDefaultConfig(): typeof FALLBACK_CONFIG {
         };
         return _backendResolvedDefaults;
       }
-    } catch { /* config chain unavailable */ }
+    } catch { /* fatal init reported at instance time, not module-load */ }
     _backendResolvedDefaults = { ...FALLBACK_CONFIG };
     return _backendResolvedDefaults;
   })();
@@ -196,9 +205,10 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
   };
   private agentdb: any;
   private initialized: boolean = false;
-  private available: boolean = false;
 
-  // In-memory storage for compatibility
+  // In-memory storage used as primary cache; agentdb is the persistence
+  // layer (write-through). ADR-0111 W1.5 — these maps are NOT a fallback for
+  // a missing agentdb; the class always uses both side-by-side.
   private entries: Map<string, MemoryEntry> = new Map();
   private namespaceIndex: Map<string, Set<string>> = new Map();
   private keyIndex: Map<string, string> = new Map();
@@ -224,67 +234,64 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
     if (config.hnswEfConstruction === undefined) merged.hnswEfConstruction = derived.efConstruction;
     if (config.hnswEfSearch === undefined) merged.hnswEfSearch = derived.efSearch;
     this.config = merged;
-    this.available = false; // Will be set during initialization
   }
 
   /**
    * Initialize AgentDB
+   *
+   * ADR-0111 W1.5 — Model 1 cleanup. Removed the silent
+   * "available=false → in-memory fallback" early-return and the outer catch
+   * that swallowed init failures. Per feedback-no-fallbacks, agentdb-init
+   * failure indicates a broken install and is fatal.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Try to import AgentDB
+    // ensureAgentDBImport throws on import failure (Model 1 — no silent
+    // fallback). If `AgentDB` is still undefined after the import, the
+    // package shipped without the expected export — also fatal.
     await ensureAgentDBImport();
-
-    this.available = AgentDB !== undefined;
-
-    if (!this.available) {
-      console.warn('AgentDB not available, using fallback in-memory storage');
-      this.initialized = true;
-      return;
+    if (AgentDB === undefined) {
+      throw new Error(
+        'agentdb module loaded but did not export AgentDB class — ' +
+        'version mismatch with @claude-flow/memory (ADR-0111 W1.5)',
+      );
     }
 
+    // Initialize AgentDB with config
+    this.agentdb = new AgentDB({
+      dbPath: this.config.dbPath || ':memory:',
+      namespace: this.config.namespace,
+      forceWasm: this.config.forceWasm,
+      vectorBackend: this.config.vectorBackend,
+      vectorDimension: this.config.vectorDimension,
+    });
+
+    // Suppress agentdb's noisy console.log during init
+    // (EmbeddingService, AgentDB core emit info-level logs we don't need)
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => {
+      const msg = String(args[0] ?? '');
+      if (msg.includes('Transformers.js loaded') ||
+          msg.includes('Using better-sqlite3') ||
+          msg.includes('better-sqlite3 unavailable') ||
+          msg.includes('[AgentDB]')) return;
+      origLog.apply(console, args);
+    };
     try {
-      // Initialize AgentDB with config
-      this.agentdb = new AgentDB({
-        dbPath: this.config.dbPath || ':memory:',
-        namespace: this.config.namespace,
-        forceWasm: this.config.forceWasm,
-        vectorBackend: this.config.vectorBackend,
-        vectorDimension: this.config.vectorDimension,
-      });
-
-      // Suppress agentdb's noisy console.log during init
-      // (EmbeddingService, AgentDB core emit info-level logs we don't need)
-      const origLog = console.log;
-      console.log = (...args: unknown[]) => {
-        const msg = String(args[0] ?? '');
-        if (msg.includes('Transformers.js loaded') ||
-            msg.includes('Using better-sqlite3') ||
-            msg.includes('better-sqlite3 unavailable') ||
-            msg.includes('[AgentDB]')) return;
-        origLog.apply(console, args);
-      };
-      try {
-        await this.agentdb.initialize();
-      } finally {
-        console.log = origLog;
-      }
-
-      // Create memory_entries table if it doesn't exist
-      await this.createSchema();
-
-      this.initialized = true;
-      this.emit('initialized', {
-        backend: this.agentdb.vectorBackendName,
-        isWasm: this.agentdb.isWasm,
-      });
-    } catch (error) {
-      console.error('Failed to initialize AgentDB:', error);
-      this.available = false;
-      this.initialized = true;
-      this.emit('initialization:failed', { error });
+      await this.agentdb.initialize();
+    } finally {
+      console.log = origLog;
     }
+
+    // Create memory_entries table if it doesn't exist
+    await this.createSchema();
+
+    this.initialized = true;
+    this.emit('initialized', {
+      backend: this.agentdb.vectorBackendName,
+      isWasm: this.agentdb.isWasm,
+    });
   }
 
   /**
@@ -592,40 +599,21 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
 
   /**
    * Health check
+   *
+   * ADR-0111 W1.5 — Under Model 1 agentdb is required, so storage and index
+   * are always healthy after `initialize()` succeeds. The pre-W1.5 'degraded'
+   * branches were dead in production.
    */
   async healthCheck(): Promise<HealthCheckResult> {
     const issues: string[] = [];
     const recommendations: string[] = [];
 
-    // Check AgentDB availability
-    const storageHealth: ComponentHealth = this.agentdb
-      ? { status: 'healthy', latency: 0 }
-      : {
-          status: 'degraded',
-          latency: 0,
-          message: 'AgentDB not available, using fallback',
-        };
-
-    // Check index health
+    const storageHealth: ComponentHealth = { status: 'healthy', latency: 0 };
     const indexHealth: ComponentHealth = { status: 'healthy', latency: 0 };
-    if (!this.agentdb) {
-      indexHealth.status = 'degraded';
-      indexHealth.message = 'HNSW index not available';
-      recommendations.push('Install agentdb for 150x-12,500x faster vector search');
-    }
-
-    // Check cache health
     const cacheHealth: ComponentHealth = { status: 'healthy', latency: 0 };
 
-    const status =
-      storageHealth.status === 'unhealthy' || indexHealth.status === 'unhealthy'
-        ? 'unhealthy'
-        : storageHealth.status === 'degraded' || indexHealth.status === 'degraded'
-          ? 'degraded'
-          : 'healthy';
-
     return {
-      status,
+      status: 'healthy',
       components: {
         storage: storageHealth,
         index: indexHealth,
@@ -1057,14 +1045,10 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
   }
 
   /**
-   * Check if AgentDB is available
-   */
-  isAvailable(): boolean {
-    return this.available;
-  }
-
-  /**
    * Get underlying AgentDB instance
+   *
+   * ADR-0111 W1.5 — `isAvailable()` removed. Under Model 1 agentdb is
+   * required; if `initialize()` returned, this.agentdb is set.
    */
   getAgentDB(): any {
     return this.agentdb;

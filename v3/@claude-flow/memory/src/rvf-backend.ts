@@ -704,6 +704,53 @@ export class RvfBackend implements IMemoryBackend {
     return Array.from(ns);
   }
 
+  /**
+   * Enumerate all entries that have embeddings attached.
+   *
+   * ADR-0111 W1.5 — letter F prep. Replaces upstream's SQLite-shaped
+   * `bridgeGetAllEmbeddings` with an RVF-backed enumeration primitive.
+   * Used by RaBitQ index construction and other consumers that need a
+   * snapshot of every stored vector at runtime.
+   *
+   * @param dimensions Filter to entries whose embedding length matches
+   *                   this value. When omitted, all dimensions are
+   *                   returned (the caller is expected to validate).
+   * @param limit Max results (default: 50000, mirroring upstream's
+   *              bridgeGetAllEmbeddings).
+   *
+   * @returns Snapshot array — empty when there are no entries with
+   *          embeddings. Each entry's `embedding` is a fresh number[]
+   *          copy (not a Float32Array reference) so the caller can
+   *          mutate freely.
+   */
+  async enumerateEmbeddings(options: {
+    dimensions?: number;
+    limit?: number;
+  } = {}): Promise<Array<{
+    id: string;
+    key: string;
+    namespace: string;
+    embedding: number[];
+  }>> {
+    const limit = options.limit ?? 50_000;
+    const targetDim = options.dimensions;
+    const out: Array<{ id: string; key: string; namespace: string; embedding: number[] }> = [];
+
+    for (const entry of this.entries.values()) {
+      if (out.length >= limit) break;
+      if (!entry.embedding) continue;
+      if (targetDim !== undefined && entry.embedding.length !== targetDim) continue;
+      out.push({
+        id: entry.id,
+        key: entry.key,
+        namespace: entry.namespace,
+        embedding: Array.from(entry.embedding),
+      });
+    }
+
+    return out;
+  }
+
   async clearNamespace(namespace: string): Promise<number> {
     const toDelete: string[] = [];
     for (const [id, entry] of this.entries) {

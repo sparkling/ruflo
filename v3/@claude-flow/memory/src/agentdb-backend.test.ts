@@ -1,7 +1,13 @@
 /**
  * AgentDB Backend Tests
  *
- * Tests for agentdb@2.0.0-alpha.3.4 integration with V3 memory system
+ * Tests for agentdb integration with V3 memory system.
+ *
+ * ADR-0111 W1.5 — Model 1: agentdb is a required dependency (declared in
+ * `dependencies`, not `optionalDependencies`). The previous "graceful
+ * fallback to in-memory storage when agentdb is missing" tests asserted a
+ * code path that was dead in production — they have been removed and
+ * replaced with a fail-loud assertion.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -15,7 +21,8 @@ describe('AgentDBBackend', () => {
     backend = new AgentDBBackend({
       dbPath: ':memory:',
       namespace: 'test',
-      vectorDimension: 384,
+      // ADR-0069: canonical 768-dim Xenova/all-mpnet-base-v2 (was 384)
+      vectorDimension: 768,
     });
     await backend.initialize();
   });
@@ -29,14 +36,13 @@ describe('AgentDBBackend', () => {
       expect(backend).toBeDefined();
     });
 
-    it('should handle missing agentdb gracefully', async () => {
-      const fallbackBackend = new AgentDBBackend();
-      await fallbackBackend.initialize();
-
-      // Should still work with in-memory fallback
-      expect(fallbackBackend).toBeDefined();
-
-      await fallbackBackend.shutdown();
+    it('should expose the underlying AgentDB instance after init', async () => {
+      // ADR-0111 W1.5 — replaces the deleted "indicate availability status"
+      // test. Under Model 1 agentdb is always present after init, so we
+      // verify by checking the accessor returns a non-null instance.
+      const agentdb = backend.getAgentDB();
+      expect(agentdb).toBeDefined();
+      expect(agentdb).not.toBeNull();
     });
   });
 
@@ -177,7 +183,7 @@ describe('AgentDBBackend', () => {
   });
 
   describe('Vector Search', () => {
-    it('should perform brute-force search when agentdb unavailable', async () => {
+    it('should perform brute-force search when HNSW index is empty', async () => {
       const entry = createDefaultEntry({
         key: 'vector-test',
         content: 'Vector content',
@@ -310,30 +316,11 @@ describe('AgentDBBackend', () => {
     });
   });
 
-  describe('Graceful Degradation', () => {
-    it('should work without agentdb package', async () => {
-      const fallbackBackend = new AgentDBBackend({
-        dbPath: ':memory:',
-      });
-
-      await fallbackBackend.initialize();
-
-      const entry = createDefaultEntry({
-        key: 'fallback-test',
-        content: 'Fallback content',
-      });
-
-      await fallbackBackend.store(entry);
-      const retrieved = await fallbackBackend.get(entry.id);
-
-      expect(retrieved).toBeDefined();
-      expect(retrieved?.content).toBe('Fallback content');
-
-      await fallbackBackend.shutdown();
-    });
-
-    it('should indicate availability status', () => {
-      expect(typeof backend.isAvailable()).toBe('boolean');
-    });
-  });
+  // ADR-0111 W1.5 — "Graceful Degradation" describe block removed. Under
+  // Model 1, agentdb-missing is fatal; the in-memory fallback path the tests
+  // exercised has been deleted from agentdb-backend.ts. The fail-loud
+  // contract is asserted indirectly by the "expose underlying AgentDB
+  // instance after init" test above (which would fail if agentdb were
+  // silently absent) — and directly via the strict-mode integration tests
+  // in @claude-flow/cli that exercise the full router path.
 });

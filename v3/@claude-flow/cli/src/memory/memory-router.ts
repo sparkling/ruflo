@@ -447,6 +447,11 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
             dbPath: dbPath || _getDbPath(),
             dimension: embJson.dimension ?? 768,
             embeddingModel: embJson.model ?? 'Xenova/all-mpnet-base-v2',
+            // ADR-0111 W1.5 — RVF-primary fail-loud (memory project-rvf-primary).
+            // 'ruvector' forces the native NAPI backend; 'auto' could silently
+            // fall through to hnswlib when the native binary is missing, which
+            // contradicts our fail-loud stance.
+            vectorBackend: 'ruvector',
             hnswM: embJson.hnsw?.m ?? 23,
             hnswEfConstruction: embJson.hnsw?.efConstruction ?? 100,
             hnswEfSearch: embJson.hnsw?.efSearch ?? 50,
@@ -1810,6 +1815,77 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
     default:
       return { success: false, error: `Unknown causal operation: ${(op as { type: string }).type}` };
   }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0111 W1.5 — letter F prep: enumerate-embeddings primitive
+// ---------------------------------------------------------------------------
+
+/**
+ * Enumerate all stored embeddings via the RVF backend.
+ *
+ * ADR-0111 W1.5 — replaces upstream's SQLite-shaped `bridgeGetAllEmbeddings`
+ * with an RVF-primary primitive. Letter F's RaBitQ index construction will
+ * call this to materialize a snapshot of every stored vector.
+ *
+ * Per project-rvf-primary, this reads directly from the RvfBackend's
+ * in-memory `entries` map (the canonical source of truth) — NOT from any
+ * SQLite `memory_entries` table. Bypasses the registry entirely; this is
+ * the storage-layer surface, not a controller op.
+ *
+ * @param options.dimensions Filter to embeddings of this length (default
+ *                           768, matching reference-embedding-model.md
+ *                           `Xenova/all-mpnet-base-v2`).
+ * @param options.limit      Max results (default 50000 — matches upstream
+ *                           bridgeGetAllEmbeddings).
+ * @param options.dbPath     Reserved for future per-DB targeting; currently
+ *                           ignored — operations use the active router
+ *                           storage.
+ *
+ * @returns Array of embeddings or `null` when storage is unavailable
+ *          (genuinely fatal under Model 1, but kept nullable to preserve
+ *          the upstream signature shape for letter F's adoption).
+ */
+export async function routerGetAllEmbeddings(options: {
+  dimensions?: number;
+  limit?: number;
+  dbPath?: string;
+} = {}): Promise<Array<{
+  id: string;
+  key: string;
+  namespace: string;
+  embedding: number[];
+}> | null> {
+  await ensureRouter();
+  if (!_storage) {
+    // Under ADR-0111 W1.5 Model 1 this should not happen — ensureRouter
+    // either succeeds or throws. Returning null preserves the upstream
+    // signature for letter F adoption; log so the regression is visible.
+    console.error('[routerGetAllEmbeddings] storage unavailable after ensureRouter()');
+    return null;
+  }
+
+  const dimensions = options.dimensions ?? 768;
+  const limit = options.limit ?? 50_000;
+
+  // RvfBackend exposes enumerateEmbeddings() as an extension method beyond
+  // IStorageContract. Cast and feature-check so non-RVF backends (none
+  // exist in production today, but the type allows for it) degrade safely.
+  const storage = _storage as IStorageContract & {
+    enumerateEmbeddings?: (opts: { dimensions?: number; limit?: number }) => Promise<Array<{
+      id: string;
+      key: string;
+      namespace: string;
+      embedding: number[];
+    }>>;
+  };
+
+  if (typeof storage.enumerateEmbeddings !== 'function') {
+    console.error('[routerGetAllEmbeddings] active storage does not implement enumerateEmbeddings');
+    return null;
+  }
+
+  return storage.enumerateEmbeddings({ dimensions, limit });
 }
 
 // ---------------------------------------------------------------------------
