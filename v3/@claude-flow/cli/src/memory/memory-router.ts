@@ -525,13 +525,15 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
           });
         } catch (e) {
           _restoreConsole();
-          // ADR-0090 Tier B1: embedding dimension mismatch is a FATAL regression
-          // signal, not a best-effort controller-init failure. If the user's
-          // stored vectors are incompatible with the configured model, we must
-          // NOT silently disable the registry (that is the exact ADR-0082
-          // silent-fallback pattern). Preserve the original error so the
-          // outer catch can recognize it and re-throw.
-          if (e && (e as Error).name === 'EmbeddingDimensionError') {
+          // ADR-0090 Tier B1 + ADR-0111 W1.6: dimension mismatch and agentdb-init
+          // failure are both FATAL regression signals, not best-effort
+          // controller-init failures. If the user's stored vectors are
+          // incompatible with the configured model OR agentdb (a required dep
+          // per Model 1) failed to initialize, we must NOT silently disable
+          // the registry (that is the exact ADR-0082 silent-fallback pattern).
+          // Preserve the original error so the outer catch can recognize it.
+          const errName = e && (e as Error).name;
+          if (errName === 'EmbeddingDimensionError' || errName === 'AgentDBInitError') {
             throw e;
           }
           throw new Error('registry init failed');
@@ -560,10 +562,13 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
       } catch (e) {
         _registryAvailable = false;
         _registryPromise = null;
-        // ADR-0090 Tier B1: re-throw EmbeddingDimensionError. The caller
-        // (_doInit) has its own best-effort wrapper, but it also must not
-        // swallow this specific error type — see the matching guard there.
-        if (e && (e as Error).name === 'EmbeddingDimensionError') {
+        // ADR-0090 Tier B1 + ADR-0111 W1.6: re-throw fatal classes.
+        // EmbeddingDimensionError = data-loss regression signal.
+        // AgentDBInitError = required dep failed (Model 1 — agentdb is in
+        // dependencies, not optionalDependencies). The caller (_doInit) has
+        // its own best-effort wrapper, but it also must not swallow these.
+        const errName = e && (e as Error).name;
+        if (errName === 'EmbeddingDimensionError' || errName === 'AgentDBInitError') {
           throw e;
         }
         return null;
@@ -692,11 +697,13 @@ async function _doInit(): Promise<void> {
     // ADR-0086 B4: circuit breaker — storage creation failed.
     _storage = null;
     _initFailed = true; // ADR-0086 I2: prevent retry storm.
-    // ADR-0090 Tier B1/B2: preserve fatal error classes so CLI can surface
-    // specific diagnostics (dimension mismatch / corruption). Wrapping
-    // into a plain Error would mask data-loss regressions (ADR-0082).
+    // ADR-0090 Tier B1/B2 + ADR-0111 W1.6: preserve fatal error classes so
+    // CLI can surface specific diagnostics (dimension mismatch / corruption /
+    // agentdb-init). Wrapping into a plain Error would mask data-loss
+    // regressions (ADR-0082).
     if (e && (e as Error).name === 'EmbeddingDimensionError') throw e;
     if (e && (e as Error).name === 'RvfCorruptError') throw e;
+    if (e && (e as Error).name === 'AgentDBInitError') throw e;
     throw new Error('Storage initialization failed: ' + (e instanceof Error ? e.message : String(e)));
   }
 
@@ -711,10 +718,14 @@ async function _doInit(): Promise<void> {
   // Silently disabling controllers in that case would mask a real data-loss
   // regression (ADR-0082). Re-throw so the CLI exits non-zero with a clear
   // diagnostic.
+  // ADR-0111 W1.6: AgentDBInitError is also FATAL. Per Model 1, agentdb is a
+  // required dependency; init failure means a broken install. Swallowing it
+  // here would defeat the W1.5 fail-loud cleanup of agentdb-backend.ts.
   try {
     await initControllerRegistry();
   } catch (e) {
-    if (e && (e as Error).name === 'EmbeddingDimensionError') {
+    const errName = e && (e as Error).name;
+    if (errName === 'EmbeddingDimensionError' || errName === 'AgentDBInitError') {
       throw e;
     }
     // Other registry errors: best-effort — storage still works without the

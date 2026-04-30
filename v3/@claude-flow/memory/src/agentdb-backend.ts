@@ -243,55 +243,74 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
    * "available=false → in-memory fallback" early-return and the outer catch
    * that swallowed init failures. Per feedback-no-fallbacks, agentdb-init
    * failure indicates a broken install and is fatal.
+   *
+   * ADR-0111 W1.6 — outer try/catch labels generic Errors as
+   * `AgentDBInitError` so `memory-router.ts` best-effort wrappers (lines
+   * 534/566/698/717) can discriminate and re-throw (instead of swallowing).
+   * Without the label, the W1.5 fail-loud-ness was observable inside this
+   * class but the CLI process never exited non-zero on a broken install.
+   * Pre-existing fatal classes (RvfCorruptError, EmbeddingDimensionError)
+   * keep their names — only generic `Error` instances get relabeled.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // ensureAgentDBImport throws on import failure (Model 1 — no silent
-    // fallback). If `AgentDB` is still undefined after the import, the
-    // package shipped without the expected export — also fatal.
-    await ensureAgentDBImport();
-    if (AgentDB === undefined) {
-      throw new Error(
-        'agentdb module loaded but did not export AgentDB class — ' +
-        'version mismatch with @claude-flow/memory (ADR-0111 W1.5)',
-      );
-    }
-
-    // Initialize AgentDB with config
-    this.agentdb = new AgentDB({
-      dbPath: this.config.dbPath || ':memory:',
-      namespace: this.config.namespace,
-      forceWasm: this.config.forceWasm,
-      vectorBackend: this.config.vectorBackend,
-      vectorDimension: this.config.vectorDimension,
-    });
-
-    // Suppress agentdb's noisy console.log during init
-    // (EmbeddingService, AgentDB core emit info-level logs we don't need)
-    const origLog = console.log;
-    console.log = (...args: unknown[]) => {
-      const msg = String(args[0] ?? '');
-      if (msg.includes('Transformers.js loaded') ||
-          msg.includes('Using better-sqlite3') ||
-          msg.includes('better-sqlite3 unavailable') ||
-          msg.includes('[AgentDB]')) return;
-      origLog.apply(console, args);
-    };
     try {
-      await this.agentdb.initialize();
-    } finally {
-      console.log = origLog;
+      // ensureAgentDBImport throws on import failure (Model 1 — no silent
+      // fallback). If `AgentDB` is still undefined after the import, the
+      // package shipped without the expected export — also fatal.
+      await ensureAgentDBImport();
+      if (AgentDB === undefined) {
+        throw new Error(
+          'agentdb module loaded but did not export AgentDB class — ' +
+          'version mismatch with @claude-flow/memory (ADR-0111 W1.5)',
+        );
+      }
+
+      // Initialize AgentDB with config
+      this.agentdb = new AgentDB({
+        dbPath: this.config.dbPath || ':memory:',
+        namespace: this.config.namespace,
+        forceWasm: this.config.forceWasm,
+        vectorBackend: this.config.vectorBackend,
+        vectorDimension: this.config.vectorDimension,
+      });
+
+      // Suppress agentdb's noisy console.log during init
+      // (EmbeddingService, AgentDB core emit info-level logs we don't need)
+      const origLog = console.log;
+      console.log = (...args: unknown[]) => {
+        const msg = String(args[0] ?? '');
+        if (msg.includes('Transformers.js loaded') ||
+            msg.includes('Using better-sqlite3') ||
+            msg.includes('better-sqlite3 unavailable') ||
+            msg.includes('[AgentDB]')) return;
+        origLog.apply(console, args);
+      };
+      try {
+        await this.agentdb.initialize();
+      } finally {
+        console.log = origLog;
+      }
+
+      // Create memory_entries table if it doesn't exist
+      await this.createSchema();
+
+      this.initialized = true;
+      this.emit('initialized', {
+        backend: this.agentdb.vectorBackendName,
+        isWasm: this.agentdb.isWasm,
+      });
+    } catch (e) {
+      // ADR-0111 W1.6: label generic Errors so memory-router catches at
+      // lines 534/566/698/717 discriminate (re-throw, not swallow). Don't
+      // clobber names of pre-existing fatal classes (RvfCorruptError,
+      // EmbeddingDimensionError, etc.).
+      if (e instanceof Error && e.name === 'Error') {
+        e.name = 'AgentDBInitError';
+      }
+      throw e;
     }
-
-    // Create memory_entries table if it doesn't exist
-    await this.createSchema();
-
-    this.initialized = true;
-    this.emit('initialized', {
-      backend: this.agentdb.vectorBackendName,
-      isWasm: this.agentdb.isWasm,
-    });
   }
 
   /**
