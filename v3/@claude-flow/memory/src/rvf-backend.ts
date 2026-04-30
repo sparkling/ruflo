@@ -32,6 +32,7 @@ export interface RvfBackendConfig {
   quantization?: 'fp32' | 'fp16' | 'int8';
   hnswM?: number;
   hnswEfConstruction?: number;
+  hnswEfSearch?: number;
   maxElements?: number;
   verbose?: boolean;
   defaultNamespace?: string;
@@ -222,6 +223,7 @@ export class RvfBackend implements IMemoryBackend {
       quantization: config.quantization ?? 'fp32',
       hnswM: config.hnswM ?? derived.M,
       hnswEfConstruction: config.hnswEfConstruction ?? derived.efConstruction,
+      hnswEfSearch: config.hnswEfSearch ?? derived.efSearch,
       maxElements: config.maxElements ?? DEFAULT_MAX_ELEMENTS,
       verbose: config.verbose ?? false,
       defaultNamespace: config.defaultNamespace ?? 'default',
@@ -292,7 +294,21 @@ export class RvfBackend implements IMemoryBackend {
       this.persistTimer = setInterval(() => {
         if (this.dirty && !this.persisting) {
           const op = this.walEntryCount > 0 ? this.compactWal() : this.persistToDisk();
-          op.catch(() => {});
+          // ADR-0112 Phase 2 (RVF track) + feedback-best-effort-must-rethrow-fatals:
+          // discriminate. RvfCorruptError + RvfNotInitializedError signal real
+          // data-integrity problems and must NOT be silently swallowed by the
+          // fire-and-forget timer — surface them so the next caller's invocation
+          // sees the broken state. Lock-acquisition failures + transient I/O
+          // errors are recoverable and OK to swallow (the next tick retries).
+          op.catch((err: unknown) => {
+            const name = err instanceof Error ? err.name : '';
+            if (name === 'RvfCorruptError' || name === 'RvfNotInitializedError') {
+              // Re-throw asynchronously so the unhandledRejection handler logs
+              // it and the dirty flag stays set (next caller sees the failure).
+              setImmediate(() => { throw err; });
+            }
+            // Else: transient — next tick retries.
+          });
         }
       }, this.config.autoPersistInterval);
       if (this.persistTimer.unref) this.persistTimer.unref();
@@ -340,7 +356,22 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
+  /**
+   * ADR-0112 Phase 2 (RVF track): public-method init guard. Throws
+   * RvfNotInitializedError if `initialize()` has not completed. Applied
+   * at the top of all 9 data-path methods (store / get / getByKey /
+   * update / delete / query / search / bulkInsert / bulkDelete) so a
+   * caller that forgets to await initialize() gets a precise error
+   * naming the method instead of silent in-memory degradation.
+   */
+  private requireInitialized(method: string): void {
+    if (!this.initialized) {
+      throw new RvfNotInitializedError(method);
+    }
+  }
+
   async store(entry: MemoryEntry): Promise<void> {
+    this.requireInitialized('store');
     this.checkCapacity();
     const ns = entry.namespace || this.config.defaultNamespace;
     const e = ns !== entry.namespace ? { ...entry, namespace: ns } : entry;
@@ -394,6 +425,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
+    this.requireInitialized('get');
     this.noteNativeFallbackUse('get');
     const entry = this.entries.get(id);
     if (!entry) return null;
@@ -403,6 +435,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async getByKey(namespace: string, key: string): Promise<MemoryEntry | null> {
+    this.requireInitialized('getByKey');
     this.noteNativeFallbackUse('getByKey');
     const id = this.keyIndex.get(this.compositeKey(namespace, key));
     if (!id) return null;
@@ -410,6 +443,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async update(id: string, updateData: MemoryEntryUpdate): Promise<MemoryEntry | null> {
+    this.requireInitialized('update');
     const entry = this.entries.get(id);
     if (!entry) return null;
 
@@ -450,6 +484,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async delete(id: string): Promise<boolean> {
+    this.requireInitialized('delete');
     const entry = this.entries.get(id);
     if (!entry) return false;
     this.entries.delete(id);
@@ -485,6 +520,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async query(q: MemoryQuery): Promise<MemoryEntry[]> {
+    this.requireInitialized('query');
     this.noteNativeFallbackUse('query');
     const start = performance.now();
     let results = Array.from(this.entries.values());
@@ -550,6 +586,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
+    this.requireInitialized('search');
     this.noteNativeFallbackUse('search');
     const start = performance.now();
     let results: SearchResult[];
@@ -562,7 +599,7 @@ export class RvfBackend implements IMemoryBackend {
       try {
         const raw: Array<{ id: number; distance: number }> = this.nativeDb.query(
           new Float32Array(embedding), options.k * 2,
-          { efSearch: this.config.hnswEfConstruction },
+          { efSearch: this.config.hnswEfSearch },
         );
         results = [];
         for (const r of raw) {
@@ -618,6 +655,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
+    this.requireInitialized('bulkInsert');
     this.checkCapacity(entries.length);
     for (const entry of entries) {
       this.entries.set(entry.id, entry);
@@ -651,6 +689,7 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async bulkDelete(ids: string[]): Promise<number> {
+    this.requireInitialized('bulkDelete');
     let count = 0;
     const nativeIds: number[] = [];
     for (const id of ids) {
@@ -2156,9 +2195,18 @@ export class RvfBackend implements IMemoryBackend {
             }
           }
         }
-      } catch {
-        // Read error — fall back to in-memory state. Worst case we repeat
-        // the pre-fix behavior for this one persist; not a regression.
+      } catch (err) {
+        // ADR-0112 Phase 2 (RVF track) + feedback-best-effort-must-rethrow-fatals:
+        // read errors during peer-state merge are usually transient (lock
+        // contention, partial writes). Fallback to in-memory state preserves
+        // correctness for those. But RvfCorruptError indicates real on-disk
+        // corruption and must propagate — silently overwriting it during the
+        // next persist would destroy the diagnostic.
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'RvfCorruptError') throw err;
+        // Else: transient read error — fall back to in-memory state. Worst
+        // case we repeat the pre-fix behavior for this one persist; not a
+        // regression.
       }
     }
 
@@ -2309,5 +2357,38 @@ export class RvfCorruptError extends Error {
       `Move or delete the file to start fresh, or restore from a backup.`,
     );
     this.name = 'RvfCorruptError';
+  }
+}
+
+/**
+ * ADR-0112 Phase 2 (RVF track): fail-loud signal for data-path methods
+ * called before `initialize()` has completed.
+ *
+ * Pre-fix behavior: data-path methods (store / get / query / search /
+ * etc.) had no init guard and would operate against the constructor-
+ * initialized empty Map + null nativeDb. Writes appeared to succeed
+ * (entry landed in the Map) but persistence failed silently and the
+ * native HNSW index was never updated. Reads returned empty without
+ * indicating the backend had never loaded its on-disk state. This is
+ * the exact ADR-0082 silent-fallback antipattern at the method-level
+ * (W1.5/W1.6 fixed init-time, W1.8 closes method-time per ADR-0112
+ * §Required follow-up #1 "Both contracts apply at the method level").
+ *
+ * The class is named so memory-router._isFatalInitError() picks it up
+ * and propagates it through registry/init catches without masking.
+ *
+ * Callers receive the method name in the error message so the failure
+ * is precisely diagnosable ("RvfBackend.store called before
+ * initialize() — backend is not initialized" vs. a generic guard).
+ */
+export class RvfNotInitializedError extends Error {
+  constructor(method: string) {
+    super(
+      `RvfBackend.${method} called before initialize() — backend is not ` +
+      `initialized. Per ADR-0112, public methods must fail loud rather than ` +
+      `silently operate against a constructor-only state (which would lose ` +
+      `data on persist + skip native HNSW indexing). Call initialize() first.`,
+    );
+    this.name = 'RvfNotInitializedError';
   }
 }
