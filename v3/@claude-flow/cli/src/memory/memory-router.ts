@@ -211,6 +211,39 @@ function _findProjectRoot(): string {
 }
 
 /**
+ * ADR-0112 Phase 2 (memory-router track): unified fatal-init error
+ * discrimination. Five error classes signal data-integrity / required-
+ * dependency failures that MUST propagate so the CLI can surface a
+ * specific diagnostic — silently dropping any of them is the ADR-0082
+ * silent-fallback antipattern.
+ *
+ *   - EmbeddingDimensionError: controller-registry's relabel of
+ *     DimensionMismatchError (controller-registry.ts:623). Means the
+ *     user's stored vectors don't match the configured model.
+ *   - DimensionMismatchError: the underlying class from
+ *     embedding-pipeline.ts. Direct throws (not via controller-registry)
+ *     keep this name. ADR-0112 W1.8 slice 4 found memory-router only
+ *     checked the relabelled name, missing direct throws.
+ *   - RvfCorruptError: rvf-backend.ts:2305. Disk file corrupted —
+ *     surfacing it lets the CLI emit a specific recovery message
+ *     instead of a generic "init failed".
+ *   - AgentDBInitError: required dep failed under Model 1 (agentdb is
+ *     in dependencies, not optionalDependencies — ADR-0111 W1.5/W1.6).
+ *   - ControllerInitError: controller-registry's class for individual
+ *     controller bootstrap failures (W1.5). Op-layer discriminates so
+ *     callers see "<controller> not initialized" not "Storage init failed".
+ */
+function _isFatalInitError(e: unknown): boolean {
+  if (!e || !(e instanceof Error)) return false;
+  const name = e.name;
+  return name === 'EmbeddingDimensionError'
+      || name === 'DimensionMismatchError'
+      || name === 'RvfCorruptError'
+      || name === 'AgentDBInitError'
+      || name === 'ControllerInitError';
+}
+
+/**
  * ADR-0069 Bug #3: when the CLI is invoked outside any `.claude-flow/` project
  * context (e.g. `cd /tmp/foo && claude-flow memory store ...`), the previous
  * behavior was to write `./.claude-flow/memory.rvf` relative to whatever
@@ -525,17 +558,12 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
           });
         } catch (e) {
           _restoreConsole();
-          // ADR-0090 Tier B1 + ADR-0111 W1.6: dimension mismatch and agentdb-init
-          // failure are both FATAL regression signals, not best-effort
-          // controller-init failures. If the user's stored vectors are
-          // incompatible with the configured model OR agentdb (a required dep
-          // per Model 1) failed to initialize, we must NOT silently disable
-          // the registry (that is the exact ADR-0082 silent-fallback pattern).
-          // Preserve the original error so the outer catch can recognize it.
-          const errName = e && (e as Error).name;
-          if (errName === 'EmbeddingDimensionError' || errName === 'AgentDBInitError') {
-            throw e;
-          }
+          // ADR-0090 Tier B1 + ADR-0111 W1.6 + ADR-0112 Phase 2 (memory-router
+          // track): dimension mismatch (both relabelled and direct), RVF
+          // corruption, agentdb-init, and controller-init are FATAL — not
+          // best-effort registry-init failures. Silently disabling the
+          // registry on any of them masks data-loss regressions per ADR-0082.
+          if (_isFatalInitError(e)) throw e;
           throw new Error('registry init failed');
         }
 
@@ -562,15 +590,10 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
       } catch (e) {
         _registryAvailable = false;
         _registryPromise = null;
-        // ADR-0090 Tier B1 + ADR-0111 W1.6: re-throw fatal classes.
-        // EmbeddingDimensionError = data-loss regression signal.
-        // AgentDBInitError = required dep failed (Model 1 — agentdb is in
-        // dependencies, not optionalDependencies). The caller (_doInit) has
-        // its own best-effort wrapper, but it also must not swallow these.
-        const errName = e && (e as Error).name;
-        if (errName === 'EmbeddingDimensionError' || errName === 'AgentDBInitError') {
-          throw e;
-        }
+        // ADR-0090 Tier B1 + ADR-0111 W1.6 + ADR-0112 Phase 2: re-throw all
+        // fatal init classes. The caller (_doInit) wraps in its own best-
+        // effort try/catch, but those must not swallow these classes either.
+        if (_isFatalInitError(e)) throw e;
         return null;
       }
     })();
@@ -697,13 +720,10 @@ async function _doInit(): Promise<void> {
     // ADR-0086 B4: circuit breaker — storage creation failed.
     _storage = null;
     _initFailed = true; // ADR-0086 I2: prevent retry storm.
-    // ADR-0090 Tier B1/B2 + ADR-0111 W1.6: preserve fatal error classes so
-    // CLI can surface specific diagnostics (dimension mismatch / corruption /
-    // agentdb-init). Wrapping into a plain Error would mask data-loss
-    // regressions (ADR-0082).
-    if (e && (e as Error).name === 'EmbeddingDimensionError') throw e;
-    if (e && (e as Error).name === 'RvfCorruptError') throw e;
-    if (e && (e as Error).name === 'AgentDBInitError') throw e;
+    // ADR-0090 Tier B1/B2 + ADR-0111 W1.6 + ADR-0112 Phase 2 (memory-router
+    // track): preserve all fatal error classes (DimensionMismatchError direct
+    // throws are now caught too — slice 4 found those slipped through).
+    if (_isFatalInitError(e)) throw e;
     throw new Error('Storage initialization failed: ' + (e instanceof Error ? e.message : String(e)));
   }
 
@@ -724,10 +744,11 @@ async function _doInit(): Promise<void> {
   try {
     await initControllerRegistry();
   } catch (e) {
-    const errName = e && (e as Error).name;
-    if (errName === 'EmbeddingDimensionError' || errName === 'AgentDBInitError') {
-      throw e;
-    }
+    // ADR-0112 Phase 2 (memory-router track): unified fatal-init
+    // discrimination — slice 4 added DimensionMismatchError + RvfCorruptError
+    // + ControllerInitError to the set previously limited to the relabelled
+    // EmbeddingDimensionError + AgentDBInitError.
+    if (_isFatalInitError(e)) throw e;
     // Other registry errors: best-effort — storage still works without the
     // auxiliary controllers.
   }
