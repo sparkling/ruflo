@@ -116,19 +116,28 @@ export const memoryTools: MCPTool[] = [
 
       let key = input.key as string;
 
-      // Phase 4: AgentMemoryScope — apply scope prefix to key
-      try {
-        if (input.scope) {
-          const scopeCtrl: any = await getController('agentMemoryScope');
-          if (scopeCtrl && typeof scopeCtrl.scopeKey === 'function') {
-            key = scopeCtrl.scopeKey(
-              key,
-              input.scope as 'agent' | 'session' | 'global',
-              (input.scope_id || input.agent_id || input.session_id) as string | undefined,
-            );
-          }
+      // Phase 4: AgentMemoryScope — apply scope prefix to key.
+      // ADR-0112 Phase 2 (MCP handler track): if the caller explicitly
+      // requested a scope but the controller threw at scopeKey(), the
+      // entry would silently land at an unscoped key — a data-integrity
+      // bug that violates ADR-0082 + ADR-0112 §Required follow-up #4.
+      // Discriminate: missing controller is a legitimate "no scoping
+      // available" path (entry stays unscoped); controller errors
+      // propagate.
+      if (input.scope) {
+        const scopeCtrl: any = await getController('agentMemoryScope');
+        if (scopeCtrl && typeof scopeCtrl.scopeKey === 'function') {
+          // No catch — if scopeKey throws, propagate to the outer handler
+          key = scopeCtrl.scopeKey(
+            key,
+            input.scope as 'agent' | 'session' | 'global',
+            (input.scope_id || input.agent_id || input.session_id) as string | undefined,
+          );
         }
-      } catch { /* scope controller unavailable — use unscoped key */ }
+        // controller missing or method missing → entry stored unscoped
+        // (legitimate: scoping is opt-in via input.scope, but the build
+        // may not have agentMemoryScope wired)
+      }
       const namespace = (input.namespace as string) || 'default';
       const value = input.value as string;
       const tags = (input.tags as string[]) || [];

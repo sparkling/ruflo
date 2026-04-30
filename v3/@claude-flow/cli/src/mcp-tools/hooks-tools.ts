@@ -2500,83 +2500,84 @@ export const hooksPatternStore: MCPTool = {
     const timestamp = new Date().toISOString();
     const patternId = `pattern-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    // Phase 3: Try ReasoningBank via router first (ADR-0084 Phase 3)
-    let reasoningResult: { success: boolean; patternId: string; controller: string } | null = null;
+    // ADR-0112 Phase 2 (MCP handler track): hooks_intelligence_pattern-store
+    // is a pattern store that targets ReasoningBank (AgentDB SQLite
+    // reasoning_patterns table). Per ADR-0112 §Decision, this tool writes
+    // to exactly one store. The previous code had two silent-fallthrough
+    // sites:
+    //   1. catch{} swallowing routePatternOp errors as "Router not available"
+    //   2. fallback to memory-router store ('patterns' namespace in RVF)
+    //      when ReasoningBank failed — a cross-store coordination violation.
+    // Now: ReasoningBank is the only target. Failures propagate.
+    let reasoningResult: { success: boolean; patternId: string; controller: string; error?: string } | null = null;
+    let routerError: string | null = null;
     try {
       const { routePatternOp } = await import('../memory/memory-router.js');
       const result = await routePatternOp({ type: 'store', pattern, patternType: type, confidence, metadata: metadata as Record<string, unknown> | undefined });
       if (result.success) {
         reasoningResult = {
-          success: result.success,
+          success: true,
           patternId: (result.patternId as string) || patternId,
           controller: (result.controller as string) || 'unknown',
         };
+      } else {
+        // routePatternOp returned { success: false, error: ... } — surface it
+        routerError = (result.error as string) || 'routePatternOp returned unsuccessful result';
       }
-    } catch {
-      // Router not available
+    } catch (err) {
+      // Router import or call threw — surface the actual error, do not
+      // silently swallow. Per ADR-0082 + ADR-0112 §Required follow-up #4.
+      routerError = err instanceof Error ? err.message : String(err);
     }
 
-    // Fallback: persist using memory-router store (ADR-0086 T2.7)
-    let storeResult: { success: boolean; id?: string; embedding?: { dimensions: number; model: string }; error?: string } = { success: false };
-    if (!reasoningResult) {
-      const storeFn = await getRealStoreFunction();
-      if (storeFn) {
-        try {
-          storeResult = await storeFn({
-            key: patternId,
-            value: JSON.stringify({ pattern, type, confidence, metadata, timestamp }),
-            namespace: 'patterns',
-            generateEmbeddingFlag: true,
-            tags: [type, `confidence-${Math.round(confidence * 100)}`, 'reasoning-pattern'],
-          });
-        } catch (error) {
-          storeResult = { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
-      }
-    }
+    const success = reasoningResult?.success === true;
+    const controller = reasoningResult?.controller || 'reasoningBank';
 
-    const success = reasoningResult?.success || storeResult.success;
-    const controller = reasoningResult?.controller || (storeResult.success ? 'bridge-store' : 'none');
-
-    // OPT-017: Also populate neural_patterns store to eliminate dual-store divergence
+    // OPT-017: Also populate neural_patterns store. neural_patterns is a
+    // local JSON cache (NOT a store crossing the RVF↔SQLite partition);
+    // it lives in a separate file managed by neural-tools.ts. This is a
+    // legitimate side-effect cache, not a partition violation.
+    // The catch is best-effort + reports neuralSynced=false to the caller
+    // so downstream surfaces can detect the missing index.
     let neuralSynced = false;
-    try {
-      const { loadNeuralStore, saveNeuralStore, generateEmbedding } = await import('./neural-tools.js');
-      const neuralStore = loadNeuralStore();
-      const neuralPatternId = reasoningResult?.patternId || storeResult.id || patternId;
-      // Generate a real embedding so neural_patterns search (cosine similarity) can find this pattern
-      // ADR-0052: matches embedding config default
-      const embedding = await generateEmbedding(pattern, EMBEDDING_DIM);
-      neuralStore.patterns[neuralPatternId] = {
-        id: neuralPatternId,
-        name: pattern,
-        type,
-        embedding,
-        metadata: metadata || {},
-        createdAt: timestamp,
-        usageCount: 0,
-      };
-      saveNeuralStore(neuralStore);
-      neuralSynced = true;
-    } catch {
-      // Neural store sync is best-effort; neuralSynced stays false and is reported to caller
+    if (success) {
+      try {
+        const { loadNeuralStore, saveNeuralStore, generateEmbedding } = await import('./neural-tools.js');
+        const neuralStore = loadNeuralStore();
+        const neuralPatternId = reasoningResult?.patternId || patternId;
+        const embedding = await generateEmbedding(pattern, EMBEDDING_DIM);
+        neuralStore.patterns[neuralPatternId] = {
+          id: neuralPatternId,
+          name: pattern,
+          type,
+          embedding,
+          metadata: metadata || {},
+          createdAt: timestamp,
+          usageCount: 0,
+        };
+        saveNeuralStore(neuralStore);
+        neuralSynced = true;
+      } catch {
+        // Neural-tools cache miss is non-fatal — neuralSynced=false is the signal
+      }
     }
 
     return {
-      patternId: reasoningResult?.patternId || storeResult.id || patternId,
+      success,
+      patternId: reasoningResult?.patternId || patternId,
       pattern,
       type,
       confidence,
       indexed: success,
-      hnswIndexed: success && (!!storeResult.embedding || controller === 'reasoningBank'),
-      embedding: storeResult.embedding,
+      hnswIndexed: success,
       neuralSynced,
       timestamp,
       controller,
-      implementation: controller === 'reasoningBank' ? 'reasoning-bank-controller' : (storeResult.success ? 'real-hnsw-indexed' : 'memory-only'),
-      note: controller === 'reasoningBank'
+      implementation: success ? 'reasoning-bank-controller' : 'failed',
+      note: success
         ? 'Pattern stored via ReasoningBank controller with HNSW indexing'
-        : (storeResult.success ? 'Pattern stored with vector embedding for semantic search' : (storeResult.error || 'Store function unavailable')),
+        : `ReasoningBank store failed: ${routerError || 'unknown error'}. Per ADR-0112, no silent fallback to RVF (cross-store coordination forbidden).`,
+      ...(routerError ? { error: routerError } : {}),
     };
   },
 };

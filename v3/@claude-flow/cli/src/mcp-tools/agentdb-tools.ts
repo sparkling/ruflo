@@ -699,7 +699,16 @@ async function _persistSemanticRoutes(
     }
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(routes, null, 2), 'utf-8');
-  } catch { /* best-effort — in-memory addRoute already succeeded */ }
+  } catch (err) {
+    // ADR-0112 Phase 2 (MCP handler track): persist failure is fatal.
+    // The route was added in-memory but will not survive process restart;
+    // returning success here violates ADR-0082 + ADR-0112 §Required
+    // follow-up #4 (no "best-effort" persistence paths). Re-throw so the
+    // outer handler returns success:false.
+    throw new Error(
+      `Failed to persist semantic routes to disk: ${err instanceof Error ? err.message : String(err)}. In-memory route was added but will be lost on restart.`,
+    );
+  }
 }
 
 export const agentdbSemanticAddRoute: MCPTool = {
