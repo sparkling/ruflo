@@ -1250,79 +1250,44 @@ export class RvfBackend implements IMemoryBackend {
       return false;
     }
 
-    // Truly cold start: file doesn't exist at all. Create a new native DB.
+    // Truly cold start: file doesn't exist at all (per the SFVR-magic peek
+    // above; pre-existing native files are handled by the open-retry branch
+    // earlier). Use `RvfDatabase.openOrCreate` — the thread-safe Rust-side
+    // primitive (ADR-0095 swarm-2 final fix) that resolves create-vs-open
+    // atomically under one kernel `flock(LOCK_EX)`. Concurrent peers all
+    // call this; exactly one performs the create, the others end up on the
+    // open path. No JS-side retry/dispatch logic needed — the kernel queue
+    // serializes everyone FIFO.
     //
-    // ADR-0095 Tier B7 extension (2026-04-21): RvfDatabase.create() acquires
-    // the same internal file lock as RvfDatabase.open(). Under N cold-start
-    // concurrent writers racing to create the SFVR file, losers hit
-    // `RVF error 0x0300: LockHeld` — a transient condition (peer releases
-    // when its own create call returns) identical to the one the open path
-    // already retries at lines 928-957. Apply the same 5s exponential-
-    // backoff budget to create so cold-start contention doesn't take down
-    // the whole store and force pure-TS fallback. Non-LockHeld errors and
-    // budget exhaustion surface as before.
-    let lastCreateErr: any = null;
-    const createMaxMs = 5000;
-    const createStart = Date.now();
-    const createBaseDelayMs = 20;
-    const createMaxDelayMs = 400;
-    let createAttempt = 0;
-    while (Date.now() - createStart < createMaxMs) {
-      try {
-        this.nativeDb = rvf.RvfDatabase.create(this.config.databasePath, {
-          dimension: this.config.dimensions,
-          metric: nativeMetric,
-          m: this.config.hnswM,
-          efConstruction: this.config.hnswEfConstruction,
-        });
-        if (this.config.verbose) {
-          console.log(
-            '[RvfBackend] Native @ruvector/rvf-node created new SFVR file' +
-            (createAttempt > 0 ? ` (attempt ${createAttempt + 1} after ${Date.now() - createStart}ms)` : ''),
-          );
-        }
-        return true;
-      } catch (err: any) {
-        lastCreateErr = err;
-        const code = err?.code;
-        // ENOENT on create = parent dir missing; benign cold-start race.
-        if (code === 'ENOENT') {
-          if (this.config.verbose) {
-            console.log('[RvfBackend] Native create hit ENOENT (cold start race); using pure-TS fallback');
-          }
-          return false;
-        }
-        const msg = String(err?.message ?? err ?? '');
-        const isLockHeld = msg.includes('0x0300') || /LockHeld/i.test(msg);
-        // ADR-0095 swarm-2 fix: race loser → retry as open().
-        // 0x0306 AlreadyExists is the post-flock-check semantic from
-        // race-safe `RvfStore::create` (the contract-correct error code
-        // when a peer won the create race). 0x0300 LockHeld is the
-        // legacy code from older fork builds — keep both for robustness.
-        const isAlreadyExists = msg.includes('0x0306') || /AlreadyExists/i.test(msg);
-        if ((isAlreadyExists || isLockHeld) && fileExists(this.config.databasePath)) {
-          try {
-            this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
-            return true;
-          } catch (openErr: any) {
-            lastCreateErr = openErr;
-            const oMsg = String(openErr?.message ?? openErr ?? '');
-            if (!(oMsg.includes('0x0300') || /LockHeld/i.test(oMsg))) break;
-          }
-        }
-        if (!isLockHeld) break;
-        const expDelay = Math.min(createBaseDelayMs * Math.pow(2, createAttempt), createMaxDelayMs);
-        const jitter = expDelay * 0.5 * Math.random();
-        await new Promise(res => setTimeout(res, expDelay + jitter));
-        createAttempt++;
+    // Error shapes:
+    //   - ENOENT: parent dir missing (cold-start race against `mkdir`).
+    //     Benign; degrade to pure-TS fallback.
+    //   - All other errors propagate fatally — they indicate real
+    //     filesystem/binary problems, not contention.
+    try {
+      this.nativeDb = rvf.RvfDatabase.openOrCreate(this.config.databasePath, {
+        dimension: this.config.dimensions,
+        metric: nativeMetric,
+        m: this.config.hnswM,
+        efConstruction: this.config.hnswEfConstruction,
+      });
+      if (this.config.verbose) {
+        console.log('[RvfBackend] Native @ruvector/rvf-node openOrCreate succeeded');
       }
+      return true;
+    } catch (err: any) {
+      const code = err?.code;
+      if (code === 'ENOENT') {
+        if (this.config.verbose) {
+          console.log('[RvfBackend] Native openOrCreate hit ENOENT (parent dir missing); using pure-TS fallback');
+        }
+        return false;
+      }
+      throw new Error(
+        `[RvfBackend] Native RvfDatabase.openOrCreate failed at ${this.config.databasePath} ` +
+        `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
+      );
     }
-    const finalCode = lastCreateErr?.code;
-    throw new Error(
-      `[RvfBackend] Native RvfDatabase.create failed at ${this.config.databasePath} ` +
-      `(code=${finalCode ?? 'unknown'}, attempts=${createAttempt + 1}, elapsed=${Date.now() - createStart}ms): ` +
-      `${lastCreateErr?.message ?? lastCreateErr}`,
-    );
   }
 
   /**
