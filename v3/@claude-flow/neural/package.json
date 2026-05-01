@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/neural",
-  "version": "3.0.0-alpha.7-patch.422",
+  "version": "3.0.0-alpha.7-patch.423",
   "type": "module",
   "description": "Neural module - SONA learning integration, neural modes",
   "main": "dist/index.js",
@@ -13,11 +13,11 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@claude-flow/memory": "3.0.0-alpha.13-patch.299",
-    "@ruvector/sona": "0.1.5-patch.11"
+    "@claude-flow/memory": "3.0.0-alpha.13-patch.300",
+    "@ruvector/sona": "0.1.5-patch.12"
   },
   "optionalDependencies": {
-    "agentdb": "3.0.0-alpha.10-patch.402"
+    "agentdb": "3.0.0-alpha.10-patch.403"
   },
   "publishConfig": {
     "access": "public",
