@@ -16,11 +16,16 @@ import type { MCPTool } from './types.js';
 import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
 import { migrateLegacyStore, hasLegacyStore } from '../memory/migration-legacy.js';
 
-const MEMORY_DIR = '.claude-flow/memory';
+// #1604: Align with memory-initializer.ts — single source of truth is .swarm/memory.db
+const MEMORY_DIR = '.swarm';
+const LEGACY_MEMORY_DIR = '.claude-flow/memory';
 const MIGRATION_MARKER = '.migrated-to-sqlite';
 
 function getMigrationMarkerPath(): string {
-  return resolve(join(MEMORY_DIR, MIGRATION_MARKER));
+  // Marker lives alongside the legacy store so the migration check finds it
+  // even if .swarm is wiped (legacy data is the source-of-truth for "have we
+  // migrated yet?").
+  return resolve(join(LEGACY_MEMORY_DIR, MIGRATION_MARKER));
 }
 
 // D-2: Input bounds for memory parameters
