@@ -141,6 +141,17 @@ export class RvfBackend implements IMemoryBackend {
   private nativeFallbackMode = false;
   private nativeFallbackUseCount = 0;
 
+  // ADR-0095 amendment (2026-05-01, swarm 2 instrumentation): per-instance
+  // diag helper. Gated by RVF_DIAG=1 (separate from RVF_DEBUG so we can
+  // turn on instrumentation without flooding existing debug paths). Logs
+  // include pid + ts (ms) so multi-process logs can be merged + time-ordered.
+  private _diag(msg: string): void {
+    if (!process.env.RVF_DIAG) return;
+    const ts = Date.now();
+    const path = this.config?.databasePath ?? '?';
+    process.stderr.write(`[RVF-DIAG pid=${process.pid} t=${ts}] ${msg} @${path}\n`);
+  }
+
   // ADR-0094 Sprint 1.4 d8 (ruflo-patch): lazy native re-ingest after load.
   //
   // Pre-fix behavior: loadFromDisk() and replayWal() unconditionally called
@@ -290,9 +301,12 @@ export class RvfBackend implements IMemoryBackend {
     //     native flock does NOT cover these JS-side files. JS lock
     //     remains around this step to serialize against peer renames
     //     and journal appends.
+    this._diag('initialize.start');
     await this.reapStaleTmpFiles().catch(() => {});
+    this._diag('initialize.reapDone');
 
     const hasNative = await this.tryNativeInit();
+    this._diag(`initialize.tryNativeInit.return hasNative=${hasNative} nativeDb=${this.nativeDb ? 'set' : 'null'} fallback=${this.nativeFallbackMode} deferred=${this._deferredCorruptReason ? 'set' : 'null'}`);
 
     // Only create HnswLite when native is NOT available (Debt 8)
     if (!hasNative) {
@@ -305,13 +319,17 @@ export class RvfBackend implements IMemoryBackend {
     }
 
     // JS-side WAL/meta race window — kept under .jslock.
+    this._diag('initialize.preLoadFromDisk acquiring jslock');
     await this.acquireLock();
-    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] initialize ACQUIRED lock at ${this.lockPath}`);
+    this._diag(`initialize.loadFromDisk.start entriesBefore=${this.entries.size} seenIdsBefore=${this.seenIds.size}`);
     try {
       await this.loadFromDisk();
+      this._diag(`initialize.loadFromDisk.done entriesAfter=${this.entries.size} seenIdsAfter=${this.seenIds.size}`);
     } finally {
       await this.releaseLock();
+      this._diag('initialize.releasedJslock');
     }
+    this._diag(`initialize.complete entries=${this.entries.size} fallback=${this.nativeFallbackMode} deferred=${this._deferredCorruptReason ? 'set' : 'null'}`);
 
     if (this.config.autoPersistInterval > 0 && this.config.databasePath !== ':memory:') {
       this.persistTimer = setInterval(() => {
@@ -412,6 +430,8 @@ export class RvfBackend implements IMemoryBackend {
     this.checkCapacity();
     const ns = entry.namespace || this.config.defaultNamespace;
     const e = ns !== entry.namespace ? { ...entry, namespace: ns } : entry;
+    const storeStart = Date.now();
+    this._diag(`store.start key=${e.key} ns=${e.namespace} entries=${this.entries.size} fallback=${this.nativeFallbackMode} nativeDb=${this.nativeDb ? 'set' : 'null'}`);
 
     // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): hold the
     // advisory lock across the WHOLE store sequence — in-mem mutation,
@@ -463,14 +483,19 @@ export class RvfBackend implements IMemoryBackend {
 
       // WAL append + compact INSIDE the same lock. Each helper internally
       // re-acquires the lock; the depth counter no-ops the inner acquire.
+      this._diag(`store.preAppendToWal key=${e.key} entries=${this.entries.size}`);
       await this.appendToWal(e);
+      this._diag(`store.postAppendToWal key=${e.key} walEntryCount=${this.walEntryCount}`);
       // ADR-0090 Tier A4 / B7 concurrent-write fix: always compact after
       // every store, not just when walCompactionThreshold is hit.
       if (this.walPath) {
+        this._diag('store.preCompactWal');
         await this.compactWal();
+        this._diag('store.postCompactWal');
       }
     } finally {
       await this.releaseLock();
+      this._diag(`store.end key=${e.key} totalElapsed=${Date.now() - storeStart}ms`);
     }
   }
 
@@ -1153,16 +1178,6 @@ export class RvfBackend implements IMemoryBackend {
         `native file has SFVR magic but RvfDatabase.open failed after ` +
         `${attempt} attempt(s) over ${Date.now() - openStartTime}ms ` +
         `(budget ${maxOpenWaitMs}ms): ${lastErr?.message ?? lastErr}`;
-      // ADR-0095 amendment (2026-05-01, swarm 2 fix): also flip the
-      // fallback-mode flag. Without this, `metadataPath()` returns the
-      // SFVR-magic main path (because both `nativeDb` and
-      // `nativeFallbackMode` are false), so the next `persistToDiskInner`
-      // writes pure-TS RVF\0 bytes OVER the SFVR file — a split-brain
-      // corruption that produced the residual silent-loss observed in
-      // diag-rvf-interproc-race at low N. Setting the flag forces all
-      // subsequent persists to route to `.meta`.
-      if (process.env.RVF_DEBUG) console.error(`[RVF-DIAG-DEFERRED] pid=${process.pid} site=open ts=${Date.now()} reason=${this._deferredCorruptReason}`);
-      this.nativeFallbackMode = true;
       return false;
     }
 
@@ -1198,12 +1213,6 @@ export class RvfBackend implements IMemoryBackend {
         `file exists but only ${peekBytesRead}/4 magic bytes present — ` +
         `peer RvfDatabase.create is mid-write or header was truncated`;
       if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: partial-magic (peekBytesRead=${peekBytesRead})`);
-      // ADR-0095 amendment (2026-05-01, swarm 2 fix): see line 1152
-      // comment for rationale. Without setting fallback mode here, the
-      // partial-magic peek leaves the writer in split-brain state where
-      // metadataPath returns the main path (still SFVR or about-to-be).
-      if (process.env.RVF_DEBUG) console.error(`[RVF-DIAG-DEFERRED] pid=${process.pid} site=partial-magic ts=${Date.now()} reason=${this._deferredCorruptReason}`);
-      this.nativeFallbackMode = true;
       return false;
     }
 
@@ -1225,11 +1234,6 @@ export class RvfBackend implements IMemoryBackend {
         `bad magic bytes ${JSON.stringify(peekStr)} — not 'SFVR' (native) ` +
         `or 'RVF\\0' (pure-TS). File is corrupt or from an unknown format.`;
       if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: bad-magic peekStr=${JSON.stringify(peekStr)}`);
-      // ADR-0095 amendment (2026-05-01, swarm 2 fix): see line 1152
-      // comment. Bad-magic deferred-corrupt MUST also flip fallback
-      // mode so subsequent persists route to .meta.
-      if (process.env.RVF_DEBUG) console.error(`[RVF-DIAG-DEFERRED] pid=${process.pid} site=bad-magic ts=${Date.now()} reason=${this._deferredCorruptReason}`);
-      this.nativeFallbackMode = true;
       return false;
     }
 
@@ -1535,8 +1539,11 @@ export class RvfBackend implements IMemoryBackend {
     // Peer writers can't interleave during the wide hold.
     if (this._lockHeldDepth > 0) {
       this._lockHeldDepth++;
+      this._diag(`acquireLock.reentrant depth=${this._lockHeldDepth}`);
       return;
     }
+    const acqStart = Date.now();
+    this._diag('acquireLock.start');
     const { writeFile: wf, readFile: rf, unlink: ul, mkdir: mk } = await import('node:fs/promises');
     // ADR-0095 Pass 3 (d3): ensure lockfile parent directory exists before the
     // open-wx below. acquireLock is called from initialize/persist/delete
@@ -1574,6 +1581,7 @@ export class RvfBackend implements IMemoryBackend {
       try {
         await wf(this.lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
         this._lockHeldDepth = 1;
+        this._diag(`acquireLock.acquired attempts=${attempt} elapsed=${Date.now() - acqStart}ms`);
         return; // Lock acquired
       } catch (e: any) {
         if (e.code !== 'EEXIST') throw e;
@@ -1624,13 +1632,16 @@ export class RvfBackend implements IMemoryBackend {
     // release until the outer-most try/finally fires.
     if (this._lockHeldDepth > 1) {
       this._lockHeldDepth--;
+      this._diag(`releaseLock.reentrant depth=${this._lockHeldDepth}`);
       return;
     }
     if (this._lockHeldDepth === 0) {
       // silent-fallthrough-OK: defensive — paired release without acquire (e.g. acquireLock threw before bumping). Nothing to do.
+      this._diag('releaseLock.unpaired (depth=0, no-op)');
       return;
     }
     this._lockHeldDepth = 0;
+    this._diag('releaseLock.unlinking');
     // ADR-0095 amendment (2026-05-01, t3-2 fix): verify ownership before
     // unlinking. With .jslock the only writer is JS-side, but two
     // concurrent JS instances can race during shutdown — A's release
@@ -1882,7 +1893,10 @@ export class RvfBackend implements IMemoryBackend {
     if (!existsSync(dir)) await mkdir(dir, { recursive: true });
     await this.acquireLock();
     try {
+      const walSizeBefore = existsSync(this.walPath) ? (await import('node:fs')).statSync(this.walPath).size : 0;
       await appendFile(this.walPath, Buffer.concat([lenBuf, json]));
+      const walSizeAfter = existsSync(this.walPath) ? (await import('node:fs')).statSync(this.walPath).size : 0;
+      this._diag(`appendToWal key=${entry.key} entryBytes=${json.length + 4} walSize=${walSizeBefore}->${walSizeAfter}`);
     } finally {
       await this.releaseLock();
     }
@@ -1981,17 +1995,22 @@ export class RvfBackend implements IMemoryBackend {
 
   /** Compact WAL: rewrite main .rvf with all entries, then delete WAL */
   private async compactWal(): Promise<void> {
-    if (this.persisting) return; // Another persist is in flight; retry on next trigger
+    if (this.persisting) {
+      this._diag('compactWal.skipped (persisting=true)');
+      return; // Another persist is in flight; retry on next trigger
+    }
+    this._diag(`compactWal.start walEntryCount=${this.walEntryCount} entries=${this.entries.size}`);
     await this.acquireLock();
     try {
       await this.persistToDiskInner();
       if (this.walPath) {
         // silent-fallthrough-OK: WAL may not exist if no entries were written; ENOENT is expected
-        try { await unlink(this.walPath); } catch {}
+        try { await unlink(this.walPath); this._diag('compactWal.unlinkedWal'); } catch {}
       }
       this.walEntryCount = 0;
     } finally {
       await this.releaseLock();
+      this._diag('compactWal.end');
     }
   }
 
@@ -2005,6 +2024,10 @@ export class RvfBackend implements IMemoryBackend {
     //    (the WAL may contain entries from a prior process that exited
     //    before compaction — e.g. short-lived CLI invocations).
     const metaPath = this.config.databasePath + '.meta';
+    const metaExists = existsSync(metaPath);
+    const mainExists = existsSync(this.config.databasePath);
+    const walExists = this.walPath && existsSync(this.walPath);
+    this._diag(`loadFromDisk.start metaExists=${metaExists} mainExists=${mainExists} walExists=${walExists} nativeDb=${this.nativeDb ? 'set' : 'null'} fallback=${this.nativeFallbackMode}`);
     let loadPath: string | null = null;
     if (this.nativeDb || this.nativeFallbackMode) {
       // ADR-0090 Tier B2 + ADR-0092: when native is active, the main
@@ -2243,6 +2266,7 @@ export class RvfBackend implements IMemoryBackend {
     // the surviving data and a successful shutdown will rewrite a clean
     // main file.
     this._deferredCorruptReason = null;
+    this._diag(`loadFromDisk.end entries=${this.entries.size} seenIds=${this.seenIds.size} keys=[${Array.from(this.entries.values()).map(e=>(e as any).key).join(',')}]`);
   }
 
   private async persistToDisk(): Promise<void> {
@@ -2272,6 +2296,9 @@ export class RvfBackend implements IMemoryBackend {
    */
   private async mergePeerStateBeforePersist(): Promise<void> {
     if (this.config.databasePath === ':memory:') return;
+    const beforeEntries = this.entries.size;
+    const beforeSeenIds = this.seenIds.size;
+    this._diag(`mergePeer.start entriesBefore=${beforeEntries} seenIdsBefore=${beforeSeenIds} fallback=${this.nativeFallbackMode} nativeDb=${this.nativeDb ? 'set' : 'null'}`);
 
     // Step 1: re-read the compacted main file. If a peer process compacted
     // their WAL since our initialize(), their entries are now in `.rvf` and
@@ -2363,18 +2390,24 @@ export class RvfBackend implements IMemoryBackend {
     // replayWal() uses standard set() which gives chronological last-write-
     // wins, the correct ordering for concurrent appendToWal calls under the
     // advisory lock.
+    const beforeWal = this.entries.size;
     if (this.walPath && existsSync(this.walPath)) {
       await this.replayWal();
     }
+    this._diag(`mergePeer.end entriesBefore=${beforeEntries} entriesAfterMeta=${beforeWal} entriesAfterAll=${this.entries.size} addedFromMeta=${beforeWal - beforeEntries} addedFromWal=${this.entries.size - beforeWal}`);
   }
 
   private async persistToDiskInner(): Promise<void> {
     if (this.persisting) {
+      this._diag('persistToDiskInner.skipped (persisting=true)');
       if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner SKIPPED (persisting=true)`);
       return; // Prevent concurrent persist calls
     }
     this.persisting = true;
-    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner ENTER, this.entries.size=${this.entries.size}, keys=${Array.from(this.entries.values()).map(e=>(e as any).key).join(',')}`);
+    const persistStart = Date.now();
+    const persistKeys = Array.from(this.entries.values()).map(e=>(e as any).key).join(',');
+    this._diag(`persistToDiskInner.start entries=${this.entries.size} keys=[${persistKeys}] target=${this.metadataPath()}`);
+    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner ENTER, this.entries.size=${this.entries.size}, keys=${persistKeys}`);
 
     try {
     // Multi-writer convergence (ADR-0090 Tier B7 fix).
@@ -2464,7 +2497,9 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
     await rename(tmpPath, target);
-    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner WROTE ${entries.length} entries to ${target}, keys=${entries.map(e=>(e as any).key).join(',')}`);
+    const writtenKeys = entries.map(e=>(e as any).key).join(',');
+    this._diag(`persistToDiskInner.renamed tmp=${tmpPath} target=${target} entries=${entries.length} keys=[${writtenKeys}]`);
+    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner WROTE ${entries.length} entries to ${target}, keys=${writtenKeys}`);
 
     // fsync directory entry for power-crash durability (Debt 12)
     try {
