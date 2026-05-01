@@ -415,7 +415,7 @@ async function checkVersionFreshness(): Promise<HealthCheck> {
 
     if (isOutdated) {
       const fix = isNpx
-        ? 'rm -rf ~/.npm/_npx/* && npx -y @claude-flow/cli@latest'
+        ? 'rm -rf ~/.npm/_npx/* && npx -y @sparkleideas/cli@latest'
         : 'npm update @claude-flow/cli';
 
       return {

@@ -373,7 +373,7 @@ function generateHooksConfig(config: HooksConfig): object {
     // workers (consolidate, preload) run regardless of `claude` availability.
     sessionStartHooks.push({
       type: 'command',
-      command: 'npx @claude-flow/cli@latest daemon start --quiet 2>/dev/null || true',
+      command: 'npx @sparkleideas/cli@latest daemon start --quiet 2>/dev/null || true',
       timeout: 5000,
       continueOnError: true,
     });

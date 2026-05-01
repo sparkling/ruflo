@@ -267,7 +267,7 @@ function setupAndBoundary(): string {
   return `## Quick Setup
 
 \`\`\`bash
-claude mcp add claude-flow -- npx -y @claude-flow/cli@latest
+claude mcp add claude-flow -- npx -y @sparkleideas/cli@latest
 ruflo daemon start
 ruflo doctor --fix
 \`\`\`

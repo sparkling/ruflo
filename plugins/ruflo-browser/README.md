@@ -18,7 +18,7 @@ Agentic browser automation with Playwright for testing, scraping, and UI interac
 
 ## Commands
 
-- `/browser` -- List active sessions, take screenshots, manage tabs
+- `/ruflo-browser` -- List active sessions, take screenshots, manage tabs
 
 ## Skills
 

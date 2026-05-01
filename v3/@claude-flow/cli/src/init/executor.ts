@@ -557,7 +557,7 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
         cvesFixed: 0,
         totalCves: 3,
         lastScan: null,
-        _note: 'Run: npx @claude-flow/cli@latest security scan'
+        _note: 'Run: npx @sparkleideas/cli@latest security scan'
       };
       fs.writeFileSync(auditPath, JSON.stringify(audit, null, 2), 'utf-8');
       result.created.push('.claude-flow/security/audit-status.json');
@@ -1489,7 +1489,7 @@ async function writeInitialMetrics(
       cvesFixed: 0,
       totalCves: 3,
       lastScan: null,
-      _note: 'Run: npx @claude-flow/cli@latest security scan'
+      _note: 'Run: npx @sparkleideas/cli@latest security scan'
     };
     fs.writeFileSync(auditPath, JSON.stringify(audit, null, 2), 'utf-8');
     result.created.files.push('.claude-flow/security/audit-status.json');
@@ -1573,13 +1573,13 @@ RuFlo V3 is a domain-driven design architecture for multi-agent AI coordination 
 ### Quick Commands
 \`\`\`bash
 # Initialize swarm
-npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh --max-agents 8 --strategy specialized
+npx @sparkleideas/cli@latest swarm init --topology hierarchical-mesh --max-agents 8 --strategy specialized
 
 # Check status
-npx @claude-flow/cli@latest swarm status
+npx @sparkleideas/cli@latest swarm status
 
 # Monitor activity
-npx @claude-flow/cli@latest swarm monitor
+npx @sparkleideas/cli@latest swarm monitor
 \`\`\`
 
 ---
@@ -1663,17 +1663,17 @@ npx @claude-flow/cli@latest swarm monitor
 ### Example Commands
 \`\`\`bash
 # Initialize
-npx @claude-flow/cli@latest init --wizard
+npx @sparkleideas/cli@latest init --wizard
 
 # Spawn agent
-npx @claude-flow/cli@latest agent spawn -t coder --name my-coder
+npx @sparkleideas/cli@latest agent spawn -t coder --name my-coder
 
 # Memory operations
-npx @claude-flow/cli@latest memory store --key "pattern" --value "data" --namespace patterns
-npx @claude-flow/cli@latest memory search --query "authentication"
+npx @sparkleideas/cli@latest memory store --key "pattern" --value "data" --namespace patterns
+npx @sparkleideas/cli@latest memory search --query "authentication"
 
 # Diagnostics
-npx @claude-flow/cli@latest doctor --fix
+npx @sparkleideas/cli@latest doctor --fix
 \`\`\`
 
 ---
@@ -1772,16 +1772,16 @@ High-confidence insights (>0.8) can transfer between agents.
 ### Memory Commands
 \`\`\`bash
 # Store pattern
-npx @claude-flow/cli@latest memory store --key "name" --value "data" --namespace patterns
+npx @sparkleideas/cli@latest memory store --key "name" --value "data" --namespace patterns
 
 # Semantic search
-npx @claude-flow/cli@latest memory search --query "authentication"
+npx @sparkleideas/cli@latest memory search --query "authentication"
 
 # List entries
-npx @claude-flow/cli@latest memory list --namespace patterns
+npx @sparkleideas/cli@latest memory list --namespace patterns
 
 # Initialize database
-npx @claude-flow/cli@latest memory init --force
+npx @sparkleideas/cli@latest memory init --force
 \`\`\`
 
 ---
@@ -1810,16 +1810,16 @@ npx @claude-flow/cli@latest memory init --force
 ### Hive-Mind Commands
 \`\`\`bash
 # Initialize
-npx @claude-flow/cli@latest hive-mind init --queen-type strategic
+npx @sparkleideas/cli@latest hive-mind init --queen-type strategic
 
 # Status
-npx @claude-flow/cli@latest hive-mind status
+npx @sparkleideas/cli@latest hive-mind status
 
 # Spawn workers
-npx @claude-flow/cli@latest hive-mind spawn --count 5 --type worker
+npx @sparkleideas/cli@latest hive-mind spawn --count 5 --type worker
 
 # Consensus
-npx @claude-flow/cli@latest hive-mind consensus --propose "task"
+npx @sparkleideas/cli@latest hive-mind consensus --propose "task"
 \`\`\`
 
 ---

@@ -368,7 +368,7 @@ const allCommand: Command = {
     // Step 1: Initialize memory
     try {
       output.writeln(output.dim('  Initializing memory database...'));
-      execSync('npx @claude-flow/cli@latest memory init 2>/dev/null', {
+      execSync('npx @sparkleideas/cli@latest memory init 2>/dev/null', {
         stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
       });
       output.writeln('  \u2713 Memory initialized');
@@ -377,7 +377,7 @@ const allCommand: Command = {
     // Step 2: Start daemon
     try {
       output.writeln(output.dim('  Starting daemon...'));
-      execSync('npx @claude-flow/cli@latest daemon start 2>/dev/null &', {
+      execSync('npx @sparkleideas/cli@latest daemon start 2>/dev/null &', {
         stdio: 'pipe', cwd: ctx.cwd, timeout: 10000
       });
       output.writeln('  \u2713 Daemon started');

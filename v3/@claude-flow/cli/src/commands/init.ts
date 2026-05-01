@@ -395,7 +395,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       if (startAll) {
         try {
           output.writeln(output.dim('  Initializing memory database...'));
-          execSync('npx @claude-flow/cli@latest memory init 2>/dev/null', {
+          execSync('npx @sparkleideas/cli@latest memory init 2>/dev/null', {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 30000
@@ -410,7 +410,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       if (startDaemon) {
         try {
           output.writeln(output.dim('  Starting daemon...'));
-          execSync('npx @claude-flow/cli@latest daemon start 2>/dev/null &', {
+          execSync('npx @sparkleideas/cli@latest daemon start 2>/dev/null &', {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 10000
@@ -425,7 +425,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       if (startAll) {
         try {
           output.writeln(output.dim('  Initializing swarm...'));
-          execSync('npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh 2>/dev/null', {
+          execSync('npx @sparkleideas/cli@latest swarm init --topology hierarchical-mesh 2>/dev/null', {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 30000
@@ -456,7 +456,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
         output.writeln(output.dim(`  Model: ${embeddingModel}`));
         output.writeln(output.dim('  Hyperbolic: Enabled (Poincaré ball)'));
         output.writeln(output.dim('  Downloading ONNX model (~110 MB, one-time)...'));
-        execSync(`npx @claude-flow/cli@latest embeddings init --model ${embeddingModel} --force 2>/dev/null`, {
+        execSync(`npx @sparkleideas/cli@latest embeddings init --model ${embeddingModel} --force 2>/dev/null`, {
           stdio: 'pipe',
           cwd: ctx.cwd,
           timeout: 120000 // ADR-0080: allow 2 min for model download
@@ -749,7 +749,7 @@ export const wizardCommand: Command = {
         output.printInfo('Initializing ONNX embedding subsystem...');
         const { execSync } = await import('child_process');
         try {
-          execSync(`npx @claude-flow/cli@latest embeddings init --model ${embeddingModel} --no-download --force 2>/dev/null`, {
+          execSync(`npx @sparkleideas/cli@latest embeddings init --model ${embeddingModel} --no-download --force 2>/dev/null`, {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 30000
@@ -795,7 +795,7 @@ export const wizardCommand: Command = {
         if (startAll) {
           try {
             output.writeln(output.dim('  Initializing memory database...'));
-            execSync('npx @claude-flow/cli@latest memory init 2>/dev/null', {
+            execSync('npx @sparkleideas/cli@latest memory init 2>/dev/null', {
               stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
             });
             output.writeln(output.success('  \u2713 Memory initialized'));
@@ -804,7 +804,7 @@ export const wizardCommand: Command = {
         if (startDaemon) {
           try {
             output.writeln(output.dim('  Starting daemon...'));
-            execSync('npx @claude-flow/cli@latest daemon start 2>/dev/null &', {
+            execSync('npx @sparkleideas/cli@latest daemon start 2>/dev/null &', {
               stdio: 'pipe', cwd: ctx.cwd, timeout: 10000
             });
             output.writeln(output.success('  \u2713 Daemon started'));
@@ -813,7 +813,7 @@ export const wizardCommand: Command = {
         if (startAll) {
           try {
             output.writeln(output.dim('  Initializing swarm...'));
-            execSync(`npx @claude-flow/cli@latest swarm init --topology ${options.runtime.topology || 'hierarchical-mesh'} 2>/dev/null`, {
+            execSync(`npx @sparkleideas/cli@latest swarm init --topology ${options.runtime.topology || 'hierarchical-mesh'} 2>/dev/null`, {
               stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
             });
             output.writeln(output.success('  \u2713 Swarm initialized'));
