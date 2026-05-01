@@ -11,7 +11,7 @@ import { dirname, join } from 'path';
 import type { Command, CommandContext, CommandResult, V3Config, CLIError } from './types.js';
 import { CommandParser, commandParser } from './parser.js';
 import { OutputFormatter, output } from './output.js';
-import { commands, commandsByCategory, getCommandsByCategory, commandRegistry, getCommand, getCommandAsync, getCommandNames, getLazyCommandNames, hasCommand } from './commands/index.js';
+import { commands, commandsByCategory, commandRegistry, getCommand, getCommandAsync, getCommandNames, hasCommand } from './commands/index.js';
 import { suggestCommand } from './suggest.js';
 import { runStartupUpdateCheck } from './update/index.js';
 
@@ -75,16 +75,9 @@ export class CLI {
     this.output = output;
     this.interactive = options.interactive ?? process.stdin.isTTY ?? false;
 
-    // Register all core (synchronously loaded) commands with full definitions
+    // Register all commands
     for (const cmd of commands) {
       this.parser.registerCommand(cmd);
-    }
-
-    // Register lazy command names so the parser can recognize them during
-    // argument resolution without importing their modules. Fix for #1596:
-    // prevents `daemon start` from being mis-routed to the `start` command.
-    for (const name of getLazyCommandNames()) {
-      this.parser.registerLazyCommandName(name);
     }
   }
 
@@ -152,7 +145,7 @@ export class CLI {
           this.output.writeln(this.output.dim(`  ${message}`));
           process.exit(1);
         } else {
-          await this.showHelp();
+          this.showHelp();
         }
         return;
       }
@@ -306,7 +299,7 @@ export class CLI {
   /**
    * Show main help
    */
-  private async showHelp(): Promise<void> {
+  private showHelp(): void {
     this.output.writeln();
     this.output.writeln(this.output.bold(`${this.name} v${this.version}`));
     this.output.writeln(this.output.dim(this.description));
@@ -316,12 +309,9 @@ export class CLI {
     this.output.writeln(`  ${this.name} <command> [subcommand] [options]`);
     this.output.writeln();
 
-    // PERF-03: Load all commands by category (lazy-loaded on demand)
-    const categories = await getCommandsByCategory();
-
     // Primary Commands
     this.output.writeln(this.output.bold('PRIMARY COMMANDS:'));
-    for (const cmd of categories.primary) {
+    for (const cmd of commandsByCategory.primary) {
       if (cmd.hidden) continue;
       const name = cmd.name.padEnd(12);
       this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
@@ -329,48 +319,40 @@ export class CLI {
     this.output.writeln();
 
     // Advanced Commands
-    if (categories.advanced.length > 0) {
-      this.output.writeln(this.output.bold('ADVANCED COMMANDS:'));
-      for (const cmd of categories.advanced) {
-        if (cmd.hidden) continue;
-        const name = cmd.name.padEnd(12);
-        this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
-      }
-      this.output.writeln();
+    this.output.writeln(this.output.bold('ADVANCED COMMANDS:'));
+    for (const cmd of commandsByCategory.advanced) {
+      if (cmd.hidden) continue;
+      const name = cmd.name.padEnd(12);
+      this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
     }
+    this.output.writeln();
 
     // Utility Commands
-    if (categories.utility.length > 0) {
-      this.output.writeln(this.output.bold('UTILITY COMMANDS:'));
-      for (const cmd of categories.utility) {
-        if (cmd.hidden) continue;
-        const name = cmd.name.padEnd(12);
-        this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
-      }
-      this.output.writeln();
+    this.output.writeln(this.output.bold('UTILITY COMMANDS:'));
+    for (const cmd of commandsByCategory.utility) {
+      if (cmd.hidden) continue;
+      const name = cmd.name.padEnd(12);
+      this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
     }
+    this.output.writeln();
 
     // Analysis Commands
-    if (categories.analysis.length > 0) {
-      this.output.writeln(this.output.bold('ANALYSIS COMMANDS:'));
-      for (const cmd of categories.analysis) {
-        if (cmd.hidden) continue;
-        const name = cmd.name.padEnd(12);
-        this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
-      }
-      this.output.writeln();
+    this.output.writeln(this.output.bold('ANALYSIS COMMANDS:'));
+    for (const cmd of commandsByCategory.analysis) {
+      if (cmd.hidden) continue;
+      const name = cmd.name.padEnd(12);
+      this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
     }
+    this.output.writeln();
 
     // Management Commands
-    if (categories.management.length > 0) {
-      this.output.writeln(this.output.bold('MANAGEMENT COMMANDS:'));
-      for (const cmd of categories.management) {
-        if (cmd.hidden) continue;
-        const name = cmd.name.padEnd(12);
-        this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
-      }
-      this.output.writeln();
+    this.output.writeln(this.output.bold('MANAGEMENT COMMANDS:'));
+    for (const cmd of commandsByCategory.management) {
+      if (cmd.hidden) continue;
+      const name = cmd.name.padEnd(12);
+      this.output.writeln(`  ${this.output.highlight(name)} ${cmd.description}`);
     }
+    this.output.writeln();
 
     this.output.writeln(this.output.bold('GLOBAL OPTIONS:'));
     for (const opt of this.parser.getGlobalOptions()) {
