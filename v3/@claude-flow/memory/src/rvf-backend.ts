@@ -1294,8 +1294,13 @@ export class RvfBackend implements IMemoryBackend {
         }
         const msg = String(err?.message ?? err ?? '');
         const isLockHeld = msg.includes('0x0300') || /LockHeld/i.test(msg);
-        // ADR-0095 swarm-2 fix: create-race loser → retry as open().
-        if (isLockHeld && fileExists(this.config.databasePath)) {
+        // ADR-0095 swarm-2 fix: race loser → retry as open().
+        // 0x0306 AlreadyExists is the post-flock-check semantic from
+        // race-safe `RvfStore::create` (the contract-correct error code
+        // when a peer won the create race). 0x0300 LockHeld is the
+        // legacy code from older fork builds — keep both for robustness.
+        const isAlreadyExists = msg.includes('0x0306') || /AlreadyExists/i.test(msg);
+        if ((isAlreadyExists || isLockHeld) && fileExists(this.config.databasePath)) {
           try {
             this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
             return true;
