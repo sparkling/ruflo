@@ -1,6 +1,6 @@
 {
   "name": "claude-flow",
-  "version": "2.7.47-patch.379",
+  "version": "2.7.47-patch.380",
   "description": "Ruflo - Enterprise AI agent orchestration for Claude Code. Deploy 60+ specialized agents in coordinated swarms with self-learning, fault-tolerant consensus, vector memory, and MCP integration",
   "main": "dist/index.js",
   "type": "module",
@@ -58,15 +58,15 @@
     "zod": "^3.22.4"
   },
   "optionalDependencies": {
-    "@claude-flow/codex": "3.0.0-alpha.9-patch.420",
-    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.407",
+    "@claude-flow/codex": "3.0.0-alpha.9-patch.421",
+    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.408",
     "@ruvector/attention": "^0.1.3",
     "@ruvector/core": "^0.1.30",
     "@ruvector/router": "^0.1.27",
     "@ruvector/router-linux-x64-gnu": "^0.1.27",
     "@ruvector/sona": "^0.1.5",
-    "agentdb": "3.0.0-alpha.10-patch.387",
-    "agentic-flow": "2.0.2-alpha-patch.400"
+    "agentdb": "3.0.0-alpha.10-patch.388",
+    "agentic-flow": "2.0.2-alpha-patch.401"
   },
   "overrides": {
     "hono": ">=4.11.4"
