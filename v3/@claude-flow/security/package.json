@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/security",
-  "version": "3.0.0-alpha.6-patch.406",
+  "version": "3.0.0-alpha.6-patch.407",
   "type": "module",
   "description": "Security module - CVE fixes, input validation, path security",
   "main": "dist/index.js",

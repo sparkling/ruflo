@@ -2406,7 +2406,7 @@ export class RvfBackend implements IMemoryBackend {
     this.persisting = true;
     const persistStart = Date.now();
     const persistKeys = Array.from(this.entries.values()).map(e=>(e as any).key).join(',');
-    this._diag(`persistToDiskInner.start entries=${this.entries.size} keys=[${persistKeys}] target=${this.metadataPath()}`);
+    this._diag(`persistToDiskInner.start entries=${this.entries.size} keys=[${persistKeys}] target=${this.metadataPath}`);
     if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner ENTER, this.entries.size=${this.entries.size}, keys=${persistKeys}`);
 
     try {
