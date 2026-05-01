@@ -44,18 +44,13 @@ import { wasmAgentTools } from './mcp-tools/wasm-agent-tools.js';
 import { guidanceTools } from './mcp-tools/guidance-tools.js';
 import { autopilotTools } from './mcp-tools/autopilot-tools.js';
 
-// #1605: Only register browser tools if agent-browser is available
-let _browserAvailable: boolean | null = null;
+// Fork stance per feedback-no-fallbacks + feedback-no-value-judgements-on-features:
+// always register browser tools. Upstream's #1605 gated registration on
+// `agent-browser` binary presence, which masks unavailability as "tool not found"
+// (a silent fallback). When agent-browser is missing, individual tool calls
+// fail loudly with the underlying ENOENT — preserving the failure signal.
 function getBrowserTools(): MCPTool[] {
-  if (_browserAvailable === null) {
-    try {
-      execFileSync('agent-browser', ['--version'], { stdio: 'ignore', timeout: 3000 });
-      _browserAvailable = true;
-    } catch {
-      _browserAvailable = false;
-    }
-  }
-  return _browserAvailable ? browserTools : [];
+  return browserTools;
 }
 
 /**

@@ -25,3 +25,4 @@ export { wasmAgentTools } from './wasm-agent-tools.js';
 export { ruvllmWasmTools } from './ruvllm-tools.js';
 export { guidanceTools } from './guidance-tools.js';
 export { autopilotTools } from './autopilot-tools.js';
+export { browserTools } from './browser-tools.js';
