@@ -1153,6 +1153,16 @@ export class RvfBackend implements IMemoryBackend {
         `native file has SFVR magic but RvfDatabase.open failed after ` +
         `${attempt} attempt(s) over ${Date.now() - openStartTime}ms ` +
         `(budget ${maxOpenWaitMs}ms): ${lastErr?.message ?? lastErr}`;
+      // ADR-0095 amendment (2026-05-01, swarm 2 fix): also flip the
+      // fallback-mode flag. Without this, `metadataPath()` returns the
+      // SFVR-magic main path (because both `nativeDb` and
+      // `nativeFallbackMode` are false), so the next `persistToDiskInner`
+      // writes pure-TS RVF\0 bytes OVER the SFVR file — a split-brain
+      // corruption that produced the residual silent-loss observed in
+      // diag-rvf-interproc-race at low N. Setting the flag forces all
+      // subsequent persists to route to `.meta`.
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DIAG-DEFERRED] pid=${process.pid} site=open ts=${Date.now()} reason=${this._deferredCorruptReason}`);
+      this.nativeFallbackMode = true;
       return false;
     }
 
@@ -1188,6 +1198,12 @@ export class RvfBackend implements IMemoryBackend {
         `file exists but only ${peekBytesRead}/4 magic bytes present — ` +
         `peer RvfDatabase.create is mid-write or header was truncated`;
       if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: partial-magic (peekBytesRead=${peekBytesRead})`);
+      // ADR-0095 amendment (2026-05-01, swarm 2 fix): see line 1152
+      // comment for rationale. Without setting fallback mode here, the
+      // partial-magic peek leaves the writer in split-brain state where
+      // metadataPath returns the main path (still SFVR or about-to-be).
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DIAG-DEFERRED] pid=${process.pid} site=partial-magic ts=${Date.now()} reason=${this._deferredCorruptReason}`);
+      this.nativeFallbackMode = true;
       return false;
     }
 
@@ -1209,6 +1225,11 @@ export class RvfBackend implements IMemoryBackend {
         `bad magic bytes ${JSON.stringify(peekStr)} — not 'SFVR' (native) ` +
         `or 'RVF\\0' (pure-TS). File is corrupt or from an unknown format.`;
       if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: bad-magic peekStr=${JSON.stringify(peekStr)}`);
+      // ADR-0095 amendment (2026-05-01, swarm 2 fix): see line 1152
+      // comment. Bad-magic deferred-corrupt MUST also flip fallback
+      // mode so subsequent persists route to .meta.
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DIAG-DEFERRED] pid=${process.pid} site=bad-magic ts=${Date.now()} reason=${this._deferredCorruptReason}`);
+      this.nativeFallbackMode = true;
       return false;
     }
 
