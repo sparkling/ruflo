@@ -1294,6 +1294,35 @@ export class RvfBackend implements IMemoryBackend {
         }
         const msg = String(err?.message ?? err ?? '');
         const isLockHeld = msg.includes('0x0300') || /LockHeld/i.test(msg);
+        // ADR-0095 amendment (2026-05-01, swarm 2 fix): when create
+        // returns LockHeld AND the file now exists on disk, the new
+        // store.rs flock-first ordering raced a peer that already
+        // created the file. Switch to `open()` (which goes through the
+        // same flock queue and will succeed once the peer releases).
+        // This replaces the previous behavior where create-race losers
+        // got `FsyncFailed` mapped from EEXIST and crashed at
+        // attempts=1, causing the residual silent loss observed at low
+        // N in `diag-rvf-interproc-race.mjs`.
+        if (isLockHeld && fileExists(this.config.databasePath)) {
+          this._diag(`tryNativeInit.create raced; retrying as open() (attempt=${createAttempt})`);
+          try {
+            this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
+            if (this.config.verbose) {
+              console.log(
+                `[RvfBackend] Native create raced; opened existing SFVR file (after ${Date.now() - createStart}ms)`,
+              );
+            }
+            return true;
+          } catch (openErr: any) {
+            // Open failed — could be the peer still mid-write. Fall
+            // through to LockHeld retry path below to back off and try
+            // create again (which will re-route here).
+            lastCreateErr = openErr;
+            const openMsg = String(openErr?.message ?? openErr ?? '');
+            const openLockHeld = openMsg.includes('0x0300') || /LockHeld/i.test(openMsg);
+            if (!openLockHeld) break;
+          }
+        }
         if (!isLockHeld) break;
         const expDelay = Math.min(createBaseDelayMs * Math.pow(2, createAttempt), createMaxDelayMs);
         const jitter = expDelay * 0.5 * Math.random();
