@@ -21,6 +21,75 @@ export interface ValidationResult {
 }
 
 /**
+ * Enum of valid Queen types per ADR-0107. Domain-specific validator per
+ * upstream ADR-092 pattern + ADR-0111 W5.
+ */
+export const QUEEN_TYPES = ['strategic', 'tactical', 'adaptive'] as const;
+export type QueenType = (typeof QUEEN_TYPES)[number];
+
+export function validateQueenType(value: unknown, label = 'queenType'): ValidationResult {
+  if (typeof value !== 'string' || value.length === 0) {
+    return { valid: false, sanitized: '', error: `${label} must be a non-empty string` };
+  }
+  if (!QUEEN_TYPES.includes(value as QueenType)) {
+    return {
+      valid: false,
+      sanitized: '',
+      error: `${label} must be one of: ${QUEEN_TYPES.join(', ')} (got '${value}')`,
+    };
+  }
+  return { valid: true, sanitized: value };
+}
+
+/**
+ * Enum of valid worker types per ADR-0108. Mirrors the V2-parity port
+ * (`--worker-types` comma-separated). Domain-specific validator per
+ * upstream ADR-092 pattern + ADR-0111 W5.
+ */
+export const WORKER_TYPES = [
+  'researcher', 'coder', 'analyst', 'tester', 'architect', 'reviewer',
+  'optimizer', 'documenter', 'specialist', 'coordinator', 'monitor',
+] as const;
+export type WorkerType = (typeof WORKER_TYPES)[number];
+
+export function validateWorkerType(value: unknown, label = 'workerType'): ValidationResult {
+  if (typeof value !== 'string' || value.length === 0) {
+    return { valid: false, sanitized: '', error: `${label} must be a non-empty string` };
+  }
+  if (!WORKER_TYPES.includes(value as WorkerType)) {
+    return {
+      valid: false,
+      sanitized: '',
+      error: `${label} must be one of: ${WORKER_TYPES.join(', ')} (got '${value}')`,
+    };
+  }
+  return { valid: true, sanitized: value };
+}
+
+/**
+ * Enum of valid storage providers per ADR-0110. RVF is primary
+ * (per `project-rvf-primary` memory); `agentdb` is a hybrid backend;
+ * `sqlite` is structurally-unreachable fallback retained for migration.
+ * Domain-specific validator per upstream ADR-092 pattern + ADR-0111 W5.
+ */
+export const STORAGE_PROVIDERS = ['rvf', 'agentdb', 'sqlite'] as const;
+export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
+
+export function validateStorageProvider(value: unknown, label = 'storageProvider'): ValidationResult {
+  if (typeof value !== 'string' || value.length === 0) {
+    return { valid: false, sanitized: '', error: `${label} must be a non-empty string` };
+  }
+  if (!STORAGE_PROVIDERS.includes(value as StorageProvider)) {
+    return {
+      valid: false,
+      sanitized: '',
+      error: `${label} must be one of: ${STORAGE_PROVIDERS.join(', ')} (got '${value}')`,
+    };
+  }
+  return { valid: true, sanitized: value };
+}
+
+/**
  * Validate an identifier (agent ID, agent type, namespace, key, etc.)
  * Rejects shell metacharacters and path traversal.
  */
