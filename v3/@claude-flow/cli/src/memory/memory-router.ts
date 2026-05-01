@@ -704,7 +704,18 @@ async function _doInit(): Promise<void> {
 
   // ADR-0086 T2.2: Create RvfBackend (IStorageContract) instead of SQLite initializer
   // ADR-0094 Sprint 1.4 (d6): capture lockPath for sync shutdown path.
-  if (databasePath && databasePath !== ':memory:') _lockPath = databasePath + '.lock';
+  // ADR-0095 amendment (2026-05-01, swarm-confirmed t3-2 fix): the JS-side
+  // advisory lock lives at `path + '.jslock'`, NOT `path + '.lock'`. The
+  // latter is the NATIVE rvf-runtime FLVR-format binary lock; if we set
+  // `_lockPath` to that path, `_syncShutdown` reads the native binary, fails
+  // to JSON.parse it, falls into the `catch { isOurs = true }` path, and
+  // `unlinkSync`s a peer's native lock on every CLI exit — directly
+  // producing the LockHeld 0x0300 / FsyncFailed 0x0303 errors and the
+  // silent-loss races observed in t3-2. Confirmed via 10-agent swarm
+  // analysis 2026-05-01 + diag-rvf-interproc-race.mjs --trials 40 (0/40
+  // before fix). See rvf-backend.ts constructor comment for the .jslock
+  // rename rationale.
+  if (databasePath && databasePath !== ':memory:') _lockPath = databasePath + '.jslock';
   try {
     // ADR-0069 Bug #3: ensure the parent directory exists before RvfBackend
     // tries to open the file. The per-user path `$HOME/.claude-flow/data/`

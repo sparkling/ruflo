@@ -231,8 +231,19 @@ export class RvfBackend implements IMemoryBackend {
       walCompactionThreshold: config.walCompactionThreshold ?? DEFAULT_WAL_COMPACTION_THRESHOLD,
     };
     validatePath(this.config.databasePath);
+    // ADR-0095 amendment (2026-04-30, t3-2 fix): JS-side advisory lock
+    // path is `.jslock`, NOT `.lock`. The native rvf-runtime crate
+    // (forks/ruvector/crates/rvf/rvf-runtime/src/locking.rs lock_path_for)
+    // ALREADY uses `path + ".lock"` for its WriterLease / FLVR-format
+    // binary lock file. JS using the same path collided: native writes
+    // FLVR magic + PID + UUID; JS tries to JSON.parse it, fails. The
+    // collision was the primary t3-2 silent-data-loss vector — JS
+    // peers would either steal the native lock (old behavior) or wait
+    // forever (the new safer behavior). Either way, broken. Disjoint
+    // paths fix the collision; the native lock remains authoritative
+    // for native ops, and JS's advisory lock guards JS-side mutations.
     this.walPath = this.config.databasePath === ':memory:' ? '' : this.config.databasePath + '.wal';
-    this.lockPath = this.config.databasePath === ':memory:' ? '' : this.config.databasePath + '.lock';
+    this.lockPath = this.config.databasePath === ':memory:' ? '' : this.config.databasePath + '.jslock';
   }
 
   async initialize(): Promise<void> {
@@ -248,24 +259,29 @@ export class RvfBackend implements IMemoryBackend {
     this._deferredCorruptReason = null;
 
     // ADR-0095 amendment d1 (ruflo-patch): serialize the entire init sequence
-    // through the PID-based advisory lock. Previously `reapStaleTmpFiles →
-    // tryNativeInit → loadFromDisk` ran unlocked, so a second process starting
-    // up concurrently could race the first in the native create/open and the
-    // pure-TS reader paths. Wrapping them under the same advisory lock that
-    // persistToDisk / compactWal / appendToWal use makes init serialize
-    // against both other initializers AND live writers. :memory: mode is a
-    // no-op in the lock path (lockPath is ''), so the guard is free there.
+    // through the PID-based advisory lock. Native rvf-runtime's WriterLock
+    // (O_CREAT|O_EXCL with break-stale + retry-from-JS) returns WouldBlock,
+    // not blocks, on contention; its retry loop only handles LockHeld
+    // (0x0300) — FsyncFailed (0x0303) and other transient native errors are
+    // fatal at first occurrence. Empirically (t3-2 stress test, 2026-05-01,
+    // patch.281) removing the JS init lock to "let native serialize"
+    // produced ~30% native-create failures under N=6 concurrent writers.
+    // The JS advisory lock has no such failure mode (5s budget, exponential
+    // backoff, PID-verified break) so it is the load-bearing serialization
+    // for cold-start init across writers. Keeping it around the whole init
+    // also prevents JS-side WAL/meta races during loadFromDisk against any
+    // peer's mid-flight persistToDisk rename.
     //
     // Re-entrancy note: reapStaleTmpFiles, tryNativeInit, loadFromDisk
     // (including its replayWal call) do NOT themselves take the lock — all
-    // three existing lock-taking sites are in appendToWal/compactWal/
-    // persistToDisk, none of which fire during init. Verified against
-    // rvf-backend.ts at the time of this change.
+    // three existing lock-taking sites are in the WAL-append, WAL-compact,
+    // and disk-persist methods, none of which fire during init.
     //
     // The lock primitive has a 5s budget + throws on timeout; we let that
     // propagate rather than swallowing — if init can't claim the lock within
     // budget, something upstream is deeply wrong and the caller should see it.
     await this.acquireLock();
+    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] initialize ACQUIRED lock at ${this.lockPath}`);
     try {
       // Reap stale *.tmp.* files left by crashed writers before native init
       // so the directory state is clean when the native backend peeks at it.
@@ -351,10 +367,22 @@ export class RvfBackend implements IMemoryBackend {
     this.hnswIndex = null;
     this.initialized = false;
 
-    // Clean up advisory lock file
+    // Clean up advisory lock file — ONLY if WE own it. A blanket unlink
+    // here would unlink a peer's lock and re-introduce the t3-2 corruption
+    // chain. releaseLock has the same PID-verify check; this is just for
+    // the case where shutdown is called outside any lock-acquired region.
     if (this.lockPath) {
-      // silent-fallthrough-OK: lock file may have been removed by peer or never created; ENOENT is the expected case
-      try { await unlink(this.lockPath); } catch {}
+      try {
+        const { readFile: rf } = await import('node:fs/promises');
+        const content = await rf(this.lockPath, 'utf-8');
+        const { pid } = JSON.parse(content);
+        if (pid === process.pid) {
+          // silent-fallthrough-OK: lock file may have been removed by peer between our read and unlink; ENOENT is expected
+          try { await unlink(this.lockPath); } catch {}
+        }
+      } catch {
+        // silent-fallthrough-OK: no lock file or unparseable content — nothing to clean up
+      }
     }
   }
 
@@ -377,50 +405,63 @@ export class RvfBackend implements IMemoryBackend {
     this.checkCapacity();
     const ns = entry.namespace || this.config.defaultNamespace;
     const e = ns !== entry.namespace ? { ...entry, namespace: ns } : entry;
-    this.entries.set(e.id, e);
-    this.seenIds.add(e.id);
-    this.keyIndex.set(this.compositeKey(e.namespace, e.key), e.id);
-    // Index in ONE backend, not both (Debt 8)
-    if (e.embedding) {
-      if (this.nativeDb) {
-        const numId = this.assignNativeId(e.id);
-        try {
-          this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
-        } catch (err) {
-          // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
-          // file's segment hashes no longer validate — further native ops
-          // would keep lying. Degrade loudly, then fall through to the
-          // pure-TS indexing branch via reIndexAfterDegrade.
-          if (!this.degradeToFallbackMode('store', err) && this.config.verbose) {
-            console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+
+    // ADR-0095 amendment (2026-04-30, t3-2 fix): lock JUST the in-memory
+    // mutation + native ingest. The unlocked native ingest is the ~5-10%
+    // multi-writer corruption source per the comment at the top of this
+    // file (5-10% InvalidChecksum on the SFVR file under contention).
+    //
+    // Earlier attempt: wrap the full R-M-W (mutate + WAL + compaction) in
+    // one locked region. That eliminated the native race BUT made each
+    // holder hold the lock for ~1s. With 6 writers serialized that's ~6s
+    // total — exceeds the 5s staleness threshold, so waiters consider
+    // live holders "stale" and steal the lock, racing the durable write.
+    // Result: t3-2 went from 1/30 fail to 7/30.
+    //
+    // Better shape: short locked region for the unsafe in-process state
+    // mutation, then release. The WAL helpers acquire their own quick
+    // locks (each <200ms), so no holder holds the lock long enough to
+    // trip staleness. Cross-process convergence on the WAL+compact path
+    // is handled by the peer-merge step inside the durable-write helper
+    // (re-reads disk + WAL, merges, writes).
+    await this.acquireLock();
+    try {
+      this.entries.set(e.id, e);
+      this.seenIds.add(e.id);
+      this.keyIndex.set(this.compositeKey(e.namespace, e.key), e.id);
+      // Index in ONE backend, not both (Debt 8)
+      if (e.embedding) {
+        if (this.nativeDb) {
+          const numId = this.assignNativeId(e.id);
+          try {
+            this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
+          } catch (err) {
+            // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
+            // file's segment hashes no longer validate — further native ops
+            // would keep lying. Degrade loudly, then fall through to the
+            // pure-TS indexing branch via reIndexAfterDegrade.
+            if (!this.degradeToFallbackMode('store', err) && this.config.verbose) {
+              console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+            }
+            this.reIndexAfterDegrade(e.id, e.embedding);
           }
-          this.reIndexAfterDegrade(e.id, e.embedding);
+        } else if (this.hnswIndex) {
+          this.hnswIndex.add(e.id, e.embedding);
         }
-      } else if (this.hnswIndex) {
-        this.hnswIndex.add(e.id, e.embedding);
       }
+      this.dirty = true;
+    } finally {
+      await this.releaseLock();
     }
-    this.dirty = true;
     // Persist immediately so data survives process exit (the 30s auto-persist
-    // timer may never fire in short-lived CLI invocations).
+    // timer may never fire in short-lived CLI invocations). The WAL helpers
+    // each acquire their own quick lock; both call sites are bounded by
+    // the WAL-append + persist-merge logic below the lock.
     await this.appendToWal(e);
     // ADR-0090 Tier A4 / B7 concurrent-write fix: always compact after
-    // every store, not just when walCompactionThreshold (default 100) is
-    // hit. Under concurrent CLI writers (the T3-2 acceptance scenario) the
-    // process.exit(0) in @sparkleideas/cli's exit hook can fire BEFORE the
-    // beforeExit-registered shutdownRouter, leaving writers B..F with
-    // entries only in the WAL while writer A's lucky beforeExit rolled
-    // .meta forward to entryCount=1. Compacting under the lock on every
-    // store uses mergePeerStateBeforePersist() to merge every peer's
-    // on-disk state + every peer's in-flight WAL entry into .meta, so
-    // entryCount always reflects the current durable state across all
-    // concurrent writers — not just this process's snapshot. The
-    // compaction is already serialized by the advisory lock, so this
-    // trades a marginal per-store latency cost for a disk header that is
-    // always consistent with what `memory list` (or a fresh process)
-    // would see via replayWal. Fail-loud on lock failure is preserved
-    // because the compaction path still throws on lock starvation after
-    // the 5s budget — no silent fallback was introduced.
+    // every store, not just when walCompactionThreshold is hit. The
+    // peer-merge step in the durable-write helper handles cross-process
+    // convergence across all writers.
     if (this.walPath) {
       await this.compactWal();
     }
@@ -914,6 +955,12 @@ export class RvfBackend implements IMemoryBackend {
       return false;
     }
 
+    // Note: the advisory lock that protects this method's peek+open+create
+    // decision is acquired by initialize() at the call site (line 268),
+    // released by initialize() in finally{} at line 290. tryNativeInit itself
+    // does NOT acquire the lock — doing so would deadlock the non-reentrant
+    // PID-based wx-create primitive.
+
     // ADR-0095 amendment (ruflo-patch commit 2d12bb1): replace the silent
     // catch-all (ADR-0082 violation — 5 of 6 writers were falling silently to
     // pure-TS when the native file was momentarily mid-write) with typed
@@ -1133,6 +1180,7 @@ export class RvfBackend implements IMemoryBackend {
       this._deferredCorruptReason =
         `file exists but only ${peekBytesRead}/4 magic bytes present — ` +
         `peer RvfDatabase.create is mid-write or header was truncated`;
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: partial-magic (peekBytesRead=${peekBytesRead})`);
       return false;
     }
 
@@ -1153,6 +1201,7 @@ export class RvfBackend implements IMemoryBackend {
       this._deferredCorruptReason =
         `bad magic bytes ${JSON.stringify(peekStr)} — not 'SFVR' (native) ` +
         `or 'RVF\\0' (pure-TS). File is corrupt or from an unknown format.`;
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: bad-magic peekStr=${JSON.stringify(peekStr)}`);
       return false;
     }
 
@@ -1165,6 +1214,7 @@ export class RvfBackend implements IMemoryBackend {
           `'RVF\\0' format; using pure-TS backend (native will not clobber)`,
         );
       }
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: fileOnDisk path peekBytesRead=${peekBytesRead} isRVFNull=${isRVFNull}`);
       return false;
     }
 
@@ -1465,7 +1515,20 @@ export class RvfBackend implements IMemoryBackend {
       // create the path, so surface it here per ADR-0082 (no silent swallow).
       if (err?.code && err.code !== 'EEXIST') throw err;
     }
-    const maxWaitMs = 5000; // total budget for lock acquisition
+    // ADR-0095 amendment (2026-05-01, t3-2 fix): with the .jslock path
+    // rename (constructor line 246), JS no longer collides with the native
+    // rvf-runtime crate's `.lock` file. The lock content is now ALWAYS
+    // JSON written by us, so:
+    //   - no time-based stealing (a slow but live holder must NOT be
+    //     preempted — that's the corruption vector that wrote
+    //     incompatible content to the same lock file)
+    //   - no blind unlink on parse failure (the only way parse fails
+    //     with .jslock is the wf-not-yet-completed window — the holder
+    //     IS alive and writing; back off, retry)
+    //   - 60s budget. Subprocess CLI inits under heavy contention take
+    //     1-3s each; 6 serialized = up to ~18s; 60s gives headroom for
+    //     OS scheduling jitter, native flock contention, and tail latency.
+    const maxWaitMs = 60000;
     const baseDelayMs = 20;
     const maxDelayMs = 500;
     const startTime = Date.now();
@@ -1476,24 +1539,30 @@ export class RvfBackend implements IMemoryBackend {
         return; // Lock acquired
       } catch (e: any) {
         if (e.code !== 'EEXIST') throw e;
-        // Lock exists — check if holder is alive
+        // Lock exists — only steal when recorded PID is dead.
+        let parseSuccessful = false;
+        let holderAlive = true;
         try {
           const content = await rf(this.lockPath, 'utf-8');
-          const { pid, ts } = JSON.parse(content);
-          const staleMs = 5000; // 5s stale threshold (CLI processes are short-lived)
-          let pidAlive = true;
-          try { process.kill(pid, 0); } catch { pidAlive = false; }
-          if (!pidAlive || Date.now() - ts > staleMs) {
-            // silent-fallthrough-OK: best-effort cleanup of stale lock file; ENOENT is expected if peer already removed it
-            try { await ul(this.lockPath); } catch {}
-            continue; // Retry immediately after removing stale lock
+          const parsed = JSON.parse(content);
+          const pid = parsed?.pid;
+          parseSuccessful = typeof pid === 'number' && pid > 0;
+          if (parseSuccessful) {
+            try { process.kill(pid, 0); } catch { holderAlive = false; }
           }
         } catch {
-          // silent-fallthrough-OK: corrupt lock file recovery; ENOENT or lock-already-removed is the expected case
-          try { await ul(this.lockPath); } catch {}
-          continue; // Corrupt lock file — remove and retry
+          // silent-fallthrough-OK: transient mid-write read on the
+          // wf-creates-then-writes window — holder IS alive and
+          // committing JSON content, back off and retry. NEVER unlink
+          // on parse failure; that was the t3-2 corruption vector.
+          parseSuccessful = false;
+          holderAlive = true;
         }
-        // Lock holder is alive — exponential backoff with jitter
+        if (parseSuccessful && !holderAlive) {
+          // silent-fallthrough-OK: best-effort cleanup of dead-holder lock
+          try { await ul(this.lockPath); } catch {}
+          continue;
+        }
         const expDelay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
         const jitter = expDelay * 0.5 * Math.random();
         const delayMs = expDelay + jitter;
@@ -1506,12 +1575,25 @@ export class RvfBackend implements IMemoryBackend {
     );
   }
 
-  /** Release advisory lock */
+  /** Release advisory lock — only if WE still own it. */
   private async releaseLock(): Promise<void> {
-    // silent-fallthrough-OK: no lockPath = no lock acquired = nothing to release (in-memory store path)
+    // silent-fallthrough-OK: no lockPath = :memory: mode = no lock acquired = nothing to release
     if (!this.lockPath) return;
-    // silent-fallthrough-OK: lock file may have been removed by stale-cleanup peer; ENOENT is expected
-    try { await unlink(this.lockPath); } catch {}
+    // ADR-0095 amendment (2026-05-01, t3-2 fix): verify ownership before
+    // unlinking. With .jslock the only writer is JS-side, but two
+    // concurrent JS instances can race during shutdown — A's release
+    // unlinking B's lock would let C acquire concurrently with B.
+    try {
+      const { readFile: rf, unlink: ul } = await import('node:fs/promises');
+      const content = await rf(this.lockPath, 'utf-8');
+      const { pid } = JSON.parse(content);
+      if (pid === process.pid) {
+        // silent-fallthrough-OK: lock file may be removed between read and unlink (peer cleanup race); ENOENT is expected
+        try { await ul(this.lockPath); } catch {}
+      }
+    } catch {
+      // silent-fallthrough-OK: lock file gone (already unlinked or never created) — nothing to release
+    }
   }
 
   private bruteForceSearch(embedding: Float32Array, options: SearchOptions): SearchResult[] {
@@ -2235,8 +2317,12 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   private async persistToDiskInner(): Promise<void> {
-    if (this.persisting) return; // Prevent concurrent persist calls
+    if (this.persisting) {
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner SKIPPED (persisting=true)`);
+      return; // Prevent concurrent persist calls
+    }
     this.persisting = true;
+    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner ENTER, this.entries.size=${this.entries.size}, keys=${Array.from(this.entries.values()).map(e=>(e as any).key).join(',')}`);
 
     try {
     // Multi-writer convergence (ADR-0090 Tier B7 fix).
@@ -2326,6 +2412,7 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
     await rename(tmpPath, target);
+    if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] persistToDiskInner WROTE ${entries.length} entries to ${target}, keys=${entries.map(e=>(e as any).key).join(',')}`);
 
     // fsync directory entry for power-crash durability (Debt 12)
     try {
