@@ -98,57 +98,15 @@ export async function buildRabitqIndex(options?: {
     const entries: RabitqEntry[] = [];
     const vectors: number[] = [];
 
-    // Try bridge first (reads via better-sqlite3, sees WAL data)
-    let usedBridge = false;
-    try {
-      const { bridgeGetAllEmbeddings } = await import('./memory-bridge.js');
-      const bridgeRows = await bridgeGetAllEmbeddings({ dimensions, dbPath: options?.dbPath });
-      if (bridgeRows && bridgeRows.length > 0) {
-        for (const row of bridgeRows) {
-          entries.push({ id: row.id, key: row.key, namespace: row.namespace });
-          vectors.push(...row.embedding);
-        }
-        usedBridge = true;
-      }
-    } catch { /* bridge unavailable, fall through */ }
-
-    // Fallback: read .swarm/memory.db via sql.js
-    if (!usedBridge) {
-      if (!fs.existsSync(dbPath)) {
-        rabitqInitializing = false;
-        return { success: false, vectorCount: 0, dimensions, compressionRatio: 0, buildTimeMs: 0, error: 'Database not found' };
-      }
-
-      const initSqlJs = (await import('sql.js')).default;
-      const SQL = await initSqlJs();
-      const fileBuffer = fs.readFileSync(dbPath);
-      const db = new SQL.Database(fileBuffer);
-
-      const result = db.exec(`
-        SELECT id, key, namespace, embedding
-        FROM memory_entries
-        WHERE status = 'active' AND embedding IS NOT NULL
-        LIMIT 50000
-      `);
-
-      if (result[0]?.values) {
-        for (const row of result[0].values) {
-          const [id, key, ns, embeddingJson] = row as [string, string, string, string];
-          if (!embeddingJson) continue;
-
-          try {
-            const embedding = JSON.parse(embeddingJson) as number[];
-            if (embedding.length !== dimensions) continue;
-
-            entries.push({ id: String(id), key: key || String(id), namespace: ns || 'default' });
-            vectors.push(...embedding);
-          } catch {
-            // skip invalid
-          }
-        }
-      }
-
-      db.close();
+    // ADR-0086 RVF-first: read embeddings via memory-router (the consolidated
+    // successor to deleted memory-bridge.ts). No sql.js fallback per ADR-0084
+    // (no shadow SQLite read path) + feedback-no-fallbacks (fail loud, never
+    // mask via silent catch).
+    const { routerGetAllEmbeddings } = await import('./memory-router.js');
+    const routerRows = await routerGetAllEmbeddings({ dimensions, dbPath: options?.dbPath });
+    for (const row of routerRows) {
+      entries.push({ id: row.id, key: row.key, namespace: row.namespace });
+      vectors.push(...row.embedding);
     }
 
     if (entries.length < 2) {
