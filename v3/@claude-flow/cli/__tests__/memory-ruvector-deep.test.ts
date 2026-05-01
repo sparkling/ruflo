@@ -416,28 +416,28 @@ describe('SONA Optimizer', () => {
   });
 
   describe('getRoutingSuggestion', () => {
-    it('should suggest coder for implementation tasks', () => {
-      const suggestion = optimizer.getRoutingSuggestion('implement a new feature for authentication');
+    it('should suggest coder for implementation tasks', async () => {
+      const suggestion = await optimizer.getRoutingSuggestion('implement a new feature for authentication');
       expect(suggestion.agent).toBeDefined();
       expect(suggestion.confidence).toBeGreaterThan(0);
       expect(suggestion.source).toBeDefined();
     });
 
-    it('should suggest tester for test tasks', () => {
-      const suggestion = optimizer.getRoutingSuggestion('write unit test coverage for the API');
+    it('should suggest tester for test tasks', async () => {
+      const suggestion = await optimizer.getRoutingSuggestion('write unit test coverage for the API');
       expect(suggestion.agent).toBeDefined();
       expect(['tester', 'coder', 'reviewer']).toContain(suggestion.agent);
     });
 
-    it('should fallback to default for unknown tasks', () => {
-      const suggestion = optimizer.getRoutingSuggestion('xyzzy');
+    it('should fallback to default for unknown tasks', async () => {
+      const suggestion = await optimizer.getRoutingSuggestion('xyzzy');
       expect(suggestion.agent).toBe('coder');
       expect(suggestion.source).toBe('default');
       expect(suggestion.confidence).toBe(0.3);
     });
 
-    it('should include alternatives', () => {
-      const suggestion = optimizer.getRoutingSuggestion('implement and test security audit');
+    it('should include alternatives', async () => {
+      const suggestion = await optimizer.getRoutingSuggestion('implement and test security audit');
       expect(suggestion.alternatives).toBeDefined();
       expect(Array.isArray(suggestion.alternatives)).toBe(true);
     });

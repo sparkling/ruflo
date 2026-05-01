@@ -7,6 +7,10 @@
  * - Singleton router instance
  */
 
+import * as pathMod from 'node:path';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+
 // ============================================================================
 // Caching for Performance
 // ============================================================================
@@ -488,7 +492,8 @@ export async function coverageGaps(
  * Returns null if path is invalid or attempts traversal
  */
 function validateProjectPath(inputPath: string | undefined): string | null {
-  const { resolve, normalize, isAbsolute } = require('path');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- sync function, top-level import at file head
+  const { resolve, normalize, isAbsolute } = pathMod;
 
   // Default to cwd if not provided
   const basePath = inputPath || process.cwd();
@@ -536,9 +541,7 @@ async function loadProjectCoverage(projectRoot?: string, skipCache?: boolean): P
     }
   }
 
-  const { existsSync } = require('fs');
-  const { readFile } = require('fs/promises');
-  const { join, normalize } = require('path');
+  const { join, normalize } = pathMod;
 
   // Try common coverage locations (all relative to validated root)
   const coverageLocations = [

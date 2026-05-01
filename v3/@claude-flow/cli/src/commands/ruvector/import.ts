@@ -14,6 +14,7 @@ import type { Command, CommandContext, CommandResult } from '../../types.js';
 import { output } from '../../output.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { validateTimestamp } from './pg-utils.js';
 
 /**
  * Memory entry structure from SQLite/JSON export
@@ -42,8 +43,16 @@ interface ImportStats {
 
 /**
  * Format a ruvector embedding array for PostgreSQL
+ * Validates each element is a finite number to prevent SQL injection via crafted arrays.
  */
 function formatEmbedding(embedding: number[], dimensions: number = 384): string {
+  // Validate every element is a finite number (prevents SQL injection via crafted JSON)
+  for (let i = 0; i < embedding.length; i++) {
+    if (typeof embedding[i] !== 'number' || !Number.isFinite(embedding[i])) {
+      throw new Error(`Invalid embedding value at index ${i}: expected finite number, got ${typeof embedding[i]}`);
+    }
+  }
+
   // Ensure correct dimensions by padding or truncating
   const padded = [...embedding];
   while (padded.length < dimensions) {
@@ -70,13 +79,21 @@ function generateInsertSQL(entry: MemoryEntry): string {
   const value = typeof entry.value === 'string'
     ? escapeString(entry.value)
     : escapeString(JSON.stringify(entry.value));
-  const namespace = entry.namespace || 'default';
+  const namespace = escapeString(entry.namespace || 'default');
   const metadata = entry.metadata ? escapeString(JSON.stringify(entry.metadata)) : '{}';
 
   let embeddingClause = 'NULL';
   if (entry.embedding && Array.isArray(entry.embedding) && entry.embedding.length > 0) {
     embeddingClause = formatEmbedding(entry.embedding);
   }
+
+  // DA-HIGH-3: Validate timestamps to prevent SQL injection via crafted JSON
+  const createdAt = entry.created_at
+    ? `'${escapeString(validateTimestamp(String(entry.created_at)))}'::timestamptz`
+    : 'NOW()';
+  const updatedAt = entry.updated_at
+    ? `'${escapeString(validateTimestamp(String(entry.updated_at)))}'::timestamptz`
+    : 'NOW()';
 
   return `INSERT INTO claude_flow.memory_entries (key, value, embedding, namespace, metadata, created_at, updated_at)
 VALUES (
@@ -85,8 +102,8 @@ VALUES (
   ${embeddingClause},
   '${namespace}',
   '${metadata}'::jsonb,
-  ${entry.created_at ? `'${entry.created_at}'::timestamptz` : 'NOW()'},
-  ${entry.updated_at ? `'${entry.updated_at}'::timestamptz` : 'NOW()'}
+  ${createdAt},
+  ${updatedAt}
 )
 ON CONFLICT (key, namespace) DO UPDATE SET
   value = EXCLUDED.value,
@@ -337,12 +354,23 @@ export const importCommand: Command = {
         output.writeln(output.dim(`  docker exec -i ${containerName} psql -U claude -d claude_flow < ${tempFile}`));
         output.writeln();
 
-        // Execute via child_process
-        const { execSync } = await import('child_process');
+        // Execute via child_process (CRIT-02: use execFileSync to prevent command injection)
+        const { execFileSync } = await import('child_process');
+
+        // Validate containerName: alphanumeric, hyphens, underscores, dots only
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(containerName)) {
+          throw new Error(`Invalid container name: ${containerName}`);
+        }
+
         try {
-          const result = execSync(`docker exec -i ${containerName} psql -U claude -d claude_flow < ${tempFile}`, {
+          const sqlContent = fs.readFileSync(tempFile, 'utf-8');
+          const result = execFileSync('docker', [
+            'exec', '-i', containerName,
+            'psql', '-U', 'claude', '-d', 'claude_flow',
+          ], {
             encoding: 'utf-8',
             timeout: 60000,
+            input: sqlContent,
           });
 
           if (verbose) {

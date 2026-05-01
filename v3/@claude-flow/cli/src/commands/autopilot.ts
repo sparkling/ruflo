@@ -212,9 +212,9 @@ const logCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     if (ctx.flags?.clear) {
-      const fs = require('fs') as typeof import('fs');
-      const path = require('path') as typeof import('path');
-      try { fs.writeFileSync(path.resolve(LOG_FILE), '[]'); } catch { /* ignore */ }
+      const { writeFileSync } = await import('node:fs');
+      const { resolve } = await import('node:path');
+      try { writeFileSync(resolve(LOG_FILE), '[]'); } catch { /* ignore */ }
       output.writeln('Autopilot log cleared');
       return { success: true };
     }
@@ -254,8 +254,8 @@ const learnCommand: Command = {
       return { success: true };
     }
 
-    const metrics = await (learning as any).getMetrics();
-    const patterns = await (learning as any).discoverSuccessPatterns();
+    const metrics = await (learning as unknown as { getMetrics: () => Promise<{ episodes: number; patterns: number; trajectories: number }> }).getMetrics();
+    const patterns = await (learning as unknown as { discoverSuccessPatterns: () => Promise<Array<{ pattern: string; frequency: number; avgReward: number }>> }).discoverSuccessPatterns();
 
     if (ctx.flags?.json) {
       output.printJson({ metrics, patterns });
@@ -299,7 +299,7 @@ const historyCommand: Command = {
       return { success: true };
     }
 
-    const results = await (learning as any).recallSimilarTasks(query, limit);
+    const results = await (learning as unknown as { recallSimilarTasks: (query: string, limit: number) => Promise<unknown[]> }).recallSimilarTasks(query, limit);
     if (ctx.flags?.json) {
       output.printJson(results);
     } else if (results.length === 0) {
@@ -320,13 +320,13 @@ const predictCommand: Command = {
     const learning = await tryLoadLearning();
 
     if (learning) {
-      const prediction = await (learning as any).predictNextAction(state);
+      const prediction = await (learning as unknown as { predictNextAction: (state: unknown) => Promise<{ action?: string; confidence?: number; alternatives?: string[] } | null> }).predictNextAction(state);
       if (ctx.flags?.json) {
         output.printJson(prediction);
       } else {
         output.writeln(`Action: ${prediction?.action || 'unknown'}`);
         output.writeln(`Confidence: ${prediction?.confidence || 0}`);
-        if (prediction?.alternatives?.length > 0) output.writeln(`Alternatives: ${prediction.alternatives.join(', ')}`);
+        if (prediction?.alternatives && prediction.alternatives.length > 0) output.writeln(`Alternatives: ${prediction.alternatives.join(', ')}`);
       }
       return { success: true };
     }

@@ -302,6 +302,17 @@ const trainCommand: Command = {
       flushPatterns();
       const persistence = getPersistenceStatus();
 
+      // Save LoRA checkpoint via ruvllm TrainingPipeline if available
+      try {
+        const { LoRAAdapter } = await import('../ruvector/lora-adapter.js');
+        const path = await import('path');
+        const cpDir = path.join(process.cwd(), '.claude-flow', 'neural');
+        const cpPath = path.join(cpDir, `lora-checkpoint-${Date.now()}.json`);
+        const adapter = new LoRAAdapter({ inputDim: dim, outputDim: dim, rank: 4 });
+        await adapter.initBackend();
+        await adapter.saveCheckpoint(cpPath);
+      } catch { /* checkpoint save is best-effort */ }
+
       output.writeln();
 
       // Display results
@@ -500,6 +511,40 @@ const statusCommand: Command = {
             status: output.success('Available'),
             details: '~4x memory reduction',
           },
+          {
+            component: 'ruvllm Coordinator',
+            status: stats._ruvllmBackend === 'active' ? output.success('Active') : output.dim('Unavailable'),
+            details: stats._ruvllmBackend === 'active'
+              ? `SonaCoordinator | ${stats._ruvllmTrajectories} trajectories`
+              : 'Install @ruvector/ruvllm',
+          },
+          {
+            component: 'Contrastive Trainer',
+            status: stats._contrastiveTrainer && stats._contrastiveTrainer !== 'unavailable' ? output.success('Active') : output.dim('Unavailable'),
+            details: stats._contrastiveTrainer && stats._contrastiveTrainer !== 'unavailable'
+              ? `${(stats._contrastiveTrainer as any).triplets ?? 0} triplets, ${(stats._contrastiveTrainer as any).agents ?? 0} agents`
+              : 'Install @ruvector/ruvllm',
+          },
+          {
+            component: 'Training Pipeline',
+            status: stats._trainingBackend === 'ruvllm' ? output.success('Active') : output.dim(stats._trainingBackend || 'Unavailable'),
+            details: stats._trainingBackend === 'ruvllm'
+              ? 'ruvllm checkpoints enabled'
+              : 'JS fallback (no checkpoints)',
+          },
+          await (async () => {
+            try {
+              const { getGraphStats } = await import('../ruvector/graph-backend.js');
+              const gs = await getGraphStats();
+              return {
+                component: 'Graph Database',
+                status: gs.backend === 'graph-node' ? output.success('Active') : output.dim('Unavailable'),
+                details: gs.backend === 'graph-node'
+                  ? `${gs.totalNodes} nodes, ${gs.totalEdges} edges`
+                  : 'Install @ruvector/graph-node',
+              };
+            } catch { return { component: 'Graph Database', status: output.dim('Unavailable'), details: 'Not loaded' }; }
+          })(),
         ],
       });
 
@@ -800,6 +845,12 @@ const optimizeCommand: Command = {
       const patterns = await getAllPatterns();
       const stats = getIntelligenceStats();
 
+      // Trigger ruvllm background learning if available
+      try {
+        const { runBackgroundLearning } = await import('../memory/intelligence.js');
+        await runBackgroundLearning();
+      } catch { /* background learning is best-effort */ }
+
       // Get actual pattern storage size
       const patternDir = path.join(process.cwd(), '.claude-flow', 'neural');
       let beforeSize = 0;
@@ -815,22 +866,45 @@ const optimizeCommand: Command = {
         spinner.setText('Quantizing pattern embeddings to Int8...');
 
         let quantizedCount = 0;
-        let memoryReduction = 0;
+        let totalBeforeValues = 0;
+        let totalAfterValues = 0;
 
         for (const pattern of patterns) {
           if (pattern.embedding && pattern.embedding.length > 0) {
-            // Float32 (4 bytes) -> Int8 (1 byte) = 4x reduction
-            const beforeBytes = pattern.embedding.length * 4;
-            const afterBytes = pattern.embedding.length; // Int8
-            memoryReduction += beforeBytes - afterBytes;
+            totalBeforeValues += pattern.embedding.length;
+
+            // Actually quantize: scale Float32 values to Int8 range [-128, 127]
+            const emb = pattern.embedding;
+            let min = Infinity, max = -Infinity;
+            for (const v of emb) {
+              if (v < min) min = v;
+              if (v > max) max = v;
+            }
+            const range = max - min || 1;
+            const scale = 255 / range;
+            const offset = min;
+
+            // Convert in-place to quantized integer values
+            for (let i = 0; i < emb.length; i++) {
+              emb[i] = Math.round((emb[i] - offset) * scale) - 128;
+            }
+
+            // Store quantization params for dequantization (extra fields survive JSON serialization)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const p = pattern as any;
+            p.quantized = true;
+            p.quantScale = scale;
+            p.quantOffset = offset;
+
+            totalAfterValues += pattern.embedding.length;
             quantizedCount++;
           }
         }
 
-        // Save optimized patterns
+        // Save actually-quantized patterns (integers serialize smaller in JSON)
         await flushPatterns();
 
-        // Get after size
+        // Measure real file size after quantization
         let afterSize = beforeSize;
         try {
           const patternFile = path.join(patternDir, 'patterns.json');
@@ -839,7 +913,9 @@ const optimizeCommand: Command = {
           }
         } catch { /* ignore */ }
 
-        spinner.succeed(`Quantized ${quantizedCount} patterns`);
+        const actualRatio = beforeSize > 0 && afterSize > 0 ? (beforeSize / afterSize) : 0;
+
+        spinner.succeed(`Quantized ${quantizedCount} pattern embeddings to Int8`);
 
         output.writeln();
         output.printTable({
@@ -850,9 +926,9 @@ const optimizeCommand: Command = {
           ],
           data: [
             { metric: 'Pattern Count', before: String(patterns.length), after: String(patterns.length) },
+            { metric: 'Quantized', before: '-', after: String(quantizedCount) },
             { metric: 'Storage Size', before: `${(beforeSize / 1024).toFixed(1)} KB`, after: `${(afterSize / 1024).toFixed(1)} KB` },
-            { metric: 'Embedding Memory', before: `${((memoryReduction * 4) / 1024).toFixed(1)} KB`, after: `${(memoryReduction / 1024).toFixed(1)} KB` },
-            { metric: 'Memory Reduction', before: '-', after: `~${(3.92).toFixed(2)}x (Int8)` },
+            { metric: 'Reduction Ratio', before: '-', after: actualRatio > 0 ? `${actualRatio.toFixed(2)}x` : 'N/A (no data)' },
             { metric: 'Precision', before: 'Float32', after: 'Int8 (±0.5%)' },
           ],
         });
@@ -1554,7 +1630,8 @@ const benchmarkCommand: Command = {
     spinner.start();
 
     try {
-      const attention: any = await import('@ruvector/attention');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic import of optional native WASM module with no type declarations
+      const attention = await import('@ruvector/attention') as unknown as Record<string, new (...args: number[]) => { computeRaw: (q: Float32Array, k: Float32Array[], v: Float32Array[]) => Float32Array }>;
 
       // Manual benchmark since benchmarkAttention has a binding bug
       const benchmarkMechanism = async (name: string, mechanism: { computeRaw: (q: Float32Array, k: Float32Array[], v: Float32Array[]) => Float32Array }) => {

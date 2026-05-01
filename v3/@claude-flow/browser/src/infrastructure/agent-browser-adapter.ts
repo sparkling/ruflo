@@ -3,7 +3,7 @@
  * Wraps agent-browser CLI for programmatic access
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import type {
   ActionResult,
   Snapshot,
@@ -71,7 +71,7 @@ export class AgentBrowserAdapter {
 
     return new Promise((resolve) => {
       try {
-        const result = execSync(`agent-browser ${fullArgs.join(' ')}`, {
+        const result = execFileSync('agent-browser', fullArgs, {
           encoding: 'utf-8',
           timeout: this.timeout + 5000,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -638,7 +638,7 @@ export class AgentBrowserAdapter {
 
     return new Promise((resolve) => {
       try {
-        const result = execSync(`agent-browser ${args.join(' ')}`, {
+        const result = execFileSync('agent-browser', args, {
           encoding: 'utf-8',
           timeout: 300000, // 5 minutes for download
         });

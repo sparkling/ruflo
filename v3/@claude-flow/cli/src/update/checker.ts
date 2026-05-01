@@ -4,6 +4,7 @@
  */
 
 import * as semver from 'semver';
+import { createRequire } from 'node:module';
 import { shouldCheckForUpdates, recordCheck, getCachedVersions } from './rate-limiter.js';
 
 export interface UpdateCheckResult {
@@ -138,10 +139,10 @@ export function getInstalledVersion(packageName: string): string | null {
 
     for (const modulePath of possiblePaths) {
       try {
-        // Use dynamic import with require for package.json
-        const resolved = require.resolve(modulePath, { paths: [process.cwd()] });
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const pkg = require(resolved);
+        // Use createRequire for ESM-compatible package.json loading
+        const esmRequire = createRequire(import.meta.url);
+        const resolved = esmRequire.resolve(modulePath, { paths: [process.cwd()] });
+        const pkg = esmRequire(resolved);
         return pkg.version;
       } catch {
         continue;

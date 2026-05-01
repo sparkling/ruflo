@@ -18,14 +18,15 @@
  */
 
 import { EventEmitter } from 'events';
-import { spawn, ChildProcess } from 'child_process';
-import { createServer, Server } from 'http';
+import { spawn, ChildProcess, execFileSync } from 'child_process';
+import { createServer, Server, request as httpRequestFn } from 'http';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { trackRequest } from './mcp-tools/request-tracker.js';
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -503,12 +504,14 @@ export class MCPServerManager extends EventEmitter {
 
           try {
             const result = await callMCPTool(toolName, toolParams, { sessionId });
+            trackRequest(toolName, true);
             return {
               jsonrpc: '2.0',
               id: message.id,
               result: { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] },
             };
           } catch (error) {
+            trackRequest(toolName, false);
             return {
               jsonrpc: '2.0',
               id: message.id,
@@ -703,12 +706,25 @@ export class MCPServerManager extends EventEmitter {
     }
 
     // Verify it's actually a node process (guards against PID reuse)
+    // DA-CRIT-3: Use execFileSync to prevent command injection via PID values
     try {
-      const { execSync } = require('child_process') as typeof import('child_process');
-      const cmdline = execSync(`cat /proc/${pid}/cmdline 2>/dev/null || ps -p ${pid} -o comm= 2>/dev/null`, {
-        encoding: 'utf8',
-        timeout: 1000,
-      }).trim();
+      const safePid = String(Math.floor(Math.abs(pid)));
+      let cmdline = '';
+      try {
+        // Try /proc on Linux
+        cmdline = fs.readFileSync(`/proc/${safePid}/cmdline`, 'utf8');
+      } catch {
+        // Fall back to ps on macOS/other
+        try {
+          cmdline = execFileSync('ps', ['-p', safePid, '-o', 'comm='], {
+            encoding: 'utf8',
+            timeout: 1000,
+          }).trim();
+        } catch {
+          // ps failed — fall through
+        }
+      }
+      if (!cmdline) return true; // Can't inspect, fall back to kill check
       // Must be a node process to be our MCP server
       return cmdline.includes('node') || cmdline.includes('claude-flow') || cmdline.includes('npx');
     } catch {
@@ -727,9 +743,8 @@ export class MCPServerManager extends EventEmitter {
   ): Promise<any> {
     return new Promise((resolve, reject) => {
       const urlObj = new URL(url);
-      const http = require('http');
 
-      const req = http.request(
+      const req = httpRequestFn(
         {
           hostname: urlObj.hostname,
           port: urlObj.port,

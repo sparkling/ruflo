@@ -166,7 +166,7 @@ describe('JSON Security', () => {
       const malicious = '{"__proto__": {"polluted": true}, "normal": 1}';
       const result = safeJsonParse<Record<string, unknown>>(malicious);
       expect(result.normal).toBe(1);
-      expect(result.__proto__).toBeUndefined();
+      expect(Object.hasOwn(result, '__proto__')).toBe(false);
     });
 
     it('should throw on invalid JSON', () => {

@@ -12,7 +12,9 @@ import * as path from 'path';
 
 // Format date for display
 function formatDate(dateStr: string): string {
+  if (!dateStr) return '-';
   const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return '-';
   const now = new Date();
   const diff = now.getTime() - date.getTime();
 
@@ -80,15 +82,18 @@ const listCommand: Command = {
     try {
       const result = await callMCPTool<{
         sessions: Array<{
-          id: string;
+          sessionId?: string;
+          id?: string;
           name?: string;
           description?: string;
-          status: 'active' | 'saved' | 'archived';
-          createdAt: string;
-          updatedAt: string;
-          agentCount: number;
-          taskCount: number;
-          memorySize: number;
+          status?: 'active' | 'saved' | 'archived';
+          savedAt?: string;
+          createdAt?: string;
+          updatedAt?: string;
+          agentCount?: number;
+          taskCount?: number;
+          memorySize?: number;
+          stats?: { agents?: number; tasks?: number; memoryEntries?: number; totalSize?: number };
         }>;
         total: number;
       }>('session_list', {
@@ -121,12 +126,12 @@ const listCommand: Command = {
           { key: 'updated', header: 'Last Updated', width: 18 }
         ],
         data: result.sessions.map(s => ({
-          id: s.id,
+          id: s.sessionId || s.id || '-',
           name: s.name || '-',
-          status: formatStatus(s.status),
-          agents: s.agentCount,
-          tasks: s.taskCount,
-          updated: formatDate(s.updatedAt)
+          status: formatStatus(s.status || 'saved'),
+          agents: s.agentCount ?? s.stats?.agents ?? 0,
+          tasks: s.taskCount ?? s.stats?.tasks ?? 0,
+          updated: formatDate(s.updatedAt || s.savedAt || s.createdAt || '')
         }))
       });
 
@@ -211,16 +216,18 @@ const saveCommand: Command = {
         name: string;
         description?: string;
         savedAt: string;
-        includes: {
+        includes?: {
           memory: boolean;
           agents: boolean;
           tasks: boolean;
         };
-        stats: {
-          agentCount: number;
-          taskCount: number;
-          memoryEntries: number;
-          totalSize: number;
+        stats?: {
+          agents?: number;
+          agentCount?: number;
+          tasks?: number;
+          taskCount?: number;
+          memoryEntries?: number;
+          totalSize?: number;
         };
       }>('session_save', {
         name: sessionName,
@@ -233,6 +240,7 @@ const saveCommand: Command = {
       spinner.succeed('Session saved');
       output.writeln();
 
+      const stats = result.stats || {};
       output.printTable({
         columns: [
           { key: 'property', header: 'Property', width: 18 },
@@ -243,10 +251,10 @@ const saveCommand: Command = {
           { property: 'Name', value: result.name },
           { property: 'Description', value: result.description || '-' },
           { property: 'Saved At', value: new Date(result.savedAt).toLocaleString() },
-          { property: 'Agents', value: result.stats.agentCount },
-          { property: 'Tasks', value: result.stats.taskCount },
-          { property: 'Memory Entries', value: result.stats.memoryEntries },
-          { property: 'Total Size', value: formatSize(result.stats.totalSize) }
+          { property: 'Agents', value: stats.agentCount ?? stats.agents ?? 0 },
+          { property: 'Tasks', value: stats.taskCount ?? stats.tasks ?? 0 },
+          { property: 'Memory Entries', value: stats.memoryEntries ?? 0 },
+          { property: 'Total Size', value: formatSize(stats.totalSize ?? 0) }
         ]
       });
 
@@ -554,10 +562,12 @@ const exportCommand: Command = {
       const result = await callMCPTool<{
         sessionId: string;
         data: unknown;
-        stats: {
-          agentCount: number;
-          taskCount: number;
-          memoryEntries: number;
+        stats?: {
+          agents?: number;
+          agentCount?: number;
+          tasks?: number;
+          taskCount?: number;
+          memoryEntries?: number;
         };
       }>('session_export', {
         sessionId,
@@ -582,6 +592,7 @@ const exportCommand: Command = {
       spinner.succeed('Session exported');
       output.writeln();
 
+      const exportStats = result.stats || {};
       output.printTable({
         columns: [
           { key: 'property', header: 'Property', width: 18 },
@@ -591,9 +602,9 @@ const exportCommand: Command = {
           { property: 'Session ID', value: sessionId },
           { property: 'Output File', value: absolutePath },
           { property: 'Format', value: exportFormat.toUpperCase() },
-          { property: 'Agents', value: result.stats.agentCount },
-          { property: 'Tasks', value: result.stats.taskCount },
-          { property: 'Memory Entries', value: result.stats.memoryEntries },
+          { property: 'Agents', value: exportStats.agentCount ?? exportStats.agents ?? 0 },
+          { property: 'Tasks', value: exportStats.taskCount ?? exportStats.tasks ?? 0 },
+          { property: 'Memory Entries', value: exportStats.memoryEntries ?? 0 },
           { property: 'File Size', value: formatSize(content.length) }
         ]
       });
@@ -741,11 +752,13 @@ const currentCommand: Command = {
         name?: string;
         status: string;
         startedAt: string;
-        stats: {
-          agentCount: number;
-          taskCount: number;
-          memoryEntries: number;
-          duration: number;
+        stats?: {
+          agents?: number;
+          agentCount?: number;
+          tasks?: number;
+          taskCount?: number;
+          memoryEntries?: number;
+          duration?: number;
         };
       }>('session_current', { includeStats: true });
 
@@ -758,6 +771,7 @@ const currentCommand: Command = {
       output.writeln(output.bold('Current Session'));
       output.writeln();
 
+      const curStats = result.stats || {};
       output.printTable({
         columns: [
           { key: 'property', header: 'Property', width: 18 },
@@ -768,10 +782,10 @@ const currentCommand: Command = {
           { property: 'Name', value: result.name || '-' },
           { property: 'Status', value: formatStatus(result.status) },
           { property: 'Started', value: new Date(result.startedAt).toLocaleString() },
-          { property: 'Duration', value: formatDuration(result.stats.duration) },
-          { property: 'Agents', value: result.stats.agentCount },
-          { property: 'Tasks', value: result.stats.taskCount },
-          { property: 'Memory Entries', value: result.stats.memoryEntries }
+          { property: 'Duration', value: formatDuration(curStats.duration ?? 0) },
+          { property: 'Agents', value: curStats.agentCount ?? curStats.agents ?? 0 },
+          { property: 'Tasks', value: curStats.taskCount ?? curStats.tasks ?? 0 },
+          { property: 'Memory Entries', value: curStats.memoryEntries ?? 0 }
         ]
       });
 

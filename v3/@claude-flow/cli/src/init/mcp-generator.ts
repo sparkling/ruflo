@@ -14,23 +14,40 @@ function isWindows(): boolean {
   return process.platform === 'win32';
 }
 
-// ADR-0104 §4a: detect a globally-installed `claude-flow` so init can write
+// ADR-0104 §4a: detect a globally-installed `ruflo` binary so init can write
 // `.mcp.json` with a direct path. Eliminates ~5–8s `npx -y` cold start that
 // exceeds claude-code's MCP handshake budget in `-p` mode.
 // Cached at module load — `init` runs once per project.
-let cachedClaudeFlowPath: string | null | undefined;
-function detectClaudeFlowPath(): string | null {
-  if (cachedClaudeFlowPath !== undefined) return cachedClaudeFlowPath;
-  const cmd = isWindows() ? 'where claude-flow' : 'which claude-flow';
+let cachedRufloPath: string | null | undefined;
+function detectRufloPath(): string | null {
+  if (cachedRufloPath !== undefined) return cachedRufloPath;
+  const cmd = isWindows() ? 'where ruflo' : 'which ruflo';
   try {
     const out = execSync(cmd, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
-    // `where` may return multiple lines on Windows — take the first.
     const path = out.split(/\r?\n/)[0].trim();
-    cachedClaudeFlowPath = path || null;
+    cachedRufloPath = path || null;
   } catch {
-    cachedClaudeFlowPath = null;
+    cachedRufloPath = null;
   }
-  return cachedClaudeFlowPath ?? null;
+  return cachedRufloPath ?? null;
+}
+
+/**
+ * Build the `ruflo` MCP server entry. Prefers a directly-resolved path
+ * over `npx -y` to avoid the cold-start that breaks claude-code MCP attach
+ * in `-p` mode (ADR-0104 §4a). Falls back to npx when not globally installed.
+ */
+function createRufloEntry(env: Record<string, string>, additionalProps: Record<string, unknown> = {}): object {
+  const rufloPath = detectRufloPath();
+  if (rufloPath) {
+    return {
+      command: rufloPath,
+      args: ['mcp', 'start'],
+      env,
+      ...additionalProps,
+    };
+  }
+  return createMCPServerEntry(['ruflo@latest', 'mcp', 'start'], env, additionalProps);
 }
 
 /**
@@ -62,27 +79,6 @@ function createMCPServerEntry(
 }
 
 /**
- * Build the `claude-flow` MCP server entry. Prefers a directly-resolved path
- * over `npx -y` to avoid the cold-start that breaks claude-code MCP attach
- * in `-p` mode (ADR-0104 §4a). Falls back to npx when not globally installed.
- */
-function createClaudeFlowEntry(env: Record<string, string>): object {
-  const cfPath = detectClaudeFlowPath();
-  if (cfPath) {
-    return {
-      command: cfPath,
-      args: ['mcp', 'start'],
-      env,
-    };
-  }
-  return createMCPServerEntry(
-    ['@claude-flow/cli@latest', 'mcp', 'start'],
-    env,
-    {}
-  );
-}
-
-/**
  * Generate MCP configuration
  */
 export function generateMCPConfig(options: InitOptions): object {
@@ -93,16 +89,20 @@ export function generateMCPConfig(options: InitOptions): object {
     npm_config_update_notifier: 'false',
   };
 
-  // Claude Flow MCP server (core)
+  // Claude Flow MCP server (core) — uses ruflo wrapper for portable npm-resolved invocation
+  // ADR-0104 §4a: prefer directly-resolved binary path over npx cold-start
   if (config.claudeFlow) {
-    mcpServers['claude-flow'] = createClaudeFlowEntry({
-      ...npmEnv,
-      CLAUDE_FLOW_MODE: 'v3',
-      CLAUDE_FLOW_HOOKS_ENABLED: 'true',
-      CLAUDE_FLOW_TOPOLOGY: options.runtime.topology,
-      CLAUDE_FLOW_MAX_AGENTS: String(options.runtime.maxAgents),
-      CLAUDE_FLOW_MEMORY_BACKEND: options.runtime.memoryBackend,
-    });
+    mcpServers['claude-flow'] = createRufloEntry(
+      {
+        ...npmEnv,
+        CLAUDE_FLOW_MODE: 'v3',
+        CLAUDE_FLOW_HOOKS_ENABLED: 'true',
+        CLAUDE_FLOW_TOPOLOGY: options.runtime.topology,
+        CLAUDE_FLOW_MAX_AGENTS: String(options.runtime.maxAgents),
+        CLAUDE_FLOW_MEMORY_BACKEND: options.runtime.memoryBackend,
+      },
+      { autoStart: config.autoStart }
+    );
   }
 
   // Ruv-Swarm MCP server (enhanced coordination)
@@ -143,7 +143,7 @@ export function generateMCPCommands(options: InitOptions): string[] {
 
   if (isWindows()) {
     if (config.claudeFlow) {
-      commands.push('claude mcp add claude-flow -- cmd /c npx -y @claude-flow/cli@latest mcp start');
+      commands.push('claude mcp add claude-flow -- cmd /c npx -y ruflo@latest mcp start');
     }
     if (config.ruvSwarm) {
       commands.push('claude mcp add ruv-swarm -- cmd /c npx -y ruv-swarm mcp start');
@@ -153,7 +153,7 @@ export function generateMCPCommands(options: InitOptions): string[] {
     }
   } else {
     if (config.claudeFlow) {
-      commands.push("claude mcp add claude-flow -- npx -y @claude-flow/cli@latest mcp start");
+      commands.push("claude mcp add claude-flow -- npx -y ruflo@latest mcp start");
     }
     if (config.ruvSwarm) {
       commands.push("claude mcp add ruv-swarm -- npx -y ruv-swarm mcp start");

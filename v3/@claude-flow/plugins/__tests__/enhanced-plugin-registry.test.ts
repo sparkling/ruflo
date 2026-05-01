@@ -28,7 +28,7 @@ function createTestPlugin(
     .withDescription(`Test plugin: ${name}`);
 
   if (dependencies) {
-    builder.withDependencies(dependencies);
+    builder.withDependencies(dependencies.map(d => `${d.name}@${d.version}`));
   }
 
   return builder.build();
@@ -37,7 +37,7 @@ function createTestPlugin(
 class TestPlugin extends BasePlugin {
   public initializeCalled = false;
   public shutdownCalled = false;
-  public state: any = null;
+  public customState: any = null;
 
   constructor(name: string, version: string, deps?: string[]) {
     super({
@@ -56,11 +56,11 @@ class TestPlugin extends BasePlugin {
   }
 
   async getState(): Promise<unknown> {
-    return this.state;
+    return this.customState;
   }
 
-  async setState(state: unknown): Promise<void> {
-    this.state = state;
+  async restoreState(state: unknown): Promise<void> {
+    this.customState = state;
   }
 }
 
@@ -267,7 +267,7 @@ describe('EnhancedPluginRegistry', () => {
 
     it('should preserve state during reload', async () => {
       const plugin1 = new TestPlugin('test-plugin', '1.0.0');
-      plugin1.state = { counter: 42 };
+      plugin1.customState = { counter: 42 };
 
       await registry.register(plugin1);
       await registry.initialize();
@@ -279,7 +279,7 @@ describe('EnhancedPluginRegistry', () => {
         migrateState: (state: any) => state,
       });
 
-      expect(plugin2.state).toEqual({ counter: 42 });
+      expect(plugin2.customState).toEqual({ counter: 42 });
     });
 
     it('should reject name mismatch', async () => {

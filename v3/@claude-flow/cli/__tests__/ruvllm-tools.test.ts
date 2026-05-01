@@ -69,8 +69,9 @@ describe('ruvllm-wasm MCP tools', () => {
       const tool = findTool('ruvllm_status');
       const result = await tool.handler({}) as any;
       const data = JSON.parse(result.content[0].text);
-      expect(data.available).toBe(true);
-      expect(data.version).toBe('2.0.1');
+      expect(data.wasm.available).toBe(true);
+      expect(data.wasm.version).toBe('2.0.1');
+      expect(data.native).toBeDefined();
     });
   });
 

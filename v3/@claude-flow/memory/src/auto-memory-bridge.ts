@@ -168,7 +168,7 @@ type ResolvedConfig = Required<Omit<AutoMemoryBridgeConfig, 'learning' | 'graph'
 
 const DEFAULT_CONFIG: ResolvedConfig = {
   memoryDir: '',
-  workingDir: process.cwd(),
+  workingDir: process.env.CLAUDE_FLOW_CWD || process.cwd(),
   maxIndexLines: 180,
   topicMapping: DEFAULT_TOPIC_MAPPING,
   syncMode: 'on-session-end',
@@ -469,6 +469,16 @@ export class AutoMemoryBridge extends EventEmitter {
           sections[category] = summaries;
         }
       }
+    }
+
+    // Fix for #1556: if no topic files matched (e.g. the memory folder uses
+    // Claude Code's native `<type>_<topic>.md` convention rather than the
+    // hardcoded DEFAULT_TOPIC_MAPPING filenames), do NOT overwrite the
+    // existing MEMORY.md with a one-line stub. A `curate` operation must be
+    // non-destructive when there is nothing to curate.
+    if (Object.keys(sections).length === 0) {
+      this.emit('index:skipped', { reason: 'no-matching-topic-files' });
+      return;
     }
 
     // ADR-049: Use graph PageRank to prioritize sections

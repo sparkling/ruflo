@@ -35,6 +35,7 @@ import { githubTools } from './mcp-tools/github-tools.js';
 import { daaTools } from './mcp-tools/daa-tools.js';
 import { coordinationTools } from './mcp-tools/coordination-tools.js';
 import { browserTools } from './mcp-tools/browser-tools.js';
+import { execFileSync } from 'node:child_process';
 // Phase 6: AgentDB v3 controller tools
 import { agentdbTools } from './mcp-tools/agentdb-tools.js';
 // RuVector WASM tools
@@ -42,6 +43,20 @@ import { ruvllmWasmTools } from './mcp-tools/ruvllm-tools.js';
 import { wasmAgentTools } from './mcp-tools/wasm-agent-tools.js';
 import { guidanceTools } from './mcp-tools/guidance-tools.js';
 import { autopilotTools } from './mcp-tools/autopilot-tools.js';
+
+// #1605: Only register browser tools if agent-browser is available
+let _browserAvailable: boolean | null = null;
+function getBrowserTools(): MCPTool[] {
+  if (_browserAvailable === null) {
+    try {
+      execFileSync('agent-browser', ['--version'], { stdio: 'ignore', timeout: 3000 });
+      _browserAvailable = true;
+    } catch {
+      _browserAvailable = false;
+    }
+  }
+  return _browserAvailable ? browserTools : [];
+}
 
 /**
  * MCP Tool Registry
@@ -81,7 +96,7 @@ registerTools([
   ...githubTools,
   ...daaTools,
   ...coordinationTools,
-  ...browserTools,
+  ...getBrowserTools(),
   // Phase 6: AgentDB v3 controller tools
   ...agentdbTools,
   // RuVector WASM tools

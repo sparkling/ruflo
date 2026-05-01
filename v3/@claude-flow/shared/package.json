@@ -13,7 +13,8 @@
     "./hooks": "./dist/hooks/index.js",
     "./mcp": "./dist/mcp/index.js",
     "./security": "./dist/security/index.js",
-    "./resilience": "./dist/resilience/index.js"
+    "./resilience": "./dist/resilience/index.js",
+    "./src/plugin-interface.js": "./dist/plugin-interface.js"
   },
   "scripts": {
     "test": "vitest run",

@@ -366,35 +366,35 @@ describe('Tool Honesty (v3.5.56-57)', () => {
   // =========================================================================
   // Bonus: Stubs are marked honestly with _stub: true
   // =========================================================================
-  describe('Stubs are honestly marked', () => {
-    it('should mark performance_profile as _stub: true', () => {
+  describe('Performance tools are real implementations', () => {
+    it('should have real performance_profile (not _stub)', () => {
       const source = readSource('performance-tools.ts');
       const profileStart = source.indexOf("name: 'performance_profile'");
       expect(profileStart).toBeGreaterThan(-1);
 
-      const handlerSection = source.slice(profileStart, profileStart + 1000);
-      expect(handlerSection).toContain('_stub: true');
-      expect(handlerSection).toContain('not yet implemented');
+      const handlerSection = source.slice(profileStart, profileStart + 5000);
+      expect(handlerSection).not.toContain('_stub: true');
+      expect(handlerSection).toContain('_real: true');
     });
 
-    it('should mark performance_optimize as _stub: true', () => {
+    it('should have real performance_optimize (not _stub)', () => {
       const source = readSource('performance-tools.ts');
       const optimizeStart = source.indexOf("name: 'performance_optimize'");
       expect(optimizeStart).toBeGreaterThan(-1);
 
-      const handlerSection = source.slice(optimizeStart, optimizeStart + 1000);
-      expect(handlerSection).toContain('_stub: true');
-      expect(handlerSection).toContain('not yet implemented');
+      const handlerSection = source.slice(optimizeStart, optimizeStart + 5000);
+      expect(handlerSection).not.toContain('_stub: true');
+      expect(handlerSection).toContain('_real: true');
     });
 
-    it('should mark performance_bottleneck as _stub: true', () => {
+    it('should have real performance_bottleneck (not _stub)', () => {
       const source = readSource('performance-tools.ts');
       const bottleneckStart = source.indexOf("name: 'performance_bottleneck'");
       expect(bottleneckStart).toBeGreaterThan(-1);
 
-      const handlerSection = source.slice(bottleneckStart, bottleneckStart + 1000);
-      expect(handlerSection).toContain('_stub: true');
-      expect(handlerSection).toContain('not yet implemented');
+      const handlerSection = source.slice(bottleneckStart, bottleneckStart + 5000);
+      expect(handlerSection).not.toContain('_stub: true');
+      expect(handlerSection).toContain('_real: true');
     });
   });
 });

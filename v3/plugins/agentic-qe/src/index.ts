@@ -3,7 +3,7 @@
  * Plugin exports for claude-flow V3 integration
  *
  * @module v3/plugins/agentic-qe
- * @version 3.2.3
+ * @version 3.5.59
  */
 
 // =============================================================================
@@ -286,7 +286,7 @@ export type {
  */
 export const PLUGIN_METADATA = {
   name: 'agentic-qe',
-  version: '3.2.3',
+  version: '3.5.59',
   description: 'Quality Engineering plugin with 51 specialized agents across 12 DDD bounded contexts',
   author: 'rUv',
   license: 'MIT',

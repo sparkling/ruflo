@@ -126,6 +126,8 @@ export interface LoRAStats {
   avgAdaptationNorm: number;
   /** Last update timestamp */
   lastUpdate: number | null;
+  /** Training backend in use ('ruvllm' | 'js-fallback') */
+  _trainingBackend?: string;
 }
 
 // ============================================================================
@@ -143,6 +145,34 @@ const DEFAULT_CONFIG: LoRAConfig = {
   dropoutProb: 0.1,
   autoSaveInterval: 50,
 };
+
+// ============================================================================
+// @ruvector/ruvllm TrainingPipeline (lazy-loaded)
+// ============================================================================
+
+let ruvllmPipeline: any = null;
+let pipelineLoaded = false;
+
+async function loadTrainingPipeline(adapter: LoRAAdapter): Promise<any> {
+  if (pipelineLoaded) return ruvllmPipeline;
+  pipelineLoaded = true;
+  try {
+    const { createRequire } = await import('module');
+    const requireCjs = createRequire(import.meta.url);
+    const ruvllm = requireCjs('@ruvector/ruvllm');
+    const config = adapter.getConfig();
+    // Create a ruvllm LoraAdapter that mirrors our JS adapter's config
+    const nativeAdapter = new (ruvllm as any).LoraAdapter(config.inputDim, config.outputDim, config.rank);
+    ruvllmPipeline = new (ruvllm as any).TrainingPipeline({
+      adapter: nativeAdapter,
+      learningRate: 0.001,
+      batchSize: 8,
+    });
+    return ruvllmPipeline;
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================================
 // LoRA Adapter Class
@@ -163,6 +193,22 @@ export class LoRAAdapter {
   constructor(config?: Partial<LoRAConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.weights = this.initializeWeights();
+  }
+
+  /**
+   * Eagerly load the ruvllm TrainingPipeline backend.
+   * Called automatically during first checkpoint operation,
+   * or call explicitly to make getStats() report backend status.
+   */
+  async initBackend(): Promise<void> {
+    await loadTrainingPipeline(this);
+  }
+
+  /**
+   * Get a readonly copy of the adapter configuration
+   */
+  getConfig(): Readonly<LoRAConfig> {
+    return this.config;
   }
 
   /**
@@ -378,6 +424,9 @@ export class LoRAAdapter {
         ? this.adaptationNormSum / this.totalAdaptations
         : 0,
       lastUpdate: this.lastUpdate,
+      _trainingBackend: pipelineLoaded
+        ? (ruvllmPipeline ? 'ruvllm' : 'js-fallback')
+        : 'js-fallback',
     };
   }
 
@@ -473,6 +522,54 @@ export class LoRAAdapter {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Save a training checkpoint via ruvllm TrainingPipeline.
+   * Falls back to writing our own weight JSON if ruvllm is unavailable.
+   */
+  async saveCheckpoint(path: string): Promise<boolean> {
+    const pipeline = await loadTrainingPipeline(this);
+    if (pipeline) {
+      try {
+        pipeline.saveCheckpoint(path);
+        // Verify ruvllm actually wrote the file (some versions are no-op)
+        const fs = await import('fs');
+        if (fs.existsSync(path)) return true;
+      } catch { /* fall through to JS fallback */ }
+    }
+    // Fallback: save our own weights as JSON
+    try {
+      const fs = await import('fs');
+      const data = JSON.stringify(this.exportWeights());
+      fs.writeFileSync(path, data);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Load a training checkpoint via ruvllm TrainingPipeline.
+   * Falls back to reading our own weight JSON if ruvllm is unavailable.
+   */
+  async loadCheckpoint(path: string): Promise<boolean> {
+    const pipeline = await loadTrainingPipeline(this);
+    if (pipeline) {
+      try {
+        pipeline.loadCheckpoint(path);
+        return true;
+      } catch { /* fall through to JS fallback */ }
+    }
+    // Fallback: load from our JSON format
+    try {
+      const fs = await import('fs');
+      if (fs.existsSync(path)) {
+        const data = JSON.parse(fs.readFileSync(path, 'utf-8'));
+        return this.importWeights(data);
+      }
+    } catch { /* return false below */ }
+    return false;
   }
 
   /**

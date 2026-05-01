@@ -175,7 +175,7 @@ const startCommand: Command = {
         output.writeln(output.dim('  Loading tool registry...'));
       });
 
-      manager.on('started', (data: any) => {
+      manager.on('started', (data: { startupTime?: number }) => {
         output.writeln(output.dim(`  Server started in ${data.startupTime?.toFixed(2) || 0}ms`));
       });
 

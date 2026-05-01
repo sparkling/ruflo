@@ -7,14 +7,23 @@
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
-import { existsSync, statSync, rmSync, readdirSync } from 'fs';
+import { existsSync, statSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+
+/**
+ * Ruflo-owned subdirectories within .claude/ that are safe to delete.
+ * Everything else in .claude/ (agents, skills, commands, settings.local.json,
+ * memory.db, worktrees, launch.json) belongs to Claude Code and must be preserved.
+ * See: https://github.com/ruvnet/ruflo/issues/1557
+ */
+const CLAUDE_OWNED_SUBDIRS = [
+  { path: join('.claude', 'helpers'), description: 'Ruflo hook scripts' },
+];
 
 /**
  * Artifact directories and files that claude-flow/ruflo may create
  */
 const ARTIFACT_DIRS = [
-  { path: '.claude', description: 'Claude settings, helpers, agents' },
   { path: '.claude-flow', description: 'Capabilities and configuration' },
   { path: 'data', description: 'Memory databases' },
   { path: '.swarm', description: 'Swarm state' },
@@ -129,7 +138,23 @@ export const cleanupCommand: Command = {
     const found: { path: string; description: string; size: number; type: 'dir' | 'file'; skipped?: boolean }[] = [];
     let totalSize = 0;
 
-    // Scan directories
+    // Scan ruflo-owned subdirs within .claude/ (surgical — preserves Claude Code files)
+    for (const artifact of CLAUDE_OWNED_SUBDIRS) {
+      const fullPath = join(cwd, artifact.path);
+      if (existsSync(fullPath)) {
+        const size = getSize(fullPath);
+        found.push({ path: artifact.path, description: artifact.description, size, type: 'dir' });
+        totalSize += size;
+      }
+    }
+
+    // Check if .claude/settings.json has ruflo hooks/claudeFlow blocks to clean
+    const settingsPath = join(cwd, '.claude', 'settings.json');
+    if (existsSync(settingsPath)) {
+      found.push({ path: join('.claude', 'settings.json'), description: 'Remove ruflo hooks/claudeFlow blocks (preserves rest)', size: 0, type: 'file' });
+    }
+
+    // Scan standalone artifact directories
     for (const artifact of ARTIFACT_DIRS) {
       const fullPath = join(cwd, artifact.path);
       if (existsSync(fullPath)) {
@@ -187,7 +212,15 @@ export const cleanupCommand: Command = {
         // Actually delete
         try {
           const fullPath = join(cwd, item.path);
-          if (item.type === 'dir') {
+          // Special handling: surgically clean settings.json instead of deleting
+          if (item.path === join('.claude', 'settings.json')) {
+            try {
+              const raw = JSON.parse(readFileSync(fullPath, 'utf-8'));
+              delete raw.hooks;
+              delete raw.claudeFlow;
+              writeFileSync(fullPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
+            } catch { /* settings.json parse failed, skip */ }
+          } else if (item.type === 'dir') {
             rmSync(fullPath, { recursive: true, force: true });
           } else {
             rmSync(fullPath, { force: true });

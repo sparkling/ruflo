@@ -17,6 +17,7 @@ import {
   getOfficialPlugins,
   type PluginEntry,
   type PluginSearchOptions,
+  type PluginType,
 } from '../plugins/store/index.js';
 import { getPluginManager, type InstalledPlugin } from '../plugins/manager.js';
 import { getBulkRatings } from '../services/registry-api.js';
@@ -113,7 +114,7 @@ const listCommand: Command = {
       // Build search options
       const searchOptions: PluginSearchOptions = {
         category,
-        type: type as any,
+        type: type as PluginType,
         sortBy: 'downloads',
         sortOrder: 'desc',
       };
@@ -138,11 +139,13 @@ const listCommand: Command = {
 
       // Fetch real ratings from Cloud Function (non-blocking)
       let realRatings: Record<string, { average: number; count: number }> = {};
+      let ratingsSource: 'live' | 'cached' | 'unavailable' = 'live';
       try {
         const pluginIds = plugins.map(p => p.name);
         realRatings = await getBulkRatings(pluginIds, 'plugin');
       } catch {
         // Fall back to static ratings if Cloud Function unavailable
+        ratingsSource = 'unavailable';
       }
 
       if (ctx.flags.format === 'json') {
@@ -151,6 +154,7 @@ const listCommand: Command = {
           ...p,
           rating: realRatings[p.name]?.average || p.rating,
           ratingCount: realRatings[p.name]?.count || 0,
+          ...(ratingsSource === 'unavailable' ? { ratingsSource: 'cached' as const } : {}),
         }));
         output.printJson(pluginsWithRatings);
         return { success: true, data: pluginsWithRatings };
@@ -184,6 +188,9 @@ const listCommand: Command = {
       });
 
       output.writeln();
+      if (ratingsSource === 'unavailable') {
+        output.writeln(output.dim('(ratings: cached — cloud unavailable)'));
+      }
       output.writeln(output.dim(`Source: ${result.source}${result.fromCache ? ' (cached)' : ''}`));
       if (result.cid) {
         output.writeln(output.dim(`Registry CID: ${result.cid.slice(0, 30)}...`));
@@ -768,7 +775,7 @@ const searchCommand: Command = {
       const searchOptions: PluginSearchOptions = {
         query,
         category,
-        type: type as any,
+        type: type as PluginType,
         verified,
         limit,
         sortBy: 'downloads',

@@ -17,6 +17,7 @@
 
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import { DomainEvent, AllDomainEvents } from './domain-events.js';
 
@@ -130,11 +131,19 @@ export class EventStore extends EventEmitter {
     if (this.initialized) return;
 
     // Load sql.js WASM
-    this.SQL = await initSqlJs({
-      locateFile: this.config.wasmPath
-        ? () => this.config.wasmPath!
-        : (file) => `https://sql.js.org/dist/${file}`,
-    });
+    let wasmLocator: ((file: string) => string) | undefined;
+    if (this.config.wasmPath) {
+      wasmLocator = () => this.config.wasmPath!;
+    } else {
+      try {
+        const req = createRequire(import.meta.url);
+        const sqlJsPath = req.resolve('sql.js/dist/sql-wasm.wasm');
+        wasmLocator = () => sqlJsPath;
+      } catch {
+        wasmLocator = (file: string) => `https://sql.js.org/dist/${file}`;
+      }
+    }
+    this.SQL = await initSqlJs({ locateFile: wasmLocator });
 
     // Load existing database if exists
     if (this.config.databasePath !== ':memory:' && existsSync(this.config.databasePath)) {
@@ -369,7 +378,7 @@ export class EventStore extends EventEmitter {
   async *replay(fromVersion: number = 0): AsyncIterable<DomainEvent> {
     this.ensureInitialized();
 
-    const stmt = this.db!.prepare('SELECT * FROM events WHERE version >= ? ORDER BY version ASC');
+    const stmt = this.db!.prepare('SELECT * FROM events WHERE rowid >= ? ORDER BY rowid ASC');
     stmt.bind([fromVersion]);
 
     while (stmt.step()) {
@@ -437,7 +446,7 @@ export class EventStore extends EventEmitter {
 
     // Total events
     const totalStmt = this.db!.prepare('SELECT COUNT(*) as count FROM events');
-    const totalRow = totalStmt.getAsObject();
+    const totalRow = totalStmt.getAsObject([]);
     totalStmt.free();
     const totalEvents = (totalRow.count as number) || 0;
 
@@ -463,12 +472,12 @@ export class EventStore extends EventEmitter {
 
     // Timestamp range
     const rangeStmt = this.db!.prepare('SELECT MIN(timestamp) as oldest, MAX(timestamp) as newest FROM events');
-    const rangeRow = rangeStmt.getAsObject();
+    const rangeRow = rangeStmt.getAsObject([]);
     rangeStmt.free();
 
     // Snapshot count
     const snapshotStmt = this.db!.prepare('SELECT COUNT(*) as count FROM snapshots');
-    const snapshotRow = snapshotStmt.getAsObject();
+    const snapshotRow = snapshotStmt.getAsObject([]);
     snapshotStmt.free();
 
     return {

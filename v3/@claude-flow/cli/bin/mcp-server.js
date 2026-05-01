@@ -8,6 +8,14 @@
  */
 
 import { randomUUID } from 'crypto';
+
+// Suppress [AgentDB Patch] warnings (cosmetic, from agentic-flow v1.x compat patch)
+const _origWarn = console.warn;
+console.warn = (...args) => {
+  if (String(args[0] ?? '').includes('[AgentDB Patch]')) return;
+  _origWarn.apply(console, args);
+};
+
 import { listMCPTools, callMCPTool, hasTool } from '../dist/src/mcp-client.js';
 
 const VERSION = '3.0.0';

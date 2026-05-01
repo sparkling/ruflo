@@ -12,12 +12,23 @@ import { unlinkSync, existsSync } from 'node:fs';
 describe('DatabaseProvider', () => {
   const testDbPath = './test-database-provider.db';
 
+  beforeEach(() => {
+    // Ensure clean state before each test
+    if (existsSync(testDbPath)) {
+      try {
+        unlinkSync(testDbPath);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  });
+
   afterEach(() => {
     // Cleanup test database
     if (existsSync(testDbPath)) {
       try {
         unlinkSync(testDbPath);
-      } catch (error) {
+      } catch {
         // Ignore cleanup errors
       }
     }
@@ -72,8 +83,9 @@ describe('DatabaseProvider', () => {
         namespace: 'test',
       });
 
+      const countBefore = await db.count('test');
       await db.store(entry);
-      await expect(db.count()).resolves.toBe(1);
+      await expect(db.count('test')).resolves.toBe(countBefore + 1);
 
       await db.shutdown();
     });

@@ -5,6 +5,8 @@
  * Created with ❤️ by ruv.io
  */
 
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 
@@ -20,23 +22,19 @@ const CLAIMS_CONFIG_PATHS = [
 ];
 
 function getClaimsConfigPaths(): string[] {
-  // Lazy import to keep top-level synchronous
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const path = require('path') as typeof import('path');
   return [
-    path.resolve(CLAIMS_CONFIG_PATHS[0]),
-    path.resolve(CLAIMS_CONFIG_PATHS[1]),
-    path.resolve(process.env.HOME || '~', '.config/claude-flow/claims.json'),
+    resolve(CLAIMS_CONFIG_PATHS[0]),
+    resolve(CLAIMS_CONFIG_PATHS[1]),
+    resolve(process.env.HOME || '~', '.config/claude-flow/claims.json'),
   ];
 }
 
 function loadClaimsConfig(): { config: ClaimsConfig; path: string } {
-  const fs = require('fs') as typeof import('fs');
   const configPaths = getClaimsConfigPaths();
 
   for (const configPath of configPaths) {
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, 'utf-8');
+    if (existsSync(configPath)) {
+      const content = readFileSync(configPath, 'utf-8');
       return { config: JSON.parse(content) as ClaimsConfig, path: configPath };
     }
   }
@@ -55,17 +53,14 @@ function loadClaimsConfig(): { config: ClaimsConfig; path: string } {
 }
 
 function saveClaimsConfig(config: ClaimsConfig, configPath: string): void {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-
-  const dir = path.dirname(configPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  const dir = dirname(configPath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 
   const tmpPath = configPath + '.tmp';
-  fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmpPath, configPath);
+  writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  renameSync(tmpPath, configPath);
 }
 
 // List subcommand

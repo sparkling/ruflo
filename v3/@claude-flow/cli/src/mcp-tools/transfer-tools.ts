@@ -7,6 +7,7 @@
  */
 
 import type { MCPTool, MCPToolResult } from './types.js';
+import { validateIdentifier, validatePackageName, validateText } from './validate-input.js';
 
 /**
  * Helper to create MCP tool result
@@ -46,6 +47,7 @@ export const transferTools: MCPTool[] = [
       required: ['content'],
     },
     handler: async (input): Promise<MCPToolResult> => {
+      { const v = validateText((input as { content: string }).content, 'content'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { detectPII } = await import('../transfer/anonymization/index.js');
         const result = detectPII((input as { content: string }).content);
@@ -75,6 +77,7 @@ export const transferTools: MCPTool[] = [
       required: ['name'],
     },
     handler: async (input): Promise<MCPToolResult> => {
+      { const v = validateIdentifier((input as { name: string }).name, 'name'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { resolveIPNS } = await import('../transfer/ipfs/client.js');
         const result = await resolveIPNS((input as { name: string }).name);
@@ -119,6 +122,8 @@ export const transferTools: MCPTool[] = [
       },
     },
     handler: async (input): Promise<MCPToolResult> => {
+      if ((input as Record<string, unknown>).query) { const v = validateText((input as Record<string, unknown>).query, 'query'); if (!v.valid) return createResult({ error: v.error }, true); }
+      if ((input as Record<string, unknown>).category) { const v = validateIdentifier((input as Record<string, unknown>).category, 'category'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { PatternStore } = await import('../transfer/store/index.js');
         const store = new PatternStore();
@@ -147,6 +152,7 @@ export const transferTools: MCPTool[] = [
       required: ['id'],
     },
     handler: async (input): Promise<MCPToolResult> => {
+      { const v = validateIdentifier((input as { id: string }).id, 'id'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { PatternStore } = await import('../transfer/store/index.js');
         const store = new PatternStore();
@@ -182,6 +188,7 @@ export const transferTools: MCPTool[] = [
       required: ['id'],
     },
     handler: async (input): Promise<MCPToolResult> => {
+      { const v = validateIdentifier((input as { id: string }).id, 'id'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { PatternStore } = await import('../transfer/store/index.js');
         const store = new PatternStore();
@@ -291,6 +298,9 @@ export const transferTools: MCPTool[] = [
       },
     },
     handler: async (input): Promise<MCPToolResult> => {
+      if ((input as Record<string, unknown>).query) { const v = validateText((input as Record<string, unknown>).query, 'query'); if (!v.valid) return createResult({ error: v.error }, true); }
+      if ((input as Record<string, unknown>).category) { const v = validateIdentifier((input as Record<string, unknown>).category, 'category'); if (!v.valid) return createResult({ error: v.error }, true); }
+      if ((input as Record<string, unknown>).type) { const v = validateIdentifier((input as Record<string, unknown>).type, 'type'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { createPluginDiscoveryService, searchPlugins } = await import(
           '../plugins/store/index.js'
@@ -325,6 +335,7 @@ export const transferTools: MCPTool[] = [
       required: ['name'],
     },
     handler: async (input): Promise<MCPToolResult> => {
+      { const v = validatePackageName((input as { name: string }).name, 'name'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { createPluginDiscoveryService } = await import('../plugins/store/index.js');
         const discovery = createPluginDiscoveryService();

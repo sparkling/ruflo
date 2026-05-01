@@ -24,6 +24,7 @@ import {
   type MCPToolDefinition,
   type CLICommandDefinition,
   type MemoryBackendFactory,
+  type HookContext,
   type HookDefinition,
   type HookHandler,
   type WorkerDefinition,
@@ -401,6 +402,8 @@ export class HookBuilder {
   private priority: HookPriority = HookPriority.Normal;
   private async: boolean = true;
   private handler?: HookHandler;
+  private condition?: (ctx: HookContext) => boolean;
+  private transformer?: (data: unknown) => unknown;
 
   constructor(event: HookEvent) {
     this.event = event;
@@ -426,6 +429,21 @@ export class HookBuilder {
     return this;
   }
 
+  when(condition: (ctx: HookContext) => boolean): this {
+    this.condition = condition;
+    return this;
+  }
+
+  transform(transformer: (data: unknown) => unknown): this {
+    this.transformer = transformer;
+    return this;
+  }
+
+  handle(handler: HookHandler): this {
+    this.handler = handler;
+    return this;
+  }
+
   withHandler(handler: HookHandler): this {
     this.handler = handler;
     return this;
@@ -436,9 +454,29 @@ export class HookBuilder {
       throw new Error(`Hook for event ${this.event} requires a handler`);
     }
 
+    let finalHandler = this.handler;
+
+    if (this.transformer) {
+      const innerHandler = finalHandler;
+      const xform = this.transformer;
+      finalHandler = (ctx: HookContext) => {
+        const transformed = { ...ctx, data: xform(ctx.data) };
+        return innerHandler(transformed);
+      };
+    }
+
+    if (this.condition) {
+      const innerHandler = finalHandler;
+      const cond = this.condition;
+      finalHandler = (ctx: HookContext) => {
+        if (!cond(ctx)) return { success: true };
+        return innerHandler(ctx);
+      };
+    }
+
     return {
       event: this.event,
-      handler: this.handler,
+      handler: finalHandler,
       priority: this.priority,
       name: this.name,
       description: this.description,

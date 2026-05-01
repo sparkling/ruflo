@@ -110,6 +110,7 @@ export interface IntelligenceStats {
   sonaEnabled: boolean;
   reasoningBankSize: number;
   patternsLearned: number;
+  signalsProcessed: number;
   trajectoriesRecorded: number;
   lastAdaptation: number | null;
   avgAdaptationTime: number;
@@ -477,7 +478,9 @@ class LocalReasoningBank {
   }
 
   /**
-   * Load patterns from disk
+   * Load patterns from disk, deduplicating by content.
+   * When multiple patterns share identical content, keeps the one with
+   * highest confidence (ties broken by most recent lastUsedAt).
    */
   private loadFromDisk(): void {
     try {
@@ -485,9 +488,43 @@ class LocalReasoningBank {
       if (existsSync(path)) {
         const data = JSON.parse(readFileSync(path, 'utf-8'));
         if (Array.isArray(data)) {
+          const totalLoaded = data.length;
+
+          // Group by content to deduplicate
+          const byContent = new Map<string, StoredPattern>();
           for (const pattern of data) {
+            const key = pattern.content;
+            const existing = byContent.get(key);
+            if (!existing) {
+              byContent.set(key, pattern);
+            } else {
+              // Keep the one with higher confidence; break ties by lastUsedAt
+              if (
+                pattern.confidence > existing.confidence ||
+                (pattern.confidence === existing.confidence &&
+                  (pattern.lastUsedAt ?? 0) > (existing.lastUsedAt ?? 0))
+              ) {
+                // Merge: adopt the higher usageCount sum
+                pattern.usageCount = (pattern.usageCount ?? 0) + (existing.usageCount ?? 0);
+                byContent.set(key, pattern);
+              } else {
+                existing.usageCount = (existing.usageCount ?? 0) + (pattern.usageCount ?? 0);
+              }
+            }
+          }
+
+          // Populate the bank from deduplicated entries
+          for (const pattern of byContent.values()) {
             this.patterns.set(pattern.id, pattern);
             this.patternList.push(pattern);
+          }
+
+          const removed = totalLoaded - byContent.size;
+          if (removed > 0) {
+            console.log(`Deduplicated ${removed} patterns (${byContent.size} unique)`);
+            // Persist the compacted set immediately so the file shrinks on disk
+            this.dirty = true;
+            this.flushToDisk();
           }
         }
       }
@@ -533,6 +570,9 @@ class LocalReasoningBank {
 
   /**
    * Store a pattern - O(1)
+   * Deduplicates by content: if a pattern with the same content already
+   * exists, the existing entry is updated (bumped usageCount, higher
+   * confidence wins, refreshed lastUsedAt) instead of adding a duplicate.
    */
   store(pattern: Omit<StoredPattern, 'usageCount' | 'createdAt' | 'lastUsedAt'> & Partial<StoredPattern>): void {
     const now = Date.now();
@@ -555,6 +595,21 @@ class LocalReasoningBank {
         this.patternList[idx] = stored;
       }
     } else {
+      // Check for content-duplicate before inserting a new entry
+      const contentDupe = this.patternList.find(p => p.content === pattern.content);
+      if (contentDupe) {
+        // Merge into the existing pattern instead of adding a duplicate
+        contentDupe.usageCount++;
+        contentDupe.lastUsedAt = now;
+        if (stored.confidence > contentDupe.confidence) {
+          contentDupe.confidence = stored.confidence;
+        }
+        // Keep the Map in sync with the mutated object
+        this.patterns.set(contentDupe.id, contentDupe);
+        this.saveToDisk();
+        return;
+      }
+
       // Evict oldest if at capacity
       if (this.patterns.size >= this.maxSize) {
         const oldest = this.patternList.shift();
@@ -689,6 +744,27 @@ class LocalReasoningBank {
 }
 
 // ============================================================================
+// @ruvector/ruvllm SonaCoordinator Integration
+// ============================================================================
+
+let ruvllmCoordinator: any = null;
+let ruvllmLoaded = false;
+
+async function loadRuvllmCoordinator(): Promise<any> {
+  if (ruvllmLoaded) return ruvllmCoordinator;
+  ruvllmLoaded = true;
+  try {
+    const { createRequire } = await import('module');
+    const requireCjs = createRequire(import.meta.url);
+    const ruvllm = requireCjs('@ruvector/ruvllm');
+    ruvllmCoordinator = new ruvllm.SonaCoordinator(ruvllm.DEFAULT_SONA_CONFIG);
+    return ruvllmCoordinator;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
 // Module State
 // ============================================================================
 
@@ -697,6 +773,8 @@ let reasoningBank: LocalReasoningBank | null = null;
 let intelligenceInitialized = false;
 let globalStats = {
   trajectoriesRecorded: 0,
+  patternsLearned: 0,
+  signalsProcessed: 0,
   lastAdaptation: null as number | null
 };
 
@@ -775,6 +853,9 @@ export async function initializeIntelligence(config?: Partial<SonaConfig>): Prom
 
     // Load persisted stats if available
     loadPersistedStats();
+
+    // Eagerly load ruvllm coordinator so stats reflect backend status
+    await loadRuvllmCoordinator();
 
     intelligenceInitialized = true;
 
@@ -871,20 +952,69 @@ export async function recordTrajectory(
   }
 
   try {
+    // Generate embeddings for steps that don't have them (required for distillation)
+    const enrichedSteps = await Promise.all(steps.map(async (step) => {
+      if (step.embedding && step.embedding.length > 0) return step;
+      try {
+        const { generateEmbedding } = await import('./memory-initializer.js');
+        const result = await generateEmbedding(step.content);
+        return { ...step, embedding: result.embedding };
+      } catch {
+        return step; // Skip embedding if not available
+      }
+    }));
+
     sonaCoordinator!.recordTrajectory({
-      steps,
+      steps: enrichedSteps,
       verdict,
       timestamp: Date.now()
     });
 
     // Apply RL: update pattern confidences based on verdict
     if (reasoningBank) {
-      // Load steps into the coordinator for endTrajectory processing
-      for (const step of steps) {
+      for (const step of enrichedSteps) {
         sonaCoordinator!.addTrajectoryStep(step);
       }
       await sonaCoordinator!.endTrajectory(verdict, reasoningBank);
       await sonaCoordinator!.distillLearning(reasoningBank);
+
+      // Also store successful trajectories as patterns directly
+      if (verdict === 'success') {
+        for (const step of enrichedSteps) {
+          if (step.embedding && step.embedding.length > 0) {
+            reasoningBank.store({
+              id: `pattern-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              type: step.type,
+              content: step.content,
+              embedding: step.embedding,
+              confidence: verdict === 'success' ? 0.8 : 0.4,
+              metadata: step.metadata || {},
+              createdAt: Date.now(),
+            });
+            globalStats.patternsLearned++;
+          }
+        }
+      }
+    }
+
+    // Forward trajectory to @ruvector/ruvllm SonaCoordinator if available
+    const ruvllmCoord = await loadRuvllmCoordinator();
+    if (ruvllmCoord) {
+      try {
+        const avgQuality = verdict === 'success' ? 1.0 : verdict === 'partial' ? 0.5 : 0.0;
+        ruvllmCoord.recordTrajectory({
+          steps: enrichedSteps.map(s => ({
+            state: s.content,
+            action: s.type,
+            reward: avgQuality,
+            embedding: s.embedding || []
+          })),
+          totalReward: avgQuality,
+          success: verdict === 'success'
+        });
+      } catch {
+        // ruvllm recording failed silently
+      }
     }
 
     globalStats.trajectoriesRecorded++;
@@ -949,17 +1079,41 @@ export async function findSimilarPatterns(
 /**
  * Get intelligence system statistics
  */
-export function getIntelligenceStats(): IntelligenceStats {
+export function getIntelligenceStats(): IntelligenceStats & {
+  _ruvllmBackend: string;
+  _ruvllmTrajectories: number;
+  _contrastiveTrainer?: { triplets: number; agents: number } | string;
+  _trainingBackend?: string;
+} {
   const sonaStats = sonaCoordinator?.stats();
   const bankStats = reasoningBank?.stats();
+
+  const ruvllmStats = ruvllmCoordinator?.stats?.() || null;
+
+  // Fetch cross-module stats for unified reporting
+  let contrastiveTrainer: { triplets: number; agents: number } | string = 'unavailable';
+  let trainingBackend = 'unavailable';
+  try {
+    // Synchronous check — contrastiveTrainer is module-level in sona-optimizer
+    // We read it via the SONAOptimizer singleton if available
+    const sonaModule = (globalThis as any).__claudeFlowSonaStats;
+    if (sonaModule) {
+      contrastiveTrainer = sonaModule._contrastiveTrainer || 'unavailable';
+    }
+  } catch { /* not available */ }
 
   return {
     sonaEnabled: !!sonaCoordinator,
     reasoningBankSize: bankStats?.size ?? 0,
-    patternsLearned: bankStats?.patternCount ?? 0,
+    patternsLearned: Math.max(bankStats?.patternCount ?? 0, globalStats.patternsLearned),
+    signalsProcessed: globalStats.signalsProcessed,
     trajectoriesRecorded: globalStats.trajectoriesRecorded,
     lastAdaptation: globalStats.lastAdaptation,
-    avgAdaptationTime: sonaStats?.avgAdaptationMs ?? 0
+    avgAdaptationTime: sonaStats?.avgAdaptationMs ?? 0,
+    _ruvllmBackend: ruvllmStats ? 'active' : 'unavailable',
+    _ruvllmTrajectories: ruvllmStats?.trajectoriesBuffered || 0,
+    _contrastiveTrainer: contrastiveTrainer,
+    _trainingBackend: trainingBackend,
   };
 }
 
@@ -1036,6 +1190,8 @@ export function clearIntelligence(): void {
   intelligenceInitialized = false;
   globalStats = {
     trajectoriesRecorded: 0,
+    patternsLearned: 0,
+    signalsProcessed: 0,
     lastAdaptation: null
   };
 }
@@ -1241,6 +1397,15 @@ export async function clearAllPatterns(): Promise<void> {
  */
 export function getNeuralDataDir(): string {
   return getDataDir();
+}
+
+/**
+ * Trigger background learning on the @ruvector/ruvllm SonaCoordinator.
+ * No-op if ruvllm is not installed.
+ */
+export async function runBackgroundLearning(): Promise<void> {
+  const coord = await loadRuvllmCoordinator();
+  if (coord) coord.runBackgroundLoop();
 }
 
 /**

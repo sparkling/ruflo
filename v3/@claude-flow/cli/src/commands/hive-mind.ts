@@ -271,8 +271,10 @@ async function spawnClaudeCodeInstance(
         output.printInfo('Running in non-interactive mode');
       }
 
-      // Add auto-permission flag unless explicitly disabled
-      const skipPermissions = flags['dangerously-skip-permissions'] !== false && !flags['no-auto-permissions'];
+      // HIGH-02: Strict boolean check (=== true) instead of loose truthiness (!== false)
+      // to prevent undefined/null from being treated as "skip permissions".
+      // Behavior change: only explicit --dangerously-skip-permissions flag triggers skip.
+      const skipPermissions = flags['dangerously-skip-permissions'] === true && !flags['no-auto-permissions'];
       if (skipPermissions) {
         claudeArgs.push('--dangerously-skip-permissions');
         if (!isNonInteractive) {

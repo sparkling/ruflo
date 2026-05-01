@@ -1,0 +1,19 @@
+{
+  "name": "ruflo-intelligence",
+  "description": "Self-learning neural intelligence with SONA patterns, trajectory learning, and intelligent model routing",
+  "version": "0.1.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "intelligence",
+    "sona",
+    "neural",
+    "learning",
+    "routing"
+  ]
+}

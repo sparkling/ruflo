@@ -1,5 +1,5 @@
 {
-  "model": "claude-opus-4-6",
+  "model": "claude-opus-4-7",
   "customInstructions": "Follow the project's CLAUDE.md guidelines. Use concurrent execution for all operations. Prioritize v3 implementation with security-first development, 15-agent swarm coordination, phased performance optimization, and cross-platform helper automation.",
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
@@ -144,29 +144,7 @@
         ]
       }
     ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/helpers/hook-handler.cjs\" status",
-            "timeout": 3000
-          }
-        ]
-      }
-    ],
-    "TeammateIdle": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/helpers/hook-handler.cjs\" post-task",
-            "timeout": 5000
-          }
-        ]
-      }
-    ],
-    "TaskCompleted": [
+    "SubagentStop": [
       {
         "hooks": [
           {
@@ -179,14 +157,14 @@
     ]
   },
   "attribution": {
-    "commit": "Co-Authored-By: claude-flow <ruv@ruv.net>",
-    "pr": "\ud83e\udd16 Generated with [claude-flow](https://github.com/ruvnet/claude-flow)"
+    "commit": "Co-Authored-By: RuFlo <ruv@ruv.net>",
+    "pr": "\ud83e\udd16 Generated with [RuFlo](https://github.com/ruvnet/ruflo)"
   },
   "claudeFlow": {
-    "version": "3.5.2",
+    "version": "3.6.11",
     "enabled": true,
     "modelPreferences": {
-      "default": "claude-opus-4-6",
+      "default": "claude-opus-4-7",
       "routing": "claude-haiku-4-5-20251001"
     },
     "agentTeams": {
@@ -286,20 +264,20 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "node \"$CLAUDE_PROJECT_DIR/.claude/helpers/statusline.cjs\""
+    "command": "sh -c 'exec node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/statusline.cjs\"'"
   },
   "mcpServers": {
     "claude-flow": {
-      "command": "node",
+      "command": "npx",
       "args": [
-        "/workspaces/claude-flow/v3/@claude-flow/cli/bin/cli.js",
+        "-y",
+        "ruflo@latest",
         "mcp",
         "start"
       ]
     }
   },
   "enabledMcpjsonServers": [
-    "claude-flow",
-    "ruv-swarm"
+    "claude-flow"
   ]
 }

@@ -2,6 +2,9 @@
  * Diff Classifier for Change Analysis
  */
 
+import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 export interface DiffClassifierConfig {
   maxDiffSize: number;
   classifyByImpact: boolean;
@@ -396,7 +399,7 @@ export function getGitDiffNumstat(ref: string = 'HEAD'): DiffFile[] {
     return cached.files;
   }
 
-  const { execFileSync } = require('child_process');
+  // execFileSync imported at top level
   try {
     // SECURITY: Use execFileSync with args array instead of shell string
     // This prevents command injection via the ref parameter
@@ -471,8 +474,7 @@ export async function getGitDiffNumstatAsync(ref: string = 'HEAD'): Promise<Diff
     return cached.files;
   }
 
-  const { execFile } = require('child_process');
-  const { promisify } = require('util');
+  // execFile + promisify imported at top level
   const execFileAsync = promisify(execFile);
 
   try {

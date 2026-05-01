@@ -23,18 +23,18 @@ export function searchPlugins(
   if (options.query) {
     const query = options.query.toLowerCase();
     plugins = plugins.filter(p =>
-      p.name.toLowerCase().includes(query) ||
-      p.displayName.toLowerCase().includes(query) ||
-      p.description.toLowerCase().includes(query) ||
-      p.tags.some(t => t.toLowerCase().includes(query)) ||
-      p.keywords.some(k => k.toLowerCase().includes(query))
+      p.name?.toLowerCase().includes(query) ||
+      p.displayName?.toLowerCase().includes(query) ||
+      p.description?.toLowerCase().includes(query) ||
+      (p.tags || []).some(t => t.toLowerCase().includes(query)) ||
+      (p.keywords || []).some(k => k.toLowerCase().includes(query))
     );
   }
 
   // Category filter
   if (options.category) {
     plugins = plugins.filter(p =>
-      p.categories.includes(options.category!)
+      (p.categories || []).includes(options.category!)
     );
   }
 
@@ -46,7 +46,7 @@ export function searchPlugins(
   // Tags filter (match any)
   if (options.tags && options.tags.length > 0) {
     plugins = plugins.filter(p =>
-      options.tags!.some(tag => p.tags.includes(tag))
+      options.tags!.some(tag => (p.tags || []).includes(tag))
     );
   }
 
@@ -86,7 +86,7 @@ export function searchPlugins(
   // Permissions filter
   if (options.permissions && options.permissions.length > 0) {
     plugins = plugins.filter(p =>
-      options.permissions!.every(perm => p.permissions.includes(perm))
+      options.permissions!.every(perm => (p.permissions || []).includes(perm))
     );
   }
 
@@ -161,13 +161,13 @@ export function getPluginSearchSuggestions(
       suggestions.add(plugin.displayName);
     }
     // Search in tags
-    for (const tag of plugin.tags) {
+    for (const tag of plugin.tags || []) {
       if (tag.toLowerCase().includes(query)) {
         suggestions.add(tag);
       }
     }
     // Search in keywords
-    for (const keyword of plugin.keywords) {
+    for (const keyword of plugin.keywords || []) {
       if (keyword.toLowerCase().includes(query)) {
         suggestions.add(keyword);
       }
@@ -184,7 +184,7 @@ export function getPluginTagCloud(registry: PluginRegistry): Map<string, number>
   const tagCounts = new Map<string, number>();
 
   for (const plugin of registry.plugins) {
-    for (const tag of plugin.tags) {
+    for (const tag of plugin.tags || []) {
       tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
     }
   }
@@ -201,7 +201,7 @@ export function getPluginCategoryStats(registry: PluginRegistry): Map<string, nu
   const categoryCounts = new Map<string, number>();
 
   for (const plugin of registry.plugins) {
-    for (const category of plugin.categories) {
+    for (const category of plugin.categories || []) {
       categoryCounts.set(category, (categoryCounts.get(category) || 0) + 1);
     }
   }
@@ -229,14 +229,14 @@ export function findSimilarPlugins(
       let score = 0;
 
       // Tag overlap
-      const tagOverlap = plugin.tags.filter(t =>
-        targetPlugin.tags.includes(t)
+      const tagOverlap = (plugin.tags || []).filter(t =>
+        (targetPlugin.tags || []).includes(t)
       ).length;
       score += tagOverlap * 2;
 
       // Category match
-      const categoryMatch = plugin.categories.some(c =>
-        targetPlugin.categories.includes(c)
+      const categoryMatch = (plugin.categories || []).some(c =>
+        (targetPlugin.categories || []).includes(c)
       );
       if (categoryMatch) score += 3;
 
@@ -299,6 +299,6 @@ export function getPluginsByPermission(
   permission: string
 ): PluginEntry[] {
   return registry.plugins.filter(p =>
-    p.permissions.includes(permission as any)
+    (p.permissions || []).includes(permission as any)
   );
 }

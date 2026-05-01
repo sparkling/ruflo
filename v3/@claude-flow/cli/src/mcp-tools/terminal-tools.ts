@@ -6,6 +6,7 @@
 
 import { type MCPTool, findProjectRoot, getDisplayCwd } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { validateIdentifier, validatePath, validateText } from './validate-input.js';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
@@ -76,6 +77,16 @@ export const terminalTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
+      // Validate user-provided input (#1425)
+      if (input.name) {
+        const v = validateText(input.name, 'name', 256);
+        if (!v.valid) return { success: false, error: v.error };
+      }
+      if (input.workingDir) {
+        const v = validatePath(input.workingDir, 'workingDir');
+        if (!v.valid) return { success: false, error: v.error };
+      }
+
       const store = loadTerminalStore();
       const id = `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -118,6 +129,14 @@ export const terminalTools: MCPTool[] = [
       required: ['command'],
     },
     handler: async (input) => {
+      // Validate user-provided input (#1425)
+      const vCmd = validateText(input.command, 'command', 10_000);
+      if (!vCmd.valid) return { success: false, error: vCmd.error };
+      if (input.sessionId) {
+        const v = validateIdentifier(input.sessionId, 'sessionId');
+        if (!v.valid) return { success: false, error: v.error };
+      }
+
       const store = loadTerminalStore();
       const sessionId = input.sessionId as string;
       const command = input.command as string;
@@ -236,6 +255,10 @@ export const terminalTools: MCPTool[] = [
       required: ['sessionId'],
     },
     handler: async (input) => {
+      // Validate user-provided input (#1425)
+      const vId = validateIdentifier(input.sessionId, 'sessionId');
+      if (!vId.valid) return { success: false, error: vId.error };
+
       const store = loadTerminalStore();
       const sessionId = input.sessionId as string;
       const session = store.sessions[sessionId];
@@ -267,6 +290,12 @@ export const terminalTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
+      // Validate user-provided input (#1425)
+      if (input.sessionId) {
+        const v = validateIdentifier(input.sessionId, 'sessionId');
+        if (!v.valid) return { success: false, error: v.error };
+      }
+
       const store = loadTerminalStore();
       const sessionId = input.sessionId as string;
       const limit = (input.limit as number) || 50;

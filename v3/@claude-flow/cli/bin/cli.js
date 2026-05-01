@@ -10,6 +10,15 @@
 
 import { randomUUID } from 'crypto';
 
+// Suppress noisy [AgentDB Patch] warnings from agentic-flow's runtime patch
+// These are cosmetic — the patch tries to fix agentdb v1.x imports but we use v3
+const _origWarn = console.warn;
+console.warn = (...args) => {
+  const msg = String(args[0] ?? '');
+  if (msg.includes('[AgentDB Patch]')) return;
+  _origWarn.apply(console, args);
+};
+
 // Check if we should run in MCP server mode
 // Conditions:
 //   1. stdin is being piped AND no CLI arguments provided (auto-detect)
@@ -38,17 +47,28 @@ if (isMCPMode) {
 
     for (const line of lines) {
       if (line.trim()) {
+        let message;
         try {
-          const message = JSON.parse(line);
+          message = JSON.parse(line);
+        } catch {
+          console.log(JSON.stringify({
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error' },
+          }));
+          continue;
+        }
+        try {
           const response = await handleMessage(message);
           if (response) {
             console.log(JSON.stringify(response));
           }
         } catch (error) {
+          // #1606: Return proper internal error instead of parse error
           console.log(JSON.stringify({
             jsonrpc: '2.0',
-            id: null,
-            error: { code: -32700, message: 'Parse error' },
+            id: message.id ?? null,
+            error: { code: -32603, message: error instanceof Error ? error.message : 'Internal error' },
           }));
         }
       }
@@ -149,8 +169,15 @@ if (isMCPMode) {
   // Run normal CLI mode
   const { CLI } = await import('../dist/src/index.js');
   const cli = new CLI();
-  cli.run().catch((error) => {
-    console.error('Fatal error:', error.message);
-    process.exit(1);
-  });
+  cli.run()
+    .then(() => {
+      // #1552: Exit cleanly after one-shot commands.
+      // Long-running commands (daemon foreground, mcp, status --watch) never resolve,
+      // so this only fires for normal CLI commands.
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error('Fatal error:', error.message);
+      process.exit(1);
+    });
 }

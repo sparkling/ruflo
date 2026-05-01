@@ -7,6 +7,7 @@
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
+import { execSync } from 'node:child_process';
 
 // Scan subcommand
 const scanCommand: Command = {
@@ -58,9 +59,9 @@ const scanCommand: Command = {
                 maxBuffer: 10 * 1024 * 1024,
                 stdio: ['pipe', 'pipe', 'pipe'],
               });
-            } catch (auditErr: any) {
+            } catch (auditErr: unknown) {
               // npm audit exits non-zero when vulnerabilities found — stdout still has JSON
-              auditResult = auditErr.stdout || '{}';
+              auditResult = (auditErr instanceof Error && 'stdout' in auditErr ? (auditErr as { stdout: string }).stdout : undefined) || '{}';
             }
 
             try {
@@ -262,37 +263,21 @@ const cveCommand: Command = {
     output.writeln(output.bold('CVE Database'));
     output.writeln(output.dim('─'.repeat(50)));
 
+    output.writeln(output.warning('⚠ No CVE database configured.'));
+    output.writeln(output.dim('This command requires a CVE data source (e.g., NVD API) which is not yet integrated.'));
+    output.writeln();
+
     if (checkCve) {
-      output.printBox([
-        `CVE ID: ${checkCve}`,
-        `Severity: CRITICAL (9.8)`,
-        `Status: Active`,
-        ``,
-        `Description: Remote code execution vulnerability`,
-        `Affected: lodash < 4.17.21`,
-        `Fix: Upgrade to lodash >= 4.17.21`,
-        ``,
-        `References:`,
-        `  - https://nvd.nist.gov/vuln/detail/${checkCve}`,
-        `  - https://github.com/advisories`,
-      ].join('\n'), 'CVE Details');
+      output.writeln(`To look up ${output.bold(checkCve)}, use one of these real sources:`);
     } else {
-      output.writeln(output.warning('⚠ No real CVE database configured. Showing example data.'));
-      output.writeln(output.dim('Run "npm audit" or "claude-flow security scan" for real vulnerability detection.'));
-      output.writeln();
-      output.printTable({
-        columns: [
-          { key: 'id', header: 'CVE ID (Example)', width: 22 },
-          { key: 'severity', header: 'Severity', width: 12 },
-          { key: 'package', header: 'Package', width: 20 },
-          { key: 'status', header: 'Status', width: 15 },
-        ],
-        data: [
-          { id: 'CVE-YYYY-NNNN', severity: output.error('CRITICAL'), package: 'example-pkg@1.0.0', status: output.warning('Example') },
-          { id: 'CVE-YYYY-NNNN', severity: output.warning('HIGH'), package: 'example-pkg@2.0.0', status: output.success('Example') },
-          { id: 'CVE-YYYY-NNNN', severity: output.info('MEDIUM'), package: 'example-pkg@3.0.0', status: output.success('Example') },
-        ],
-      });
+      output.writeln('To check for real vulnerabilities, use:');
+    }
+
+    output.writeln();
+    output.writeln(`  ${output.dim('$')} npm audit                                    ${output.dim('# dependency vulnerabilities')}`);
+    output.writeln(`  ${output.dim('$')} claude-flow security scan                     ${output.dim('# real code + dependency scan')}`);
+    if (checkCve) {
+      output.writeln(`  ${output.dim('$')} open https://nvd.nist.gov/vuln/detail/${checkCve}  ${output.dim('# NVD lookup')}`);
     }
 
     return { success: true };
@@ -314,27 +299,234 @@ const threatsCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const model = ctx.flags.model as string || 'stride';
+    const scope = ctx.flags.scope as string || '.';
+    const exportFormat = ctx.flags.export as string | undefined;
 
     output.writeln();
     output.writeln(output.bold(`Threat Model: ${model.toUpperCase()}`));
     output.writeln(output.dim('─'.repeat(50)));
 
+    const spinner = output.createSpinner({ text: `Scanning ${scope} for threat indicators...`, spinner: 'dots' });
+    spinner.start();
+
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const rootDir = path.resolve(scope);
+    const findings: Array<{ category: string; severity: string; location: string; description: string }> = [];
+    const extensions = new Set(['.ts', '.js', '.json', '.yaml', '.yml', '.tsx', '.jsx']);
+    const skipDirs = new Set(['node_modules', 'dist', '.git']);
+    let filesScanned = 0;
+    const MAX_FILES = 500;
+
+    // Threat indicator patterns mapped to STRIDE categories
+    const threatPatterns: Array<{ pattern: RegExp; category: string; severity: string; description: string }> = [
+      // Spoofing — weak/missing authentication
+      { pattern: /(?:app|router|server)\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*['"][^'"]+['"]\s*,\s*(?:async\s+)?\(?(?:req|request)/g, category: 'Spoofing', severity: 'medium', description: 'HTTP endpoint without auth middleware' },
+
+      // Tampering — code injection vectors
+      { pattern: /\beval\s*\(/g, category: 'Tampering', severity: 'high', description: 'eval() usage — arbitrary code execution risk' },
+      { pattern: /\bexecSync\s*\(/g, category: 'Tampering', severity: 'high', description: 'execSync() usage — command injection risk' },
+      { pattern: /\bexec\s*\(\s*[^)]*\$\{/g, category: 'Tampering', severity: 'high', description: 'exec() with template literal — injection risk' },
+      { pattern: /child_process.*\bexec\b/g, category: 'Tampering', severity: 'medium', description: 'child_process exec import — review for injection' },
+      { pattern: /new\s+Function\s*\(/g, category: 'Tampering', severity: 'high', description: 'new Function() — dynamic code execution risk' },
+
+      // Repudiation — missing audit/logging
+      // (checked via absence of logging imports, handled separately)
+
+      // Info Disclosure — secrets and data leaks
+      { pattern: /(?:api[_-]?key|secret|token|password|passwd|credential)\s*[:=]\s*['"][^'"]{8,}['"]/gi, category: 'Info Disclosure', severity: 'high', description: 'Hardcoded credential or secret' },
+      { pattern: /AKIA[0-9A-Z]{16}/g, category: 'Info Disclosure', severity: 'critical', description: 'AWS Access Key ID detected' },
+      { pattern: /gh[ps]_[A-Za-z0-9_]{36,}/g, category: 'Info Disclosure', severity: 'high', description: 'GitHub token detected' },
+      { pattern: /-----BEGIN (?:RSA|EC|DSA|OPENSSH) PRIVATE KEY-----/g, category: 'Info Disclosure', severity: 'critical', description: 'Private key detected' },
+      { pattern: /http:\/\/(?!localhost|127\.0\.0\.1|0\.0\.0\.0)/g, category: 'Info Disclosure', severity: 'medium', description: 'Non-localhost HTTP URL — should use HTTPS' },
+
+      // DoS — missing rate limiting / resource protection
+      { pattern: /require\s*\(\s*['"]express['"]\s*\)/g, category: 'DoS', severity: 'low', description: 'Express detected — verify rate-limiting is configured' },
+      { pattern: /require\s*\(\s*['"]fastify['"]\s*\)/g, category: 'DoS', severity: 'low', description: 'Fastify detected — verify rate-limiting is configured' },
+
+      // Elevation of privilege — unsafe deserialization, prototype pollution
+      { pattern: /JSON\.parse\s*\(\s*(?:req\.|request\.)/g, category: 'Elevation', severity: 'medium', description: 'Unsanitized JSON.parse from request — validate input' },
+      { pattern: /\.__proto__/g, category: 'Elevation', severity: 'high', description: '__proto__ access — prototype pollution risk' },
+      { pattern: /Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req|request)\./g, category: 'Elevation', severity: 'medium', description: 'Object.assign from request — prototype pollution risk' },
+    ];
+
+    // Check for .env files committed to git
+    const checkEnvInGit = () => {
+      try {
+        const tracked = execSync('git ls-files --cached', { cwd: rootDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        const envFiles = tracked.split('\n').filter((f: string) => /(?:^|\/)\.env(?:\.|$)/.test(f));
+        for (const envFile of envFiles) {
+          findings.push({
+            category: 'Info Disclosure',
+            severity: output.error('CRITICAL'),
+            location: envFile,
+            description: '.env file tracked in git — secrets may be exposed',
+          });
+        }
+      } catch { /* not a git repo or git not available */ }
+    };
+
+    // Recursive file scanner
+    const scanDir = (dir: string) => {
+      if (filesScanned >= MAX_FILES) return;
+      let entries: import('fs').Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch { return; }
+
+      for (const entry of entries) {
+        if (filesScanned >= MAX_FILES) break;
+        if (skipDirs.has(entry.name) || entry.name.startsWith('.')) continue;
+
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scanDir(fullPath);
+        } else if (entry.isFile() && extensions.has(path.extname(entry.name)) && !entry.name.endsWith('.d.ts')) {
+          filesScanned++;
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.size > 1024 * 1024) continue; // skip files > 1MB
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            const lines = content.split('\n');
+            const relPath = path.relative(rootDir, fullPath);
+
+            for (let i = 0; i < lines.length; i++) {
+              for (const tp of threatPatterns) {
+                tp.pattern.lastIndex = 0;
+                if (tp.pattern.test(lines[i])) {
+                  const sevLabel = tp.severity === 'critical' ? output.error('CRITICAL') :
+                                   tp.severity === 'high' ? output.warning('HIGH') :
+                                   tp.severity === 'medium' ? output.warning('MEDIUM') : output.info('LOW');
+                  findings.push({
+                    category: tp.category,
+                    severity: sevLabel,
+                    location: `${relPath}:${i + 1}`,
+                    description: tp.description,
+                  });
+                  tp.pattern.lastIndex = 0;
+                }
+              }
+            }
+          } catch { /* file read error */ }
+        }
+      }
+    };
+
+    // Check for missing security middleware in Express/Fastify apps
+    const checkMissingMiddleware = () => {
+      const serverFiles: string[] = [];
+      const collectServerFiles = (dir: string, depth: number) => {
+        if (depth <= 0 || filesScanned >= MAX_FILES) return;
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (skipDirs.has(entry.name) || entry.name.startsWith('.')) continue;
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              collectServerFiles(fullPath, depth - 1);
+            } else if (/\.(ts|js)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+              try {
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                if (/require\s*\(\s*['"](?:express|fastify)['"]\s*\)/.test(content) || /from\s+['"](?:express|fastify)['"]/.test(content)) {
+                  serverFiles.push(fullPath);
+                  const relPath = path.relative(rootDir, fullPath);
+                  if (!/(?:helmet|lusca)/.test(content)) {
+                    findings.push({ category: 'Tampering', severity: output.warning('MEDIUM'), location: relPath, description: 'No helmet/lusca security headers middleware' });
+                  }
+                  if (!/(?:cors)/.test(content)) {
+                    findings.push({ category: 'Spoofing', severity: output.info('LOW'), location: relPath, description: 'No CORS middleware detected' });
+                  }
+                  if (!/(?:rate.?limit|throttle)/.test(content)) {
+                    findings.push({ category: 'DoS', severity: output.warning('MEDIUM'), location: relPath, description: 'No rate-limiting middleware detected' });
+                  }
+                }
+              } catch { /* skip */ }
+            }
+          }
+        } catch { /* skip */ }
+      };
+      collectServerFiles(rootDir, 5);
+    };
+
+    checkEnvInGit();
+    scanDir(rootDir);
+    checkMissingMiddleware();
+
+    spinner.succeed(`Scanned ${filesScanned} files`);
+
+    // STRIDE reference framework
+    const strideRef = [
+      { category: 'Spoofing', description: 'Can an attacker impersonate a user or service?', example: 'Strong authentication, mTLS' },
+      { category: 'Tampering', description: 'Can data or code be modified without detection?', example: 'Input validation, integrity checks' },
+      { category: 'Repudiation', description: 'Can actions be performed without accountability?', example: 'Audit logging, signed commits' },
+      { category: 'Info Disclosure', description: 'Can sensitive data leak to unauthorized parties?', example: 'Encryption at rest and in transit' },
+      { category: 'DoS', description: 'Can service availability be degraded?', example: 'Rate limiting, resource quotas' },
+      { category: 'Elevation', description: 'Can privileges be escalated beyond granted level?', example: 'RBAC, principle of least privilege' },
+    ];
+
+    // Display real findings
+    output.writeln();
+    if (findings.length > 0) {
+      output.writeln(output.bold(`Findings (${findings.length}):`));
+      output.writeln();
+      output.printTable({
+        columns: [
+          { key: 'category', header: 'STRIDE Category', width: 18 },
+          { key: 'severity', header: 'Severity', width: 12 },
+          { key: 'location', header: 'Location', width: 30 },
+          { key: 'description', header: 'Description', width: 40 },
+        ],
+        data: findings.slice(0, 30),
+      });
+      if (findings.length > 30) {
+        output.writeln(output.dim(`... and ${findings.length - 30} more findings`));
+      }
+
+      // Summary by STRIDE category
+      const byCat: Record<string, number> = {};
+      for (const f of findings) byCat[f.category] = (byCat[f.category] || 0) + 1;
+      output.writeln();
+      output.writeln(output.bold('Summary by STRIDE category:'));
+      for (const [cat, count] of Object.entries(byCat).sort((a, b) => b[1] - a[1])) {
+        output.writeln(`  ${cat}: ${count} finding${count === 1 ? '' : 's'}`);
+      }
+    } else {
+      output.writeln(output.success('No threat indicators detected in scanned files.'));
+    }
+
+    // Always show STRIDE reference
+    output.writeln();
+    output.writeln(output.bold(`${model.toUpperCase()} Reference Framework${findings.length === 0 ? ' (reference only — no issues detected)' : ''}:`));
+    output.writeln();
     output.printTable({
       columns: [
-        { key: 'category', header: 'Category', width: 20 },
-        { key: 'threat', header: 'Threat', width: 30 },
-        { key: 'risk', header: 'Risk', width: 10 },
-        { key: 'mitigation', header: 'Mitigation', width: 30 },
+        { key: 'category', header: `${model.toUpperCase()} Category`, width: 20 },
+        { key: 'description', header: 'What to Assess', width: 40 },
+        { key: 'example', header: 'Example Mitigation', width: 30 },
       ],
-      data: [
-        { category: 'Spoofing', threat: 'API key theft', risk: output.error('High'), mitigation: 'Use secure key storage' },
-        { category: 'Tampering', threat: 'Data manipulation', risk: output.warning('Medium'), mitigation: 'Input validation' },
-        { category: 'Repudiation', threat: 'Action denial', risk: output.info('Low'), mitigation: 'Audit logging' },
-        { category: 'Info Disclosure', threat: 'Data leakage', risk: output.error('High'), mitigation: 'Encryption at rest' },
-        { category: 'DoS', threat: 'Resource exhaustion', risk: output.warning('Medium'), mitigation: 'Rate limiting' },
-        { category: 'Elevation', threat: 'Privilege escalation', risk: output.error('High'), mitigation: 'RBAC implementation' },
-      ],
+      data: strideRef,
     });
+
+    // Export if requested
+    if (exportFormat && findings.length > 0) {
+      const exportData = {
+        model: model.toUpperCase(),
+        timestamp: new Date().toISOString(),
+        scope,
+        filesScanned,
+        totalFindings: findings.length,
+        findings: findings.map(f => ({ ...f, severity: f.severity.replace(/\x1b\[[0-9;]*m/g, '') })),
+        strideReference: strideRef,
+      };
+      if (exportFormat === 'json') {
+        output.writeln();
+        output.writeln(JSON.stringify(exportData, null, 2));
+      }
+    }
+
+    output.writeln();
+    output.writeln(output.dim(`Files scanned: ${filesScanned} (max ${MAX_FILES})`));
 
     return { success: true };
   },
@@ -427,37 +619,157 @@ const secretsCommand: Command = {
     { command: 'claude-flow security secrets -a rotate', description: 'Rotate compromised secrets' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const path = ctx.flags.path as string || '.';
+    const scanPath = ctx.flags.path as string || '.';
+    const ignorePatterns = ctx.flags.ignore as string | undefined;
 
     output.writeln();
     output.writeln(output.bold('Secret Detection'));
     output.writeln(output.dim('─'.repeat(50)));
 
-    const spinner = output.createSpinner({ text: 'Scanning for secrets...', spinner: 'dots' });
+    const spinner = output.createSpinner({ text: `Scanning ${scanPath} for secrets...`, spinner: 'dots' });
     spinner.start();
-    await new Promise(r => setTimeout(r, 800));
-    spinner.succeed('Scan complete');
+
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const rootDir = path.resolve(scanPath);
+    const skipDirs = new Set(['node_modules', 'dist', '.git']);
+    const extensions = new Set(['.ts', '.js', '.json', '.yaml', '.yml', '.tsx', '.jsx', '.env', '.toml', '.cfg', '.conf', '.ini', '.properties', '.sh', '.bash', '.zsh']);
+    const ignoreList = ignorePatterns ? ignorePatterns.split(',').map(p => p.trim()) : [];
+
+    const secretPatterns: Array<{ pattern: RegExp; type: string; risk: string; action: string }> = [
+      { pattern: /AKIA[0-9A-Z]{16}/g, type: 'AWS Access Key', risk: 'Critical', action: 'Rotate immediately' },
+      { pattern: /gh[ps]_[A-Za-z0-9_]{36,}/g, type: 'GitHub Token', risk: 'Critical', action: 'Revoke and rotate' },
+      { pattern: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, type: 'JWT Token', risk: 'High', action: 'Remove from source' },
+      { pattern: /-----BEGIN (?:RSA|EC|DSA|OPENSSH) PRIVATE KEY-----/g, type: 'Private Key', risk: 'Critical', action: 'Remove and regenerate' },
+      { pattern: /(?:mongodb|postgres|mysql|redis):\/\/[^\s'"]+/g, type: 'Connection String', risk: 'High', action: 'Use env variable' },
+      { pattern: /['"](?:sk-|sk_live_|sk_test_)[a-zA-Z0-9]{20,}['"]/g, type: 'API Key (Stripe/OpenAI)', risk: 'Critical', action: 'Rotate immediately' },
+      { pattern: /['"]xox[baprs]-[a-zA-Z0-9-]+['"]/g, type: 'Slack Token', risk: 'High', action: 'Revoke and rotate' },
+      { pattern: /[a-zA-Z0-9_-]*(?:api[_-]?key|secret[_-]?key|auth[_-]?token|access[_-]?token|private[_-]?key)\s*[:=]\s*['"][^'"]{8,}['"]/gi, type: 'Generic Secret/API Key', risk: 'High', action: 'Use env variable' },
+      { pattern: /(?:password|passwd|pwd)\s*[:=]\s*['"][^'"]{8,}['"]/gi, type: 'Hardcoded Password', risk: 'High', action: 'Use secrets manager' },
+    ];
+
+    const findings: Array<{ type: string; location: string; risk: string; action: string; line: string }> = [];
+    let filesScanned = 0;
+    const MAX_FILES = 500;
+
+    const shouldIgnore = (filePath: string): boolean => {
+      return ignoreList.some(p => filePath.includes(p));
+    };
+
+    const scanDir = (dir: string) => {
+      if (filesScanned >= MAX_FILES) return;
+      let entries: import('fs').Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch { return; }
+
+      for (const entry of entries) {
+        if (filesScanned >= MAX_FILES) break;
+        if (skipDirs.has(entry.name)) continue;
+        // Allow dotfiles like .env but skip .git
+        const fullPath = path.join(dir, entry.name);
+
+        if (entry.isDirectory()) {
+          if (entry.name.startsWith('.') && entry.name !== '.env') continue;
+          scanDir(fullPath);
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name);
+          const isEnvFile = entry.name.startsWith('.env');
+          if (!extensions.has(ext) && !isEnvFile) continue;
+          if (entry.name.endsWith('.d.ts')) continue;
+
+          const relPath = path.relative(rootDir, fullPath);
+          if (shouldIgnore(relPath)) continue;
+
+          filesScanned++;
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.size > 1024 * 1024) continue; // skip files > 1MB
+
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            // Quick binary check — skip if null bytes present
+            if (content.includes('\0')) continue;
+
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              for (const sp of secretPatterns) {
+                sp.pattern.lastIndex = 0;
+                const match = sp.pattern.exec(line);
+                if (match) {
+                  // Mask the matched secret for safe display
+                  const matched = match[0];
+                  const masked = matched.length > 12
+                    ? matched.substring(0, 6) + '***' + matched.substring(matched.length - 3)
+                    : '***';
+
+                  findings.push({
+                    type: sp.type,
+                    location: `${relPath}:${i + 1}`,
+                    risk: sp.risk,
+                    action: sp.action,
+                    line: masked,
+                  });
+                  sp.pattern.lastIndex = 0;
+                }
+              }
+            }
+          } catch { /* file read error */ }
+        }
+      }
+    };
+
+    scanDir(rootDir);
+    spinner.succeed(`Scanned ${filesScanned} files`);
 
     output.writeln();
-    output.writeln(output.warning('⚠ No real secrets scan performed. Showing example findings.'));
-    output.writeln(output.dim('Run "claude-flow security scan --depth full" for real secret detection.'));
-    output.writeln();
-    output.printTable({
-      columns: [
-        { key: 'type', header: 'Secret Type (Example)', width: 25 },
-        { key: 'location', header: 'Location', width: 30 },
-        { key: 'risk', header: 'Risk', width: 12 },
-        { key: 'action', header: 'Recommended', width: 20 },
-      ],
-      data: [
-        { type: 'AWS Access Key', location: 'example/config.ts:15', risk: output.error('Critical'), action: 'Rotate immediately' },
-        { type: 'GitHub Token', location: 'example/.env:8', risk: output.warning('High'), action: 'Remove from repo' },
-        { type: 'JWT Secret', location: 'example/auth.ts:42', risk: output.warning('High'), action: 'Use env variable' },
-        { type: 'DB Password', location: 'example/compose.yml:23', risk: output.warning('Medium'), action: 'Use secrets mgmt' },
-      ],
-    });
+    if (findings.length > 0) {
+      const criticalCount = findings.filter(f => f.risk === 'Critical').length;
+      const highCount = findings.filter(f => f.risk === 'High').length;
+      const mediumCount = findings.filter(f => f.risk === 'Medium').length;
 
-    return { success: true };
+      output.printTable({
+        columns: [
+          { key: 'type', header: 'Secret Type', width: 25 },
+          { key: 'location', header: 'Location', width: 35 },
+          { key: 'risk', header: 'Risk', width: 12 },
+          { key: 'action', header: 'Recommended', width: 22 },
+        ],
+        data: findings.slice(0, 25).map(f => ({
+          type: f.type,
+          location: f.location,
+          risk: f.risk === 'Critical' ? output.error(f.risk) :
+                f.risk === 'High' ? output.warning(f.risk) :
+                output.warning(f.risk),
+          action: f.action,
+        })),
+      });
+
+      if (findings.length > 25) {
+        output.writeln(output.dim(`... and ${findings.length - 25} more secrets found`));
+      }
+
+      output.writeln();
+      output.printBox([
+        `Path: ${scanPath}`,
+        `Files scanned: ${filesScanned}`,
+        ``,
+        `Critical: ${criticalCount}  High: ${highCount}  Medium: ${mediumCount}`,
+        `Total secrets found: ${findings.length}`,
+      ].join('\n'), 'Secrets Summary');
+    } else {
+      output.writeln(output.success('No secrets detected.'));
+      output.writeln();
+      output.printBox([
+        `Path: ${scanPath}`,
+        `Files scanned: ${filesScanned}`,
+        ``,
+        `No hardcoded secrets, API keys, tokens, or credentials found.`,
+      ].join('\n'), 'Secrets Summary');
+    }
+
+    return { success: findings.length === 0 };
   },
 };
 

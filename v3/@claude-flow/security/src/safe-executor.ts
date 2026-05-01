@@ -501,6 +501,28 @@ export function createDevelopmentExecutor(): SafeExecutor {
 }
 
 /**
+ * Factory function to create a CLI executor.
+ * Allows commands commonly needed by CLI command handlers.
+ *
+ * @returns Configured SafeExecutor for CLI operations
+ */
+export function createCliExecutor(): SafeExecutor {
+  return new SafeExecutor({
+    allowedCommands: [
+      'git',
+      'npm',
+      'npx',
+      'node',
+      'docker',
+      'which',
+      'tsc',
+      'vitest',
+    ],
+    timeout: 60000,
+  });
+}
+
+/**
  * Factory function to create a read-only executor.
  * Only allows commands that read without modifying.
  *

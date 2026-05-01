@@ -6,6 +6,7 @@
 import type { Command, CommandContext, CommandResult } from '../../types.js';
 import { output } from '../../output.js';
 import { confirm, select } from '../../prompt.js';
+import { validateSchemaName } from './pg-utils.js';
 
 /**
  * Get PostgreSQL connection config from context
@@ -18,7 +19,7 @@ function getConnectionConfig(ctx: CommandContext) {
     user: (ctx.flags.user as string) || process.env.PGUSER || 'postgres',
     password: (ctx.flags.password as string) || process.env.PGPASSWORD || '',
     ssl: (ctx.flags.ssl as boolean) || process.env.PGSSLMODE === 'require',
-    schema: (ctx.flags.schema as string) || 'claude_flow',
+    schema: validateSchemaName((ctx.flags.schema as string) || 'claude_flow'),
   };
 }
 

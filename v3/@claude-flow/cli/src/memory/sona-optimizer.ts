@@ -70,7 +70,7 @@ export interface RoutingSuggestion {
   /** Whether Q-learning was used */
   usedQLearning: boolean;
   /** Source of recommendation */
-  source: 'sona-pattern' | 'q-learning' | 'keyword-match' | 'default';
+  source: 'sona-native' | 'sona-pattern' | 'q-learning' | 'sona-keyword' | 'default';
   /** Alternative agents with scores */
   alternatives: Array<{ agent: string; score: number }>;
   /** Matched keywords */
@@ -95,6 +95,8 @@ export interface SONAStats {
   qLearningEnabled: boolean;
   /** Time of last learning update */
   lastUpdate: number | null;
+  /** Contrastive trainer status (from @ruvector/ruvllm) */
+  _contrastiveTrainer?: { triplets: number; agents: number } | 'unavailable';
 }
 
 /**
@@ -127,6 +129,27 @@ const CONFIDENCE_INCREMENT = 0.1;
 const CONFIDENCE_DECREMENT = 0.15;
 const DECAY_RATE = 0.01; // Per day
 const MAX_PATTERNS = 1000;
+
+// ============================================================================
+// Contrastive Trainer (lazy-loaded from @ruvector/ruvllm)
+// ============================================================================
+
+let contrastiveTrainer: any = null;
+let trainerLoaded = false;
+
+async function loadContrastiveTrainer(): Promise<any> {
+  if (trainerLoaded) return contrastiveTrainer;
+  trainerLoaded = true;
+  try {
+    const { createRequire } = await import('module');
+    const requireCjs = createRequire(import.meta.url);
+    const ruvllm = requireCjs('@ruvector/ruvllm');
+    contrastiveTrainer = new ruvllm.ContrastiveTrainer({ batchSize: 32, margin: 0.5 });
+    return contrastiveTrainer;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Common agent types for routing
@@ -210,8 +233,40 @@ export class SONAOptimizer {
   private qLearningRouter: any = null;
   private qLearningEnabled = false;
 
+  /** Real @ruvector/sona engine — null if native not available, undefined if not yet tried */
+  private sonaEngine: any | null | undefined = undefined;
+
   constructor(options?: { persistencePath?: string }) {
     this.persistencePath = options?.persistencePath || DEFAULT_PERSISTENCE_PATH;
+  }
+
+  /**
+   * Attempt to load the native @ruvector/sona engine (once).
+   * Sets `sonaEngine` to the engine instance or null if unavailable.
+   */
+  private async loadSonaEngine(): Promise<void> {
+    if (this.sonaEngine !== undefined) return; // already attempted
+    try {
+      const sona: any = await import('@ruvector/sona');
+      const EngineCtor = sona.SonaEngine || sona.default?.SonaEngine;
+      if (EngineCtor) {
+        this.sonaEngine = new EngineCtor({ mode: 'real-time' });
+      } else {
+        this.sonaEngine = null;
+      }
+    } catch {
+      this.sonaEngine = null; // native not available
+    }
+  }
+
+  /**
+   * Infer an agent type string from a SONA pattern result object.
+   */
+  private inferAgentFromPattern(pattern: Record<string, unknown>): string {
+    if (typeof pattern.agent === 'string') return pattern.agent;
+    if (typeof pattern.route === 'string') return pattern.route;
+    if (typeof pattern.label === 'string') return pattern.label;
+    return 'coder';
   }
 
   /**
@@ -231,6 +286,9 @@ export class SONAOptimizer {
       // Q-learning not available, continue without it
       this.qLearningEnabled = false;
     }
+
+    // Eagerly load ContrastiveTrainer so stats reflect backend status
+    await loadContrastiveTrainer();
 
     return {
       success: true,
@@ -311,6 +369,16 @@ export class SONAOptimizer {
       this.qLearningRouter.update(task, agent, reward);
     }
 
+    // Feed outcome into contrastive trainer for agent embedding learning (fire-and-forget)
+    if (success) {
+      loadContrastiveTrainer().then(trainer => {
+        if (!trainer) return;
+        // Use keyword vector as a lightweight embedding proxy
+        const embedding = this.keywordsToEmbedding(keywords);
+        trainer.addAgentEmbedding(agent, embedding);
+      }).catch(() => { /* ignore trainer errors */ });
+    }
+
     // Persist to disk (debounced)
     this.saveToDisk();
 
@@ -323,12 +391,44 @@ export class SONAOptimizer {
   }
 
   /**
-   * Get routing suggestion based on learned patterns
+   * Get routing suggestion based on learned patterns.
+   *
+   * Priority order:
+   * 1. Real @ruvector/sona native engine (if available and has matches)
+   * 2. SONA learned pattern matching (keyword overlap + confidence)
+   * 3. Q-learning router (if enabled)
+   * 4. Keyword heuristic
+   * 5. Default fallback
    */
-  getRoutingSuggestion(task: string): RoutingSuggestion {
+  async getRoutingSuggestion(task: string): Promise<RoutingSuggestion> {
+    // Priority 1: Try real @ruvector/sona native engine
+    await this.loadSonaEngine();
+    if (this.sonaEngine) {
+      try {
+        const patterns = this.sonaEngine.findPatterns(task, 3);
+        if (patterns && patterns.length > 0) {
+          const best = patterns[0];
+          const agent = best.route || best.agent || this.inferAgentFromPattern(best);
+          return {
+            agent,
+            confidence: best.quality || 0.8,
+            usedQLearning: false,
+            source: 'sona-native',
+            alternatives: patterns.slice(1).map((p: any) => ({
+              agent: p.route || p.agent || this.inferAgentFromPattern(p),
+              score: p.quality || 0.5,
+            })),
+            matchedKeywords: best.keywords || [],
+          };
+        }
+      } catch {
+        // Native SONA failed on this query — fall through to keyword matching
+      }
+    }
+
     const keywords = this.extractKeywords(task);
 
-    // Try SONA pattern matching first
+    // Priority 2: Try SONA learned pattern matching
     const sonaResult = this.findBestPatternMatch(keywords);
     if (sonaResult && sonaResult.confidence >= 0.6) {
       return {
@@ -341,7 +441,7 @@ export class SONAOptimizer {
       };
     }
 
-    // Try Q-learning router if available
+    // Priority 3: Try Q-learning router if available
     if (this.qLearningRouter && this.qLearningEnabled) {
       try {
         const decision = this.qLearningRouter.route(task, false);
@@ -359,20 +459,20 @@ export class SONAOptimizer {
       }
     }
 
-    // Fallback to keyword-based heuristic
+    // Priority 4: Keyword-based heuristic
     const keywordMatch = this.matchKeywordsToAgent(keywords);
     if (keywordMatch) {
       return {
         agent: keywordMatch.agent,
         confidence: keywordMatch.confidence,
         usedQLearning: false,
-        source: 'keyword-match',
+        source: 'sona-keyword',
         alternatives: this.getAlternatives(keywords, keywordMatch.agent),
         matchedKeywords: keywordMatch.matchedKeywords,
       };
     }
 
-    // Default fallback
+    // Priority 5: Default fallback
     return {
       agent: 'coder',
       confidence: 0.3,
@@ -402,7 +502,25 @@ export class SONAOptimizer {
       avgConfidence: this.patterns.size > 0 ? totalConfidence / this.patterns.size : 0,
       qLearningEnabled: this.qLearningEnabled,
       lastUpdate: this.lastUpdate,
+      _contrastiveTrainer: contrastiveTrainer
+        ? { triplets: contrastiveTrainer.getTripletCount?.() ?? 0, agents: contrastiveTrainer.getAgentEmbeddings?.()?.size ?? 0 }
+        : 'unavailable',
     };
+  }
+
+  /**
+   * Trigger contrastive training on accumulated agent embeddings.
+   * Returns training metrics or { trained: false } if insufficient data.
+   *
+   * @param _epochs - reserved for future use (epochs are set at ContrastiveTrainer construction)
+   */
+  async trainAgentEmbeddings(_epochs: number = 5): Promise<{ trained: boolean; loss?: number; triplets?: number }> {
+    const trainer = await loadContrastiveTrainer();
+    if (!trainer || (trainer.getTripletCount?.() ?? 0) < 3) {
+      return { trained: false };
+    }
+    const result = trainer.train();
+    return { trained: true, loss: result.finalLoss, triplets: result.tripletCount };
   }
 
   /**
@@ -482,6 +600,32 @@ export class SONAOptimizer {
   // ============================================================================
   // Private Methods
   // ============================================================================
+
+  /**
+   * Convert extracted keywords into a lightweight 384-dim embedding proxy.
+   * Uses a deterministic hash-scatter so each keyword set maps to a
+   * consistent unit-length vector compatible with ContrastiveTrainer.
+   */
+  private keywordsToEmbedding(keywords: string[]): Float32Array {
+    const dim = 384;
+    const vec = new Float32Array(dim);
+    for (const kw of keywords) {
+      // Simple FNV-1a-like hash per character to scatter energy across dims
+      let h = 0x811c9dc5;
+      for (let i = 0; i < kw.length; i++) {
+        h ^= kw.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+      const idx = Math.abs(h) % dim;
+      vec[idx] += (h & 1) ? 1 : -1;
+    }
+    // L2-normalize
+    let norm = 0;
+    for (let i = 0; i < dim; i++) norm += vec[i] * vec[i];
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < dim; i++) vec[i] /= norm;
+    return vec;
+  }
 
   /**
    * Extract meaningful keywords from task description

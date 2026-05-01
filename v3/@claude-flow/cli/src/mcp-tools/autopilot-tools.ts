@@ -9,6 +9,7 @@
  */
 
 import type { MCPTool } from './types.js';
+import { validateText } from './validate-input.js';
 import {
   loadState, saveState, appendLog, loadLog, discoverTasks,
   isTerminal, tryLoadLearning,
@@ -224,6 +225,8 @@ const autopilotHistory: MCPTool = {
     required: ['query'],
   },
   handler: async (params: Record<string, unknown>) => {
+    const vQuery = validateText(params.query, 'query');
+    if (!vQuery.valid) return ok({ query: '', results: [], error: vQuery.error });
     const query = String(params.query || '');
     const limit = validateNumber(params.limit, 1, 100, 10);
     const learning = await tryLoadLearning();

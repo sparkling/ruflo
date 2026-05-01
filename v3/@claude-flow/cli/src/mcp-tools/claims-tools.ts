@@ -8,6 +8,7 @@
  */
 
 import type { MCPTool } from './types.js';
+import { validateIdentifier, validateText } from './validate-input.js';
 
 // Inline claim service since we can't import external modules
 interface Claimant {
@@ -174,6 +175,10 @@ export const claimsTools: MCPTool[] = [
       const claimantStr = input.claimant as string;
       const context = input.context as string | undefined;
 
+      { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
+      { const v = validateText(claimantStr, 'claimant'); if (!v.valid) return { success: false, error: v.error }; }
+      if (context) { const v = validateText(context, 'context'); if (!v.valid) return { success: false, error: v.error }; }
+
       const claimant = parseClaimant(claimantStr);
       if (!claimant) {
         return { success: false, error: 'Invalid claimant format. Use "human:userId:name" or "agent:agentId:agentType"' };
@@ -243,6 +248,10 @@ export const claimsTools: MCPTool[] = [
       const claimantStr = input.claimant as string;
       const reason = input.reason as string | undefined;
 
+      { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
+      { const v = validateText(claimantStr, 'claimant'); if (!v.valid) return { success: false, error: v.error }; }
+      if (reason) { const v = validateText(reason, 'reason'); if (!v.valid) return { success: false, error: v.error }; }
+
       const claimant = parseClaimant(claimantStr);
       if (!claimant) {
         return { success: false, error: 'Invalid claimant format' };
@@ -310,6 +319,11 @@ export const claimsTools: MCPTool[] = [
       const reason = input.reason as string | undefined;
       const progress = (input.progress as number) || 0;
 
+      { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
+      { const v = validateText(fromStr, 'from'); if (!v.valid) return { success: false, error: v.error }; }
+      { const v = validateText(toStr, 'to'); if (!v.valid) return { success: false, error: v.error }; }
+      if (reason) { const v = validateText(reason, 'reason'); if (!v.valid) return { success: false, error: v.error }; }
+
       const from = parseClaimant(fromStr);
       const to = parseClaimant(toStr);
 
@@ -367,6 +381,9 @@ export const claimsTools: MCPTool[] = [
     handler: async (input) => {
       const issueId = input.issueId as string;
       const claimantStr = input.claimant as string;
+
+      { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
+      { const v = validateText(claimantStr, 'claimant'); if (!v.valid) return { success: false, error: v.error }; }
 
       const claimant = parseClaimant(claimantStr);
       if (!claimant) {
@@ -442,6 +459,9 @@ export const claimsTools: MCPTool[] = [
       const note = input.note as string | undefined;
       const progress = input.progress as number | undefined;
 
+      { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
+      if (note) { const v = validateText(note, 'note'); if (!v.valid) return { success: false, error: v.error }; }
+
       const store = loadClaims();
       const claim = store.claims[issueId];
 
@@ -496,6 +516,9 @@ export const claimsTools: MCPTool[] = [
       const status = input.status as string | undefined;
       const claimantFilter = input.claimant as string | undefined;
       const agentType = input.agentType as string | undefined;
+
+      if (claimantFilter) { const v = validateText(claimantFilter, 'claimant'); if (!v.valid) return { success: false, error: v.error }; }
+      if (agentType) { const v = validateIdentifier(agentType, 'agentType'); if (!v.valid) return { success: false, error: v.error }; }
 
       const store = loadClaims();
       let claims = Object.values(store.claims);
@@ -557,6 +580,9 @@ export const claimsTools: MCPTool[] = [
       const preferredTypes = input.preferredTypes as string[] | undefined;
       const context = input.context as string | undefined;
 
+      { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
+      if (context) { const v = validateText(context, 'context'); if (!v.valid) return { success: false, error: v.error }; }
+
       const store = loadClaims();
       const claim = store.claims[issueId];
 
@@ -609,6 +635,9 @@ export const claimsTools: MCPTool[] = [
     handler: async (input) => {
       const issueId = input.issueId as string;
       const stealerStr = input.stealer as string;
+
+      { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
+      { const v = validateText(stealerStr, 'stealer'); if (!v.valid) return { success: false, error: v.error }; }
 
       const stealer = parseClaimant(stealerStr);
       if (!stealer) {
@@ -675,6 +704,8 @@ export const claimsTools: MCPTool[] = [
     handler: async (input) => {
       const agentType = input.agentType as string | undefined;
 
+      if (agentType) { const v = validateIdentifier(agentType, 'agentType'); if (!v.valid) return { success: false, error: v.error }; }
+
       const store = loadClaims();
       let stealableIssues = Object.entries(store.stealable).map(([issueId, info]) => ({
         issueId,
@@ -716,6 +747,9 @@ export const claimsTools: MCPTool[] = [
     handler: async (input) => {
       const agentId = input.agentId as string | undefined;
       const agentType = input.agentType as string | undefined;
+
+      if (agentId) { const v = validateIdentifier(agentId, 'agentId'); if (!v.valid) return { success: false, error: v.error }; }
+      if (agentType) { const v = validateIdentifier(agentType, 'agentType'); if (!v.valid) return { success: false, error: v.error }; }
 
       const store = loadClaims();
       const claims = Object.values(store.claims);

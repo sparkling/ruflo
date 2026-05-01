@@ -1,0 +1,23 @@
+{
+  "name": "ruflo-ruvector",
+  "description": "Self-learning vector database via npx ruvector — HNSW, FlashAttention-3, Graph RAG, hybrid search, DiskANN, 103 MCP tools, Brain AGI",
+  "version": "0.2.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruvector",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "ruvector",
+    "vector-database",
+    "hnsw",
+    "flash-attention",
+    "graph-rag",
+    "hybrid-search",
+    "diskann",
+    "mcp",
+    "brain-agi"
+  ]
+}

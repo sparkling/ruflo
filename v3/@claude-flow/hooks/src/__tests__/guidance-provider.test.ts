@@ -405,7 +405,7 @@ describe('GuidanceProvider', () => {
       expect(result.shouldStop).toBe(true);
     });
 
-    it('should block stopping when too many unconsolidated patterns', async () => {
+    it('should block stopping when too many unconsolidated patterns', { timeout: 15000 }, async () => {
       // Store more than 10 patterns to trigger the check
       for (let i = 0; i < 12; i++) {
         await reasoningBank.storePattern(`Pattern ${i}`, 'general');

@@ -246,7 +246,7 @@ const PII_PATTERNS = [
     description: 'Credit card number',
   },
   {
-    pattern: /\b(sk-[a-zA-Z0-9]{48}|sk-ant-[a-zA-Z0-9-]{90,})\b/g,
+    pattern: /\b(sk-[a-zA-Z0-9]{20,}|sk-ant-[a-zA-Z0-9-]{20,})\b/g,
     type: 'api_key',
     description: 'API key (OpenAI/Anthropic format)',
   },

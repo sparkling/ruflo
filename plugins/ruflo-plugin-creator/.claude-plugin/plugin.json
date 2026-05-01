@@ -1,0 +1,18 @@
+{
+  "name": "ruflo-plugin-creator",
+  "description": "Scaffold, validate, and publish new Claude Code plugins with proper structure and MCP tool wiring",
+  "version": "0.1.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "plugin",
+    "scaffold",
+    "generator",
+    "developer-tools"
+  ]
+}

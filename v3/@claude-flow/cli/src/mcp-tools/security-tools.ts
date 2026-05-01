@@ -11,6 +11,7 @@
  */
 
 import type { MCPTool, MCPToolResult } from './types.js';
+import { validateText, validateIdentifier } from './validate-input.js';
 import { autoInstallPackage } from './auto-install.js';
 import { createRequire } from 'module';
 
@@ -107,6 +108,7 @@ const aidefenceScanTool: MCPTool = {
     required: ['input'],
   },
   handler: async (args: Record<string, unknown>): Promise<MCPToolResult> => {
+    { const v = validateText(args.input, 'input'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
     const input = args.input as string;
     const quick = args.quick as boolean;
 
@@ -184,6 +186,7 @@ const aidefenceAnalyzeTool: MCPTool = {
     required: ['input'],
   },
   handler: async (args: Record<string, unknown>): Promise<MCPToolResult> => {
+    { const v = validateText(args.input, 'input'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
     const input = args.input as string;
     const searchSimilar = args.searchSimilar !== false;
     const k = (args.k as number) || 5;
@@ -319,6 +322,9 @@ const aidefenceLearnTool: MCPTool = {
     required: ['input', 'wasAccurate'],
   },
   handler: async (args: Record<string, unknown>): Promise<MCPToolResult> => {
+    { const v = validateText(args.input, 'input'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+    if (args.verdict) { const v = validateText(args.verdict, 'verdict'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+    if (args.threatType) { const v = validateIdentifier(args.threatType, 'threatType'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
     const input = args.input as string;
     const wasAccurate = args.wasAccurate as boolean;
     const verdict = args.verdict as string | undefined;
@@ -390,6 +396,7 @@ const aidefenceIsSafeTool: MCPTool = {
     required: ['input'],
   },
   handler: async (args: Record<string, unknown>): Promise<MCPToolResult> => {
+    { const v = validateText(args.input, 'input'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
     const input = args.input as string;
 
     try {
@@ -431,6 +438,7 @@ const aidefenceHasPIITool: MCPTool = {
     required: ['input'],
   },
   handler: async (args: Record<string, unknown>): Promise<MCPToolResult> => {
+    { const v = validateText(args.input, 'input'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
     const input = args.input as string;
 
     try {

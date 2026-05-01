@@ -4,6 +4,7 @@
  */
 
 import type { MCPTool } from './types.js';
+import { validateGitRef, validatePath } from './validate-input.js';
 import {
   analyzeDiff,
   assessFileRisk,
@@ -50,6 +51,7 @@ export const analyzeDiffTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
     const includeFileRisks = params.includeFileRisks !== false;
     const includeReviewers = params.includeReviewers !== false;
@@ -110,6 +112,7 @@ export const diffRiskTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
 
     try {
@@ -152,6 +155,7 @@ export const diffClassifyTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
 
     try {
@@ -198,6 +202,7 @@ export const diffReviewersTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
     const limit = (params.limit as number) || 5;
 
@@ -256,6 +261,8 @@ export const fileRiskTool: MCPTool = {
     required: ['path'],
   },
   handler: async (params: Record<string, unknown>) => {
+    const vPath = validatePath(params.path, 'path');
+    if (!vPath.valid) return { file: params.path, risk: 'unknown', score: 0, reasons: [vPath.error] };
     const file: DiffFile = {
       path: params.path as string,
       status: (params.status as DiffFile['status']) || 'modified',
@@ -296,6 +303,7 @@ export const diffStatsTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
 
     try {

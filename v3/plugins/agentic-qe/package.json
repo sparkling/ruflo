@@ -1,7 +1,7 @@
 {
   "name": "@claude-flow/plugin-agentic-qe",
-  "version": "3.0.0-alpha.4-patch.439",
-  "description": "Quality Engineering plugin for Claude Flow V3 with 51 specialized agents across 12 DDD bounded contexts",
+  "version": "3.5.59",
+  "description": "Quality Engineering plugin for Ruflo V3 with 51 specialized agents across 12 DDD bounded contexts",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -43,21 +43,21 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ruvnet/claude-flow.git",
+    "url": "https://github.com/ruvnet/ruflo.git",
     "directory": "v3/plugins/agentic-qe"
   },
-  "homepage": "https://github.com/ruvnet/claude-flow/tree/main/v3/plugins/agentic-qe",
+  "homepage": "https://github.com/ruvnet/ruflo/tree/main/v3/plugins/agentic-qe",
   "bugs": {
-    "url": "https://github.com/ruvnet/claude-flow/issues"
+    "url": "https://github.com/ruvnet/ruflo/issues"
   },
   "dependencies": {
     "zod": "^3.23.0"
   },
   "peerDependencies": {
-    "@claude-flow/plugins": "3.0.0-alpha.7-patch.438",
-    "@claude-flow/memory": "3.0.0-alpha.13-patch.312",
-    "@claude-flow/security": "3.0.0-alpha.6-patch.420",
-    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.438"
+    "@claude-flow/plugins": ">=3.0.0-0",
+    "@claude-flow/memory": ">=3.0.0-0",
+    "@claude-flow/security": ">=3.0.0-0",
+    "@claude-flow/embeddings": ">=3.0.0-0"
   },
   "peerDependenciesMeta": {
     "@claude-flow/plugins": {

@@ -1,0 +1,19 @@
+{
+  "name": "ruflo-jujutsu",
+  "description": "Advanced git workflows with diff analysis, risk scoring, and reviewer recommendations",
+  "version": "0.1.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "jujutsu",
+    "git",
+    "diff",
+    "review",
+    "risk-analysis"
+  ]
+}

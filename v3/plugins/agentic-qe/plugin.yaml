@@ -2,7 +2,7 @@
 # Quality Engineering plugin for Claude Flow V3
 
 name: agentic-qe
-version: 3.2.3
+version: 3.5.59
 description: |
   Comprehensive Quality Engineering plugin with 51 specialized agents
   across 12 DDD bounded contexts. Features AI-powered test generation,
@@ -11,8 +11,8 @@ description: |
 
 author: rUv
 license: MIT
-homepage: https://github.com/ruvnet/agentic-qe
-repository: https://github.com/ruvnet/agentic-qe
+homepage: https://github.com/ruvnet/ruflo/tree/main/v3/plugins/agentic-qe
+repository: https://github.com/ruvnet/ruflo
 
 # Plugin metadata
 metadata:
@@ -27,7 +27,7 @@ metadata:
     - chaos-engineering
     - accessibility
   stability: stable
-  minClaudeFlowVersion: "3.0.0-alpha.50"
+  minClaudeFlowVersion: "3.5.0"
 
 # Dependencies
 dependencies:
@@ -501,8 +501,8 @@ integration:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 implementation:
-  status: planning  # planning | in-progress | complete
-  lastUpdated: "2026-01-23"
+  status: in-progress  # planning | in-progress | complete
+  lastUpdated: "2026-04-06"
   reviewedBy: "code-reviewer"
   reviewDate: "2026-01-23"
 

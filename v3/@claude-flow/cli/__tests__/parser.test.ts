@@ -481,6 +481,54 @@ describe('CommandParser', () => {
   });
 
   // -------------------------------------------------------------------------
+  // #1596: lazy command routing — `daemon start` must not be mis-routed to
+  // the core `start` command when `daemon` is a lazy-loaded command.
+  // -------------------------------------------------------------------------
+  describe('lazy command routing (#1596)', () => {
+    it('should not mis-route "daemon start" to the sync "start" command', () => {
+      const p = new CommandParser({ allowUnknownFlags: true });
+      // Sync command "start" is registered with full definition
+      p.registerCommand({ name: 'start', description: 'Top-level start', handler: async () => ({ success: true }) } as Command);
+      // "daemon" is lazy — only its name is registered
+      p.registerLazyCommandName('daemon');
+
+      const result = p.parse(['daemon', 'start', '--foreground']);
+      expect(result.command[0]).toBe('daemon');
+      expect(result.positional[0]).toBe('start');
+      expect(result.flags.foreground).toBe(true);
+    });
+
+    it('should still recognize bare "start" as the sync start command', () => {
+      const p = new CommandParser({ allowUnknownFlags: true });
+      p.registerCommand({ name: 'start', description: 'Top-level start', handler: async () => ({ success: true }) } as Command);
+      p.registerLazyCommandName('daemon');
+
+      const result = p.parse(['start']);
+      expect(result.command[0]).toBe('start');
+      expect(result.positional).toHaveLength(0);
+    });
+
+    it('should route lazy command even when a global flag comes first', () => {
+      const p = new CommandParser({ allowUnknownFlags: true });
+      p.registerCommand({ name: 'start', description: '', handler: async () => ({}) } as Command);
+      p.registerLazyCommandName('daemon');
+
+      const result = p.parse(['-v', 'daemon', 'start', '--foreground']);
+      expect(result.command[0]).toBe('daemon');
+      expect(result.positional[0]).toBe('start');
+      expect(result.flags.verbose).toBe(true);
+    });
+
+    it('should resolve bare lazy command (e.g. "doctor")', () => {
+      const p = new CommandParser({ allowUnknownFlags: true });
+      p.registerLazyCommandName('doctor');
+
+      const result = p.parse(['doctor']);
+      expect(result.command[0]).toBe('doctor');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Edge: short flag with value
   // -------------------------------------------------------------------------
   describe('short flag with value', () => {

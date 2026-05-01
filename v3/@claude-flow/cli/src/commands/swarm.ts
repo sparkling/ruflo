@@ -161,16 +161,80 @@ function getSwarmStatus(swarmId?: string) {
       pending: pendingTasks
     },
     metrics: {
-      tokensUsed: 0,
-      avgResponseTime: '--',
-      successRate: totalTasks > 0 ? `${Math.round((completedTasks / totalTasks) * 100)}%` : '--',
-      elapsedTime: '--'
+      tokensUsed: (swarmState as Record<string, unknown>)?.tokensUsed as number | null ?? null,
+      avgResponseTime: (() => {
+        // Calculate average response time from task files with startedAt/completedAt
+        const taskTimesMs: number[] = [];
+        if (fs.existsSync(tasksDir)) {
+          try {
+            const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.json'));
+            for (const file of taskFiles) {
+              try {
+                const task = JSON.parse(fs.readFileSync(path.join(tasksDir, file), 'utf-8'));
+                if (task.startedAt && task.completedAt) {
+                  const elapsed = new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime();
+                  if (elapsed > 0) taskTimesMs.push(elapsed);
+                }
+              } catch { /* skip malformed task files */ }
+            }
+          } catch { /* skip if dir unreadable */ }
+        }
+        if (taskTimesMs.length === 0) return null;
+        const avgMs = Math.round(taskTimesMs.reduce((a, b) => a + b, 0) / taskTimesMs.length);
+        return avgMs < 1000 ? `${avgMs}ms` : `${(avgMs / 1000).toFixed(1)}s`;
+      })(),
+      successRate: totalTasks > 0 ? `${Math.round((completedTasks / totalTasks) * 100)}%` : null,
+      elapsedTime: (() => {
+        // Calculate from swarm startedAt in state.json
+        const startedAt = (swarmState as Record<string, unknown>)?.startedAt as string | undefined
+          || (swarmState as Record<string, unknown>)?.initializedAt as string | undefined;
+        if (!startedAt) return null;
+        const elapsedMs = Date.now() - new Date(startedAt).getTime();
+        if (elapsedMs < 0) return null;
+        const secs = Math.floor(elapsedMs / 1000);
+        if (secs < 60) return `${secs}s`;
+        const mins = Math.floor(secs / 60);
+        const remSecs = secs % 60;
+        if (mins < 60) return `${mins}m ${remSecs}s`;
+        const hrs = Math.floor(mins / 60);
+        const remMins = mins % 60;
+        return `${hrs}h ${remMins}m`;
+      })()
     },
-    coordination: {
-      consensusRounds: 0,
-      messagesSent: 0,
-      conflictsResolved: 0
-    },
+    coordination: (() => {
+      // Read real coordination counts from .swarm/coordination/ directory
+      const coordDir = path.join(swarmDir, 'coordination');
+      let consensusRounds = 0;
+      let messagesSent = 0;
+      let conflictsResolved = 0;
+      if (fs.existsSync(coordDir)) {
+        try {
+          const coordFiles = fs.readdirSync(coordDir).filter(f => f.endsWith('.json'));
+          for (const file of coordFiles) {
+            try {
+              const entry = JSON.parse(fs.readFileSync(path.join(coordDir, file), 'utf-8'));
+              if (entry.type === 'consensus') consensusRounds++;
+              else if (entry.type === 'message') messagesSent++;
+              else if (entry.type === 'conflict' || entry.type === 'conflict-resolution') conflictsResolved++;
+              // Also aggregate pre-counted fields if present
+              if (typeof entry.consensusRounds === 'number') consensusRounds += entry.consensusRounds;
+              if (typeof entry.messagesSent === 'number') messagesSent += entry.messagesSent;
+              if (typeof entry.conflictsResolved === 'number') conflictsResolved += entry.conflictsResolved;
+            } catch { /* skip malformed coordination files */ }
+          }
+        } catch { /* skip if dir unreadable */ }
+      }
+      // Also check state.json for aggregate coordination stats
+      if (swarmState) {
+        const coord = (swarmState as Record<string, unknown>).coordination as Record<string, number> | undefined;
+        if (coord) {
+          if (typeof coord.consensusRounds === 'number') consensusRounds += coord.consensusRounds;
+          if (typeof coord.messagesSent === 'number') messagesSent += coord.messagesSent;
+          if (typeof coord.conflictsResolved === 'number') conflictsResolved += coord.conflictsResolved;
+        }
+      }
+      return { consensusRounds, messagesSent, conflictsResolved };
+    })(),
     hasActiveSwarm: !!swarmState || totalAgents > 0
   };
 }
@@ -505,8 +569,10 @@ const startCommand: Command = {
 
     output.writeln();
     output.printSuccess(`Swarm ${swarmId} initialized with ${totalAgents} agent slots`);
-    output.writeln(output.dim('  Note: Agents are registered but actual task execution requires'));
-    output.writeln(output.dim('  Claude Code Task tool or hive-mind spawn --claude to drive work.'));
+    output.writeln(output.dim('  This CLI coordinates agent state. Execution happens via:'));
+    output.writeln(output.dim('  - Claude Code Agent tool (interactive)'));
+    output.writeln(output.dim('  - claude -p (headless background)'));
+    output.writeln(output.dim('  - hive-mind spawn --claude (autonomous)'));
     output.writeln(output.dim(`  Monitor: claude-flow swarm status ${swarmId}`));
 
     return { success: true, data: executionState };
@@ -585,10 +651,10 @@ const statusCommand: Command = {
     // Metrics
     output.writeln(output.bold('Performance Metrics'));
     output.printList([
-      `Tokens Used: ${status.metrics.tokensUsed.toLocaleString()}`,
-      `Avg Response Time: ${status.metrics.avgResponseTime}`,
-      `Success Rate: ${status.metrics.successRate}`,
-      `Elapsed Time: ${status.metrics.elapsedTime}`
+      `Tokens Used: ${status.metrics.tokensUsed != null ? status.metrics.tokensUsed.toLocaleString() : output.dim('unknown')}`,
+      `Avg Response Time: ${status.metrics.avgResponseTime ?? output.dim('no data')}`,
+      `Success Rate: ${status.metrics.successRate ?? output.dim('no data')}`,
+      `Elapsed Time: ${status.metrics.elapsedTime ?? output.dim('no data')}`
     ]);
 
     output.writeln();

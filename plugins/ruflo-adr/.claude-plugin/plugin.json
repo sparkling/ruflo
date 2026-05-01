@@ -1,0 +1,9 @@
+{
+  "name": "ruflo-adr",
+  "description": "ADR lifecycle management — create, index, supersede, and link Architecture Decision Records to code",
+  "version": "0.1.0",
+  "author": { "name": "ruvnet", "url": "https://github.com/ruvnet" },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": ["ruflo", "adr", "architecture", "decisions", "documentation"]
+}

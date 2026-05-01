@@ -26,6 +26,21 @@ const CONFIG = {
 
 const CWD = process.cwd();
 
+// Read package version once at startup
+let pkgVersion = '3.5';
+try {
+  const pkgPaths = [
+    path.join(CWD, 'node_modules', '@claude-flow', 'cli', 'package.json'),
+    path.join(CWD, 'v3', '@claude-flow', 'cli', 'package.json'),
+  ];
+  for (const p of pkgPaths) {
+    if (fs.existsSync(p)) {
+      const pkg = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      if (pkg.version) { pkgVersion = pkg.version; break; }
+    }
+  }
+} catch { /* use default */ }
+
 // ANSI colors
 const c = {
   reset: '\x1b[0m',
@@ -177,28 +192,43 @@ function getModelName() {
 
 // Get learning stats from memory database (pure stat calls)
 function getLearningStats() {
-  const memoryPaths = [
-    path.join(CWD, '.swarm', 'memory.db'),
-    path.join(CWD, '.claude-flow', 'memory.db'),
-    path.join(CWD, '.claude', 'memory.db'),
-    path.join(CWD, 'data', 'memory.db'),
-    path.join(CWD, '.agentdb', 'memory.db'),
-  ];
+  let patterns = 0;
+  let sessions = 0;
 
-  for (const dbPath of memoryPaths) {
-    const stat = safeStat(dbPath);
-    if (stat) {
-      const sizeKB = stat.size / 1024;
-      const patterns = Math.floor(sizeKB / 2);
-      return {
-        patterns,
-        sessions: Math.max(1, Math.floor(patterns / 10)),
-      };
+  // 1. Count real patterns from pattern store
+  const patternStorePath = path.join(CWD, '.claude-flow', 'data', 'patterns.json');
+  try {
+    if (fs.existsSync(patternStorePath)) {
+      const data = JSON.parse(fs.readFileSync(patternStorePath, 'utf-8'));
+      if (Array.isArray(data)) patterns = data.length;
+      else if (data && data.patterns) patterns = Array.isArray(data.patterns) ? data.patterns.length : Object.keys(data.patterns).length;
     }
+  } catch { /* ignore */ }
+
+  // 2. Count from auto-memory-store (real entries)
+  if (patterns === 0) {
+    const autoStorePath = path.join(CWD, '.claude-flow', 'data', 'auto-memory-store.json');
+    try {
+      if (fs.existsSync(autoStorePath)) {
+        const data = JSON.parse(fs.readFileSync(autoStorePath, 'utf-8'));
+        if (Array.isArray(data)) patterns = data.length;
+        else if (data && data.entries) patterns = data.entries.length;
+      }
+    } catch { /* ignore */ }
   }
 
-  // Check session files count
-  let sessions = 0;
+  // 3. Count from hooks memory store
+  if (patterns === 0) {
+    const hooksStorePath = path.join(CWD, '.claude-flow', 'memory', 'store.json');
+    try {
+      if (fs.existsSync(hooksStorePath)) {
+        const data = JSON.parse(fs.readFileSync(hooksStorePath, 'utf-8'));
+        if (data && data.entries) patterns = Object.keys(data.entries).length;
+      }
+    } catch { /* ignore */ }
+  }
+
+  // 4. Count real session files
   try {
     const sessDir = path.join(CWD, '.claude', 'sessions');
     if (fs.existsSync(sessDir)) {
@@ -206,7 +236,16 @@ function getLearningStats() {
     }
   } catch { /* ignore */ }
 
-  return { patterns: 0, sessions };
+  if (sessions === 0) {
+    try {
+      const cfSessDir = path.join(CWD, '.claude-flow', 'sessions');
+      if (fs.existsSync(cfSessDir)) {
+        sessions = fs.readdirSync(cfSessDir).filter(f => f.endsWith('.json')).length;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return { patterns, sessions };
 }
 
 // V3 progress from metrics files (pure file reads)
@@ -219,11 +258,7 @@ function getV3Progress() {
   let domainsCompleted = Math.min(5, Math.floor(dddProgress / 20));
 
   if (dddProgress === 0 && learning.patterns > 0) {
-    if (learning.patterns >= 500) domainsCompleted = 5;
-    else if (learning.patterns >= 200) domainsCompleted = 4;
-    else if (learning.patterns >= 100) domainsCompleted = 3;
-    else if (learning.patterns >= 50) domainsCompleted = 2;
-    else if (learning.patterns >= 10) domainsCompleted = 1;
+    domainsCompleted = Math.min(5, Math.floor(learning.patterns / 100));
     dddProgress = Math.floor((domainsCompleted / totalDomains) * 100);
   }
 
@@ -323,18 +358,7 @@ function getSystemMetrics() {
     intelligencePct = Math.max(fromPatterns, fromVectors);
   }
 
-  // Maturity fallback (pure fs checks, no git exec)
-  if (intelligencePct === 0) {
-    let score = 0;
-    if (fs.existsSync(path.join(CWD, '.claude'))) score += 15;
-    const srcDirs = ['src', 'lib', 'app', 'packages', 'v3'];
-    for (const d of srcDirs) { if (fs.existsSync(path.join(CWD, d))) { score += 15; break; } }
-    const testDirs = ['tests', 'test', '__tests__', 'spec'];
-    for (const d of testDirs) { if (fs.existsSync(path.join(CWD, d))) { score += 10; break; } }
-    const cfgFiles = ['package.json', 'tsconfig.json', 'pyproject.toml', 'Cargo.toml', 'go.mod'];
-    for (const f of cfgFiles) { if (fs.existsSync(path.join(CWD, f))) { score += 5; break; } }
-    intelligencePct = Math.min(100, score);
-  }
+  // No fake fallback — 0% means no real learning data exists
 
   if (learningData?.sessions?.total !== undefined) {
     contextPct = Math.min(100, learningData.sessions.total * 5);
@@ -424,7 +448,22 @@ function getAgentDBStats() {
       const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
       if (Array.isArray(store)) vectorCount += store.length;
       else if (store?.entries) vectorCount += store.entries.length;
-    } catch { /* fall back to size estimate */ }
+    } catch { /* ignore */ }
+  }
+
+  // 1b. Count entries from hooks memory store
+  const hooksStorePath = path.join(CWD, '.claude-flow', 'memory', 'store.json');
+  const hooksStoreStat = safeStat(hooksStorePath);
+  if (hooksStoreStat) {
+    dbSizeKB += hooksStoreStat.size / 1024;
+    try {
+      const store = JSON.parse(fs.readFileSync(hooksStorePath, 'utf-8'));
+      if (store?.entries) {
+        const entryCount = Object.keys(store.entries).length;
+        vectorCount = Math.max(vectorCount, entryCount);
+        if (entryCount > 0) namespaces++;
+      }
+    } catch { /* ignore */ }
   }
 
   // 2. Count entries from ranked-context.json
@@ -577,7 +616,7 @@ function generateStatusline() {
   const parts = [];
 
   // Branding
-  parts.push(`${c.bold}${c.brightPurple}\u258A RuFlo V3${c.reset}`);
+  parts.push(`${c.bold}${c.brightPurple}\u258A RuFlo v${pkgVersion || '3.5'}${c.reset}`);
 
   // User + swarm indicator
   const dot = swarm.coordinationActive ? `${c.brightGreen}\u25CF${c.reset}` : `${c.brightCyan}\u25CF${c.reset}`;
@@ -644,7 +683,7 @@ function generateDashboard() {
   const lines = [];
 
   // Header
-  let header = `${c.bold}${c.brightPurple}\u258A RuFlo V3 ${c.reset}`;
+  let header = `${c.bold}${c.brightPurple}\u258A RuFlo v${pkgVersion} ${c.reset}`;
   header += `${swarm.coordinationActive ? c.brightCyan : c.dim}\u25CF ${c.brightCyan}${git.name}${c.reset}`;
   if (git.gitBranch) {
     header += `  ${c.dim}\u2502${c.reset}  ${c.brightBlue}\u23C7 ${git.gitBranch}${c.reset}`;

@@ -4,15 +4,15 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { AgentBrowserAdapter } from '../src/infrastructure/agent-browser-adapter.js';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
-// Mock execSync
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  execFileSync: vi.fn(),
   spawn: vi.fn(),
 }));
 
-const mockExecSync = vi.mocked(execSync);
+const mockExecSync = vi.mocked(execFileSync);
 
 describe('AgentBrowserAdapter', () => {
   let adapter: AgentBrowserAdapter;
@@ -57,7 +57,7 @@ describe('AgentBrowserAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockExecSync).toHaveBeenCalled();
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('open');
       expect(callArgs).toContain('https://example.com');
     });
@@ -106,7 +106,7 @@ describe('AgentBrowserAdapter', () => {
       const result = await adapter.click({ target: '@e1' });
 
       expect(result.success).toBe(true);
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('click');
       expect(callArgs).toContain('@e1');
     });
@@ -120,7 +120,7 @@ describe('AgentBrowserAdapter', () => {
       const result = await adapter.fill({ target: '@e1', value: 'test' });
 
       expect(result.success).toBe(true);
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('fill');
     });
 
@@ -130,7 +130,7 @@ describe('AgentBrowserAdapter', () => {
       const result = await adapter.type({ target: '@e1', text: 'hello' });
 
       expect(result.success).toBe(true);
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('type');
     });
 
@@ -140,7 +140,7 @@ describe('AgentBrowserAdapter', () => {
       const result = await adapter.press('Enter');
 
       expect(result.success).toBe(true);
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('press');
       expect(callArgs).toContain('Enter');
     });
@@ -250,7 +250,7 @@ describe('AgentBrowserAdapter', () => {
       const result = await adapter.snapshot({ interactive: true });
 
       expect(result.success).toBe(true);
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('-i');
     });
 
@@ -259,7 +259,7 @@ describe('AgentBrowserAdapter', () => {
 
       const result = await adapter.snapshot({ compact: true });
 
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('-c');
     });
   });
@@ -281,7 +281,7 @@ describe('AgentBrowserAdapter', () => {
 
       const result = await adapter.screenshot({ fullPage: true });
 
-      const callArgs = mockExecSync.mock.calls[0][0] as string;
+      const callArgs = (mockExecSync.mock.calls[0][1] as string[]).join(' ');
       expect(callArgs).toContain('--full');
     });
   });

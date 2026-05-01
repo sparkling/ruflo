@@ -105,14 +105,21 @@ describe('resolveAutoMemoryDir', () => {
 
 describe('findGitRoot', () => {
   it('should find git root for a directory inside a repo', () => {
-    // We know /workspaces/claude-flow is a git repo
-    const root = findGitRoot('/workspaces/claude-flow/v3/@claude-flow/memory');
-    expect(root).toBe('/workspaces/claude-flow');
+    // Use the actual repo path (works regardless of workspace name)
+    const thisDir = path.resolve(__dirname);
+    const root = findGitRoot(thisDir);
+    expect(root).not.toBeNull();
+    // The root should contain a .git directory
+    expect(fsSync.existsSync(path.join(root!, '.git'))).toBe(true);
   });
 
   it('should return the directory itself if it is the git root', () => {
-    const root = findGitRoot('/workspaces/claude-flow');
-    expect(root).toBe('/workspaces/claude-flow');
+    // Find the actual git root first, then verify idempotence
+    const thisDir = path.resolve(__dirname);
+    const gitRoot = findGitRoot(thisDir);
+    expect(gitRoot).not.toBeNull();
+    const root = findGitRoot(gitRoot!);
+    expect(root).toBe(gitRoot);
   });
 
   it('should return null for root filesystem', () => {
@@ -656,6 +663,36 @@ Already in DB
       expect(indexContent).toContain('Item 49');
       expect(indexContent).not.toContain('Item 0');
     });
+
+    // #1556: curateIndex() used to overwrite a hand-curated MEMORY.md with a
+    // single-line stub when none of the files in memoryDir matched the
+    // hardcoded DEFAULT_TOPIC_MAPPING filenames (as happens when Claude Code's
+    // native `<type>_<topic>.md` convention is used). The fix is to skip the
+    // write entirely when there's nothing to curate.
+    it('should not overwrite hand-curated MEMORY.md when no topic files match (#1556)', async () => {
+      const indexPath = path.join(testDir, 'MEMORY.md');
+      const handCurated = '# My Hand-Curated Memory\n\n## Section 1\nImportant notes\n\n## Section 2\nMore notes\n';
+      fsSync.writeFileSync(indexPath, handCurated, 'utf-8');
+
+      // Write files using Claude Code's native <type>_<topic>.md convention —
+      // none of these filenames appear in DEFAULT_TOPIC_MAPPING.
+      fsSync.writeFileSync(path.join(testDir, 'user_role.md'), '# user role\ndata scientist', 'utf-8');
+      fsSync.writeFileSync(path.join(testDir, 'session_foo.md'), '# session\nfoo bar', 'utf-8');
+      fsSync.writeFileSync(path.join(testDir, 'feedback_tone.md'), '# feedback\nbe concise', 'utf-8');
+
+      let skipEvent: any;
+      bridge.on('index:skipped', (e) => { skipEvent = e; });
+
+      await bridge.curateIndex();
+
+      // MEMORY.md must be byte-identical to what we wrote
+      const after = fsSync.readFileSync(indexPath, 'utf-8');
+      expect(after).toBe(handCurated);
+
+      // And the bridge should emit the skip event with a reason
+      expect(skipEvent).toBeDefined();
+      expect(skipEvent.reason).toBe('no-matching-topic-files');
+    });
   });
 
   describe('getStatus', () => {
@@ -904,17 +941,24 @@ Already in DB
   });
 
   describe('curateIndex - edge cases', () => {
-    it('should handle empty topic files', async () => {
+    it('should skip index write when topic files have no extractable summaries', async () => {
+      // #1556: curateIndex must be non-destructive when there's nothing to
+      // curate. Previously it would overwrite MEMORY.md with a title-only
+      // stub; now it emits 'index:skipped' and leaves any existing file alone.
       fsSync.writeFileSync(
         path.join(testDir, 'debugging.md'),
         '# Debugging\n\n',
         'utf-8',
       );
 
+      let skipEvent: any;
+      bridge.on('index:skipped', (e) => { skipEvent = e; });
+
       await bridge.curateIndex();
-      const content = fsSync.readFileSync(bridge.getIndexPath(), 'utf-8');
-      // Should not include empty section
-      expect(content).not.toContain('Debugging');
+
+      expect(skipEvent).toBeDefined();
+      expect(skipEvent.reason).toBe('no-matching-topic-files');
+      expect(fsSync.existsSync(bridge.getIndexPath())).toBe(false);
     });
 
     it('should emit index:curated event', async () => {

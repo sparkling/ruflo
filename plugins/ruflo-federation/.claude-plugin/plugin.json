@@ -1,0 +1,20 @@
+{
+  "name": "ruflo-federation",
+  "description": "Cross-installation agent federation with zero-trust security, peer discovery, and consensus-based task routing",
+  "version": "0.1.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "federation",
+    "zero-trust",
+    "peer-discovery",
+    "consensus",
+    "multi-agent",
+    "distributed"
+  ]
+}

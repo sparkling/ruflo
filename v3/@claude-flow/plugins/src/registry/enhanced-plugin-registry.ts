@@ -414,6 +414,15 @@ export class EnhancedPluginRegistry extends EventEmitter {
         break;
     }
 
+    // Check for initialization errors (including conflicts)
+    const initErrors = Array.from(this.plugins.values())
+      .filter(e => e.error)
+      .map(e => `${e.plugin.metadata.name}: ${e.error}`);
+
+    if (initErrors.length > 0) {
+      throw new Error(`Plugin initialization failed:\n${initErrors.join('\n')}`);
+    }
+
     this.initialized = true;
     this.logger.info(`Registry initialized with ${this.plugins.size} plugins (${strategy})`);
   }
@@ -571,8 +580,8 @@ export class EnhancedPluginRegistry extends EventEmitter {
     if (state && options?.migrateState) {
       state = options.migrateState(state, resolved.metadata.version);
     }
-    if (state && (resolved as any).setState) {
-      await (resolved as any).setState(state);
+    if (state && (resolved as any).restoreState) {
+      await (resolved as any).restoreState(state);
     }
 
     // Update entry
@@ -726,17 +735,54 @@ export class EnhancedPluginRegistry extends EventEmitter {
         this.removeFromCache(category, identifier);
         return item;
 
-      case 'namespace':
+      case 'namespace': {
         const template = resolution?.namespaceTemplate ?? '{plugin}:{name}';
+
+        // Namespace the existing entry too (on first conflict)
+        const existingNs = template
+          .replace('{plugin}', existing)
+          .replace('{name}', identifier);
+        if (!owners.has(existingNs)) {
+          this.renameInCache(category, identifier, existingNs);
+          owners.delete(identifier);
+          owners.set(existingNs, existing);
+        }
+
         const newName = template
           .replace('{plugin}', pluginName)
           .replace('{name}', identifier);
         owners.set(newName, pluginName);
         return { ...item, name: newName, type: newName } as T;
+      }
 
       case 'error':
       default:
         throw new Error(`${category}: ${identifier} conflict between ${existing} and ${pluginName}`);
+    }
+  }
+
+  private renameInCache(category: string, oldName: string, newName: string): void {
+    switch (category) {
+      case 'agentTypes':
+        this.agentTypesCache = this.agentTypesCache.map(t =>
+          t.type === oldName ? { ...t, type: newName } : t
+        );
+        break;
+      case 'taskTypes':
+        this.taskTypesCache = this.taskTypesCache.map(t =>
+          t.type === oldName ? { ...t, type: newName } : t
+        );
+        break;
+      case 'mcpTools':
+        this.mcpToolsCache = this.mcpToolsCache.map(t =>
+          t.name === oldName ? { ...t, name: newName } : t
+        );
+        break;
+      case 'cliCommands':
+        this.cliCommandsCache = this.cliCommandsCache.map(c =>
+          c.name === oldName ? { ...c, name: newName } : c
+        );
+        break;
     }
   }
 

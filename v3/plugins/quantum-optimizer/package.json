@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-quantum-optimizer",
-  "version": "3.0.0-alpha.1-patch.425",
+  "version": "3.0.0-alpha.1",
   "description": "Quantum-inspired optimization plugin providing simulated annealing, QAOA, Grover search, dependency resolution, and schedule optimization for combinatorial problems.",
   "type": "module",
   "main": "./dist/index.js",
@@ -76,14 +76,6 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "peerDependencies": {
-    "@claude-flow/ruvector-upstream": "3.0.0-alpha.1-patch.420"
-  },
-  "peerDependenciesMeta": {
-    "@claude-flow/ruvector-upstream": {
-      "optional": true
-    }
-  },
   "dependencies": {
     "zod": "^3.22.0"
   },
@@ -93,7 +85,7 @@
     "vitest": "^1.0.0"
   },
   "optionalDependencies": {
-    "@ruvector/exotic-wasm": "0.1.29-patch.2",
+    "@ruvector/exotic-wasm": "^0.1.0",
     "@ruvector/dag-wasm": "^0.1.0",
     "@ruvector/sparse-inference-wasm": "^0.1.0"
   }

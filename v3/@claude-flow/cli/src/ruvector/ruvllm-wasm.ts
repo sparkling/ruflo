@@ -24,6 +24,9 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
+// WASM binary requires at least 768-dim input for MicroLoRA adapt()
+const MICROLORA_WASM_MIN_DIM = 768;
+
 // ── Types ────────────────────────────────────────────────────
 
 export interface HnswRouterConfig {
@@ -178,7 +181,12 @@ export async function createHnswRouter(config: HnswRouterConfig): Promise<{
       return ok;
     },
     route(query: Float32Array, k = 3): HnswRouteResult[] {
-      return router.route(query, k);
+      const raw = router.route(query, k);
+      return Array.from(raw).map((r: any) => ({
+        name: r.name ?? r.pattern_name ?? '',
+        score: r.score ?? r.distance ?? 0,
+        metadata: r.metadata ? (typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata) : undefined,
+      }));
     },
     clear(): void {
       router.clear();
@@ -273,14 +281,11 @@ export async function createMicroLora(config: MicroLoraConfig): Promise<{
       return lora.apply(input);
     },
     adapt(quality: number, learningRate = 0.01, success = true): void {
-      // v2.0.2: adapt(input, feedback) — two args
       const feedback = new mod.AdaptFeedbackWasm();
       feedback.quality = quality;
       feedback.learningRate = learningRate;
-      // Note: feedback.success not on prototype in v2.0.2, set via property
       try { (feedback as any).success = success; } catch { /* v2.0.2 quirk */ }
-      // Create a dummy input vector matching the configured inputDim
-      const input = new Float32Array(config.inputDim);
+      const input = new Float32Array(Math.max(config.inputDim, MICROLORA_WASM_MIN_DIM));
       lora.adapt(input, feedback);
     },
     applyUpdates(gradients: Float32Array): void {

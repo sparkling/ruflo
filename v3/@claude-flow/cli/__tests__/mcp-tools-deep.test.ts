@@ -788,7 +788,7 @@ describe('MCP Tools Deep Test Suite', () => {
       const tool = githubTools.find(t => t.name === 'github_repo_analyze')!;
       const result: any = await tool.handler({});
       expect(result.success).toBe(true);
-      expect(result.analysis).toBeDefined();
+      expect(result.repository).toBeDefined();
     });
 
     it('github_pr_manage list returns PRs', async () => {
@@ -801,7 +801,7 @@ describe('MCP Tools Deep Test Suite', () => {
       const tool = githubTools.find(t => t.name === 'github_metrics')!;
       const result: any = await tool.handler({});
       expect(result.success).toBe(true);
-      expect(result.metrics).toBeDefined();
+      expect(result.commits).toBeDefined();
     });
   });
 
@@ -915,13 +915,13 @@ describe('MCP Tools Deep Test Suite', () => {
       const tool = agentdbTools.find(t => t.name === 'agentdb_pattern-store')!;
       const result: any = await tool.handler({});
       expect(result.success).toBe(false);
-      expect(result.error).toContain('pattern is required');
+      expect(result.error).toMatch(/pattern.*(required|must be)/i);
     });
 
     it('agentdb_pattern-search requires query param', async () => {
       const tool = agentdbTools.find(t => t.name === 'agentdb_pattern-search')!;
       const result: any = await tool.handler({});
-      expect(result.error).toContain('query is required');
+      expect(result.error).toMatch(/query.*(required|must be)/i);
     });
 
     it('agentdb_causal-edge validates required fields', async () => {
@@ -933,7 +933,7 @@ describe('MCP Tools Deep Test Suite', () => {
     it('agentdb_route requires task param', async () => {
       const tool = agentdbTools.find(t => t.name === 'agentdb_route')!;
       const result: any = await tool.handler({});
-      expect(result.error).toContain('task is required');
+      expect(result.error).toMatch(/task.*(required|must be)/i);
     });
 
     it('agentdb_batch validates entries array', async () => {

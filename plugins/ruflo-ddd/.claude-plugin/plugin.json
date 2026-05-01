@@ -1,0 +1,19 @@
+{
+  "name": "ruflo-ddd",
+  "description": "Domain-Driven Design scaffolding — bounded contexts, aggregate roots, domain events, and anti-corruption layers",
+  "version": "0.1.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "ddd",
+    "domain-driven-design",
+    "bounded-context",
+    "aggregate",
+    "events"
+  ]
+}

@@ -6,6 +6,17 @@
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 
+/** Task intent categories matching @claude-flow/guidance TaskIntent */
+type TaskIntent = 'bug-fix' | 'feature' | 'refactor' | 'security' | 'performance' | 'testing' | 'docs' | 'deployment' | 'architecture' | 'debug' | 'general';
+
+/** Gate evaluation result matching @claude-flow/guidance GateResult */
+interface GateResult {
+  decision: string;
+  gateName: string;
+  reason: string;
+  remediation?: string;
+}
+
 // compile subcommand
 const compileCommand: Command = {
   name: 'compile',
@@ -145,7 +156,7 @@ const retrieveCommand: Command = {
       const result = await retriever.retrieve({
         taskDescription: task,
         maxShards,
-        intent: intentOverride as any,
+        intent: intentOverride as TaskIntent | undefined,
       });
 
       if (jsonOutput) {
@@ -212,7 +223,7 @@ const gatesCommand: Command = {
       const { EnforcementGates } = await import('@claude-flow/guidance/gates');
       const gates = new EnforcementGates();
 
-      const results: Array<{ type: string; result: any }> = [];
+      const results: Array<{ type: string; result: GateResult[] | GateResult | null }> = [];
 
       if (command) {
         const gateResults = gates.evaluateCommand(command);

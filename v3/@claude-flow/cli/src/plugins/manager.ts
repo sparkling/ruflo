@@ -328,6 +328,9 @@ export class PluginManager {
       return { success: false, error: `Plugin ${packageName} is not installed` };
     }
 
+    // HIGH-04: Warn about unsandboxed plugin execution
+    console.warn(`[SECURITY] Plugin loaded without sandboxing: ${packageName}. Plugins run with full process access.`);
+
     plugin.enabled = true;
     await this.saveManifest();
 

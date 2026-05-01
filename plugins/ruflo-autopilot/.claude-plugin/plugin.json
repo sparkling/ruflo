@@ -1,0 +1,18 @@
+{
+  "name": "ruflo-autopilot",
+  "description": "Autonomous /loop-driven task completion with learning, prediction, and progress tracking",
+  "version": "0.1.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "autopilot",
+    "loop",
+    "autonomous",
+    "learning"
+  ]
+}

@@ -27,6 +27,7 @@ export interface SecurityConfig {
     blockedPatterns: string[];
     maxPathLength: number;
     allowHidden: boolean;
+    allowedDirectories: string[];
   };
   validation: {
     maxInputSize: number;
@@ -95,6 +96,7 @@ const strictConfig: SecurityConfig = {
     ],
     maxPathLength: 4096,
     allowHidden: false,
+    allowedDirectories: ['./v3/', './src/', './tests/', './docs/'],
   },
   validation: {
     maxInputSize: 10000,
@@ -126,6 +128,7 @@ const developmentConfig: SecurityConfig = {
     blockedPatterns: ['../', '..\\', '/etc/passwd', '/etc/shadow'],
     maxPathLength: 8192,
     allowHidden: true,
+    allowedDirectories: ['./v3/', './src/', './tests/', './docs/', './node_modules/'],
   },
   validation: {
     maxInputSize: 100000,
@@ -157,6 +160,7 @@ const testingConfig: SecurityConfig = {
     blockedPatterns: ['../', '/etc/'],
     maxPathLength: 1024,
     allowHidden: true,
+    allowedDirectories: ['./src/', './tests/'],
   },
   validation: {
     maxInputSize: 1000,
@@ -188,6 +192,7 @@ const cicdConfig: SecurityConfig = {
     blockedPatterns: ['../', '..\\', '/etc/', '/tmp/', '~/', '\0'],
     maxPathLength: 4096,
     allowHidden: false,
+    allowedDirectories: ['./v3/', './src/', './tests/'],
   },
   validation: {
     maxInputSize: 50000,
@@ -219,6 +224,7 @@ const legacyConfig: SecurityConfig = {
     blockedPatterns: [],
     maxPathLength: 255, // Old Windows limit
     allowHidden: true,
+    allowedDirectories: [],
   },
   validation: {
     maxInputSize: 1024 * 1024,

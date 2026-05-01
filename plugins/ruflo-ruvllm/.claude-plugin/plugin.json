@@ -1,0 +1,19 @@
+{
+  "name": "ruflo-ruvllm",
+  "description": "RuVLLM local inference with chat formatting, model configuration, and MicroLoRA fine-tuning",
+  "version": "0.1.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "ruvllm",
+    "llm",
+    "inference",
+    "microlora",
+    "fine-tuning"
+  ]
+}

@@ -192,6 +192,24 @@ ${skillsTable}
 | \`tester\` | Test creation | Quality assurance |
 | \`reviewer\` | Code review | Security and quality |
 
+## Execution Model
+
+- **claude-flow** = LEDGER (coordinates: memory, routing, swarm state)
+- **Codex** = EXECUTOR (writes code, runs tests, creates files)
+
+**Critical rule:** DON'T STOP after calling claude-flow commands. Coordination commands return instantly — continue immediately with the next implementation step.
+
+## MCP Integration
+
+Use MCP tools for coordination, then keep coding:
+
+| Tool | Purpose | Example |
+|------|---------|---------|
+| \`swarm_init\` | Start coordination | \`swarm_init({topology: "hierarchical"})\` |
+| \`memory_store\` | Save patterns | \`memory_store({key: "auth", value: "JWT"})\` |
+| \`memory_search\` | Find patterns | \`memory_search({query: "auth patterns"})\` |
+| \`task_orchestrate\` | Assign work | \`task_orchestrate({task: "implement"})\` |
+
 ## Code Standards
 
 ### File Organization
@@ -248,6 +266,15 @@ npx @claude-flow/cli memory store \\
 npx @claude-flow/cli memory search \\
   --query "search terms" \\
   --namespace patterns
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+npx @claude-flow/cli memory search --query "relevant patterns"
+npx @claude-flow/cli hooks route --task "current task description"
+npx @claude-flow/cli swarm init --topology hierarchical
+npx @claude-flow/cli hooks pre-task --description "task summary"
 \`\`\`
 
 ## Links

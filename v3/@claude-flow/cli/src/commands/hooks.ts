@@ -4051,13 +4051,13 @@ const statuslineCommand: Command = {
 
       try {
         const psCmd = isWindows
-          ? 'tasklist /FI "IMAGENAME eq node.exe" 2>NUL | findstr /I /C:"node" >NUL && echo 1 || echo 0'
+          ? 'tasklist /FI "IMAGENAME eq node.exe" /NH 2>NUL | find /c /v "" 2>NUL || echo 0'
           : 'ps aux 2>/dev/null | grep -c agentic-flow || echo "0"';
-        const ps = execSync(psCmd, { encoding: 'utf-8' });
+        const ps = execSync(psCmd, { encoding: 'utf-8', timeout: 3000 });
         activeAgents = Math.max(0, parseInt(ps.trim()) - 1);
         coordinationActive = activeAgents > 0;
       } catch {
-        // Ignore
+        // ps/tasklist unavailable or timed out — report zero
       }
 
       return { activeAgents, maxAgents, coordinationActive };
@@ -4470,7 +4470,7 @@ const postBashCommand: Command = {
 // Token Optimizer command - integrates agentic-flow Agent Booster
 const tokenOptimizeCommand: Command = {
   name: 'token-optimize',
-  description: 'Token optimization via agentic-flow Agent Booster (30-50% savings)',
+  description: 'Token optimization via agentic-flow Agent Booster integration',
   options: [
     { name: 'query', short: 'q', type: 'string', description: 'Query for compact context retrieval' },
     { name: 'agents', short: 'A', type: 'number', description: 'Agent count for optimal config', default: '6' },
@@ -4500,8 +4500,7 @@ const tokenOptimizeCommand: Command = {
       memoriesRetrieved: 0,
     };
     let agenticFlowAvailable = false;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let reasoningBank: any = null;
+    let reasoningBank: { retrieveMemories: (query: string, opts: { k: number }) => Promise<unknown[]>; formatMemoriesForPrompt?: (memories: unknown[]) => string } | null = null;
 
     try {
       // Check if agentic-flow v3 is available
@@ -4559,10 +4558,8 @@ const tokenOptimizeCommand: Command = {
         output.printInfo('ReasoningBank not available - query skipped');
       }
 
-      // Simulate some token savings for demo
-      stats.totalTokensSaved += 200;
-      stats.cacheHits = 2;
-      stats.cacheMisses = 1;
+      // Note: stats reflect only actual measured values from this session.
+      // No simulated/fabricated data is added.
 
       // Show stats
       if (showStats || showReport) {
@@ -5211,7 +5208,7 @@ export const hooksCommand: Command = {
       `${output.highlight('coverage-route')}  - Route tasks based on coverage gaps (ruvector)`,
       `${output.highlight('coverage-suggest')}- Suggest coverage improvements`,
       `${output.highlight('coverage-gaps')}   - List all coverage gaps with agents`,
-      `${output.highlight('token-optimize')} - Token optimization (30-50% savings)`,
+      `${output.highlight('token-optimize')} - Token optimization (agentic-flow integration)`,
       `${output.highlight('model-route')}    - Route to optimal model (haiku/sonnet/opus)`,
       `${output.highlight('model-outcome')}  - Record model routing outcome`,
       `${output.highlight('model-stats')}    - View model routing statistics`,

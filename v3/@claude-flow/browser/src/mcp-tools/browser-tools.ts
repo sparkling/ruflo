@@ -621,22 +621,68 @@ const waitTools: MCPTool[] = [
 // JavaScript Execution
 // ============================================================================
 
+// Defense-in-depth: pattern blocklist for eval scripts (CRIT-03)
+// NOTE: This is a best-effort defense layer, not a sandbox. Determined attackers can bypass
+// pattern matching via encoding/obfuscation. The primary defense is the browser sandbox itself.
+// This blocklist catches accidental misuse and unsophisticated injection attempts.
+const DANGEROUS_EVAL_PATTERNS = [
+  /\bprocess\b/,           // Node.js process access
+  /\brequire\b/,           // CommonJS require
+  /\b__dirname\b/,         // Node path leaking
+  /\b__filename\b/,        // Node path leaking
+  /\bchild_process\b/,     // Command execution
+  /\bglobal\b\s*\./,       // Global object mutation
+  /\bglobalThis\b/,        // globalThis access (bypasses global. check)
+  /\bFunction\s*\(/,       // Function constructor (eval-equivalent)
+  /\.constructor\b/,       // Constructor access (e.g., "".constructor)
+  /\bReflect\b/,           // Reflect API (can invoke constructors)
+  /\bimport\s*\(/,         // Dynamic import
+  /\beval\s*\(/,           // Direct eval calls
+];
+
+const DEFAULT_MAX_EVAL_SCRIPT_LENGTH = 20_000;
+const MAX_EVAL_SCRIPT_LENGTH = parseInt(process.env.CLAUDE_FLOW_MAX_EVAL_SCRIPT_LENGTH || '', 10) || DEFAULT_MAX_EVAL_SCRIPT_LENGTH;
+
 const evalTools: MCPTool[] = [
   {
     name: 'browser/eval',
-    description: 'Execute JavaScript in the page context',
+    description: 'Execute JavaScript in the page context (validated, length-limited)',
     category: 'browser-eval',
     inputSchema: {
       type: 'object',
       properties: {
         session: { type: 'string', description: 'Session ID' },
-        script: { type: 'string', description: 'JavaScript code to execute' },
+        script: {
+          type: 'string',
+          description: `JavaScript code to execute (max ${MAX_EVAL_SCRIPT_LENGTH} chars)`,
+          maxLength: MAX_EVAL_SCRIPT_LENGTH,
+        },
       },
       required: ['script'],
     },
     handler: async (input) => {
+      const script = input.script as string;
+
+      // Validate script length
+      if (!script || script.length === 0) {
+        throw new Error('browser/eval: script must not be empty');
+      }
+      if (script.length > MAX_EVAL_SCRIPT_LENGTH) {
+        throw new Error(`browser/eval: script exceeds maximum length of ${MAX_EVAL_SCRIPT_LENGTH} characters`);
+      }
+
+      // Check for dangerous patterns
+      for (const pattern of DANGEROUS_EVAL_PATTERNS) {
+        if (pattern.test(script)) {
+          throw new Error(`browser/eval: script contains disallowed pattern: ${pattern.source}`);
+        }
+      }
+
+      // Audit log
+      console.info(`[browser/eval] Executing script (${script.length} chars) in session ${input.session || 'default'}`);
+
       const adapter = getAdapter(input.session as string);
-      return adapter.eval({ script: input.script as string });
+      return adapter.eval({ script });
     },
   },
 ];

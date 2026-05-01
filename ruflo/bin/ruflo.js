@@ -43,8 +43,15 @@ if (isMCPMode) {
     name: 'ruflo',
     description: 'Ruflo - AI Agent Orchestration Platform',
   });
-  cli.run().catch((error) => {
-    console.error('Fatal error:', error.message);
-    process.exit(1);
-  });
+  cli.run()
+    .then(() => {
+      // #1641/#1653: Exit cleanly after one-shot commands.
+      // HNSW VectorDb, sql.js WASM, and ONNX worker threads keep the
+      // event loop alive after the command handler returns.
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error('Fatal error:', error.message);
+      process.exit(1);
+    });
 }

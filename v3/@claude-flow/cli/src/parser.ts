@@ -25,6 +25,7 @@ export interface ParserOptions {
 export class CommandParser {
   private options: ParserOptions;
   private commands: Map<string, Command> = new Map();
+  private lazyCommandNames: Set<string> = new Set();
   private globalOptions: CommandOption[] = [];
 
   constructor(options: ParserOptions = {}) {
@@ -120,6 +121,20 @@ export class CommandParser {
     }
   }
 
+  /**
+   * Register a lazy-loaded command's name so Pass 1/Pass 2 can recognize it as
+   * a command position even though its full definition hasn't been loaded yet.
+   * Fix for #1596: without this, lazy commands like `daemon start` were
+   * mis-routed because Pass 1 walked past `daemon` and greedy-matched `start`.
+   */
+  registerLazyCommandName(name: string): void {
+    this.lazyCommandNames.add(name);
+  }
+
+  private isKnownCommandName(name: string): boolean {
+    return this.commands.has(name) || this.lazyCommandNames.has(name);
+  }
+
   getCommand(name: string): Command | undefined {
     return this.commands.get(name);
   }
@@ -142,14 +157,32 @@ export class CommandParser {
       raw: [...args]
     };
 
-    // Pass 1: Identify command and subcommand (skip flags)
+    // Pass 1: Identify command and subcommand (skip flags).
+    // Fix for #1596: the first non-flag positional is ALWAYS the command slot.
+    // If it's a known command (sync or lazy) we resolve it; otherwise we stop
+    // searching — we MUST NOT walk past it and greedy-match a later arg as the
+    // command, because that's what caused `daemon start` to resolve as `start`
+    // with `daemon` left as a positional.
     let resolvedCmd: Command | undefined;
     let resolvedSub: Command | undefined;
+    let sawFirstPositional = false;
     for (const arg of args) {
       if (arg.startsWith('-')) continue;
-      if (!resolvedCmd && this.commands.has(arg)) {
-        resolvedCmd = this.commands.get(arg);
-      } else if (resolvedCmd && !resolvedSub && resolvedCmd.subcommands) {
+      if (!sawFirstPositional) {
+        sawFirstPositional = true;
+        if (this.commands.has(arg)) {
+          resolvedCmd = this.commands.get(arg);
+          continue;
+        }
+        // Lazy command: we know its name but not its subcommands. Stop the
+        // walk here — we'll rely on Pass 2 to push it onto commandPath.
+        if (this.lazyCommandNames.has(arg)) {
+          break;
+        }
+        // Unknown first positional — not a command. Stop walking.
+        break;
+      }
+      if (resolvedCmd && !resolvedSub && resolvedCmd.subcommands) {
         resolvedSub = resolvedCmd.subcommands.find(sc => sc.name === arg || sc.aliases?.includes(arg));
       }
     }
@@ -182,12 +215,16 @@ export class CommandParser {
         continue;
       }
 
-      // Handle positional arguments
-      if (result.command.length === 0 && this.commands.has(arg)) {
+      // Handle positional arguments.
+      // Fix for #1596: treat lazy command names as commands here too so that
+      // downstream dispatch sees `commandPath = ['daemon', 'start']` instead of
+      // `commandPath = ['start'], positional = ['daemon']`.
+      if (result.command.length === 0 && this.isKnownCommandName(arg)) {
         // This is a command
         result.command.push(arg);
 
-        // Check for subcommand (level 1)
+        // Check for subcommand (level 1) — only possible for sync commands
+        // whose subcommand definitions are already loaded.
         const cmd = this.commands.get(arg);
         if (cmd?.subcommands && i + 1 < args.length) {
           const nextArg = args[i + 1];

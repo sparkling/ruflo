@@ -909,6 +909,18 @@ class Quantizer {
   private config: QuantizationConfig;
   private dimensions: number;
 
+  /** Trained PQ codebooks: codebooks[subquantizer][centroid][dimension] */
+  private codebooks: number[][][] | null = null;
+
+  /** Accumulated vectors for lazy codebook training */
+  private trainingVectors: number[][] = [];
+
+  /** Minimum number of vectors needed before training codebooks */
+  private readonly pqTrainingThreshold: number = 256;
+
+  /** Whether PQ codebooks have been trained */
+  private pqTrained: boolean = false;
+
   constructor(config: QuantizationConfig, dimensions: number) {
     this.config = config;
     this.dimensions = dimensions;
@@ -990,26 +1002,210 @@ class Quantizer {
   }
 
   private productQuantize(vector: Float32Array): Float32Array {
-    // Simplified product quantization
-    // In production, would use trained codebooks
-    const subquantizers = this.config.subquantizers || 8;
-    const subvectorSize = Math.ceil(vector.length / subquantizers);
+    const numSubquantizers = this.config.subquantizers || 8;
+    const numCentroids = this.config.codebookSize || 256;
 
-    const quantized = new Float32Array(subquantizers);
+    // Accumulate training vectors until we have enough to train codebooks
+    if (!this.pqTrained) {
+      this.trainingVectors.push(Array.from(vector));
 
-    for (let i = 0; i < subquantizers; i++) {
-      let sum = 0;
-      const start = i * subvectorSize;
-      const end = Math.min(start + subvectorSize, vector.length);
-
-      for (let j = start; j < end; j++) {
-        sum += vector[j];
+      if (this.trainingVectors.length >= this.pqTrainingThreshold) {
+        this.codebooks = this.trainProductQuantizer(
+          this.trainingVectors,
+          numSubquantizers,
+          numCentroids,
+        );
+        this.pqTrained = true;
+        this.trainingVectors = []; // Free training data
+      } else {
+        // Not enough data to train yet; fall back to sub-vector means
+        const subvectorSize = Math.ceil(vector.length / numSubquantizers);
+        const quantized = new Float32Array(numSubquantizers);
+        for (let i = 0; i < numSubquantizers; i++) {
+          let sum = 0;
+          const start = i * subvectorSize;
+          const end = Math.min(start + subvectorSize, vector.length);
+          for (let j = start; j < end; j++) {
+            sum += vector[j];
+          }
+          quantized[i] = sum / (end - start);
+        }
+        return quantized;
       }
-
-      quantized[i] = sum / (end - start);
     }
 
-    return quantized;
+    // Encode: assign each sub-vector to its nearest centroid
+    const subvectorSize = Math.ceil(vector.length / numSubquantizers);
+    const encoded = new Float32Array(numSubquantizers);
+
+    for (let m = 0; m < numSubquantizers; m++) {
+      const start = m * subvectorSize;
+      const end = Math.min(start + subvectorSize, vector.length);
+      const codebook = this.codebooks![m];
+
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let c = 0; c < codebook.length; c++) {
+        let dist = 0;
+        for (let d = 0; d < end - start; d++) {
+          const diff = vector[start + d] - codebook[c][d];
+          dist += diff * diff;
+        }
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = c;
+        }
+      }
+      // Store centroid index (fits in Uint8 when numCentroids <= 256)
+      encoded[m] = bestIdx;
+    }
+
+    return encoded;
+  }
+
+  /**
+   * Train Product Quantizer codebooks using k-means on sub-vector slices.
+   *
+   * Splits each training vector into `numSubquantizers` sub-vectors, then
+   * learns `numCentroids` centroids per sub-quantizer position.
+   *
+   * @returns codebooks[m][c] = centroid vector for sub-quantizer m, centroid c
+   */
+  trainProductQuantizer(
+    trainingVectors: number[][],
+    numSubquantizers: number,
+    numCentroids: number,
+  ): number[][][] {
+    const dim = trainingVectors[0].length;
+    const subvectorSize = Math.ceil(dim / numSubquantizers);
+    const codebooks: number[][][] = [];
+
+    for (let m = 0; m < numSubquantizers; m++) {
+      const start = m * subvectorSize;
+      const end = Math.min(start + subvectorSize, dim);
+      const subLen = end - start;
+
+      // Extract sub-vectors for this position from all training vectors
+      const subVectors: number[][] = trainingVectors.map((vec) => {
+        const sub = new Array(subLen);
+        for (let d = 0; d < subLen; d++) {
+          sub[d] = vec[start + d];
+        }
+        return sub;
+      });
+
+      // Clamp centroids to available data points
+      const effectiveK = Math.min(numCentroids, subVectors.length);
+      const centroids = this.kMeans(subVectors, effectiveK, 20);
+      codebooks.push(centroids);
+    }
+
+    return codebooks;
+  }
+
+  /**
+   * Compute approximate squared Euclidean distance between two PQ-encoded
+   * vectors using their centroid indices and the shared codebooks.
+   *
+   * @param encoded1 - Centroid indices for vector 1 (length = numSubquantizers)
+   * @param encoded2 - Centroid indices for vector 2 (length = numSubquantizers)
+   * @param codebooks - Trained codebooks from trainProductQuantizer()
+   * @returns Approximate squared Euclidean distance
+   */
+  productQuantizeDistance(
+    encoded1: Uint8Array,
+    encoded2: Uint8Array,
+    codebooks?: number[][][],
+  ): number {
+    const cb = codebooks || this.codebooks;
+    if (!cb) {
+      throw new Error('Product quantizer codebooks not trained yet');
+    }
+
+    let totalDist = 0;
+    for (let m = 0; m < encoded1.length; m++) {
+      const c1 = cb[m][encoded1[m]];
+      const c2 = cb[m][encoded2[m]];
+      for (let d = 0; d < c1.length; d++) {
+        const diff = c1[d] - c2[d];
+        totalDist += diff * diff;
+      }
+    }
+    return totalDist;
+  }
+
+  /**
+   * K-means clustering.
+   *
+   * Partitions `data` into `k` clusters and returns the centroid vectors.
+   * Initialisation picks the first k data points (deterministic, avoids
+   * the overhead of k-means++ for the small sub-vector slices used in PQ).
+   */
+  private kMeans(data: number[][], k: number, maxIter: number = 20): number[][] {
+    const dim = data[0].length;
+
+    // Initialise centroids from the first k data points
+    const centroids: number[][] = data.slice(0, k).map((v) => [...v]);
+
+    for (let iter = 0; iter < maxIter; iter++) {
+      // --- Assign each point to nearest centroid ---
+      const assignments = new Int32Array(data.length);
+      for (let i = 0; i < data.length; i++) {
+        let bestDist = Infinity;
+        let bestIdx = 0;
+        for (let j = 0; j < k; j++) {
+          let dist = 0;
+          for (let d = 0; d < dim; d++) {
+            const diff = data[i][d] - centroids[j][d];
+            dist += diff * diff;
+          }
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = j;
+          }
+        }
+        assignments[i] = bestIdx;
+      }
+
+      // --- Update centroids ---
+      const sums = Array.from({ length: k }, () => new Float64Array(dim));
+      const counts = new Int32Array(k);
+      for (let i = 0; i < data.length; i++) {
+        const c = assignments[i];
+        counts[c]++;
+        for (let d = 0; d < dim; d++) {
+          sums[c][d] += data[i][d];
+        }
+      }
+
+      let converged = true;
+      for (let j = 0; j < k; j++) {
+        if (counts[j] === 0) continue; // Dead centroid, leave unchanged
+        for (let d = 0; d < dim; d++) {
+          const newVal = sums[j][d] / counts[j];
+          if (Math.abs(newVal - centroids[j][d]) > 1e-6) converged = false;
+          centroids[j][d] = newVal;
+        }
+      }
+
+      if (converged) break;
+    }
+
+    return centroids;
+  }
+
+  /**
+   * Whether the product quantizer codebooks are trained and ready for encoding.
+   */
+  get isPQTrained(): boolean {
+    return this.pqTrained;
+  }
+
+  /**
+   * Access trained codebooks (null if not yet trained).
+   */
+  getCodebooks(): number[][][] | null {
+    return this.codebooks;
   }
 }
 

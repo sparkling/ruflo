@@ -11,6 +11,7 @@
  */
 
 import type { MCPTool } from './types.js';
+import { validateIdentifier, validateText } from './validate-input.js';
 import type { ChatMessage } from '../ruvector/ruvllm-wasm.js';
 import {
   persistHnswCreate,
@@ -110,8 +111,33 @@ export const ruvllmWasmTools: MCPTool[] = [
     handler: async () => {
       try {
         const mod = await loadRuvllmWasm();
-        const status = await mod.getRuvllmStatus();
-        return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+        const wasmStatus = await mod.getRuvllmStatus();
+
+        // Also include native ruvllm CJS backend status (ADR-086)
+        let nativeBackend: Record<string, unknown> = { available: false };
+        try {
+          const { getIntelligenceStats } = await import('../memory/intelligence.js');
+          const iStats = getIntelligenceStats();
+          const { getSONAStats } = await import('../memory/sona-optimizer.js');
+          const sStats = await getSONAStats();
+          nativeBackend = {
+            available: iStats._ruvllmBackend === 'active',
+            coordinator: iStats._ruvllmBackend || 'unavailable',
+            trajectories: iStats._ruvllmTrajectories || 0,
+            contrastiveTrainer: sStats._contrastiveTrainer !== 'unavailable' ? 'active' : 'unavailable',
+            trainingBackend: iStats._trainingBackend || 'unknown',
+          };
+        } catch { /* not initialized yet */ }
+
+        // Graph database status (ADR-087)
+        let graphStatus: Record<string, unknown> = { available: false };
+        try {
+          const { getGraphStats } = await import('../ruvector/graph-backend.js');
+          const gs = await getGraphStats();
+          graphStatus = { available: gs.backend === 'graph-node', ...gs };
+        } catch { /* not loaded */ }
+
+        return { content: [{ type: 'text', text: JSON.stringify({ wasm: wasmStatus, native: nativeBackend, graph: graphStatus }, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
@@ -159,6 +185,8 @@ export const ruvllmWasmTools: MCPTool[] = [
       required: ['routerId', 'name', 'embedding'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.routerId, 'routerId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      { const v = validateIdentifier(args.name, 'name'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const routerId = args.routerId as string;
         const router = await getOrRebuildHnsw(routerId);
@@ -196,6 +224,7 @@ export const ruvllmWasmTools: MCPTool[] = [
       required: ['routerId', 'query'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.routerId, 'routerId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const routerId = args.routerId as string;
         const router = await getOrRebuildHnsw(routerId);
@@ -249,6 +278,7 @@ export const ruvllmWasmTools: MCPTool[] = [
       required: ['sonaId', 'quality'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.sonaId, 'sonaId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const sonaId = args.sonaId as string;
         const sona = await getOrRebuildSona(sonaId);
@@ -310,6 +340,7 @@ export const ruvllmWasmTools: MCPTool[] = [
       required: ['loraId', 'quality'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.loraId, 'loraId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const loraId = args.loraId as string;
         const lora = await getOrRebuildMicroLora(loraId);
@@ -343,6 +374,7 @@ export const ruvllmWasmTools: MCPTool[] = [
       required: ['messages', 'template'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateText(args.template, 'template', 256); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const mod = await loadRuvllmWasm();
         const messages = args.messages as ChatMessage[];
