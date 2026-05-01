@@ -99,9 +99,8 @@ export async function buildRabitqIndex(options?: {
     const vectors: number[] = [];
 
     // ADR-0086 RVF-first: read embeddings via memory-router (the consolidated
-    // successor to deleted memory-bridge.ts). No sql.js fallback per ADR-0084
-    // (no shadow SQLite read path) + feedback-no-fallbacks (fail loud, never
-    // mask via silent catch).
+    // successor to deleted memory-bridge). No raw SQLite shadow read path per
+    // ADR-0084 + feedback-no-fallbacks (fail loud, never mask via silent catch).
     const { routerGetAllEmbeddings } = await import('./memory-router.js');
     const routerRows = await routerGetAllEmbeddings({ dimensions, dbPath: options?.dbPath });
     for (const row of routerRows) {
