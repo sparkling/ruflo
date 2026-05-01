@@ -258,49 +258,46 @@ export class RvfBackend implements IMemoryBackend {
     // initialize) starts with a clean slate.
     this._deferredCorruptReason = null;
 
-    // ADR-0095 amendment d1 (ruflo-patch): serialize the entire init sequence
-    // through the PID-based advisory lock. Native rvf-runtime's WriterLock
-    // (O_CREAT|O_EXCL with break-stale + retry-from-JS) returns WouldBlock,
-    // not blocks, on contention; its retry loop only handles LockHeld
-    // (0x0300) — FsyncFailed (0x0303) and other transient native errors are
-    // fatal at first occurrence. Empirically (t3-2 stress test, 2026-05-01,
-    // patch.281) removing the JS init lock to "let native serialize"
-    // produced ~30% native-create failures under N=6 concurrent writers.
-    // The JS advisory lock has no such failure mode (5s budget, exponential
-    // backoff, PID-verified break) so it is the load-bearing serialization
-    // for cold-start init across writers. Keeping it around the whole init
-    // also prevents JS-side WAL/meta races during loadFromDisk against any
-    // peer's mid-flight persistToDisk rename.
+    // ADR-0095 amendment (2026-05-01, post-flock t3-2 fix): scope the JS
+    // init lock down. The previous "wrap everything in .jslock" pattern was
+    // only load-bearing because the old native WriterLock (O_CREAT|O_EXCL,
+    // non-blocking) couldn't serialize concurrent `RvfDatabase::create`
+    // calls — losers raced through the bare-file `OpenOptions::create_new`
+    // and produced FsyncFailed. With the rvf-runtime flock-based WriterLock
+    // (commit c40d8963 in the ruvector fork) the native open path is now
+    // BLOCKING and FIFO-fair at the kernel level, so JS-side serialization
+    // of `tryNativeInit` is redundant and actively harmful: writer A would
+    // hold the JS lock while waiting for the native flock, blocking all
+    // peers' JS lock acquisitions and timing them out at the 60s budget
+    // (observed: t3-2 1/6 hits, 5/6 "Failed to acquire advisory lock after
+    // 100 attempts over 60453ms").
     //
-    // Re-entrancy note: reapStaleTmpFiles, tryNativeInit, loadFromDisk
-    // (including its replayWal call) do NOT themselves take the lock — all
-    // three existing lock-taking sites are in the WAL-append, WAL-compact,
-    // and disk-persist methods, none of which fire during init.
-    //
-    // The lock primitive has a 5s budget + throws on timeout; we let that
-    // propagate rather than swallowing — if init can't claim the lock within
-    // budget, something upstream is deeply wrong and the caller should see it.
+    // Scoped behaviour:
+    //   - tmp-file reap: idempotent, race-tolerant. NO JS lock needed.
+    //   - native init: native flock provides cross-process exclusion.
+    //     NO JS lock needed.
+    //   - disk load + replay: reads JS-owned `.meta` and `.wal`. The
+    //     native flock does NOT cover these JS-side files. JS lock
+    //     remains around this step to serialize against peer renames
+    //     and journal appends.
+    await this.reapStaleTmpFiles().catch(() => {});
+
+    const hasNative = await this.tryNativeInit();
+
+    // Only create HnswLite when native is NOT available (Debt 8)
+    if (!hasNative) {
+      this.hnswIndex = new HnswLite(
+        this.config.dimensions,
+        this.config.hnswM,
+        this.config.hnswEfConstruction,
+        this.config.metric,
+      );
+    }
+
+    // JS-side WAL/meta race window — kept under .jslock.
     await this.acquireLock();
     if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] initialize ACQUIRED lock at ${this.lockPath}`);
     try {
-      // Reap stale *.tmp.* files left by crashed writers before native init
-      // so the directory state is clean when the native backend peeks at it.
-      // Non-fatal — failures here should not block init.
-      await this.reapStaleTmpFiles().catch(() => {});
-
-      const hasNative = await this.tryNativeInit();
-
-      // Only create HnswLite when native is NOT available (Debt 8)
-      if (!hasNative) {
-        this.hnswIndex = new HnswLite(
-          this.config.dimensions,
-          this.config.hnswM,
-          this.config.hnswEfConstruction,
-          this.config.metric,
-        );
-      }
-
-      // Always load metadata from disk (native only handles vectors)
       await this.loadFromDisk();
     } finally {
       await this.releaseLock();
