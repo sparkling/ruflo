@@ -956,8 +956,8 @@ export async function recordTrajectory(
     const enrichedSteps = await Promise.all(steps.map(async (step) => {
       if (step.embedding && step.embedding.length > 0) return step;
       try {
-        const { generateEmbedding } = await import('./memory-initializer.js');
-        const result = await generateEmbedding(step.content);
+        const router = await import('./memory-router.js');
+        const result = await router.generateEmbedding(step.content);
         return { ...step, embedding: result.embedding };
       } catch {
         return step; // Skip embedding if not available
