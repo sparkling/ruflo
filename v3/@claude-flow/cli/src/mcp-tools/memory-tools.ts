@@ -10,23 +10,8 @@
  * @module v3/cli/mcp-tools/memory-tools
  */
 
-import { existsSync, unlinkSync } from 'fs';
-import { join, resolve } from 'path';
 import type { MCPTool } from './types.js';
 import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
-import { migrateLegacyStore, hasLegacyStore } from '../memory/migration-legacy.js';
-
-// #1604: Align with memory-initializer.ts — single source of truth is .swarm/memory.db
-const MEMORY_DIR = '.swarm';
-const LEGACY_MEMORY_DIR = '.claude-flow/memory';
-const MIGRATION_MARKER = '.migrated-to-sqlite';
-
-function getMigrationMarkerPath(): string {
-  // Marker lives alongside the legacy store so the migration check finds it
-  // even if .swarm is wiped (legacy data is the source-of-truth for "have we
-  // migrated yet?").
-  return resolve(join(LEGACY_MEMORY_DIR, MIGRATION_MARKER));
-}
 
 // D-2: Input bounds for memory parameters
 const MAX_KEY_LENGTH = 1024;
@@ -47,12 +32,6 @@ function validateMemoryInput(key?: string, value?: string, query?: string): void
 
 async function ensureInitialized(): Promise<void> {
   await ensureRouter();
-  if (hasLegacyStore()) {
-    await migrateLegacyStore(async (opts) => {
-      const result = await routeMemoryOp({ type: 'store', ...opts });
-      return result;
-    });
-  }
 }
 
 export const memoryTools: MCPTool[] = [
@@ -622,51 +601,6 @@ export const memoryTools: MCPTool[] = [
           error: error instanceof Error ? error.message : 'Unknown error',
         };
       }
-    },
-  },
-  {
-    name: 'memory_migrate',
-    description: 'Manually trigger migration from legacy JSON store to SQLite',
-    category: 'memory',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        force: { type: 'boolean', description: 'Force re-migration even if already done' },
-      },
-    },
-    handler: async (input) => {
-      const force = input.force as boolean;
-
-      // Remove migration marker if forcing
-      if (force) {
-        const markerPath = getMigrationMarkerPath();
-        if (existsSync(markerPath)) {
-          unlinkSync(markerPath);
-        }
-      }
-
-      await ensureRouter();
-
-      if (!hasLegacyStore()) {
-        return {
-          success: true,
-          message: 'No legacy data to migrate',
-          migrated: 0,
-        };
-      }
-
-      const { migrated, total } = await migrateLegacyStore(async (opts) => {
-        const r = await routeMemoryOp({ type: 'store', ...opts });
-        return r;
-      });
-
-      return {
-        success: true,
-        message: 'Migration completed',
-        migrated,
-        total,
-        backend: 'SQLite + HNSW',
-      };
     },
   },
 ];
