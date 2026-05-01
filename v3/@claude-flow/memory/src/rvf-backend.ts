@@ -101,6 +101,16 @@ export class RvfBackend implements IMemoryBackend {
   private lockPath = '';
   private walEntryCount = 0;
 
+  // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant
+  // counter for the JS advisory lock. Lets `store()` hold the lock
+  // across in-mem mutation + the WAL helpers as one atomic region.
+  // Without this, the lock was released/reacquired 3 times per store;
+  // peer writers could interleave between releases, producing
+  // observed=1, subproc-fail=0 silent loss. Counter is process-local
+  // and protects same-process re-entry only — cross-process exclusion
+  // is unchanged.
+  private _lockHeldDepth = 0;
+
   // Native ID mapping (Phase 3)
   private nativeIdMap = new Map<string, number>();
   private nativeReverseMap = new Map<number, string>();
@@ -403,24 +413,27 @@ export class RvfBackend implements IMemoryBackend {
     const ns = entry.namespace || this.config.defaultNamespace;
     const e = ns !== entry.namespace ? { ...entry, namespace: ns } : entry;
 
-    // ADR-0095 amendment (2026-04-30, t3-2 fix): lock JUST the in-memory
-    // mutation + native ingest. The unlocked native ingest is the ~5-10%
-    // multi-writer corruption source per the comment at the top of this
-    // file (5-10% InvalidChecksum on the SFVR file under contention).
+    // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): hold the
+    // advisory lock across the WHOLE store sequence — in-mem mutation,
+    // native ingest, WAL append, and WAL compact — as one atomic
+    // critical section. Previously the lock was released after the
+    // mutation step, then re-acquired by the WAL helpers independently.
+    // That gave peer writers TWO interleave windows per store: between
+    // mutate and journal-append, and between journal-append and
+    // compact. Under N=6 concurrent writers a peer's compact step
+    // would unlink our just-written journal entry before our own
+    // compact merged it, dropping our entry — visible as
+    // observed=1, subproc-fail=0 silent loss.
     //
-    // Earlier attempt: wrap the full R-M-W (mutate + WAL + compaction) in
-    // one locked region. That eliminated the native race BUT made each
-    // holder hold the lock for ~1s. With 6 writers serialized that's ~6s
-    // total — exceeds the 5s staleness threshold, so waiters consider
-    // live holders "stale" and steal the lock, racing the durable write.
-    // Result: t3-2 went from 1/30 fail to 7/30.
-    //
-    // Better shape: short locked region for the unsafe in-process state
-    // mutation, then release. The WAL helpers acquire their own quick
-    // locks (each <200ms), so no holder holds the lock long enough to
-    // trip staleness. Cross-process convergence on the WAL+compact path
-    // is handled by the peer-merge step inside the durable-write helper
-    // (re-reads disk + WAL, merges, writes).
+    // Why this is safe now (it wasn't in 2026-04-30):
+    //   - The .jslock acquire path is re-entrant (depth counter), so
+    //     the WAL helpers nesting do NOT deadlock.
+    //   - The previous "5s staleness threshold" stealing was removed —
+    //     we no longer steal locks from live holders, we wait. Holding
+    //     for ~1-2s under N=6 contention is correct, not pathological.
+    //   - Native rvf-runtime now uses kernel flock(LOCK_EX) for
+    //     cross-process exclusion, so the native ingest path doesn't
+    //     race even when held under the JS lock.
     await this.acquireLock();
     try {
       this.entries.set(e.id, e);
@@ -447,20 +460,17 @@ export class RvfBackend implements IMemoryBackend {
         }
       }
       this.dirty = true;
+
+      // WAL append + compact INSIDE the same lock. Each helper internally
+      // re-acquires the lock; the depth counter no-ops the inner acquire.
+      await this.appendToWal(e);
+      // ADR-0090 Tier A4 / B7 concurrent-write fix: always compact after
+      // every store, not just when walCompactionThreshold is hit.
+      if (this.walPath) {
+        await this.compactWal();
+      }
     } finally {
       await this.releaseLock();
-    }
-    // Persist immediately so data survives process exit (the 30s auto-persist
-    // timer may never fire in short-lived CLI invocations). The WAL helpers
-    // each acquire their own quick lock; both call sites are bounded by
-    // the WAL-append + persist-merge logic below the lock.
-    await this.appendToWal(e);
-    // ADR-0090 Tier A4 / B7 concurrent-write fix: always compact after
-    // every store, not just when walCompactionThreshold is hit. The
-    // peer-merge step in the durable-write helper handles cross-process
-    // convergence across all writers.
-    if (this.walPath) {
-      await this.compactWal();
     }
   }
 
@@ -1497,6 +1507,15 @@ export class RvfBackend implements IMemoryBackend {
    */
   private async acquireLock(): Promise<void> {
     if (!this.lockPath) return; // :memory: mode
+    // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant.
+    // If THIS process+instance already holds the lock, just bump depth
+    // and return. Lets store() compose its three lock-needing helpers
+    // under one wide critical section without releasing between them.
+    // Peer writers can't interleave during the wide hold.
+    if (this._lockHeldDepth > 0) {
+      this._lockHeldDepth++;
+      return;
+    }
     const { writeFile: wf, readFile: rf, unlink: ul, mkdir: mk } = await import('node:fs/promises');
     // ADR-0095 Pass 3 (d3): ensure lockfile parent directory exists before the
     // open-wx below. acquireLock is called from initialize/persist/delete
@@ -1533,6 +1552,7 @@ export class RvfBackend implements IMemoryBackend {
     while (Date.now() - startTime < maxWaitMs) {
       try {
         await wf(this.lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
+        this._lockHeldDepth = 1;
         return; // Lock acquired
       } catch (e: any) {
         if (e.code !== 'EEXIST') throw e;
@@ -1576,6 +1596,20 @@ export class RvfBackend implements IMemoryBackend {
   private async releaseLock(): Promise<void> {
     // silent-fallthrough-OK: no lockPath = :memory: mode = no lock acquired = nothing to release
     if (!this.lockPath) return;
+    // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant.
+    // Decrement; only physically release when the OUTER caller exits.
+    // Mirrors the depth bump in acquireLock so nested helpers (e.g.
+    // store() wrapping its WAL helpers under one acquire) don't
+    // release until the outer-most try/finally fires.
+    if (this._lockHeldDepth > 1) {
+      this._lockHeldDepth--;
+      return;
+    }
+    if (this._lockHeldDepth === 0) {
+      // silent-fallthrough-OK: defensive — paired release without acquire (e.g. acquireLock threw before bumping). Nothing to do.
+      return;
+    }
+    this._lockHeldDepth = 0;
     // ADR-0095 amendment (2026-05-01, t3-2 fix): verify ownership before
     // unlinking. With .jslock the only writer is JS-side, but two
     // concurrent JS instances can race during shutdown — A's release
