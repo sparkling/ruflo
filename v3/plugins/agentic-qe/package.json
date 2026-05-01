@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-agentic-qe",
-  "version": "3.0.0-alpha.4-patch.432",
+  "version": "3.0.0-alpha.4-patch.433",
   "description": "Quality Engineering plugin for Claude Flow V3 with 51 specialized agents across 12 DDD bounded contexts",
   "type": "module",
   "main": "./dist/index.js",
@@ -54,10 +54,10 @@
     "zod": "^3.23.0"
   },
   "peerDependencies": {
-    "@claude-flow/plugins": "3.0.0-alpha.7-patch.431",
-    "@claude-flow/memory": "3.0.0-alpha.13-patch.305",
-    "@claude-flow/security": "3.0.0-alpha.6-patch.413",
-    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.431"
+    "@claude-flow/plugins": "3.0.0-alpha.7-patch.432",
+    "@claude-flow/memory": "3.0.0-alpha.13-patch.306",
+    "@claude-flow/security": "3.0.0-alpha.6-patch.414",
+    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.432"
   },
   "peerDependenciesMeta": {
     "@claude-flow/plugins": {

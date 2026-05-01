@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/cli",
-  "version": "3.5.58-patch.305",
+  "version": "3.5.58-patch.306",
   "type": "module",
   "description": "Ruflo CLI - Enterprise AI agent orchestration with 60+ specialized agents, swarm coordination, MCP server, self-learning hooks, and vector memory for Claude Code",
   "main": "dist/src/index.js",
@@ -86,26 +86,26 @@
     "vitest": "^4.0.16"
   },
   "dependencies": {
-    "@claude-flow/mcp": "3.0.0-alpha.8-patch.419",
-    "@claude-flow/memory": "3.0.0-alpha.13-patch.305",
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.413",
+    "@claude-flow/mcp": "3.0.0-alpha.8-patch.420",
+    "@claude-flow/memory": "3.0.0-alpha.13-patch.306",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.414",
     "@noble/ed25519": "^2.1.0",
     "semver": "^7.6.0"
   },
   "optionalDependencies": {
-    "@claude-flow/aidefence": "3.0.2-patch.427",
-    "@claude-flow/codex": "3.0.0-alpha.9-patch.441",
-    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.431",
-    "@claude-flow/guidance": "3.0.0-alpha.1-patch.431",
-    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.428",
-    "agentic-flow": "2.0.2-alpha-patch.421",
+    "@claude-flow/aidefence": "3.0.2-patch.428",
+    "@claude-flow/codex": "3.0.0-alpha.9-patch.442",
+    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.432",
+    "@claude-flow/guidance": "3.0.0-alpha.1-patch.432",
+    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.429",
+    "agentic-flow": "2.0.2-alpha-patch.422",
     "better-sqlite3": "^11.3.0",
-    "@ruvector/attention": "0.1.4-patch.17",
-    "@ruvector/learning-wasm": "0.1.29-patch.17",
-    "@ruvector/router": "0.1.28-patch.17",
-    "@ruvector/rvagent-wasm": "0.2.1-patch.17",
-    "@ruvector/ruvllm-wasm": "2.1.1-patch.17",
-    "@ruvector/sona": "0.1.5-patch.17"
+    "@ruvector/attention": "0.1.4-patch.18",
+    "@ruvector/learning-wasm": "0.1.29-patch.18",
+    "@ruvector/router": "0.1.28-patch.18",
+    "@ruvector/rvagent-wasm": "0.2.1-patch.18",
+    "@ruvector/ruvllm-wasm": "2.1.1-patch.18",
+    "@ruvector/sona": "0.1.5-patch.18"
   },
   "publishConfig": {
     "access": "public",
