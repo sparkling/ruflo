@@ -23,7 +23,7 @@ const sessionId = `mcp-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
 // Log to stderr (doesn't corrupt stdout for MCP protocol)
 console.error(
-  `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Starting in stdio mode`
+  `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
 );
 console.error(JSON.stringify({
   arch: process.arch,
@@ -57,7 +57,7 @@ process.stdin.on('data', async (chunk) => {
         }
       } catch (error) {
         console.error(
-          `[${new Date().toISOString()}] ERROR [claude-flow-mcp] Failed to parse:`,
+          `[${new Date().toISOString()}] ERROR [ruflo-mcp] Failed to parse:`,
           error instanceof Error ? error.message : String(error)
         );
         // Send parse error response
@@ -73,19 +73,19 @@ process.stdin.on('data', async (chunk) => {
 
 process.stdin.on('end', () => {
   console.error(
-    `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) stdin closed, shutting down...`
+    `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) stdin closed, shutting down...`
   );
   process.exit(0);
 });
 
 // Handle process termination
 process.on('SIGINT', () => {
-  console.error(`[${new Date().toISOString()}] INFO [claude-flow-mcp] Received SIGINT`);
+  console.error(`[${new Date().toISOString()}] INFO [ruflo-mcp] Received SIGINT`);
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  console.error(`[${new Date().toISOString()}] INFO [claude-flow-mcp] Received SIGTERM`);
+  console.error(`[${new Date().toISOString()}] INFO [ruflo-mcp] Received SIGTERM`);
   process.exit(0);
 });
 
@@ -166,7 +166,7 @@ async function handleMessage(message) {
       }
 
       case 'notifications/initialized':
-        console.error(`[${new Date().toISOString()}] INFO [claude-flow-mcp] Client initialized`);
+        console.error(`[${new Date().toISOString()}] INFO [ruflo-mcp] Client initialized`);
         return null; // No response for notifications
 
       case 'ping':
@@ -184,7 +184,7 @@ async function handleMessage(message) {
         };
     }
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] ERROR [claude-flow-mcp] ${message.method}:`, error);
+    console.error(`[${new Date().toISOString()}] ERROR [ruflo-mcp] ${message.method}:`, error);
     return {
       jsonrpc: '2.0',
       id: message.id,

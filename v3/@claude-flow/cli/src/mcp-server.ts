@@ -72,8 +72,8 @@ const DEFAULT_OPTIONS: Required<MCPServerOptions> = {
   transport: 'stdio',
   host: 'localhost',
   port: parseInt(process.env.MCP_PORT || '', 10) || 3000, // ADR-0069 A6: config-chain ports
-  pidFile: path.join(os.tmpdir(), 'claude-flow-mcp.pid'),
-  logFile: path.join(os.tmpdir(), 'claude-flow-mcp.log'),
+  pidFile: path.join(os.tmpdir(), 'ruflo-mcp.pid'),
+  logFile: path.join(os.tmpdir(), 'ruflo-mcp.log'),
   tools: 'all',
   daemonize: false,
   timeout: 30000,
@@ -317,7 +317,7 @@ export class MCPServerManager extends EventEmitter {
 
     // Log to stderr to not corrupt stdout
     console.error(
-      `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Starting in stdio mode`
+      `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
     );
 
     // ADR-0086 T2.7 + B3: router healthCheck replaces SQLite-based check
@@ -329,22 +329,22 @@ export class MCPServerManager extends EventEmitter {
       const status = await healthCheck() as { available?: boolean; controllers?: number; error?: string };
       if (!status.available) {
         console.error(
-          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Auto-initializing memory router...`
+          `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Auto-initializing memory router...`
         );
         await ensureRouter();
         console.error(
-          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory router initialized`
+          `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Memory router initialized`
         );
       } else {
         console.error(
-          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory router already available (${status.controllers ?? 0} controllers)`
+          `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Memory router already available (${status.controllers ?? 0} controllers)`
         );
       }
     } catch (memInitError) {
       // Graceful degradation: server continues even if memory init fails.
       // Memory tools will attempt lazy init on first call via ensureRouter().
       console.error(
-        `[${new Date().toISOString()}] WARN [claude-flow-mcp] (${sessionId}) Memory auto-init failed (tools will retry on first call): ${memInitError instanceof Error ? memInitError.message : String(memInitError)}`
+        `[${new Date().toISOString()}] WARN [ruflo-mcp] (${sessionId}) Memory auto-init failed (tools will retry on first call): ${memInitError instanceof Error ? memInitError.message : String(memInitError)}`
       );
     }
     console.error(JSON.stringify({
@@ -383,7 +383,7 @@ export class MCPServerManager extends EventEmitter {
 
       if (buffer.length > MAX_BUFFER_SIZE) {
         console.error(
-          `[${new Date().toISOString()}] ERROR [claude-flow-mcp] Buffer exceeded ${MAX_BUFFER_SIZE} bytes, rejecting`
+          `[${new Date().toISOString()}] ERROR [ruflo-mcp] Buffer exceeded ${MAX_BUFFER_SIZE} bytes, rejecting`
         );
         buffer = '';
         console.log(JSON.stringify({
@@ -407,7 +407,7 @@ export class MCPServerManager extends EventEmitter {
             }
           } catch (error) {
             console.error(
-              `[${new Date().toISOString()}] ERROR [claude-flow-mcp] Failed to parse message:`,
+              `[${new Date().toISOString()}] ERROR [ruflo-mcp] Failed to parse message:`,
               error instanceof Error ? error.message : String(error)
             );
           }
@@ -417,7 +417,7 @@ export class MCPServerManager extends EventEmitter {
 
     process.stdin.on('end', () => {
       console.error(
-        `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) stdin closed, shutting down...`
+        `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) stdin closed, shutting down...`
       );
       process.exit(0);
     });
@@ -425,14 +425,14 @@ export class MCPServerManager extends EventEmitter {
     // Handle process termination
     process.on('SIGINT', () => {
       console.error(
-        `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Received SIGINT, shutting down...`
+        `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Received SIGINT, shutting down...`
       );
       process.exit(0);
     });
 
     process.on('SIGTERM', () => {
       console.error(
-        `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Received SIGTERM, shutting down...`
+        `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Received SIGTERM, shutting down...`
       );
       process.exit(0);
     });
@@ -525,7 +525,7 @@ export class MCPServerManager extends EventEmitter {
         case 'notifications/initialized':
           // Client notification - no response needed
           console.error(
-            `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Client initialized`
+            `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Client initialized`
           );
           return null;
 
@@ -545,7 +545,7 @@ export class MCPServerManager extends EventEmitter {
       }
     } catch (error) {
       console.error(
-        `[${new Date().toISOString()}] ERROR [claude-flow-mcp] Error handling ${message.method}:`,
+        `[${new Date().toISOString()}] ERROR [ruflo-mcp] Error handling ${message.method}:`,
         error
       );
       return {
