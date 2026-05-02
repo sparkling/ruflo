@@ -10,6 +10,7 @@ import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { select, confirm, input } from '../prompt.js';
 import { callMCPTool, MCPClientError } from '../mcp-client.js';
+import { QUEEN_TYPES, validateQueenType, type QueenType } from '../mcp-tools/validate-input.js';
 import { spawn as childSpawn, execSync } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -27,12 +28,97 @@ interface WorkerGroups {
 }
 
 // Hive topologies
+//
+// ADR-0128 (T10) expands this enum from 4 to 6 entries by adding `ring` and
+// `star`. The union of advertised topology surfaces (CLI / USERGUIDE diagram /
+// ADR-0116 verification matrix) is six; per
+// `feedback-no-value-judgements-on-features.md` we wire the full surface
+// rather than picking the intersection.
+//
+// Behavioural enforcement lives at the dispatch site in
+// `@claude-flow/swarm/src/unified-coordinator.ts` (`dispatchByTopology`). The
+// CLI's job is to (1) validate the flag against `choices`, (2) substitute a
+// topology-specific coordination-protocol block into the queen prompt via
+// `renderTopologyProtocolBlock` below.
 const TOPOLOGIES = [
   { value: 'hierarchical', label: 'Hierarchical', hint: 'Queen-led with worker agents' },
   { value: 'mesh', label: 'Mesh', hint: 'Peer-to-peer coordination' },
   { value: 'hierarchical-mesh', label: 'Hierarchical Mesh', hint: 'Queen + peer communication (recommended)' },
-  { value: 'adaptive', label: 'Adaptive', hint: 'Dynamic topology based on task' }
+  { value: 'ring', label: 'Ring', hint: 'Deterministic ordered chain — worker N reads (N-1), writes for (N+1)' },
+  { value: 'star', label: 'Star', hint: 'Hub-and-spoke — queen is sole memory writer' },
+  { value: 'adaptive', label: 'Adaptive', hint: 'Dynamic topology based on task (delegates to T9 control loop)' }
 ];
+
+/**
+ * ADR-0128 T10 — render a topology-specific coordination-protocol block for
+ * inlining into the queen prompt. Replaces the bare
+ * `🔗 Topology: ${topology}` substring (prompt-only metadata) with a block
+ * that describes peer-visibility and memory-write rules per topology.
+ *
+ * This is descriptive material in the queen prompt — the *enforcement* lives
+ * at the worker-spawn dispatch site in
+ * `@claude-flow/swarm/src/unified-coordinator.ts` (`dispatchByTopology`).
+ * If the prompt and the protocol disagree, the protocol wins (the worker's
+ * `hive-mind_broadcast` subscription set + `hive-mind_memory` permissions
+ * are configured at spawn time and ignore the prompt body).
+ *
+ * Topology values are validated by `choices: TOPOLOGIES.map(t => t.value)` at
+ * the option-parsing layer; an unknown value reaching this function indicates
+ * a programming error and falls through to the loud default branch.
+ *
+ * Per `feedback-no-fallbacks.md` we throw on unknown topology rather than
+ * silently substituting a default. The dispatch site does the same — both
+ * surfaces fail loudly together.
+ */
+function renderTopologyProtocolBlock(topology: string): string {
+  switch (topology) {
+    case 'hierarchical':
+      return `🔗 Topology: hierarchical (queen-only broadcast)
+   Worker peer visibility: NONE — workers receive instructions from the queen via
+   hive-mind_broadcast and surface outputs through hive-mind_status. Workers
+   cannot subscribe to peer broadcasts and cannot read peer-private memory.
+   Memory-write rule: each worker writes to its own queen-readable private
+   namespace; peers cannot read each other's writes.`;
+    case 'mesh':
+      return `🔗 Topology: mesh (full peer visibility)
+   Worker peer visibility: FULL — every worker receives every other worker's
+   outputs via hive-mind_broadcast. Coordination cost is O(N²) in worker count.
+   Memory-write rule: shared peer-visible namespace; all workers read and
+   write the same memory keys.`;
+    case 'hierarchical-mesh':
+      return `🔗 Topology: hierarchical-mesh (sub-hive clustering)
+   Worker peer visibility: FULL within sub-hive, sub-queen-summarised across.
+   Workers partition into sub-hives with one sub-queen per cluster. Each
+   sub-hive runs mesh internally; sub-queens report hierarchically upward.
+   Recursion is capped at one nesting level (top queen + sub-queens — no
+   sub-sub-queens).
+   Memory-write rule: peer-visible per sub-hive; sub-queens summarise upward.`;
+    case 'ring':
+      return `🔗 Topology: ring (deterministic ordered chain)
+   Worker peer visibility: PREVIOUS NEIGHBOUR ONLY. Workers numbered 0..N-1.
+   Worker N reads worker (N-1 mod N)'s output from hive-mind_memory and writes
+   its own output for worker (N+1 mod N) to consume. There are no
+   broadcasts — coordination is strictly peer-to-peer along the ring edges.
+   Memory-write rule: each worker writes only its own slot.`;
+    case 'star':
+      return `🔗 Topology: star (hub-and-spoke)
+   Worker peer visibility: NONE (only queen-aggregated state). The queen is
+   the only writer to hive-mind_memory. Workers (spokes) read from
+   hive-mind_memory and surface outputs back through hive-mind_status for the
+   queen to aggregate and write.
+   Memory-write rule: queen-only. Worker memory writes are forbidden.`;
+    case 'adaptive':
+      return `🔗 Topology: adaptive (delegates to T9 control loop)
+   The dispatch site invokes the ADR-0127 (T9) autoscaling control loop and
+   recurses into the chosen concrete topology. Until T9 lands, dispatch
+   throws \`Error("adaptive topology dispatch requires T9/ADR-0127")\` —
+   queen prompts must not assume \`adaptive\` resolves at runtime yet.
+   See ADR-0128 §Cross-task dependency posture for the contract.`;
+    default:
+      // Per `feedback-no-fallbacks.md` — never silently substitute a default.
+      throw new Error(`unknown topology: ${topology}`);
+  }
+}
 
 // Consensus strategies
 const CONSENSUS_STRATEGIES = [
@@ -59,40 +145,53 @@ function groupWorkersByType(workers: HiveWorker[]): WorkerGroups {
 }
 
 /**
- * Generate comprehensive Hive Mind prompt for Claude Code
- * Ported from v2.7.47 with enhancements for v3
+ * Context bag passed to per-queen-type prompt renderers.
+ *
+ * ADR-0125 §Specification: `Record<QueenType, (ctx: HiveMindPromptContext) => string>`.
+ * Carries the substitution variables every variant interpolates. Per-variant
+ * bodies pull only what they need from this struct.
  */
-function generateHiveMindPrompt(
-  swarmId: string,
-  swarmName: string,
-  objective: string,
-  workers: HiveWorker[],
-  workerGroups: WorkerGroups,
-  flags: Record<string, unknown>
-): string {
-  const currentTime = new Date().toISOString();
-  const workerTypes = Object.keys(workerGroups);
-  const queenType = (flags.queenType as string) || 'strategic';
-  const consensusAlgorithm = (flags.consensus as string) || 'byzantine';
-  const topology = (flags.topology as string) || 'hierarchical-mesh';
+interface HiveMindPromptContext {
+  swarmId: string;
+  swarmName: string;
+  objective: string;
+  workers: HiveWorker[];
+  workerGroups: WorkerGroups;
+  consensusAlgorithm: string;
+  topology: string;
+  currentTime: string;
+}
 
+/**
+ * Shared header rendered by all three queen-type prompts. Contains the
+ * config block, worker distribution, and the MCP tool catalog. The per-type
+ * mission framing, preferred-tool list, and self-check criteria are appended
+ * by the queen-specific renderer below.
+ *
+ * Per ADR-0114, the queen prompt sits at the execution layer; only the body
+ * shape (per-type sections) varies between the three renderers. The shared
+ * header preserves layering: substrate (MCP catalog) and protocol (4-phase
+ * coordination) are constant; only the queen's framing differs.
+ */
+function renderHiveMindHeader(ctx: HiveMindPromptContext, queenType: QueenType): string {
+  const workerTypes = Object.keys(ctx.workerGroups);
   return `🧠 HIVE MIND COLLECTIVE INTELLIGENCE SYSTEM
 ═══════════════════════════════════════════════
 
 You are the Queen coordinator of a Hive Mind swarm with collective intelligence capabilities.
 
 HIVE MIND CONFIGURATION:
-📌 Swarm ID: ${swarmId}
-📌 Swarm Name: ${swarmName}
-🎯 Objective: ${objective}
+📌 Swarm ID: ${ctx.swarmId}
+📌 Swarm Name: ${ctx.swarmName}
+🎯 Objective: ${ctx.objective}
 👑 Queen Type: ${queenType}
-🐝 Worker Count: ${workers.length}
-🔗 Topology: ${topology}
-🤝 Consensus Algorithm: ${consensusAlgorithm}
-⏰ Initialized: ${currentTime}
+🐝 Worker Count: ${ctx.workers.length}
+${renderTopologyProtocolBlock(ctx.topology)}
+🤝 Consensus Algorithm: ${ctx.consensusAlgorithm}
+⏰ Initialized: ${ctx.currentTime}
 
 WORKER DISTRIBUTION:
-${workerTypes.map(type => `• ${type}: ${workerGroups[type].length} agents`).join('\n')}
+${workerTypes.map(type => `• ${type}: ${ctx.workerGroups[type].length} agents`).join('\n')}
 
 🔧 AVAILABLE MCP TOOLS FOR HIVE MIND COORDINATION:
 
@@ -145,7 +244,7 @@ ${workerTypes.map(type => `• ${type}: ${workerGroups[type].length} agents`).jo
 3. **COORDINATION PHASE**
    - Use consensus for critical decisions
    - Aggregate results from workers
-   - Resolve conflicts using ${consensusAlgorithm} consensus
+   - Resolve conflicts using ${ctx.consensusAlgorithm} consensus
    - Share learnings across the hive
 
 4. **COMPLETION PHASE**
@@ -155,7 +254,7 @@ ${workerTypes.map(type => `• ${type}: ${workerGroups[type].length} agents`).jo
    - Report final status
 
 🎯 YOUR OBJECTIVE:
-${objective}
+${ctx.objective}
 
 🛠️ TOOL USE (ADR-0104 §6 — reverses #1422):
 • Use Claude Code's Task tool to spawn worker agents in this session.
@@ -183,10 +282,219 @@ explicitly via MCP.
 • Store important decisions in shared memory for persistence
 • Use consensus for any decisions affecting multiple workers
 • Use mcp__ruflo__task_assign to assign tasks to workers, then mcp__ruflo__task_complete when done
+`;
+}
+
+/**
+ * Strategic queen prompt — planning-first leadership style.
+ *
+ * Mission framing: invest in plan tree before delegating.
+ * Preferred tools: planning + memory primitives.
+ * Self-check sentinel: "written plan" — anchored by ADR-0125 §Specification
+ * "Cross-ADR sentinel contract" and consumed by ADR-0126 (T8) worker prompts.
+ *
+ * Renaming the sentinel string is a breaking change for ADR-0126's
+ * cross-reference test — coordinated edits required across both ADRs.
+ */
+function renderStrategicPrompt(ctx: HiveMindPromptContext): string {
+  return `${renderHiveMindHeader(ctx, 'strategic')}
+👑 QUEEN LEADERSHIP — STRATEGIC (planning-first):
+You are an architect-first queen. Your primary disposition is to invest in a
+full plan tree BEFORE spawning workers. You decompose the objective into
+explicit subtasks, name dependencies between them, write decision rationale
+to shared memory so workers can read prior context, and only THEN delegate.
+Premature execution is your anti-pattern — the worker pool is your hands,
+not your eyes; use them only after the plan is on paper.
+
+🛠️ Tools you should reach for first:
+• mcp__ruflo__task_create        — build the plan tree as concrete subtasks
+• mcp__ruflo__memory_store       — record decision rationale and tradeoffs
+• mcp__ruflo__memory_search      — recall similar past hives before planning
+• mcp__ruflo__hive-mind_memory   — share the plan with the swarm
+
+✅ Before declaring done, verify:
+• You produced a written plan with explicit subtask decomposition before
+  spawning workers. The plan lives in mcp__ruflo__task_create entries
+  and/or mcp__ruflo__memory_store under a discoverable key.
+• You stored at least one decision rationale to memory naming the
+  trade-off you weighed (alternatives considered, why you chose this path).
+• Worker outputs trace back to a subtask in the written plan, not to
+  ad-hoc dispatch.
 
 🚀 BEGIN HIVE MIND COORDINATION NOW!
-Start by checking the current hive status and then proceed with the objective.
+Start with planning. Workers come second.
 `;
+}
+
+/**
+ * Tactical queen prompt — execution-first leadership style.
+ *
+ * Mission framing: dispatcher; bias toward agent_spawn early; shorter
+ * planning preamble; frequent worker status pings.
+ * Self-check sentinel: "spawned workers within" — ADR-0126 anchor.
+ *
+ * Renaming the sentinel is a breaking change for ADR-0126.
+ */
+function renderTacticalPrompt(ctx: HiveMindPromptContext): string {
+  return `${renderHiveMindHeader(ctx, 'tactical')}
+👑 QUEEN LEADERSHIP — TACTICAL (execution-first):
+You are a dispatcher-first queen. Your primary disposition is to translate
+the objective into worker assignments quickly and keep delegation throughput
+high. Planning preamble is short; you bias toward agent_spawn and
+task_assign within the first few coordination cycles. You ping worker
+status at least once per cycle and rebalance when a worker stalls.
+Over-planning is your anti-pattern — the swarm earns its keep by working,
+not by waiting for a perfect plan.
+
+🛠️ Tools you should reach for first:
+• mcp__ruflo__agent_spawn         — bring workers online quickly
+• mcp__ruflo__task_assign         — push work to active workers
+• mcp__ruflo__hooks_worker-status — poll worker progress every cycle
+• mcp__ruflo__hive-mind_broadcast — coordinate the swarm in flight
+
+✅ Before declaring done, verify:
+• You spawned workers within the first three coordination cycles
+  (don't sit on the objective for an extended planning preamble).
+• You pinged worker status at least once per cycle via
+  mcp__ruflo__hooks_worker-status, and rebalanced load when a worker
+  stalled or lagged.
+• You used mcp__ruflo__hive-mind_broadcast for swarm-wide direction
+  changes rather than rewriting individual task descriptions one by one.
+
+🚀 BEGIN HIVE MIND COORDINATION NOW!
+Start with delegation. Refine the plan in flight.
+`;
+}
+
+/**
+ * Adaptive queen prompt — complexity-driven mode-switch.
+ *
+ * Mission framing: pick Strategic or Tactical based on objective complexity;
+ * if mid-run signals say the wrong mode was picked, run a consensus check
+ * before switching.
+ * Self-check sentinel: "named your chosen mode" — ADR-0126 anchor.
+ *
+ * Tool list is the union of Strategic + Tactical with the consensus tool
+ * added (per ADR-0125 Phase 2). Adaptive is the longest variant by design.
+ */
+function renderAdaptivePrompt(ctx: HiveMindPromptContext): string {
+  return `${renderHiveMindHeader(ctx, 'adaptive')}
+👑 QUEEN LEADERSHIP — ADAPTIVE (mode-switching by complexity):
+You are a mode-selecting queen. Your primary disposition is to read the
+objective's complexity first, pick Strategic (planning-first) or Tactical
+(execution-first) mode based on observed signals, AND name your choice
+explicitly in shared memory so workers can read which mode the hive is
+operating under. Signals to weigh:
+  • Number of subtasks discovered during initial analysis (>5 → leans Strategic)
+  • Ambiguity in the objective text (vague → leans Strategic)
+  • Sharpness of acceptance criteria (crisp → leans Tactical)
+  • Presence of prior similar hives in memory (lots of priors → Tactical
+    can ride the priors; few priors → Strategic to build them).
+
+If mid-run you detect that the wrong mode was picked (e.g. you started
+Tactical but workers keep hitting unspecified edges), call
+mcp__ruflo__hive-mind_consensus to confirm a strategy switch with the
+swarm BEFORE flipping mode. Don't switch unilaterally — consensus on
+strategy change is the contract the workers depend on.
+
+🛠️ Tools you should reach for first:
+• mcp__ruflo__hive-mind_consensus — confirm mode switches with the swarm
+• mcp__ruflo__task_create         — build a plan tree (Strategic mode)
+• mcp__ruflo__memory_store        — record decision rationale
+• mcp__ruflo__memory_search       — recall similar past hives
+• mcp__ruflo__hive-mind_memory    — share the chosen mode with the swarm
+• mcp__ruflo__agent_spawn         — bring workers online (Tactical mode)
+• mcp__ruflo__task_assign         — push work to active workers
+• mcp__ruflo__hooks_worker-status — poll worker progress
+• mcp__ruflo__hive-mind_broadcast — coordinate the swarm in flight
+
+✅ Before declaring done, verify:
+• You explicitly named your chosen mode (Strategic or Tactical) and
+  your reason, stored to mcp__ruflo__hive-mind_memory under a key
+  workers can discover. "Adaptive" is not a runnable mode — it is
+  your meta-disposition; the swarm needs to know which concrete
+  mode you picked.
+• If you switched mid-run, you ran mcp__ruflo__hive-mind_consensus
+  to confirm the strategy switch BEFORE flipping behaviour. Record
+  the consensus result alongside the mode-switch decision.
+• Your final report names the mode you finished in (it can differ
+  from the mode you started in — that is the point of Adaptive).
+
+🚀 BEGIN HIVE MIND COORDINATION NOW!
+Start by reading the objective and naming your chosen mode.
+`;
+}
+
+/**
+ * Per-queen-type prompt dispatch table. ADR-0125 §Specification:
+ * `Record<QueenType, (ctx: HiveMindPromptContext) => string>`.
+ *
+ * Adding a fourth queen type without an enum extension in
+ * `validate-input.ts` (`QUEEN_TYPES`) is a contract violation — the
+ * `default:` case in the switch below is the runtime backstop, but the
+ * type-system layer (`QueenType` union) is the first defence.
+ */
+const QUEEN_PROMPT_RENDERERS: Record<QueenType, (ctx: HiveMindPromptContext) => string> = {
+  strategic: renderStrategicPrompt,
+  tactical: renderTacticalPrompt,
+  adaptive: renderAdaptivePrompt,
+};
+
+/**
+ * Generate comprehensive Hive Mind prompt for Claude Code.
+ *
+ * Per ADR-0125 §Decision: dispatches to a per-queen-type renderer keyed by
+ * `flags.queenType`. Each renderer carries:
+ *   1. Mission framing (planning-first / execution-first / mode-switch)
+ *   2. "Tools you should reach for first" — per-type MCP tool list
+ *   3. "Before declaring done, verify" — per-type acceptance criteria
+ *      (each variant carries the sentinel substring named in ADR-0125
+ *      §Specification "Cross-ADR sentinel contract").
+ *
+ * Unknown values throw — no silent fallback per `feedback-no-fallbacks.md`.
+ * The CLI-boundary validation in the `spawn` action surfaces a clean error
+ * before this function is reached; the `default:` arm here is a
+ * defence-in-depth backstop for non-CLI callers (programmatic invocations
+ * that bypass the flag parser).
+ *
+ * Exported so the ADR-0125 unit + integration tests can call directly.
+ */
+export function generateHiveMindPrompt(
+  swarmId: string,
+  swarmName: string,
+  objective: string,
+  workers: HiveWorker[],
+  workerGroups: WorkerGroups,
+  flags: Record<string, unknown>
+): string {
+  const queenType = ((flags.queenType as string) || 'strategic') as QueenType;
+  const ctx: HiveMindPromptContext = {
+    swarmId,
+    swarmName,
+    objective,
+    workers,
+    workerGroups,
+    consensusAlgorithm: (flags.consensus as string) || 'byzantine',
+    topology: (flags.topology as string) || 'hierarchical-mesh',
+    currentTime: new Date().toISOString(),
+  };
+
+  // Switch is the runtime backstop; the prompt map (above) is the typed
+  // manifest the ADR-0125 §Specification declares. They agree by design —
+  // adding a queen type means extending QUEEN_TYPES, the renderer map, AND
+  // a `case` arm, which is the intended cost of evolution.
+  switch (queenType) {
+    case 'strategic':
+    case 'tactical':
+    case 'adaptive':
+      return QUEEN_PROMPT_RENDERERS[queenType](ctx);
+    default:
+      // Defence-in-depth backstop. The CLI-boundary validation in the
+      // `spawn` action throws a user-friendly error before reaching here;
+      // this arm catches programmatic callers that bypass the parser.
+      // Per `feedback-no-fallbacks.md`, no silent fallback to 'strategic'.
+      throw new Error(`unknown queenType: ${String(queenType)}`);
+  }
 }
 
 /**
@@ -586,6 +894,18 @@ const spawnCommand: Command = {
       description: 'Run Claude Code in non-interactive mode',
       type: 'boolean',
       default: false
+    },
+    // ADR-0125 §Specification: declare --queen-type as a known flag with the
+    // QUEEN_TYPES enum surfaced as `choices`. The parser already accepted
+    // this flag implicitly via allowUnknownFlags; making it explicit here
+    // gives `--help` a discoverable surface and lets the renderer assume
+    // a well-typed value alongside the action-time validation below.
+    {
+      name: 'queen-type',
+      description: `Queen leadership style (${QUEEN_TYPES.join(', ')}). Differentiation is prompt-shaped, not algorithmic.`,
+      type: 'string',
+      choices: [...QUEEN_TYPES],
+      default: 'strategic'
     }
   ],
   examples: [
@@ -593,7 +913,8 @@ const spawnCommand: Command = {
     { command: 'claude-flow hive-mind spawn -n 3 -r specialist', description: 'Spawn 3 specialists' },
     { command: 'claude-flow hive-mind spawn -t coder -p my-coder', description: 'Spawn coder with custom prefix' },
     { command: 'claude-flow hive-mind spawn --claude -o "Build a REST API"', description: 'Launch Claude Code with objective' },
-    { command: 'claude-flow hive-mind spawn -n 5 --claude -o "Research AI patterns"', description: 'Spawn workers and launch Claude Code' }
+    { command: 'claude-flow hive-mind spawn -n 5 --claude -o "Research AI patterns"', description: 'Spawn workers and launch Claude Code' },
+    { command: 'claude-flow hive-mind spawn --claude -o "Optimize" --queen-type adaptive', description: 'Adaptive queen (mode-switching by complexity)' }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     // Parse count with fallback to default
@@ -603,6 +924,24 @@ const spawnCommand: Command = {
     const prefix = (ctx.flags.prefix as string) || 'hive-worker';
     const launchClaude = ctx.flags.claude as boolean;
     let objective = (ctx.flags.objective as string) || ctx.args.join(' ');
+
+    // ADR-0125 §Specification: CLI-boundary validation of --queen-type.
+    // Per `feedback-no-fallbacks.md`, unknown values must fail loudly with a
+    // user-visible error before reaching `generateHiveMindPrompt`. The
+    // `default:` arm inside `generateHiveMindPrompt` is a defence-in-depth
+    // backstop for non-CLI callers; this is the user-facing failure surface.
+    //
+    // The exact error message is part of the CLI contract — acceptance tests
+    // assert against it verbatim.
+    const rawQueenType = ctx.flags.queenType ?? ctx.flags['queen-type'];
+    if (rawQueenType !== undefined && rawQueenType !== null && rawQueenType !== '') {
+      const qtCheck = validateQueenType(rawQueenType);
+      if (!qtCheck.valid) {
+        throw new Error(
+          `--queen-type must be one of ${QUEEN_TYPES.join('|')} (got "${String(rawQueenType)}")`
+        );
+      }
+    }
 
     output.printInfo(`Spawning ${count} ${role} agent(s)...`);
 

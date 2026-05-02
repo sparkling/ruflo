@@ -57,6 +57,126 @@ import { ConsensusEngine, createConsensusEngine } from './consensus/index.js';
 
 export type AgentDomain = 'queen' | 'security' | 'core' | 'integration' | 'support';
 
+// =============================================================================
+// ADR-0128 (T10) — Hive coordination topology types
+// =============================================================================
+//
+// `HiveTopology` is the CLI-advertised topology surface — the union of values
+// the user can pass via `--topology` to `hive-mind` commands. It is distinct
+// from `TopologyType` (in `./types.ts`) which describes the lower-level
+// adjacency-graph topology used by `TopologyManager` for leader-election and
+// node-connection state. The dispatch site here operates on `HiveTopology`
+// (protocol layer per ADR-0114), independent of `TopologyType` (state layer
+// per ADR-0105 Option C).
+//
+// Six values per ADR-0128 §Topology count reconciliation:
+//   - 5 concrete topologies that drive distinct coordination protocols
+//   - 1 selector (`adaptive`) that delegates to the T9 control loop
+//
+// Until ADR-0127 (T9) lands, `adaptive` throws a not-implemented marker at
+// dispatch time — there is NO silent fallback to `hierarchical-mesh` per
+// `feedback-no-fallbacks.md`.
+export type HiveTopology =
+  | 'hierarchical'
+  | 'mesh'
+  | 'hierarchical-mesh'
+  | 'ring'
+  | 'star'
+  | 'adaptive';
+
+/**
+ * Coordination protocol surfaces produced by the per-topology dispatch.
+ *
+ * `subscriptionSet` lists the agentIds that this worker subscribes to on
+ * `hive-mind_broadcast`. `'*'` is shorthand for "every other worker"; the
+ * concrete consumer expands it at the protocol layer when subscribing.
+ *
+ * `memoryNamespace` is the `hive-mind_memory` key prefix the worker may
+ * write to. Workers without write permission have `memoryWriteAllowed:
+ * false`.
+ *
+ * `peerVisibility` tags the topology's visibility shape for downstream
+ * tooling (logging, metrics, regression assertions). The values map 1:1 to
+ * the integration-test assertion vocabulary in
+ * `tests/unit/adr0128-topology-dispatch.test.mjs`.
+ *
+ * `ringPredecessorKey` / `ringSuccessorKey` are populated only for the
+ * `ring` branch — they record which slot the worker reads from and writes
+ * to in the deterministic chain.
+ *
+ * `subHives` is populated only for the `hierarchical-mesh` branch — it
+ * records the sub-hive partitioning + sub-queen assignment so the queen can
+ * gate top-tier broadcasts to sub-queens only.
+ */
+export interface TopologyDispatchResult {
+  topology: HiveTopology;
+  workers: Array<{
+    agentId: string;
+    /**
+     * `subscriptionSet` semantics:
+     * - hierarchical: `[queen]`
+     * - mesh: `[queen, ...peers]`
+     * - ring: `[]` (no broadcasts; coordination via memory only)
+     * - star: `[queen]` (queen broadcasts; workers do not subscribe to peers)
+     * - hierarchical-mesh: `[subQueen, ...sameSubHiveWorkers]` (mesh within cluster)
+     */
+    subscriptionSet: string[];
+    memoryNamespace: string;
+    memoryWriteAllowed: boolean;
+    /** Set only for `ring`: the predecessor's output key. */
+    ringPredecessorKey?: string;
+    /** Set only for `ring`: this worker's own output key (= successor's predecessor key). */
+    ringSuccessorKey?: string;
+    /** Set only for `hierarchical-mesh`: the sub-hive id the worker is partitioned into. */
+    subHiveId?: string;
+  }>;
+  peerVisibility:
+    | 'none'
+    | 'full'
+    | 'previous-neighbour-only'
+    | 'sub-hive-mesh-plus-subqueen-reports';
+  subHives?: Array<{
+    subHiveId: string;
+    subQueenAgentId: string;
+    workerAgentIds: string[];
+  }>;
+  /** Recursion depth used by `hierarchical-mesh` (always 1 — capped per ADR-0128). */
+  recursionDepth?: number;
+}
+
+/** Options accepted by `dispatchByTopology`. */
+export interface DispatchByTopologyOptions {
+  topology: HiveTopology;
+  queenAgentId: string;
+  workerAgentIds: string[];
+  /**
+   * Optional injected resolver for the `adaptive` branch — when ADR-0127
+   * (T9) lands, the control loop is wired here. The function returns the
+   * concrete topology to recurse into. If the resolver throws or is absent
+   * we throw the not-implemented marker rather than silently falling back.
+   */
+  adaptiveResolver?: (input: {
+    queenAgentId: string;
+    workerAgentIds: string[];
+  }) => HiveTopology | Promise<HiveTopology>;
+  /**
+   * Internal: how many `hierarchical-mesh` levels we have already nested.
+   * The dispatch caps recursion at 1 (top queen + sub-queens, no
+   * sub-sub-queens) per ADR-0128 §Refinement.
+   */
+  _recursionDepth?: number;
+}
+
+/** Stable list of CLI-advertised topology values; mirrors `TOPOLOGIES` in the CLI. */
+export const HIVE_TOPOLOGIES: ReadonlyArray<HiveTopology> = [
+  'hierarchical',
+  'mesh',
+  'hierarchical-mesh',
+  'ring',
+  'star',
+  'adaptive',
+];
+
 export interface DomainConfig {
   name: AgentDomain;
   agentNumbers: number[];
@@ -159,6 +279,17 @@ export class UnifiedSwarmCoordinator extends EventEmitter implements IUnifiedSwa
   private heartbeatInterval?: NodeJS.Timeout;
   private healthCheckInterval?: NodeJS.Timeout;
   private metricsInterval?: NodeJS.Timeout;
+
+  // ADR-0128 (T10) — hive-coordination topology selected for this coordinator.
+  // Distinct from `topologyManager.config.type` (which carries the lower-level
+  // adjacency-graph topology). Defaults to `hierarchical-mesh` to match the
+  // CLI's `--topology` default; mutated via `setHiveTopology()`.
+  private _hiveTopology: HiveTopology = 'hierarchical-mesh';
+  // Optional resolver for the `adaptive` branch — populated by ADR-0127 (T9).
+  private _adaptiveResolver?: (input: {
+    queenAgentId: string;
+    workerAgentIds: string[];
+  }) => HiveTopology | Promise<HiveTopology>;
 
   constructor(config: Partial<CoordinatorConfig> = {}) {
     super();
@@ -1482,7 +1613,305 @@ export class UnifiedSwarmCoordinator extends EventEmitter implements IUnifiedSwa
       domains: Array.from(this.domainConfigs.keys()),
     });
 
+    // ADR-0128 (T10): apply per-topology coordination protocol now that the
+    // worker set is known. The dispatch returns a description of broadcast
+    // subscriptions + memory permissions; we emit it as an event so the
+    // protocol consumer (MCP layer / queen prompt renderer) can wire each
+    // worker accordingly. Failure is loud (`feedback-no-fallbacks.md`) — an
+    // unknown topology or unresolved `adaptive` throws and aborts the burst.
+    const queenEntry = Array.from(results.entries()).find(
+      ([, info]) => info.domain === 'queen'
+    );
+    if (queenEntry) {
+      const queenAgentId = queenEntry[1].agentId;
+      const workerAgentIds = Array.from(results.values())
+        .filter(info => info.domain !== 'queen')
+        .map(info => info.agentId);
+      const dispatch = await this.dispatchByTopology({
+        topology: this._hiveTopology,
+        queenAgentId,
+        workerAgentIds,
+        adaptiveResolver: this._adaptiveResolver,
+      });
+      this.emitEvent('topology.dispatched', {
+        topology: dispatch.topology,
+        peerVisibility: dispatch.peerVisibility,
+        workerCount: dispatch.workers.length,
+        subHiveCount: dispatch.subHives?.length,
+      });
+    }
+
     return results;
+  }
+
+  /**
+   * ADR-0128 (T10) — set the hive-coordination topology this coordinator
+   * dispatches into at spawn time. Validated against `HIVE_TOPOLOGIES` —
+   * unknown values throw immediately (no silent default).
+   */
+  setHiveTopology(topology: HiveTopology): void {
+    if (!HIVE_TOPOLOGIES.includes(topology)) {
+      throw new Error(`unknown topology: ${topology}`);
+    }
+    this._hiveTopology = topology;
+  }
+
+  /** ADR-0128 (T10) — accessor for the active hive-coordination topology. */
+  getHiveTopology(): HiveTopology {
+    return this._hiveTopology;
+  }
+
+  /**
+   * ADR-0128 (T10) — register the adaptive resolver invoked when the
+   * coordinator dispatches with `topology: 'adaptive'`. ADR-0127 (T9) will
+   * call this once its control loop ships.
+   */
+  setAdaptiveResolver(
+    resolver: (input: {
+      queenAgentId: string;
+      workerAgentIds: string[];
+    }) => HiveTopology | Promise<HiveTopology>
+  ): void {
+    this._adaptiveResolver = resolver;
+  }
+
+  // =============================================================================
+  // ADR-0128 (T10) — per-topology coordination dispatch
+  // =============================================================================
+  //
+  // The dispatch site governs how workers see each other's outputs and how
+  // memory writes flow. It runs at the worker-spawn boundary (called from
+  // `spawnFullHierarchy` post-spawn, and may be called directly by ADR-0127
+  // (T9) after a topology mutation drains active tasks). It produces a
+  // `TopologyDispatchResult` that downstream protocol consumers use to
+  // configure each worker's `hive-mind_broadcast` subscription set and
+  // `hive-mind_memory` permissions.
+  //
+  // Architectural invariants (ADR-0114):
+  //   - Substrate (memory backend) stays topology-agnostic.
+  //   - Protocol layer (this dispatch site) owns broadcast/memory wiring.
+  //   - Execution layer (worker prompts, queen prompt) reads topology as
+  //     descriptive context — the prompt body is NOT load-bearing.
+  //
+  // Composition with prior ADRs:
+  //   - ADR-0105 Option C wired `TopologyManager` (state layer); this method
+  //     does not duplicate that adjacency state.
+  //   - ADR-0127 (T9) calls `dispatchByTopology` with `topology: 'adaptive'`
+  //     once it lands; until then we throw a clearly-named marker.
+  //   - ADR-0126 (T8) per-worker-type prompts compose with this dispatch by
+  //     reference — they do not duplicate the topology switch.
+  //
+  // No silent fallbacks (`feedback-no-fallbacks.md`): unknown topology
+  // throws; `adaptive` without a resolver throws.
+
+  /**
+   * Compute the per-topology coordination protocol for a set of workers.
+   *
+   * This does NOT mutate registered agent state — it returns the wiring
+   * description so the caller can apply broadcast subscriptions and memory
+   * permissions at the right point in the spawn pipeline.
+   *
+   * Throws:
+   *   - `Error("unknown topology: <value>")` for any value outside
+   *     {hierarchical, mesh, hierarchical-mesh, ring, star, adaptive}.
+   *   - `Error("adaptive topology dispatch requires T9/ADR-0127 — not yet implemented")`
+   *     when `topology: 'adaptive'` and no `adaptiveResolver` is supplied.
+   *   - `Error("hierarchical-mesh recursion cap exceeded ...")` if a caller
+   *     attempts to recurse more than one level.
+   */
+  async dispatchByTopology(
+    options: DispatchByTopologyOptions
+  ): Promise<TopologyDispatchResult> {
+    const { topology, queenAgentId, workerAgentIds } = options;
+    const recursionDepth = options._recursionDepth ?? 0;
+
+    switch (topology) {
+      case 'hierarchical': {
+        // Queen-only broadcast; workers subscribe only to queen, write to
+        // their own queen-readable private namespace. Peers cannot read
+        // each other's writes.
+        return {
+          topology: 'hierarchical',
+          peerVisibility: 'none',
+          workers: workerAgentIds.map(agentId => ({
+            agentId,
+            subscriptionSet: [queenAgentId],
+            memoryNamespace: `hive-mind/${queenAgentId}/private/${agentId}`,
+            memoryWriteAllowed: true,
+          })),
+          recursionDepth,
+        };
+      }
+
+      case 'mesh': {
+        // Full peer visibility: every worker subscribes to the queen + all
+        // other workers. Shared peer-visible memory namespace; coordination
+        // is O(N²) in worker count.
+        return {
+          topology: 'mesh',
+          peerVisibility: 'full',
+          workers: workerAgentIds.map(agentId => {
+            const peers = workerAgentIds.filter(other => other !== agentId);
+            return {
+              agentId,
+              subscriptionSet: [queenAgentId, ...peers],
+              memoryNamespace: `hive-mind/${queenAgentId}/shared`,
+              memoryWriteAllowed: true,
+            };
+          }),
+          recursionDepth,
+        };
+      }
+
+      case 'hierarchical-mesh': {
+        // Sub-hive clustering: partition workers into sub-hives, instantiate
+        // one sub-queen per sub-hive, recurse — sub-hive internals get
+        // `mesh`, the sub-queen tier gets `hierarchical` upward. Recursion
+        // capped at 1 (top queen + sub-queens, no sub-sub-queens) per
+        // ADR-0128 §Refinement.
+        if (recursionDepth >= 1) {
+          throw new Error(
+            `hierarchical-mesh recursion cap exceeded — depth ${recursionDepth} would create sub-sub-queens; ADR-0128 caps recursion at 1`
+          );
+        }
+        if (workerAgentIds.length === 0) {
+          return {
+            topology: 'hierarchical-mesh',
+            peerVisibility: 'sub-hive-mesh-plus-subqueen-reports',
+            workers: [],
+            subHives: [],
+            recursionDepth,
+          };
+        }
+        // Sub-hive size of ~3 keeps clusters tight while letting sub-queens
+        // summarise upward without flooding the queen. With <=3 workers we
+        // collapse to a single sub-hive (one sub-queen plus the remaining
+        // mesh workers); larger sets split into ceil(N/3) sub-hives.
+        const subHiveSize = workerAgentIds.length <= 3
+          ? workerAgentIds.length
+          : 3;
+        const subHiveCount = Math.max(1, Math.ceil(workerAgentIds.length / subHiveSize));
+        const subHives: NonNullable<TopologyDispatchResult['subHives']> = [];
+        const mergedWorkers: TopologyDispatchResult['workers'] = [];
+        for (let h = 0; h < subHiveCount; h++) {
+          const slice = workerAgentIds.slice(h * subHiveSize, (h + 1) * subHiveSize);
+          if (slice.length === 0) continue;
+          const subQueenAgentId = slice[0];
+          const subWorkerAgentIds = slice.slice(1);
+          const subHiveId = `sub-${h}`;
+
+          subHives.push({
+            subHiveId,
+            subQueenAgentId,
+            workerAgentIds: subWorkerAgentIds,
+          });
+
+          // Sub-hive internals: mesh among non-queen workers in the cluster.
+          const inner = await this.dispatchByTopology({
+            topology: 'mesh',
+            queenAgentId: subQueenAgentId,
+            workerAgentIds: subWorkerAgentIds,
+            _recursionDepth: recursionDepth + 1,
+          });
+          for (const w of inner.workers) {
+            mergedWorkers.push({
+              ...w,
+              subHiveId,
+            });
+          }
+
+          // Sub-queen wires hierarchically upward to the top queen.
+          mergedWorkers.push({
+            agentId: subQueenAgentId,
+            subscriptionSet: [queenAgentId],
+            memoryNamespace: `hive-mind/${queenAgentId}/sub/${subHiveId}/summary`,
+            memoryWriteAllowed: true,
+            subHiveId,
+          });
+        }
+        return {
+          topology: 'hierarchical-mesh',
+          peerVisibility: 'sub-hive-mesh-plus-subqueen-reports',
+          workers: mergedWorkers,
+          subHives,
+          recursionDepth,
+        };
+      }
+
+      case 'ring': {
+        // Deterministic chain: worker N reads (N-1 mod N)'s output key,
+        // writes for (N+1 mod N) to consume. No broadcasts.
+        const N = workerAgentIds.length;
+        return {
+          topology: 'ring',
+          peerVisibility: 'previous-neighbour-only',
+          workers: workerAgentIds.map((agentId, i) => {
+            const predecessorIdx = (i - 1 + N) % N;
+            return {
+              agentId,
+              subscriptionSet: [],
+              memoryNamespace: `hive-mind/${queenAgentId}/ring`,
+              memoryWriteAllowed: true,
+              ringPredecessorKey: `hive-mind/${queenAgentId}/ring/slot-${predecessorIdx}`,
+              // Worker writes to slot-${i}; this is what slot ((i+1) mod N)
+              // reads as its predecessor.
+              ringSuccessorKey: `hive-mind/${queenAgentId}/ring/slot-${i}`,
+            };
+          }),
+          recursionDepth,
+        };
+      }
+
+      case 'star': {
+        // Hub-and-spoke: queen is sole memory writer; workers are read-only
+        // on memory and surface outputs via `hive-mind_status`. Workers do
+        // not see each other; only queen-aggregated state propagates.
+        return {
+          topology: 'star',
+          peerVisibility: 'none',
+          workers: workerAgentIds.map(agentId => ({
+            agentId,
+            subscriptionSet: [queenAgentId],
+            memoryNamespace: `hive-mind/${queenAgentId}/aggregate`,
+            // Queen is the sole writer; workers must NOT write to memory.
+            memoryWriteAllowed: false,
+          })),
+          recursionDepth,
+        };
+      }
+
+      case 'adaptive': {
+        // ADR-0127 (T9) hand-off. Until T9 ships its control loop, throw a
+        // clearly-named not-implemented marker. NO silent fallback to
+        // hierarchical-mesh, per `feedback-no-fallbacks.md`.
+        if (!options.adaptiveResolver) {
+          throw new Error(
+            'adaptive topology dispatch requires T9/ADR-0127 — not yet implemented'
+          );
+        }
+        const concrete = await options.adaptiveResolver({
+          queenAgentId,
+          workerAgentIds,
+        });
+        if (concrete === 'adaptive') {
+          throw new Error(
+            'adaptive topology resolver returned "adaptive" — would cause infinite recursion; T9 must resolve to a concrete topology'
+          );
+        }
+        return this.dispatchByTopology({
+          topology: concrete,
+          queenAgentId,
+          workerAgentIds,
+          _recursionDepth: recursionDepth,
+        });
+      }
+
+      default: {
+        // Per `feedback-no-fallbacks.md`: never silently substitute a default.
+        const exhaustive: never = topology;
+        throw new Error(`unknown topology: ${String(exhaustive)}`);
+      }
+    }
   }
 
   private createDomainCapabilities(domain: AgentDomain): AgentCapabilities {

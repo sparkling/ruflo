@@ -359,6 +359,7 @@ export type SwarmEventType =
   | 'task.queued'
   | 'topology.updated'
   | 'topology.rebalanced'
+  | 'topology.dispatched'
   | 'consensus.proposed'
   | 'consensus.achieved'
   | 'consensus.failed'
