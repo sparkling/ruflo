@@ -63,19 +63,30 @@ function concurrencyRules(): string {
 }
 
 function agentOrchestration(): string {
-  // ADR-0098: the Agent tool is the default for multi-agent work. claude-flow
-  // swarm state should only be created when the user explicitly asks for it.
+  // ADR-0098 anti-sprawl applies to swarm_init only.
+  // ADR-0115: hive-mind_spawn is the council-protocol entry point —
+  // do NOT bundle it into the swarm-sprawl prohibition. Council
+  // sessions (queen + named experts + voting + Byzantine consensus +
+  // collective memory) are the intended use case for hive-mind_spawn
+  // and shouldn't be discouraged by anti-sprawl phrasing.
   return `## Agent Orchestration
 
-- DEFAULT: use Claude Code's built-in \`Agent\` tool for multi-file or cross-module tasks.
-  It spawns subagents with ZERO coordination state, ZERO setup, ZERO cleanup.
+- DEFAULT: use Claude Code's built-in \`Agent\` tool for parallel work delegation
+  (multi-file tasks, fan-out research, independent subagent jobs). It spawns
+  subagents with ZERO coordination state, ZERO setup, ZERO cleanup.
 - ALWAYS set \`run_in_background: true\` when spawning agents
 - Put ALL agent spawns in a single message for parallel execution
 - After spawning agents, STOP and wait for results — do not poll or check status
-- DO NOT call \`swarm_init\`, \`hive-mind_spawn\`, or \`ruflo swarm init\` reflexively
-  at the start of tasks. Only when:
-    (a) the user explicitly asks for claude-flow coordination, or
-    (b) persistent cross-session coordination state is actually required.
+- Use \`hive-mind_spawn\` (or \`ruflo hive-mind spawn --claude\`) when convening
+  a COUNCIL — named experts with consistent perspectives, per-question voting,
+  Devil's Advocate role, Byzantine consensus, Queen synthesis with named
+  conditions, persistent collective memory. Hive-mind is the right primitive
+  for high-stakes decisions, ADR ratification, multi-perspective review.
+- DO NOT call \`swarm_init\` or \`ruflo swarm init\` reflexively at the start
+  of tasks (ADR-0098 anti-sprawl — applies to flat-coordination swarms only,
+  NOT to hive-mind councils). Use \`swarm_init\` only when (a) the user explicitly
+  asks for a claude-flow swarm, or (b) persistent cross-session coordination
+  state is actually required.
 - If you DO need a claude-flow swarm: the CLI now reuses matching running swarms
   automatically (ADR-0098 config-fingerprint dedupe). Pass \`--new\` only when
   you genuinely need a parallel swarm with the same config.
