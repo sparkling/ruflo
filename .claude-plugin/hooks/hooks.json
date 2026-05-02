@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | npx @sparkleideas/cli@latest hooks modify-bash"
+            "command": "cat | npx @sparkleideas/cli@latest hooks pre-bash"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | npx @sparkleideas/cli@latest hooks modify-file"
+            "command": "cat | npx @sparkleideas/cli@latest hooks pre-edit"
           }
         ]
       }
