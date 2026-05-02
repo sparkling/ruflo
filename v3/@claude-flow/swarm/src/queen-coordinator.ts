@@ -199,6 +199,14 @@ export interface HealthReport {
   metrics: HealthMetrics;
   /** Recommendations for improvement */
   recommendations: string[];
+  /**
+   * Whether a network partition has been detected in the swarm.
+   * T9 pre-flight stub (ADR-0127): type-level field reserved for runtime
+   * partition-detection logic landing in Wave 3 (`adaptive-loop.ts`). Currently
+   * always `false` at construction; T9 will populate based on heartbeat
+   * asymmetry / quorum-loss signals from `unified-coordinator.ts`.
+   */
+  partitionDetected: boolean;
 }
 
 /**
@@ -1462,6 +1470,9 @@ export class QueenCoordinator extends EventEmitter {
       alerts,
       metrics: healthMetrics,
       recommendations,
+      // T9 pre-flight stub (ADR-0127): default-initialized; runtime detection
+      // logic lands in Wave 3 via adaptive-loop.ts. Do not populate here.
+      partitionDetected: false,
     };
 
     // Store in history
