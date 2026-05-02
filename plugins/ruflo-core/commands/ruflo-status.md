@@ -5,7 +5,7 @@ description: Show Ruflo system health, MCP server status, and active agents
 $ARGUMENTS
 Run diagnostics and show system status.
 ```bash
-npx @claude-flow/cli@latest doctor
-npx @claude-flow/cli@latest status
+npx @sparkleideas/cli@latest doctor
+npx @sparkleideas/cli@latest status
 ```
-To auto-fix issues, run `npx @claude-flow/cli@latest doctor --fix` separately.
+To auto-fix issues, run `npx @sparkleideas/cli@latest doctor --fix` separately.

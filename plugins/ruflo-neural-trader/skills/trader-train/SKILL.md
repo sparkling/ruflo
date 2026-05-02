@@ -1,7 +1,7 @@
 ---
 name: trader-train
 description: Train neural models (LSTM, Transformer, N-BEATS) on market data using npx neural-trader with confidence intervals
-allowed-tools: Bash Read mcp__claude-flow__memory_store mcp__claude-flow__memory_search mcp__claude-flow__neural_train
+allowed-tools: Bash Read mcp__ruflo__memory_store mcp__ruflo__memory_search mcp__ruflo__neural_train
 argument-hint: "<lstm|transformer|nbeats> --symbol <TICKER>"
 ---
 Train neural prediction models using neural-trader's ML engine.
@@ -25,6 +25,6 @@ Steps:
    npx neural-trader --model-compare --symbol TICKER --models "lstm,transformer,nbeats"
    ```
 6. Store model results:
-   `mcp__claude-flow__memory_store({ key: "model-MODEL-TICKER-DATE", value: "TRAINING_RESULTS", namespace: "trading-models" })`
+   `mcp__ruflo__memory_store({ key: "model-MODEL-TICKER-DATE", value: "TRAINING_RESULTS", namespace: "trading-models" })`
 7. Train SONA on model outcomes:
-   `mcp__claude-flow__neural_train({ patternType: "trading-model", epochs: 10 })`
+   `mcp__ruflo__neural_train({ patternType: "trading-model", epochs: 10 })`

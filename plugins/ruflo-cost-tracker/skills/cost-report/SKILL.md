@@ -2,7 +2,7 @@
 name: cost-report
 description: Generate a cost report showing token usage and USD costs by agent and model
 argument-hint: "[--period today]"
-allowed-tools: mcp__claude-flow__agentdb_hierarchical-recall mcp__claude-flow__agentdb_semantic-route mcp__claude-flow__agentdb_pattern-search Bash
+allowed-tools: mcp__ruflo__agentdb_hierarchical-recall mcp__ruflo__agentdb_semantic-route mcp__ruflo__agentdb_pattern-search Bash
 ---
 
 # Cost Report
@@ -15,7 +15,7 @@ When you need to understand current spending -- how much each agent costs, which
 
 ## Steps
 
-1. **Retrieve usage** -- call `mcp__claude-flow__agentdb_hierarchical-recall` to fetch token usage records from the `cost-tracking` namespace for the specified period (default: today)
+1. **Retrieve usage** -- call `mcp__ruflo__agentdb_hierarchical-recall` to fetch token usage records from the `cost-tracking` namespace for the specified period (default: today)
 2. **Compute costs** -- for each record, calculate cost using model pricing:
    - Haiku: $0.25/M input, $1.25/M output
    - Sonnet: $3.00/M input, $15.00/M output
@@ -29,5 +29,5 @@ When you need to understand current spending -- how much each agent costs, which
 ## CLI alternative
 
 ```bash
-npx @claude-flow/cli@latest memory search --query "cost report for today" --namespace cost-tracking
+npx @sparkleideas/cli@latest memory search --query "cost report for today" --namespace cost-tracking
 ```

@@ -39,12 +39,12 @@ Store the domain model as a navigable graph:
 
 ```bash
 # Store bounded context hierarchy
-mcp__claude-flow__agentdb_hierarchical-store --parent "domain" --child "context:ordering" --relation "contains"
-mcp__claude-flow__agentdb_hierarchical-store --parent "context:ordering" --child "aggregate:order" --relation "contains"
+mcp__ruflo__agentdb_hierarchical-store --parent "domain" --child "context:ordering" --relation "contains"
+mcp__ruflo__agentdb_hierarchical-store --parent "context:ordering" --child "aggregate:order" --relation "contains"
 
 # Store context dependencies
-mcp__claude-flow__agentdb_causal-edge --from "context:ordering" --to "context:inventory" --type "depends-on"
-mcp__claude-flow__agentdb_causal-edge --from "context:ordering" --to "context:payments" --type "publishes-events-to"
+mcp__ruflo__agentdb_causal-edge --from "context:ordering" --to "context:inventory" --type "depends-on"
+mcp__ruflo__agentdb_causal-edge --from "context:ordering" --to "context:payments" --type "publishes-events-to"
 ```
 
 ## Directory Structure per Context
@@ -65,8 +65,8 @@ src/<context-name>/
 ## Tools
 
 - `Read`, `Grep`, `Glob` -- analyze existing codebase for domain concepts
-- `npx @claude-flow/cli@latest memory search --query "domain MODEL" --namespace patterns` -- retrieve prior domain models
-- `npx @claude-flow/cli@latest memory store --key "domain-CONTEXT" --value "MODEL" --namespace tasks` -- persist domain decisions
+- `npx @sparkleideas/cli@latest memory search --query "domain MODEL" --namespace patterns` -- retrieve prior domain models
+- `npx @sparkleideas/cli@latest memory store --key "domain-CONTEXT" --value "MODEL" --namespace tasks` -- persist domain decisions
 
 ## Cross-References
 
@@ -79,8 +79,8 @@ src/<context-name>/
 After completing tasks, store successful patterns for future domain modeling:
 
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
-npx @claude-flow/cli@latest memory store --key "ddd-pattern-CONTEXT" --value "APPROACH" --namespace patterns
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest memory store --key "ddd-pattern-CONTEXT" --value "APPROACH" --namespace patterns
 ```
 
 ## Memory
@@ -88,6 +88,6 @@ npx @claude-flow/cli@latest memory store --key "ddd-pattern-CONTEXT" --value "AP
 Before starting work, search for prior domain models and patterns:
 
 ```bash
-npx @claude-flow/cli@latest memory search --query "bounded context DOMAIN" --namespace patterns
-npx @claude-flow/cli@latest memory search --query "aggregate DOMAIN" --namespace tasks
+npx @sparkleideas/cli@latest memory search --query "bounded context DOMAIN" --namespace patterns
+npx @sparkleideas/cli@latest memory search --query "aggregate DOMAIN" --namespace tasks
 ```

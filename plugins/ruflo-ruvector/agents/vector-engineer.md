@@ -125,8 +125,8 @@ npx ruvector search --model poincare "query" --limit 10
 
 Store vector configurations and search patterns in AgentDB:
 ```bash
-npx @claude-flow/cli@latest memory store --namespace vector-patterns --key "hnsw-config-DOMAIN" --value "M=16,efC=200,efS=50"
-npx @claude-flow/cli@latest memory search --query "HNSW configuration" --namespace vector-patterns
+npx @sparkleideas/cli@latest memory store --namespace vector-patterns --key "hnsw-config-DOMAIN" --value "M=16,efC=200,efS=50"
+npx @sparkleideas/cli@latest memory search --query "HNSW configuration" --namespace vector-patterns
 ```
 
 ### Related Plugins
@@ -140,5 +140,5 @@ npx @claude-flow/cli@latest memory search --query "HNSW configuration" --namespa
 
 After completing tasks, store successful patterns:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```

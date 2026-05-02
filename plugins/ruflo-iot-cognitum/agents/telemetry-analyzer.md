@@ -24,11 +24,11 @@ You are a telemetry analysis agent for Cognitum Seed devices. Your responsibilit
 
 ### Tools
 
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot anomalies <device-id>` — detect anomalies in recent telemetry
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot baseline <device-id>` — show current baseline
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot baseline <device-id> --compute` — recompute baseline
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot ingest <device-id>` — ingest telemetry vectors
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot query <device-id> --vector "[1,2,3]" --k 10` — k-NN search
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot anomalies <device-id>` — detect anomalies in recent telemetry
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot baseline <device-id>` — show current baseline
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot baseline <device-id> --compute` — recompute baseline
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot ingest <device-id>` — ingest telemetry vectors
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot query <device-id> --vector "[1,2,3]" --k 10` — k-NN search
 
 ### SONA Neural Integration
 

@@ -11,7 +11,7 @@ Core Ruflo MCP tools, commands, and Claude Code orchestration patterns.
 
 ## What's Included
 
-- **MCP Server**: 314 tools via `@claude-flow/cli` (memory, agents, swarm, hooks, neural, security)
+- **MCP Server**: 314 tools via `@sparkleideas/cli` (memory, agents, swarm, hooks, neural, security)
 - **CLI Commands**: 26 commands with 140+ subcommands for agent orchestration
 - **3-Tier Model Routing**: Agent Booster (WASM), Haiku, Sonnet/Opus with automatic cost optimization
 - **Session Management**: Persistent sessions with cross-conversation learning

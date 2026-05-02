@@ -75,8 +75,8 @@ Planning principles:
 - **Mixed Execution**: Choose between LLM, code, or hybrid execution per action
 
 Use MCP tools for persistence and learning:
-- `mcp__claude-flow__memory_store` / `memory_search` — store and retrieve plans in `goap-plans` namespace
-- `mcp__claude-flow__task_create` / `task_update` — create and track plan steps as tasks
-- `mcp__claude-flow__hooks_intelligence_trajectory-start` / `trajectory-step` / `trajectory-end` — record execution trajectories for learning
-- `mcp__claude-flow__neural_predict` — predict optimal approaches based on learned patterns
-- `mcp__claude-flow__workflow_create` / `workflow_execute` — codify repeatable plans as workflows
+- `mcp__ruflo__memory_store` / `memory_search` — store and retrieve plans in `goap-plans` namespace
+- `mcp__ruflo__task_create` / `task_update` — create and track plan steps as tasks
+- `mcp__ruflo__hooks_intelligence_trajectory-start` / `trajectory-step` / `trajectory-end` — record execution trajectories for learning
+- `mcp__ruflo__neural_predict` — predict optimal approaches based on learned patterns
+- `mcp__ruflo__workflow_create` / `workflow_execute` — codify repeatable plans as workflows

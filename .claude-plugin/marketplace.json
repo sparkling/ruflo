@@ -2,8 +2,8 @@
   "name": "ruflo",
   "description": "RuFlo Marketplace: Claude Code native agents, swarms, workers, and MCP tools for continuous software engineering",
   "owner": {
-    "name": "ruvnet",
-    "url": "https://github.com/ruvnet"
+    "name": "sparkling",
+    "url": "https://github.com/sparkling"
   },
   "plugins": [
     {

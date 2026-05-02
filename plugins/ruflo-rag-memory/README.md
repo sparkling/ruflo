@@ -113,10 +113,10 @@ Results include source attribution: `claude-code`, `auto-memory`, or `agentdb`.
 
 ```bash
 # CLI
-npx @claude-flow/cli@latest memory search --query "auth patterns" --smart --limit 10
+npx @sparkleideas/cli@latest memory search --query "auth patterns" --smart --limit 10
 
 # MCP
-mcp__claude-flow__memory_search({ query: "auth patterns", smart: true, limit: 10 })
+mcp__ruflo__memory_search({ query: "auth patterns", smart: true, limit: 10 })
 ```
 
 Best for multi-session recall, temporal queries ("what did we decide last week?"), and diverse result sets.
@@ -128,7 +128,7 @@ Queries across all namespaces simultaneously with MMR diversity reranking:
 ```bash
 # Via MCP: memory_search_unified({ query: "auth security", limit: 5 })
 # Via CLI:
-npx @claude-flow/cli@latest memory search --query "auth security" --limit 5
+npx @sparkleideas/cli@latest memory search --query "auth security" --limit 5
 ```
 
 ## HNSW Performance

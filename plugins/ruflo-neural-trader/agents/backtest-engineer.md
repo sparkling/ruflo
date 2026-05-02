@@ -47,12 +47,12 @@ npx neural-trader --backtest --strategy NAME --symbol TICKER --benchmark SPY
 5. Compare against benchmark (SPY buy-and-hold)
 6. Store results and train SONA:
    ```bash
-   npx @claude-flow/cli@latest memory store --namespace trading-backtests --key "bt-STRATEGY-DATE" --value "RESULTS"
-   npx @claude-flow/cli@latest neural train --pattern-type trading-strategy --epochs 10
+   npx @sparkleideas/cli@latest memory store --namespace trading-backtests --key "bt-STRATEGY-DATE" --value "RESULTS"
+   npx @sparkleideas/cli@latest neural train --pattern-type trading-strategy --epochs 10
    ```
 
 ### Neural Learning
 
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```

@@ -19,11 +19,11 @@ Subcommands:
 
 Steps by subcommand:
 
-**init**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation init`
-**join**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation join ENDPOINT`
-**leave**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation leave`
-**peers**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation peers`
-**status**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation status`
-**audit**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation audit --compliance MODE --since DATE`
-**trust**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation trust NODE_ID --review`
-**config**: `npx -y -p @claude-flow/plugin-agent-federation@latest ruflo-federation config --pii-policy PATH`
+**init**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation init`
+**join**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation join ENDPOINT`
+**leave**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation leave`
+**peers**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation peers`
+**status**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation status`
+**audit**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation audit --compliance MODE --since DATE`
+**trust**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation trust NODE_ID --review`
+**config**: `npx -y -p @sparkleideas/plugin-agent-federation@latest ruflo-federation config --pii-policy PATH`

@@ -50,31 +50,31 @@ Each candlestick pattern is encoded as a fixed-length vector:
 
 ### Tools
 
-- `mcp__claude-flow__agentdb_hierarchical-store` -- store normalized OHLCV data and pattern metadata
-- `mcp__claude-flow__agentdb_hierarchical-recall` -- recall historical market data by symbol/period
-- `mcp__claude-flow__agentdb_pattern-store` -- store detected candlestick patterns with vectors
-- `mcp__claude-flow__agentdb_pattern-search` -- search for similar patterns via HNSW
-- `mcp__claude-flow__agentdb_semantic-route` -- route queries to relevant market data sources
-- `mcp__claude-flow__embeddings_embed` -- generate embeddings for pattern descriptions
-- `mcp__claude-flow__ruvllm_hnsw_create` -- create HNSW index for pattern vectors
-- `mcp__claude-flow__ruvllm_hnsw_add` -- add pattern vectors to HNSW index
-- `mcp__claude-flow__ruvllm_hnsw_route` -- nearest-neighbor search in pattern index
+- `mcp__ruflo__agentdb_hierarchical-store` -- store normalized OHLCV data and pattern metadata
+- `mcp__ruflo__agentdb_hierarchical-recall` -- recall historical market data by symbol/period
+- `mcp__ruflo__agentdb_pattern-store` -- store detected candlestick patterns with vectors
+- `mcp__ruflo__agentdb_pattern-search` -- search for similar patterns via HNSW
+- `mcp__ruflo__agentdb_semantic-route` -- route queries to relevant market data sources
+- `mcp__ruflo__embeddings_embed` -- generate embeddings for pattern descriptions
+- `mcp__ruflo__ruvllm_hnsw_create` -- create HNSW index for pattern vectors
+- `mcp__ruflo__ruvllm_hnsw_add` -- add pattern vectors to HNSW index
+- `mcp__ruflo__ruvllm_hnsw_route` -- nearest-neighbor search in pattern index
 
 ### Neural Learning
 
 After successful data ingestion or pattern detection, train patterns:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
-npx @claude-flow/cli@latest neural train --pattern-type market-data --epochs 15
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest neural train --pattern-type market-data --epochs 15
 ```
 
 ### Memory Learning
 
 Store ingested data summaries and detected patterns:
 ```bash
-npx @claude-flow/cli@latest memory store --namespace market-data --key "symbol-SYMBOL" --value "OHLCV_SUMMARY_JSON"
-npx @claude-flow/cli@latest memory store --namespace market-patterns --key "pattern-PATTERN_ID" --value "PATTERN_METADATA_JSON"
-npx @claude-flow/cli@latest memory search --query "bearish reversal patterns for AAPL" --namespace market-patterns
+npx @sparkleideas/cli@latest memory store --namespace market-data --key "symbol-SYMBOL" --value "OHLCV_SUMMARY_JSON"
+npx @sparkleideas/cli@latest memory store --namespace market-patterns --key "pattern-PATTERN_ID" --value "PATTERN_METADATA_JSON"
+npx @sparkleideas/cli@latest memory search --query "bearish reversal patterns for AAPL" --namespace market-patterns
 ```
 
 ### Related Plugins

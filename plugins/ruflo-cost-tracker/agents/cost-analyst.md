@@ -74,27 +74,27 @@ Optimization Opportunities:
 
 ### Tools
 
-- `mcp__claude-flow__agentdb_hierarchical-store` -- store usage records and budget configuration
-- `mcp__claude-flow__agentdb_hierarchical-recall` -- recall usage history and budget status
-- `mcp__claude-flow__agentdb_pattern-store` -- store cost optimization patterns
-- `mcp__claude-flow__agentdb_pattern-search` -- search for cost reduction strategies
-- `mcp__claude-flow__agentdb_semantic-route` -- route cost queries to relevant data
+- `mcp__ruflo__agentdb_hierarchical-store` -- store usage records and budget configuration
+- `mcp__ruflo__agentdb_hierarchical-recall` -- recall usage history and budget status
+- `mcp__ruflo__agentdb_pattern-store` -- store cost optimization patterns
+- `mcp__ruflo__agentdb_pattern-search` -- search for cost reduction strategies
+- `mcp__ruflo__agentdb_semantic-route` -- route cost queries to relevant data
 
 ### Neural Learning
 
 After generating cost reports or applying optimizations, train patterns:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
-npx @claude-flow/cli@latest neural train --pattern-type cost-optimization --epochs 5
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest neural train --pattern-type cost-optimization --epochs 5
 ```
 
 ### Memory Learning
 
 Store cost patterns and optimization results:
 ```bash
-npx @claude-flow/cli@latest memory store --namespace cost-tracking --key "report-DATE" --value "REPORT_JSON"
-npx @claude-flow/cli@latest memory store --namespace cost-patterns --key "optimization-OPT_NAME" --value "OPTIMIZATION_RESULT_JSON"
-npx @claude-flow/cli@latest memory search --query "cost savings from model downgrades" --namespace cost-patterns
+npx @sparkleideas/cli@latest memory store --namespace cost-tracking --key "report-DATE" --value "REPORT_JSON"
+npx @sparkleideas/cli@latest memory store --namespace cost-patterns --key "optimization-OPT_NAME" --value "OPTIMIZATION_RESULT_JSON"
+npx @sparkleideas/cli@latest memory search --query "cost savings from model downgrades" --namespace cost-patterns
 ```
 
 ### Related Plugins

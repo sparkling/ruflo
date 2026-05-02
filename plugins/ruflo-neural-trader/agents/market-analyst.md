@@ -41,22 +41,22 @@ npx neural-trader --sector-analysis --sectors "tech,healthcare,energy"
 3. Check correlations: `npx neural-trader --correlation --symbols "TICKERS" --window 30d`
 4. Store analysis in memory:
    ```bash
-   npx @claude-flow/cli@latest memory store --namespace trading-analysis --key "regime-TICKER-DATE" --value "ANALYSIS"
+   npx @sparkleideas/cli@latest memory store --namespace trading-analysis --key "regime-TICKER-DATE" --value "ANALYSIS"
    ```
 5. Compare with historical regimes:
    ```bash
-   npx @claude-flow/cli@latest memory search --query "similar regime to CURRENT_REGIME" --namespace trading-analysis
+   npx @sparkleideas/cli@latest memory search --query "similar regime to CURRENT_REGIME" --namespace trading-analysis
    ```
 
 ### Tools
 
 - `npx neural-trader` — technical analysis and regime detection
-- `mcp__claude-flow__memory_store` / `memory_search` — persist and query analysis history
-- `mcp__claude-flow__neural_predict` — SONA regime prediction
-- `mcp__claude-flow__agentdb_pattern-search` — find similar historical patterns
+- `mcp__ruflo__memory_store` / `memory_search` — persist and query analysis history
+- `mcp__ruflo__neural_predict` — SONA regime prediction
+- `mcp__ruflo__agentdb_pattern-search` — find similar historical patterns
 
 ### Neural Learning
 
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```

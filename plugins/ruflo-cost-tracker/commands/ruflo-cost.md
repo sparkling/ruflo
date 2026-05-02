@@ -20,7 +20,7 @@ Cost tracking commands:
 5. Display: dimension value, input tokens, output tokens, cache tokens, total cost, share %
 
 **`cost budget set <amount>`** -- Set a budget limit in USD.
-1. Store the budget configuration via `mcp__claude-flow__agentdb_hierarchical-store`
+1. Store the budget configuration via `mcp__ruflo__agentdb_hierarchical-store`
 2. Configure alert thresholds: info at 50%, warning at 75%, critical at 90%, hard stop at 100%
 3. Report: budget set, current spend, remaining budget, alert thresholds
 

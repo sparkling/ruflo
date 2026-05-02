@@ -2,7 +2,7 @@
 name: adr-index
 description: Build or rebuild the ADR index and dependency graph in AgentDB
 argument-hint: ""
-allowed-tools: mcp__claude-flow__agentdb_hierarchical-store mcp__claude-flow__agentdb_hierarchical-query mcp__claude-flow__agentdb_causal-edge mcp__claude-flow__agentdb_causal-query mcp__claude-flow__memory_store mcp__claude-flow__memory_search Bash Read Grep Glob
+allowed-tools: mcp__ruflo__agentdb_hierarchical-store mcp__ruflo__agentdb_hierarchical-query mcp__ruflo__agentdb_causal-edge mcp__ruflo__agentdb_causal-query mcp__ruflo__memory_store mcp__ruflo__memory_search Bash Read Grep Glob
 ---
 
 # ADR Index
@@ -25,23 +25,23 @@ After importing ADRs from another project, when the AgentDB graph is out of sync
    - **Tags**: from the `**Tags**:` line
    - **Links**: from the `## Links` section (supersedes, amended-by, related)
 
-3. **Store in AgentDB** -- For each ADR, call `mcp__claude-flow__agentdb_hierarchical-store` with:
+3. **Store in AgentDB** -- For each ADR, call `mcp__ruflo__agentdb_hierarchical-store` with:
    - path: `adr/<adr-id>`
    - value: `{ "id": "<id>", "title": "<title>", "status": "<status>", "date": "<date>", "tags": "<tags>", "file": "<filepath>" }`
 
 4. **Build causal edges** -- For each ADR with links:
-   - "Supersedes ADR-XXX" -> `mcp__claude-flow__agentdb_causal-edge` with `from: ADR-XXX`, `to: <current>`, `relation: supersedes`
-   - "Amended by ADR-YYY" -> `mcp__claude-flow__agentdb_causal-edge` with `from: <current>`, `to: ADR-YYY`, `relation: amends`
-   - "Related: ADR-ZZZ" -> `mcp__claude-flow__agentdb_causal-edge` with `from: <current>`, `to: ADR-ZZZ`, `relation: related`
-   - "Depends on ADR-WWW" -> `mcp__claude-flow__agentdb_causal-edge` with `from: <current>`, `to: ADR-WWW`, `relation: depends-on`
+   - "Supersedes ADR-XXX" -> `mcp__ruflo__agentdb_causal-edge` with `from: ADR-XXX`, `to: <current>`, `relation: supersedes`
+   - "Amended by ADR-YYY" -> `mcp__ruflo__agentdb_causal-edge` with `from: <current>`, `to: ADR-YYY`, `relation: amends`
+   - "Related: ADR-ZZZ" -> `mcp__ruflo__agentdb_causal-edge` with `from: <current>`, `to: ADR-ZZZ`, `relation: related`
+   - "Depends on ADR-WWW" -> `mcp__ruflo__agentdb_causal-edge` with `from: <current>`, `to: ADR-WWW`, `relation: depends-on`
 
-5. **Store in memory** -- For each ADR, call `mcp__claude-flow__memory_store` with:
+5. **Store in memory** -- For each ADR, call `mcp__ruflo__memory_store` with:
    - namespace: `adr-patterns`
    - key: `<adr-id>`
    - value: `<title> — <first paragraph of Context section>`
    This enables semantic search across ADRs.
 
-6. **Verify graph** -- Call `mcp__claude-flow__agentdb_causal-query` to retrieve all edges and verify:
+6. **Verify graph** -- Call `mcp__ruflo__agentdb_causal-query` to retrieve all edges and verify:
    - No dangling references (edges pointing to non-existent ADRs)
    - No circular supersedes chains
    - All superseded ADRs have status "superseded"

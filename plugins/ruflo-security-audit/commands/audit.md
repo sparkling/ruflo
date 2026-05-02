@@ -10,9 +10,9 @@ Usage: /audit [--depth quick|standard|full] [--path <dir>] [--fix]
 Defaults to `--depth standard` on the current project root. Parse the depth from $ARGUMENTS (quick, standard, or full).
 
 Steps:
-1. `npx @claude-flow/cli@latest security scan --depth DEPTH`
-2. `npx @claude-flow/cli@latest security cve --check`
-3. `npx @claude-flow/cli@latest security report --format markdown`
+1. `npx @sparkleideas/cli@latest security scan --depth DEPTH`
+2. `npx @sparkleideas/cli@latest security cve --check`
+3. `npx @sparkleideas/cli@latest security report --format markdown`
 
 Store findings in memory for pattern training:
-`npx @claude-flow/cli@latest memory store --namespace security --key "audit-YYYY-MM-DD" --value "FINDINGS_SUMMARY"`
+`npx @sparkleideas/cli@latest memory store --namespace security --key "audit-YYYY-MM-DD" --value "FINDINGS_SUMMARY"`

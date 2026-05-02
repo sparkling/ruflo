@@ -2,7 +2,7 @@
 name: vector-cluster
 description: Cluster vectors by similarity using npx ruvector k-means or density-based methods with labeled group summaries
 argument-hint: "<namespace> [--k N]"
-allowed-tools: Bash Read mcp__claude-flow__memory_search mcp__claude-flow__memory_store mcp__claude-flow__memory_list
+allowed-tools: Bash Read mcp__ruflo__memory_search mcp__ruflo__memory_store mcp__ruflo__memory_list
 ---
 
 # Vector Cluster
@@ -24,7 +24,7 @@ Use this skill when you have a collection of embeddings and want to discover nat
    - With auto-detection: `npx ruvector cluster --namespace NAMESPACE --density`
 3. **Review output** -- ruvector reports: cluster ID, label, member count, cohesion score, and outliers (for density mode)
 4. **Store results**:
-   `mcp__claude-flow__memory_store({ key: "clusters-NAMESPACE-TIMESTAMP", value: "CLUSTER_ASSIGNMENTS", namespace: "vector-clusters" })`
+   `mcp__ruflo__memory_store({ key: "clusters-NAMESPACE-TIMESTAMP", value: "CLUSTER_ASSIGNMENTS", namespace: "vector-clusters" })`
 
 ## Interpreting results
 

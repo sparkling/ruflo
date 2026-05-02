@@ -16,17 +16,17 @@ You are an AgentDB specialist for the Ruflo memory system. Your responsibilities
 
 | Tool Prefix | Operations |
 |-------------|-----------|
-| `mcp__claude-flow__agentdb_semantic-route` | Route queries to best knowledge source |
-| `mcp__claude-flow__agentdb_hierarchical-*` | Store/recall structured hierarchical data |
-| `mcp__claude-flow__agentdb_pattern-*` | Store/search learned patterns |
-| `mcp__claude-flow__agentdb_causal-edge` | Link related knowledge causally |
-| `mcp__claude-flow__agentdb_context-synthesize` | Synthesize context from multiple sources |
-| `mcp__claude-flow__agentdb_batch` | Bulk operations |
-| `mcp__claude-flow__agentdb_consolidate` | Clean up and deduplicate |
-| `mcp__claude-flow__agentdb_feedback` | Record quality feedback |
-| `mcp__claude-flow__embeddings_*` | Vector embedding generation and search |
-| `mcp__claude-flow__ruvllm_hnsw_*` | HNSW index create/add/route |
-| `mcp__claude-flow__memory_search_unified` | Cross-namespace semantic search |
+| `mcp__ruflo__agentdb_semantic-route` | Route queries to best knowledge source |
+| `mcp__ruflo__agentdb_hierarchical-*` | Store/recall structured hierarchical data |
+| `mcp__ruflo__agentdb_pattern-*` | Store/search learned patterns |
+| `mcp__ruflo__agentdb_causal-edge` | Link related knowledge causally |
+| `mcp__ruflo__agentdb_context-synthesize` | Synthesize context from multiple sources |
+| `mcp__ruflo__agentdb_batch` | Bulk operations |
+| `mcp__ruflo__agentdb_consolidate` | Clean up and deduplicate |
+| `mcp__ruflo__agentdb_feedback` | Record quality feedback |
+| `mcp__ruflo__embeddings_*` | Vector embedding generation and search |
+| `mcp__ruflo__ruvllm_hnsw_*` | HNSW index create/add/route |
+| `mcp__ruflo__memory_search_unified` | Cross-namespace semantic search |
 
 ### Decision Guide
 
@@ -45,5 +45,5 @@ You are an AgentDB specialist for the Ruflo memory system. Your responsibilities
 
 After completing tasks, store successful patterns:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```

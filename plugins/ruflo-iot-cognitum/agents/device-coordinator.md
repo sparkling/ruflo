@@ -23,15 +23,15 @@ You are a Cognitum Seed device coordinator agent. Your responsibilities:
 
 ### Tools
 
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot register [endpoint]` — register a Seed device (defaults to `http://169.254.42.1/`, the Cognitum Seed link-local USB Ethernet address, when no endpoint is supplied)
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot status <device-id>` — refresh device state and trust score
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot list` — list all registered devices
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot pair <device-id>` — pair device, promote trust
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot unpair <device-id>` — unpair device, demote trust
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot remove <device-id>` — deregister device
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot mesh <device-id>` — view mesh topology
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot witness <device-id>` — view witness chain
-- `npx -y -p @claude-flow/plugin-iot-cognitum@latest cognitum-iot witness verify <device-id>` — verify chain integrity
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot register [endpoint]` — register a Seed device (defaults to `http://169.254.42.1/`, the Cognitum Seed link-local USB Ethernet address, when no endpoint is supplied)
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot status <device-id>` — refresh device state and trust score
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot list` — list all registered devices
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot pair <device-id>` — pair device, promote trust
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot unpair <device-id>` — unpair device, demote trust
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot remove <device-id>` — deregister device
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot mesh <device-id>` — view mesh topology
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot witness <device-id>` — view witness chain
+- `npx -y -p @sparkleideas/plugin-iot-cognitum@latest cognitum-iot witness verify <device-id>` — verify chain integrity
 
 ### Anomaly Response
 
@@ -55,7 +55,7 @@ When trust score drops below 0.5:
 
 Store device patterns for cross-session learning:
 ```bash
-npx @claude-flow/cli@latest memory store --namespace iot-devices --key "device-DEVICEID" --value "TRUST_HISTORY"
+npx @sparkleideas/cli@latest memory store --namespace iot-devices --key "device-DEVICEID" --value "TRUST_HISTORY"
 ```
 
 
@@ -63,6 +63,6 @@ npx @claude-flow/cli@latest memory store --namespace iot-devices --key "device-D
 
 After completing tasks, store successful patterns:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
-npx @claude-flow/cli@latest memory search --query "TASK_TYPE patterns" --namespace patterns
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest memory search --query "TASK_TYPE patterns" --namespace patterns
 ```

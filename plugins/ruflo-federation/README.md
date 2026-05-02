@@ -35,4 +35,4 @@ The comms layer for multi-agent AI. Cross-installation agent federation with zer
 ## Requires
 
 - `ruflo-core` plugin (provides MCP server)
-- `@claude-flow/security` (cryptographic primitives)
+- `@sparkleideas/security` (cryptographic primitives)

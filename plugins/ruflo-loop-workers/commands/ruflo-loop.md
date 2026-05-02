@@ -14,4 +14,4 @@ Available workers:
 - **predict** (normal) -- predictive preloading
 - **document** (normal) -- auto-documentation
 
-Run the worker via `npx @claude-flow/cli@latest hooks worker dispatch --trigger WORKER_NAME`, then use `ScheduleWakeup` with delay 270s (cache-warm) to schedule the next iteration.
+Run the worker via `npx @sparkleideas/cli@latest hooks worker dispatch --trigger WORKER_NAME`, then use `ScheduleWakeup` with delay 270s (cache-warm) to schedule the next iteration.

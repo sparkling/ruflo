@@ -2,7 +2,7 @@
 name: workflow-create
 description: Create reusable workflow templates with steps, conditions, and parallel execution
 argument-hint: "<name> [--steps N]"
-allowed-tools: mcp__claude-flow__workflow_create mcp__claude-flow__workflow_template mcp__claude-flow__workflow_list mcp__claude-flow__workflow_status mcp__claude-flow__workflow_delete Bash
+allowed-tools: mcp__ruflo__workflow_create mcp__ruflo__workflow_template mcp__ruflo__workflow_list mcp__ruflo__workflow_status mcp__ruflo__workflow_delete Bash
 ---
 
 # Workflow Create
@@ -15,11 +15,11 @@ When you have a repeatable multi-step process (CI/CD, onboarding, release, revie
 
 ## Steps
 
-1. **List templates** — call `mcp__claude-flow__workflow_template` to see available workflow templates
-2. **Create workflow** — call `mcp__claude-flow__workflow_create` with steps, conditions, and execution order
-3. **List workflows** — call `mcp__claude-flow__workflow_list` to see all defined workflows
-4. **Check status** — call `mcp__claude-flow__workflow_status` to monitor a workflow
-5. **Clean up** — call `mcp__claude-flow__workflow_delete` to remove unused workflows
+1. **List templates** — call `mcp__ruflo__workflow_template` to see available workflow templates
+2. **Create workflow** — call `mcp__ruflo__workflow_create` with steps, conditions, and execution order
+3. **List workflows** — call `mcp__ruflo__workflow_list` to see all defined workflows
+4. **Check status** — call `mcp__ruflo__workflow_status` to monitor a workflow
+5. **Clean up** — call `mcp__ruflo__workflow_delete` to remove unused workflows
 
 ## Workflow features
 
