@@ -1,0 +1,19 @@
+{
+  "name": "ruflo-hive-mind",
+  "description": "Queen-led hive-mind collective intelligence — skills, agents, and commands for Byzantine/Raft/Gossip consensus, collective memory, and worker specialization",
+  "version": "0.1.0",
+  "author": {
+    "name": "Henrik Pettersen",
+    "url": "https://github.com/sparkling"
+  },
+  "homepage": "https://github.com/sparkling/ruflo",
+  "license": "MIT",
+  "keywords": [
+    "ruflo",
+    "hive-mind",
+    "queen-worker",
+    "consensus",
+    "collective-intelligence",
+    "byzantine"
+  ]
+}

@@ -1,0 +1,66 @@
+---
+name: hive-mind
+description: >
+  Byzantine fault-tolerant consensus and distributed coordination. Queen-led hierarchical swarm management with multiple consensus strategies.
+  Use when: distributed coordination, fault-tolerant operations, multi-agent consensus, collective decision making.
+  Skip when: single-agent tasks, simple operations, local-only work.
+allowed-tools: Bash(npx *) Read mcp__ruflo__hive-mind_init mcp__ruflo__hive-mind_spawn mcp__ruflo__hive-mind_status mcp__ruflo__hive-mind_consensus
+---
+
+# Hive-Mind Skill
+
+## Purpose
+Byzantine fault-tolerant consensus and distributed swarm coordination.
+
+## When to Trigger
+- Multi-agent distributed tasks
+- Fault-tolerant operations needed
+- Collective decision making
+- Complex coordination patterns
+
+## Topologies
+
+| Topology | Description | Use Case |
+|----------|-------------|----------|
+| `hierarchical` | Queen controls workers | Default, anti-drift |
+| `mesh` | Fully connected peers | Research, exploration |
+| `hierarchical-mesh` | Hybrid | Recommended for complex |
+| `adaptive` | Dynamic based on load | Auto-scaling |
+
+## Consensus Strategies
+
+| Strategy | Tolerance | Use Case |
+|----------|-----------|----------|
+| `byzantine` | f < n/3 faulty | Untrusted environment |
+| `raft` | f < n/2 faulty | Leader-based, consistent |
+| `gossip` | Eventual | Large scale, availability |
+| `crdt` | Conflict-free | Concurrent updates |
+| `quorum` | Configurable | Tunable consistency |
+
+## Commands
+
+### Initialize Hive-Mind
+```bash
+npx @sparkleideas/cli@latest hive-mind init --topology hierarchical-mesh --consensus raft
+```
+
+### Spawn Queen
+```bash
+npx @sparkleideas/cli@latest hive-mind spawn --role queen --name coordinator
+```
+
+### Check Consensus Status
+```bash
+npx @sparkleideas/cli@latest hive-mind consensus --status
+```
+
+### View Sessions
+```bash
+npx @sparkleideas/cli@latest hive-mind sessions --active
+```
+
+## Best Practices
+1. Use hierarchical for coding tasks (anti-drift)
+2. Use raft consensus for consistency
+3. Keep agent count under 8 for coordination
+4. Run frequent checkpoints

@@ -165,6 +165,11 @@
       "name": "ruflo-sparc",
       "source": "./plugins/ruflo-sparc",
       "description": "SPARC methodology — Specification, Pseudocode, Architecture, Refinement, Completion phases with quality gates"
+    },
+    {
+      "name": "ruflo-hive-mind",
+      "source": "./plugins/ruflo-hive-mind",
+      "description": "Queen-led hive-mind collective intelligence with consensus mechanisms (Byzantine/Raft/Gossip/CRDT/Quorum), 8 memory types, and worker specialization"
     }
   ]
 }
