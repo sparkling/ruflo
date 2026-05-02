@@ -254,6 +254,21 @@ npx claude-flow@latest plugins install @claude-flow/plugin-agent-federation
 </details>
 
 <details>
+<summary><strong>Queen leadership styles</strong></summary>
+
+Queen leadership styles passed as prompt guidance: Strategic (planning-first), Tactical (execution-first), Adaptive (mode-switching by complexity). Differentiation is prompt-shaped, not algorithmic.
+
+| Style | Disposition | Reaches for first |
+|-------|-------------|-------------------|
+| **Strategic** | Plan tree before delegating | `task_create`, `memory_store`, `memory_search`, `hive-mind_memory` |
+| **Tactical** | Dispatch early, refine in flight | `agent_spawn`, `task_assign`, `hooks_worker-status`, `hive-mind_broadcast` |
+| **Adaptive** | Pick a concrete mode by complexity; consensus before mid-run switches | `hive-mind_consensus` plus the union of Strategic + Tactical |
+
+Pass with `--queen-type strategic|tactical|adaptive` (default: `strategic`). The CLI rejects unknown values loudly — there is no silent fallback.
+
+</details>
+
+<details>
 <summary><strong>Architecture overview</strong></summary>
 
 ```

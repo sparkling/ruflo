@@ -206,7 +206,7 @@ Agents organize into swarms led by queens that coordinate work, prevent drift, a
 | Consensus | Byzantine, Weighted, Majority | Fault-tolerant decisions (2/3 majority for BFT) |
 
 **Hive Mind Capabilities:**
-- 🐝 **Queen Types**: Strategic (planning), Tactical (execution), Adaptive (optimization)
+- 🐝 **Queen Types**: Strategic (planning-first), Tactical (execution-first), Adaptive (mode-switching by complexity). Differentiation is prompt-shaped, not algorithmic — each value selects a different prompt body for the queen subagent.
 - 👷 **8 Worker Types**: Researcher, Coder, Analyst, Tester, Architect, Reviewer, Optimizer, Documenter
 - 🗳️ **3 Consensus Algorithms**: Majority, Weighted (Queen 3x), Byzantine (f < n/3)
 - 🧠 **Collective Memory**: Shared knowledge, LRU cache, SQLite persistence with WAL
