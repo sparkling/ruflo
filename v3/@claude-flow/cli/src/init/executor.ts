@@ -247,6 +247,14 @@ export async function executeInit(options: InitOptions): Promise<InitResult> {
       await writeClaudeMd(targetDir, options, result);
     }
 
+    // ADR-0100 §2: write `.ruflo-project` sentinel so findProjectRoot()
+    // can identify this directory unambiguously, even when CLAUDE.md is
+    // suppressed or when the project lives outside a git repo. Hint file
+    // only — content is informational; presence is what matters. Best-effort:
+    // a failure here MUST NOT mark init as unsuccessful (resolver falls back
+    // to the CLAUDE.md+.claude pair / .git chain).
+    await writeProjectSentinel(targetDir, result);
+
     // Count enabled hooks
     result.summary.hooksEnabled = countEnabledHooks(options);
 
@@ -1918,6 +1926,65 @@ npx @sparkleideas/cli@latest hooks worker dispatch --trigger optimize
 
   fs.writeFileSync(capabilitiesPath, capabilities, 'utf-8');
   result.created.files.push('.claude-flow/CAPABILITIES.md');
+}
+
+/**
+ * ADR-0100 §2: write `.ruflo-project` sentinel at the project root.
+ *
+ * findProjectRoot() (in mcp-tools/types.ts) checks for this file FIRST,
+ * before the CLAUDE.md+.claude pair and .git fallback. The contents are
+ * informational only — only the file's presence is load-bearing — so we
+ * keep the JSON minimal but self-describing for diagnosability.
+ *
+ * Best-effort: an error here is logged into `result.errors` but does NOT
+ * flip `result.success` to false. The resolver chain falls back gracefully
+ * if the sentinel is missing.
+ */
+async function writeProjectSentinel(
+  targetDir: string,
+  result: InitResult
+): Promise<void> {
+  const sentinelPath = path.join(targetDir, '.ruflo-project');
+
+  // If the sentinel already exists, leave it alone — never clobber an
+  // existing marker that might carry user-curated content.
+  if (fs.existsSync(sentinelPath)) {
+    result.skipped.push('.ruflo-project');
+    return;
+  }
+
+  // Resolve our own version best-effort. Failure → fall back to 'unknown'
+  // so the write itself stays purely best-effort.
+  let version = 'unknown';
+  try {
+    const esmRequire = createRequire(import.meta.url);
+    const pkgJsonPath = esmRequire.resolve('@claude-flow/cli/package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8')) as { version?: string };
+    if (typeof pkg.version === 'string' && pkg.version.length > 0) {
+      version = pkg.version;
+    }
+  } catch {
+    // resolve/read failed (e.g. running from source tree without install) —
+    // leave version as 'unknown'. The sentinel doesn't need to be accurate
+    // to satisfy findProjectRoot(); presence is sufficient.
+  }
+
+  const payload = {
+    name: 'ruflo',
+    initialized: new Date().toISOString(),
+    version,
+  };
+
+  try {
+    fs.writeFileSync(sentinelPath, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+    result.created.files.push('.ruflo-project');
+  } catch (error) {
+    // Hint file — failure is non-fatal. Record it for diagnosability but
+    // do NOT toggle result.success: ADR-0100's resolver tolerates a missing
+    // sentinel and walks back through the CLAUDE.md+.claude / .git chain.
+    const msg = error instanceof Error ? error.message : String(error);
+    result.errors.push(`.ruflo-project sentinel write failed (non-fatal): ${msg}`);
+  }
 }
 
 /**
