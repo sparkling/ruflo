@@ -197,6 +197,15 @@ import {
   type MemoryEntry,
   type ConsensusProposal,
 } from '../src/mcp-tools/hive-mind-tools.js';
+// ADR-0121 (T3) CRDT primitives
+import {
+  GCounter,
+  ORSet,
+  LWWRegister,
+  emptyCRDTState,
+  mergeCRDTState,
+  type CRDTState,
+} from '../src/mcp-tools/crdt-types.js';
 import { memoryTools } from '../src/mcp-tools/memory-tools.js';
 import { neuralTools } from '../src/mcp-tools/neural-tools.js';
 import { performanceTools } from '../src/mcp-tools/performance-tools.js';
@@ -1508,6 +1517,573 @@ describe('MCP Tools Deep Test Suite', () => {
       expect(out.gossipRound).toBeUndefined();
       expect(out.gossipBound).toBeUndefined();
       expect(out.roundTimeoutMs).toBeUndefined();
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 11.b.crdt  ADR-0121 (T3) — Hive-mind CRDT consensus protocol
+  // --------------------------------------------------------------------------
+  // Cases mirror ADR-0121 §Validation §Test list and §Acceptance criteria:
+  //  - GCounter / ORSet / LWWRegister: idempotence, commutativity, associativity
+  //  - LWW collision: same-voter same-millisecond second-write loses
+  //  - LWW collision: different-voter same-millisecond resolves by voterId lex
+  //  - OR-Set add-wins under concurrent add/remove
+  //  - G-Counter monotonicity under simulated voter restart
+  //  - Conflict-free convergence (>= 100 randomised schedules per primitive)
+  //  - hive-mind_consensus 'crdt' strategy enum + tool description + schema
+  //  - propose initialises empty crdtState triple
+  //  - vote merges crdtSnapshot into accumulator
+  //  - settlement on all-voters-submitted OR roundTimeoutMs
+  describe('ADR-0121 (T3) — CRDT consensus', () => {
+    async function freshCrdtHive(workerCount: number): Promise<{ workerIds: string[] }> {
+      const initTool = hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      await shutdownTool.handler({ force: true });
+      await initTool.handler({ topology: 'mesh' });
+      if (workerCount === 0) return { workerIds: [] };
+      const spawnOut: any = await spawnTool.handler({ count: workerCount, role: 'worker' });
+      const workerIds = spawnOut.workers.map((w: any) => w.agentId as string);
+      return { workerIds };
+    }
+
+    // ── Static enum + schema assertions ───────────────────────────────
+    it('hive-mind_consensus schema enum includes "crdt"', () => {
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const props: any = tool.inputSchema?.properties;
+      expect(props?.strategy?.enum).toContain('crdt');
+    });
+
+    it('hive-mind_consensus description mentions CRDT', () => {
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      expect(tool.description).toMatch(/CRDT/);
+    });
+
+    it('hive-mind_consensus schema declares crdtSnapshot', () => {
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const props: any = tool.inputSchema?.properties;
+      expect(props?.crdtSnapshot).toBeDefined();
+    });
+
+    // ── G-Counter algebraic properties ────────────────────────────────
+    it('GCounter idempotence: merge(a, a) === a (semantic equality)', () => {
+      const a = new GCounter();
+      a.increment('w-1');
+      a.increment('w-2');
+      a.increment('w-2');
+      const merged = a.merge(a);
+      expect(merged.toJSON()).toEqual(a.toJSON());
+    });
+
+    it('GCounter commutativity: merge(a, b) === merge(b, a)', () => {
+      const a = new GCounter();
+      const b = new GCounter();
+      a.increment('w-1');
+      a.increment('w-1');
+      b.increment('w-1');
+      b.increment('w-2');
+      b.increment('w-2');
+      b.increment('w-2');
+      expect(a.merge(b).toJSON()).toEqual(b.merge(a).toJSON());
+    });
+
+    it('GCounter associativity: merge(merge(a, b), c) === merge(a, merge(b, c))', () => {
+      const a = new GCounter();
+      a.increment('w-1');
+      const b = new GCounter();
+      b.increment('w-2');
+      b.increment('w-2');
+      const c = new GCounter();
+      c.increment('w-3');
+      c.increment('w-3');
+      c.increment('w-3');
+      const left = a.merge(b).merge(c);
+      const right = a.merge(b.merge(c));
+      expect(left.toJSON()).toEqual(right.toJSON());
+    });
+
+    it('GCounter monotonicity: voter restart resets local count, merge restores via slot-wise max', () => {
+      // Simulate voter A incrementing 5 times, snapshot, then "restart" (fresh GCounter)
+      // and merge with the snapshot — slot must restore to 5.
+      const before = new GCounter();
+      for (let i = 0; i < 5; i++) before.increment('w-A');
+      expect(before.value()).toBe(5);
+
+      // Voter "restart" — fresh counter on the same node.
+      const after = new GCounter();
+      // Merge with snapshot: slot-wise max recovers the 5 count.
+      const recovered = after.merge(before);
+      expect(recovered.value()).toBe(5);
+    });
+
+    it('GCounter increment requires non-empty voterId (no defaulting)', () => {
+      const g = new GCounter();
+      expect(() => g.increment('')).toThrow();
+      expect(() => g.increment(undefined as unknown as string)).toThrow();
+    });
+
+    // ── OR-Set algebraic properties + tombstone semantics ─────────────
+    it('ORSet idempotence: merge(a, a) elements equal a.elements()', () => {
+      const a = new ORSet<string>();
+      a.add('x', 'v-1');
+      a.add('y', 'v-2');
+      a.remove('x');
+      const merged = a.merge(a);
+      // Sets equal: same elements after merge.
+      expect(merged.elements().sort()).toEqual(a.elements().sort());
+    });
+
+    it('ORSet commutativity: merge(a, b).elements === merge(b, a).elements', () => {
+      const a = new ORSet<string>();
+      a.add('alpha', 'v-1');
+      const b = new ORSet<string>();
+      b.add('beta', 'v-2');
+      b.add('gamma', 'v-3');
+      const left = a.merge(b).elements().sort();
+      const right = b.merge(a).elements().sort();
+      expect(left).toEqual(right);
+    });
+
+    it('ORSet associativity: merge order independent', () => {
+      const a = new ORSet<string>();
+      a.add('1', 'v-1');
+      const b = new ORSet<string>();
+      b.add('2', 'v-2');
+      const c = new ORSet<string>();
+      c.add('3', 'v-3');
+      const left = a.merge(b).merge(c).elements().sort();
+      const right = a.merge(b.merge(c)).elements().sort();
+      expect(left).toEqual(right);
+    });
+
+    it('ORSet add-wins under concurrent add (B with new tag) + remove (A observed only old tag)', () => {
+      // Voter A adds x with tag1, then removes x — tombstones tag1.
+      const a = new ORSet<string>();
+      a.add('x', 'v-A');
+      // Snapshot tag1 from A's entries
+      const tag1 = a.toJSON().entries.find(([el]) => el === 'x')?.[1];
+      expect(tag1).toBeDefined();
+      a.remove('x');
+      // x should be absent from A's view.
+      expect(a.elements()).not.toContain('x');
+
+      // Voter B (without observing tag1) adds x with their own tag.
+      const b = new ORSet<string>();
+      b.add('x', 'v-B');
+
+      // After merging, x remains because B's tag is not in A's tombstones.
+      const merged = a.merge(b);
+      expect(merged.elements()).toContain('x');
+    });
+
+    it('ORSet remove-after-observe propagates tombstone correctly', () => {
+      const a = new ORSet<string>();
+      a.add('y', 'v-A');
+      // B observes A's add (via merge), then removes y.
+      const b = a.merge(new ORSet<string>());
+      b.remove('y');
+      // Merge back into A — A's view should also lose y.
+      const final = a.merge(b);
+      expect(final.elements()).not.toContain('y');
+    });
+
+    it('ORSet add requires non-empty voterId', () => {
+      const s = new ORSet<string>();
+      expect(() => s.add('x', '')).toThrow();
+    });
+
+    // ── LWW-Register algebraic properties ─────────────────────────────
+    it('LWWRegister idempotence: merge(a, a).value() === a.value()', () => {
+      const a = new LWWRegister<string>();
+      a.write('hello', 'voter-1', 1000);
+      const merged = a.merge(a);
+      expect(merged.value()).toBe('hello');
+    });
+
+    it('LWWRegister commutativity: merge(a, b) === merge(b, a) by value', () => {
+      const a = new LWWRegister<string>();
+      const b = new LWWRegister<string>();
+      a.write('A-says', 'voter-A', 1000);
+      b.write('B-says', 'voter-B', 2000);
+      // Pair (2000, 'voter-B') > (1000, 'voter-A') → both merges pick B's value.
+      expect(a.merge(b).value()).toBe(b.merge(a).value());
+      expect(a.merge(b).value()).toBe('B-says');
+    });
+
+    it('LWWRegister associativity: ((a ⊕ b) ⊕ c).value === (a ⊕ (b ⊕ c)).value', () => {
+      const a = new LWWRegister<string>();
+      const b = new LWWRegister<string>();
+      const c = new LWWRegister<string>();
+      a.write('a', 'v-1', 1000);
+      b.write('b', 'v-2', 2000);
+      c.write('c', 'v-3', 3000);
+      const left = a.merge(b).merge(c).value();
+      const right = a.merge(b.merge(c)).value();
+      expect(left).toEqual(right);
+      expect(left).toBe('c');
+    });
+
+    it('LWW tiebreak: same-voter same-millisecond second write loses (silent drop)', () => {
+      // Per ADR-0121 §Consequences-Negative: voter A writes (v1, ts, A), then
+      // (v2, ts, A) in the same Date.now() millisecond. The pairs are equal;
+      // the second write loses (the register holds v1).
+      const reg = new LWWRegister<string>();
+      reg.write('v1', 'voter-A', 1000);
+      reg.write('v2', 'voter-A', 1000);
+      expect(reg.value()).toBe('v1');
+    });
+
+    it('LWW tiebreak: different-voter same-millisecond resolves by voterId lex', () => {
+      // Two voters, same Date.now() ms. Tiebreaker: lexicographic voterId.
+      // 'voter-Z' > 'voter-A' so Z's write wins.
+      const reg = new LWWRegister<string>();
+      reg.write('A-wrote', 'voter-A', 1000);
+      reg.write('Z-wrote', 'voter-Z', 1000);
+      expect(reg.value()).toBe('Z-wrote');
+    });
+
+    it('LWW clock-skew determinism: B with much-later clock wins regardless of order', () => {
+      // Voter B's local clock is far ahead of A's. The lex-greater pair wins.
+      const reg1 = new LWWRegister<string>();
+      reg1.write('A-fresh', 'voter-A', 1000);
+      reg1.write('B-stale', 'voter-B', 999_999_999);
+      expect(reg1.value()).toBe('B-stale');
+
+      const reg2 = new LWWRegister<string>();
+      reg2.write('B-stale', 'voter-B', 999_999_999);
+      reg2.write('A-fresh', 'voter-A', 1000);
+      expect(reg2.value()).toBe('B-stale');
+    });
+
+    it('LWW clock-skew determinism: B with EARLIER clock loses regardless of order', () => {
+      // Voter B's local clock is BEHIND A's. Larger pair wins → A wins.
+      const reg = new LWWRegister<string>();
+      reg.write('A-late', 'voter-A', 999_999_999);
+      reg.write('B-early', 'voter-B', 1000);
+      expect(reg.value()).toBe('A-late');
+    });
+
+    it('LWWRegister.write requires non-empty voterId', () => {
+      const reg = new LWWRegister<string>();
+      expect(() => reg.write('x', '', 1000)).toThrow();
+      expect(() => reg.write('x', undefined as unknown as string, 1000)).toThrow();
+    });
+
+    it('LWWRegister.write rejects non-finite timestamp', () => {
+      const reg = new LWWRegister<string>();
+      expect(() => reg.write('x', 'voter-A', NaN)).toThrow();
+      expect(() => reg.write('x', 'voter-A', Infinity)).toThrow();
+    });
+
+    // ── Randomised-interleaving fuzzer for conflict-free convergence ──
+    // Per ADR-0121 §Validation: N >= 3 replicas, randomised-interleaving,
+    // >= 100 schedules per primitive, all replicas converge to same merged
+    // state regardless of message order.
+    it('GCounter fuzz: 100 schedules, 3 replicas, conflict-free convergence', () => {
+      function genReplica(voterIds: string[], opCount: number): GCounter {
+        const g = new GCounter();
+        for (let i = 0; i < opCount; i++) {
+          const v = voterIds[Math.floor(Math.random() * voterIds.length)] ?? 'v-0';
+          g.increment(v);
+        }
+        return g;
+      }
+      for (let schedule = 0; schedule < 100; schedule++) {
+        const voterIds = ['v-1', 'v-2', 'v-3'];
+        const r1 = genReplica(voterIds, 5 + Math.floor(Math.random() * 10));
+        const r2 = genReplica(voterIds, 5 + Math.floor(Math.random() * 10));
+        const r3 = genReplica(voterIds, 5 + Math.floor(Math.random() * 10));
+        // Three different merge orderings of the same replicas.
+        const m1 = r1.merge(r2).merge(r3);
+        const m2 = r3.merge(r1).merge(r2);
+        const m3 = r2.merge(r3).merge(r1);
+        expect(m1.toJSON()).toEqual(m2.toJSON());
+        expect(m2.toJSON()).toEqual(m3.toJSON());
+      }
+    });
+
+    it('ORSet fuzz: 100 schedules, 3 replicas, conflict-free convergence', () => {
+      function genReplica(voterId: string, opCount: number): ORSet<string> {
+        const s = new ORSet<string>();
+        for (let i = 0; i < opCount; i++) {
+          const el = `el-${Math.floor(Math.random() * 5)}`;
+          if (Math.random() < 0.7) s.add(el, voterId);
+          else s.remove(el);
+        }
+        return s;
+      }
+      for (let schedule = 0; schedule < 100; schedule++) {
+        const r1 = genReplica('v-1', 5 + Math.floor(Math.random() * 8));
+        const r2 = genReplica('v-2', 5 + Math.floor(Math.random() * 8));
+        const r3 = genReplica('v-3', 5 + Math.floor(Math.random() * 8));
+        const m1 = r1.merge(r2).merge(r3).elements().sort();
+        const m2 = r3.merge(r1).merge(r2).elements().sort();
+        const m3 = r2.merge(r3).merge(r1).elements().sort();
+        expect(m1).toEqual(m2);
+        expect(m2).toEqual(m3);
+      }
+    });
+
+    it('LWWRegister fuzz: 100 schedules, 3 replicas, conflict-free convergence', () => {
+      function genReplica(voterId: string): LWWRegister<string> {
+        const r = new LWWRegister<string>();
+        const ts = Math.floor(Math.random() * 1_000_000);
+        r.write(`val-${voterId}-${ts}`, voterId, ts);
+        return r;
+      }
+      for (let schedule = 0; schedule < 100; schedule++) {
+        const r1 = genReplica('v-1');
+        const r2 = genReplica('v-2');
+        const r3 = genReplica('v-3');
+        const m1 = r1.merge(r2).merge(r3).value();
+        const m2 = r3.merge(r1).merge(r2).value();
+        const m3 = r2.merge(r3).merge(r1).value();
+        expect(m1).toEqual(m2);
+        expect(m2).toEqual(m3);
+      }
+    });
+
+    // ── JSON round-trip preserves state (Set serialisation row 11) ──────
+    it('CRDT triple round-trips through JSON without loss', () => {
+      const orig: CRDTState = {
+        votes: (() => {
+          const g = new GCounter();
+          g.increment('v-1');
+          g.increment('v-2');
+          return g.toJSON();
+        })(),
+        approvers: (() => {
+          const s = new ORSet<string>();
+          s.add('v-1', 'v-1');
+          s.add('v-2', 'v-2');
+          return s.toJSON();
+        })(),
+        verdict: (() => {
+          const r = new LWWRegister<string>();
+          r.write('decision-A', 'v-1', 1000);
+          return r.toJSON();
+        })(),
+      };
+      const serialised = JSON.stringify(orig);
+      const parsed = JSON.parse(serialised) as CRDTState;
+      expect(GCounter.from(parsed.votes).value()).toBe(2);
+      expect(ORSet.from<string>(parsed.approvers).elements().sort()).toEqual(['v-1', 'v-2']);
+      expect(LWWRegister.from<string>(parsed.verdict).value()).toBe('decision-A');
+    });
+
+    // ── Integration: full proposal lifecycle through the MCP tool ───────
+    it('crdt propose initialises empty crdtState triple + crdtExpectedVoters', async () => {
+      await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const out: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'release-v1.2',
+        strategy: 'crdt',
+      });
+      expect(out.strategy).toBe('crdt');
+      expect(out.crdtState).toBeDefined();
+      expect(out.crdtState.votes).toEqual({ counts: {} });
+      expect(out.crdtState.approvers).toEqual({ entries: [], tombstones: [] });
+      expect(out.crdtState.verdict).toBeDefined();
+      expect(out.crdtExpectedVoters).toBe(3);
+      expect(out.roundTimeoutMs).toBe(GOSSIP_ROUND_TIMEOUT_MS_DEFAULT);
+    });
+
+    it('crdt vote with implicit boolean overload merges synthesized snapshot', async () => {
+      const { workerIds } = await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const propose: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'release-v1.2',
+        strategy: 'crdt',
+      });
+      const voteOut: any = await tool.handler({
+        action: 'vote',
+        proposalId: propose.proposalId,
+        voterId: workerIds[0],
+        vote: true,
+      });
+      expect(voteOut.strategy).toBe('crdt');
+      expect(voteOut.crdtApprovers).toContain(workerIds[0]);
+      expect(voteOut.crdtVoteCount).toBe(1);
+      expect(voteOut.crdtVerdict).toBe('release-v1.2');
+      // Not yet settled (1 vote of 3 expected).
+      expect(voteOut.resolved).toBe(false);
+    });
+
+    it('crdt vote with explicit crdtSnapshot merges into accumulator', async () => {
+      const { workerIds } = await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const propose: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'v',
+        strategy: 'crdt',
+      });
+      // Construct an explicit snapshot as a peer voter would.
+      const g = new GCounter(); g.increment(workerIds[1]);
+      const aps = new ORSet<string>(); aps.add(workerIds[1], workerIds[1]);
+      const reg = new LWWRegister<string>(); reg.write('alt-v', workerIds[1], 5000);
+      const snap = {
+        votes: g.toJSON(),
+        approvers: aps.toJSON(),
+        verdict: reg.toJSON(),
+      };
+      const voteOut: any = await tool.handler({
+        action: 'vote',
+        proposalId: propose.proposalId,
+        voterId: workerIds[1],
+        crdtSnapshot: snap,
+      });
+      expect(voteOut.crdtApprovers).toContain(workerIds[1]);
+      expect(voteOut.crdtVerdict).toBe('alt-v');
+    });
+
+    it('crdt vote rejects malformed crdtSnapshot (no silent fallback)', async () => {
+      const { workerIds } = await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const propose: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'v',
+        strategy: 'crdt',
+      });
+      // Missing 'verdict' field — should throw.
+      await expect(
+        tool.handler({
+          action: 'vote',
+          proposalId: propose.proposalId,
+          voterId: workerIds[0],
+          crdtSnapshot: { votes: { counts: {} }, approvers: { entries: [], tombstones: [] } },
+        }),
+      ).rejects.toThrow(/crdtSnapshot/);
+    });
+
+    it('crdt settles when all expected voters submit', async () => {
+      const { workerIds } = await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const propose: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'consensus-decision',
+        strategy: 'crdt',
+      });
+      // All three voters approve.
+      let lastResp: any;
+      for (const w of workerIds) {
+        lastResp = await tool.handler({
+          action: 'vote',
+          proposalId: propose.proposalId,
+          voterId: w,
+          vote: true,
+        });
+      }
+      // After last vote, settlement should fire.
+      expect(lastResp.resolved).toBe(true);
+      expect(lastResp.result).toBe('approved');
+      expect(lastResp.crdtVerdict).toBe('consensus-decision');
+    });
+
+    it('crdt rejects when majority of cast votes are dissents', async () => {
+      const { workerIds } = await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const propose: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'v',
+        strategy: 'crdt',
+      });
+      // Only 1 approve, 2 dissent.
+      await tool.handler({ action: 'vote', proposalId: propose.proposalId, voterId: workerIds[0], vote: true });
+      await tool.handler({ action: 'vote', proposalId: propose.proposalId, voterId: workerIds[1], vote: false });
+      const last: any = await tool.handler({ action: 'vote', proposalId: propose.proposalId, voterId: workerIds[2], vote: false });
+      expect(last.resolved).toBe(true);
+      expect(last.result).toBe('rejected');
+    });
+
+    it('crdt status surfaces merged triple and force-settles on timeout', async () => {
+      const { workerIds } = await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const propose: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'v',
+        strategy: 'crdt',
+        roundTimeoutMs: 1, // 1ms — fires almost immediately
+      });
+      // Only 1 of 3 voters submits.
+      await tool.handler({
+        action: 'vote',
+        proposalId: propose.proposalId,
+        voterId: workerIds[0],
+        vote: true,
+      });
+      // Wait for timeout + status check force-settles.
+      await new Promise(r => setTimeout(r, 10));
+      const status: any = await tool.handler({ action: 'status', proposalId: propose.proposalId });
+      // Either resolved-via-timeout in this status call, or already-resolved
+      // (historical). Both cases — settlement must surface, never silent.
+      const settled = status.resolved === true || status.historical === true;
+      expect(settled).toBe(true);
+    });
+
+    it('crdt non-strategy proposals are NOT given crdt fields (no leakage)', async () => {
+      await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const out: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'v',
+        strategy: 'raft',
+      });
+      expect(out.crdtState).toBeUndefined();
+      expect(out.crdtExpectedVoters).toBeUndefined();
+    });
+
+    it('crdt accepts re-submission from same voter (idempotent merge per row 12)', async () => {
+      const { workerIds } = await freshCrdtHive(3);
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+      const propose: any = await tool.handler({
+        action: 'propose',
+        type: 't',
+        value: 'v',
+        strategy: 'crdt',
+      });
+      // Same voter votes twice — should NOT be rejected (CRDT row 12 default).
+      const first: any = await tool.handler({
+        action: 'vote',
+        proposalId: propose.proposalId,
+        voterId: workerIds[0],
+        vote: true,
+      });
+      expect(first.error).toBeUndefined();
+      const second: any = await tool.handler({
+        action: 'vote',
+        proposalId: propose.proposalId,
+        voterId: workerIds[0],
+        vote: true,
+      });
+      // Second vote re-merges the same snapshot (idempotent — no error).
+      expect(second.error).toBeUndefined();
+      // Vote count from GCounter slot remains bounded (idempotent merge).
+      expect(second.crdtVoteCount).toBe(1);
+    });
+
+    // ── mergeCRDTState component-wise ────────────────────────────────────
+    it('mergeCRDTState merges each component independently', () => {
+      const a = emptyCRDTState();
+      const g = new GCounter(); g.increment('v-1');
+      a.votes = g.toJSON();
+
+      const b = emptyCRDTState();
+      const aps = new ORSet<string>(); aps.add('v-2', 'v-2');
+      b.approvers = aps.toJSON();
+
+      const merged = mergeCRDTState(a, b);
+      expect(GCounter.from(merged.votes).value()).toBe(1);
+      expect(ORSet.from<string>(merged.approvers).elements()).toContain('v-2');
     });
   });
 

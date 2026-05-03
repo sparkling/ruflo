@@ -3,6 +3,8 @@ name: crdt-synchronizer
 type: synchronizer
 color: "#4CAF50"
 description: Implements Conflict-free Replicated Data Types for eventually consistent state synchronization
+allowed-tools:
+  - mcp__ruflo__hive-mind_consensus
 capabilities:
   - state_based_crdts
   - operation_based_crdts

@@ -21,6 +21,15 @@ import {
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
 import { validateWorkerType, WORKER_TYPES } from './validate-input.js';
+// ADR-0121 (T3): state-based CRDT primitives for the 'crdt' strategy.
+import {
+  GCounter,
+  ORSet,
+  LWWRegister,
+  emptyCRDTState,
+  mergeCRDTState,
+  type CRDTState,
+} from './crdt-types.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -164,7 +173,12 @@ interface HiveState {
 // ADR-0120 (T2): 'gossip' added — push-style epidemic propagation with
 // eventual-consistency settling. See ADR-0120 §Specification for the
 // settle predicate, fanout function, and round-budget contract.
-type ConsensusStrategy = 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip';
+// ADR-0121 (T3): 'crdt' added — state-based CRDT (CvRDT) merge over
+// G-Counter, OR-Set, LWW-Register primitives. Convergence is mathematical,
+// not arithmetic — there is NO vote-count threshold (calculateRequiredVotes
+// short-circuits 'crdt' before reaching the strategy switch).
+// See ADR-0121 §Specification + crdt-types.ts.
+type ConsensusStrategy = 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt';
 type QuorumPreset = 'unanimous' | 'majority' | 'supermajority';
 
 /**
@@ -287,6 +301,17 @@ export interface ConsensusProposal {
   currentRoundBroadcastSet?: string[];   // voterIds already broadcast-from or targeted in this round
   roundTimeoutMs?: number;               // per-round timeout (default GOSSIP_ROUND_TIMEOUT_MS_DEFAULT)
   roundStartedAt?: string;               // ISO timestamp when current round began (for timeout)
+  // ADR-0121 (T3): CRDT-strategy-only field. Triple of `{ votes, approvers,
+  // verdict }` carrying the merged CvRDT state across all received voter
+  // snapshots. JSON-serialisable shape (Sets backed by tuple arrays — see
+  // crdt-types.ts header). Set on `'crdt'` proposals only; absent on
+  // bft/raft/quorum/weighted/gossip.
+  crdtState?: CRDTState;
+  // ADR-0121: snapshot of expected voter count at propose-time, used by the
+  // CRDT settle rule (round closes when all expected voters submitted, or
+  // the per-round timeout fires). Distinct from gossip's `totalNodes` because
+  // CRDT does not derive a fanout bound; it just needs the voter count.
+  crdtExpectedVoters?: number;
 }
 
 interface ConsensusResult {
@@ -339,6 +364,24 @@ function calculateRequiredVotes(
       const totalWorkers = Math.max(0, totalNodes - 1);
       return totalWorkers + queenWeight;
     }
+    case 'crdt':
+      // ADR-0121 (T3): CRDT rounds have NO vote-count threshold. Convergence
+      // is mathematical, not arithmetic — settling is decided by "all expected
+      // voters submitted OR per-round timeout", not "k-of-n approved".
+      // We return `totalNodes` as a nominal denominator so callers that read
+      // `required` for telemetry get a coherent number; `tryResolveProposal`
+      // bypasses the arithmetic entirely on the 'crdt' branch.
+      return Math.max(1, totalNodes);
+    case 'gossip':
+      // ADR-0120 (T2): gossip uses settleCheckGossip + lastVoteChangedRound;
+      // there is no vote-count threshold here. We return `totalNodes` as a
+      // nominal value matching CRDT (callers reading `required` for
+      // telemetry get a coherent number even though the predicate ignores it).
+      // PRIOR BEHAVIOUR: gossip fell through to `default` and threw. Fixing
+      // that here closes a latent bug where any caller reading `required` on
+      // a gossip proposal would crash. The settle path stays the gossip
+      // predicate (no behaviour change in resolution logic).
+      return Math.max(1, totalNodes);
     default:
       // ADR-0119 / feedback-no-fallbacks (global scope): no silent majority
       // fallback for unknown strategies. Synchronous throw covers typos and
@@ -1315,7 +1358,7 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_consensus',
-    description: 'Propose or vote on consensus with BFT, Raft, Quorum, Weighted, or Gossip strategies',
+    description: 'Propose or vote on consensus with BFT, Raft, Quorum, Weighted, Gossip, or CRDT strategies',
     category: 'hive-mind',
     inputSchema: {
       type: 'object',
@@ -1328,16 +1371,25 @@ export const hiveMindTools: MCPTool[] = [
         voterId: { type: 'string', description: 'Voter agent ID' },
         // ADR-0119 (T1): 'weighted' added (queen 3x voting power per USERGUIDE).
         // ADR-0120 (T2): 'gossip' added (push-style epidemic propagation; eventual consistency).
+        // ADR-0121 (T3): 'crdt' added (state-based CvRDT merge over G-Counter / OR-Set / LWW-Register).
         // 'byzantine' is an alias for 'bft' (carry-forward from ADR-0106 R1 per
         // ADR-0118 review-notes-triage 2026-05-02); normalized to 'bft' at handler entry.
-        strategy: { type: 'string', enum: ['bft', 'raft', 'quorum', 'weighted', 'byzantine', 'gossip'], description: 'Consensus strategy (default: raft). "byzantine" is an alias for "bft". "gossip" uses push-style epidemic propagation with eventual-consistency settling.' },
+        strategy: { type: 'string', enum: ['bft', 'raft', 'quorum', 'weighted', 'byzantine', 'gossip', 'crdt'], description: 'Consensus strategy (default: raft). "byzantine" is an alias for "bft". "gossip" uses push-style epidemic propagation with eventual-consistency settling. "crdt" uses state-based CvRDT merge with mathematical convergence (G-Counter / OR-Set / LWW-Register).' },
         quorumPreset: { type: 'string', enum: ['unanimous', 'majority', 'supermajority'], description: 'Quorum threshold preset (for quorum strategy, default: majority)' },
         term: { type: 'number', description: 'Term number (for raft strategy)' },
         timeoutMs: { type: 'number', description: 'Timeout in ms for raft re-proposal (default: 30000)' },
         // ADR-0120 (T2): per-round timeout for gossip strategy. Bounds settling
         // latency in the presence of slow voters; without this knob a single
         // non-voting worker would block all gossip rounds indefinitely.
-        roundTimeoutMs: { type: 'number', description: 'Per-round timeout in ms for gossip strategy (default: 5000)' },
+        // ADR-0121 (T3): also bounds the CRDT round; if not all expected voters
+        // submit before roundTimeoutMs elapses, the round force-settles with
+        // whatever snapshots have been merged so far.
+        roundTimeoutMs: { type: 'number', description: 'Per-round timeout in ms for gossip / crdt strategies (default: 5000)' },
+        // ADR-0121 (T3): optional CRDT-state snapshot a voter contributes to a
+        // 'crdt' round. Triple of `{ votes, approvers, verdict }`; merged into
+        // the proposal's accumulator. If omitted, a minimal snapshot is
+        // synthesised from the boolean `vote` field per row 14's overload rule.
+        crdtSnapshot: { description: 'Optional CRDT-state triple { votes, approvers, verdict } for crdt strategy. Merged into the proposal accumulator on each vote.' },
       },
       required: ['action'],
     },
@@ -1392,7 +1444,11 @@ export const hiveMindTools: MCPTool[] = [
         // Late-joining workers are admitted into the candidate pool via the
         // canonical voter-set lookup but do not change the bound.
         const isGossip = strategy === 'gossip';
-        const roundTimeoutMs = isGossip
+        // ADR-0121 (T3): CRDT shares the per-round-timeout knob with gossip
+        // (used to bound the wait for the last voter's snapshot). Default
+        // matches GOSSIP_ROUND_TIMEOUT_MS_DEFAULT (5000ms).
+        const isCrdt = strategy === 'crdt';
+        const roundTimeoutMs = (isGossip || isCrdt)
           ? ((input.roundTimeoutMs as number) || GOSSIP_ROUND_TIMEOUT_MS_DEFAULT)
           : undefined;
 
@@ -1415,7 +1471,14 @@ export const hiveMindTools: MCPTool[] = [
           totalNodes: isGossip ? totalNodes : undefined,
           currentRoundBroadcastSet: isGossip ? [] : undefined,
           roundTimeoutMs,
-          roundStartedAt: isGossip ? new Date().toISOString() : undefined,
+          roundStartedAt: (isGossip || isCrdt) ? new Date().toISOString() : undefined,
+          // ADR-0121 (T3): CRDT triple is initialised empty at propose-time;
+          // each subsequent vote merges the voter's snapshot into this
+          // accumulator. `crdtExpectedVoters` snapshots the voter count so the
+          // settle rule "all expected voters submitted" is stable across
+          // workers joining mid-round (mirrors gossip's `totalNodes` snapshot).
+          crdtState: isCrdt ? emptyCRDTState() : undefined,
+          crdtExpectedVoters: isCrdt ? Math.max(1, totalNodes) : undefined,
         };
 
         state.consensus.pending.push(proposal);
@@ -1437,6 +1500,10 @@ export const hiveMindTools: MCPTool[] = [
           gossipRound: proposal.gossipRound,
           gossipBound: isGossip ? gossipFanout(totalNodes) : undefined,
           roundTimeoutMs: proposal.roundTimeoutMs,
+          // ADR-0121 (T3): expose CRDT round shape so callers know the
+          // expected voter count and the empty-triple sentinel.
+          crdtExpectedVoters: proposal.crdtExpectedVoters,
+          crdtState: proposal.crdtState,
         };
       }
 
@@ -1459,6 +1526,168 @@ export const hiveMindTools: MCPTool[] = [
         // queen abdicated between propose and vote.
         if (proposalStrategy === 'weighted' && !state.queen) {
           throw new MissingQueenForWeightedConsensusError('vote');
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        // ADR-0121 (T3): CRDT vote branch.
+        //
+        // Per §Review-notes row 14 DEFER-TO-IMPL: the `vote` action overloads
+        // its input shape — accepting an optional `crdtSnapshot` field
+        // alongside (or in place of) the boolean `vote`. The boolean is
+        // implicit: `true` if `crdtSnapshot.approvers.elements` contains the
+        // voter, else derived from the explicit `vote` arg.
+        //
+        // Re-submission policy (row 12 DEFER-TO-IMPL — accept-and-let-LWW-
+        // resolve): same voter writing twice is NOT rejected. The merge is
+        // idempotent / the LWW tiebreaker handles same-millisecond collisions.
+        // This contradicts the bft/raft/quorum double-vote rejection — we
+        // short-circuit those checks for the CRDT branch below.
+        //
+        // Settle rule (row 10 DEFER-TO-IMPL — union of voter-count + timeoutMs):
+        // round closes when DISTINCT voters submitted >= crdtExpectedVoters
+        // OR the per-round timeout fires (mirrors gossip's bound + timeout
+        // approach but with "all expected voters" as the bound rather than
+        // ceil(log2(N))). Verdict comes from the LWW-Register's value().
+        // ────────────────────────────────────────────────────────────────
+        if (proposalStrategy === 'crdt') {
+          // Validate optional crdtSnapshot shape per `feedback-no-fallbacks.md`.
+          // If supplied, it MUST be a triple of `{ votes, approvers, verdict }`
+          // — partial / malformed shapes throw rather than silently coerce.
+          const rawSnapshot = (input.crdtSnapshot as unknown) ?? undefined;
+          let snapshot: CRDTState | undefined;
+          if (rawSnapshot !== undefined) {
+            if (typeof rawSnapshot !== 'object' || rawSnapshot === null) {
+              throw new Error(
+                `hive-mind_consensus.vote: crdtSnapshot must be an object, got ${typeof rawSnapshot}`,
+              );
+            }
+            const obj = rawSnapshot as Record<string, unknown>;
+            if (!('votes' in obj) || !('approvers' in obj) || !('verdict' in obj)) {
+              throw new Error(
+                'hive-mind_consensus.vote: crdtSnapshot must contain { votes, approvers, verdict }',
+              );
+            }
+            snapshot = obj as unknown as CRDTState;
+          }
+
+          // Build a local snapshot from the voter's contribution. Two paths:
+          //   (a) caller provided crdtSnapshot — use it verbatim (already
+          //       contains the voter's local state).
+          //   (b) caller provided only `vote: boolean` — synthesise a
+          //       minimal snapshot: GCounter increment for this voter,
+          //       OR-Set add if approving, LWW-Register write of the proposal
+          //       value as the verdict.
+          const wallClockMs = Date.now();
+          let voterSnapshot: CRDTState;
+          if (snapshot !== undefined) {
+            voterSnapshot = snapshot;
+          } else {
+            const g = new GCounter();
+            g.increment(voterId);
+            const aps = new ORSet<string>();
+            const isApproving = voteValue === true;
+            if (isApproving) aps.add(voterId, voterId);
+            const reg = new LWWRegister<unknown>();
+            // Write the proposal value as verdict only when approving;
+            // a 'no' vote leaves the register untouched on this branch
+            // (the proposal remains rejectable through the GCounter tally
+            // if no approver writes overcome the empty verdict).
+            if (isApproving) {
+              reg.write(proposal.value, voterId, wallClockMs);
+            }
+            voterSnapshot = {
+              votes: g.toJSON(),
+              approvers: aps.toJSON(),
+              verdict: reg.toJSON(),
+            };
+          }
+
+          // Merge into the proposal's accumulator (initialised at propose-time).
+          const before = proposal.crdtState ?? emptyCRDTState();
+          proposal.crdtState = mergeCRDTState(before, voterSnapshot);
+
+          // Track voter participation via the existing `votes` map.
+          // Boolean is implicit per row 14: true if approvers contains voter,
+          // else explicit `vote` value, else default false.
+          const approverIds = ORSet.from<string>(proposal.crdtState.approvers).elements();
+          const voterIsApprover = approverIds.includes(voterId);
+          proposal.votes[voterId] = voterIsApprover ? true : (voteValue ?? false);
+
+          // Settlement: all expected voters submitted, OR timeout fired.
+          // Per ADR-0121 §Review-notes row 10 (DEFER-TO-IMPL): "round closes
+          // when state.workers.length distinct voters have submitted, OR
+          // after the same timeoutMs window the Raft strategy already uses".
+          // We use crdtExpectedVoters (snapshot at propose-time) as the
+          // distinct-voter bound — fixed across the round.
+          const distinctVoters = Object.keys(proposal.votes).length;
+          const expected = proposal.crdtExpectedVoters ?? Math.max(1, totalNodes);
+          const allSubmitted = distinctVoters >= expected;
+
+          // Per-round timeout (CRDT round timeout fires once roundTimeoutMs
+          // has elapsed since proposal creation; we reuse roundStartedAt).
+          let timedOut = false;
+          if (proposal.roundStartedAt && proposal.roundTimeoutMs) {
+            const elapsed = wallClockMs - new Date(proposal.roundStartedAt).getTime();
+            if (elapsed >= proposal.roundTimeoutMs) timedOut = true;
+          }
+
+          let crdtResolution: 'approved' | 'rejected' | null = null;
+          if (allSubmitted || timedOut) {
+            // Resolution from the merged triple. Verdict = LWW-Register value;
+            // approvers = OR-Set elements; vote count = GCounter value.
+            // 'approved' iff approver count > 0 AND >= half of submitted votes
+            // (simple majority of cast votes at settle time). Otherwise rejected.
+            const approverCount = approverIds.length;
+            const totalCast = distinctVoters;
+            // Strict majority of cast votes were approvers, OR all approvers
+            // when no dissent recorded. (Per §Pseudocode "verdict.value() is
+            // the round's resolved verdict; approvers.elements() is the union
+            // of approvers; votes.value() is the total approval count".)
+            crdtResolution = approverCount > 0 && approverCount * 2 >= totalCast
+              ? 'approved'
+              : 'rejected';
+            proposal.status = crdtResolution;
+            state.consensus.history.push({
+              proposalId: proposal.proposalId,
+              type: proposal.type,
+              result: crdtResolution,
+              votes: { for: approverCount, against: Math.max(0, totalCast - approverCount) },
+              decidedAt: new Date(wallClockMs).toISOString(),
+              strategy: proposalStrategy,
+            });
+            state.consensus.pending = state.consensus.pending.filter(
+              p => p.proposalId !== proposal.proposalId,
+            );
+          }
+
+          saveHiveState(state);
+
+          // Compute response telemetry.
+          const verdictReg = LWWRegister.from(proposal.crdtState.verdict);
+          const gcounter = GCounter.from(proposal.crdtState.votes);
+          return {
+            action,
+            proposalId: proposal.proposalId,
+            voterId,
+            strategy: proposalStrategy,
+            // Use approver count and dissent count (cast - approver) for
+            // the response — analogous to votesFor/votesAgainst for other
+            // strategies, but derived from the merged CRDT state.
+            votesFor: approverIds.length,
+            votesAgainst: Math.max(0, distinctVoters - approverIds.length),
+            totalCast: distinctVoters,
+            crdtExpectedVoters: expected,
+            totalNodes,
+            resolved: crdtResolution !== null,
+            result: crdtResolution ?? undefined,
+            status: proposal.status,
+            // CRDT-specific telemetry surface.
+            crdtState: proposal.crdtState,
+            crdtVerdict: verdictReg.value(),
+            crdtApprovers: approverIds,
+            crdtVoteCount: gcounter.value(),
+            crdtTimedOut: timedOut,
+          };
         }
 
         const required = calculateRequiredVotes(
@@ -1781,6 +2010,55 @@ export const hiveMindTools: MCPTool[] = [
           }
         }
 
+        // ADR-0121 (T3): CRDT status surfaces the merged triple + a
+        // timeout-driven force-settle path. Mirrors gossip's status branch
+        // (row 10 DEFER-TO-IMPL: union of voter-count + timeoutMs).
+        let crdtTimedOut = false;
+        let crdtResolved = false;
+        let crdtResult: 'approved' | 'rejected' | undefined;
+        let crdtVerdictValue: unknown;
+        let crdtApproverList: string[] = [];
+        let crdtVoteTotal = 0;
+        if (proposalStrategy === 'crdt' && proposal.crdtState) {
+          const verdictReg = LWWRegister.from(proposal.crdtState.verdict);
+          const approverSet = ORSet.from<string>(proposal.crdtState.approvers);
+          const gcounter = GCounter.from(proposal.crdtState.votes);
+          crdtVerdictValue = verdictReg.value();
+          crdtApproverList = approverSet.elements();
+          crdtVoteTotal = gcounter.value();
+
+          // Timeout check.
+          if (proposal.roundStartedAt && proposal.roundTimeoutMs) {
+            const elapsed = Date.now() - new Date(proposal.roundStartedAt).getTime();
+            if (elapsed >= proposal.roundTimeoutMs) crdtTimedOut = true;
+          }
+
+          // Force-settle if all expected voters submitted OR timeout fired.
+          const distinctVoters = Object.keys(proposal.votes).length;
+          const expected = proposal.crdtExpectedVoters ?? 1;
+          if (distinctVoters >= expected || crdtTimedOut) {
+            const approverCount = crdtApproverList.length;
+            const totalCast = distinctVoters;
+            crdtResult = approverCount > 0 && approverCount * 2 >= totalCast
+              ? 'approved'
+              : 'rejected';
+            crdtResolved = true;
+            proposal.status = crdtResult;
+            state.consensus.history.push({
+              proposalId: proposal.proposalId,
+              type: proposal.type,
+              result: crdtResult,
+              votes: { for: approverCount, against: Math.max(0, totalCast - approverCount) },
+              decidedAt: new Date().toISOString(),
+              strategy: proposalStrategy,
+            });
+            state.consensus.pending = state.consensus.pending.filter(
+              p => p.proposalId !== proposal.proposalId,
+            );
+            saveHiveState(state);
+          }
+        }
+
         return {
           action,
           proposalId: proposal.proposalId,
@@ -1792,8 +2070,8 @@ export const hiveMindTools: MCPTool[] = [
           totalVotes: Object.keys(proposal.votes).length,
           required,
           totalNodes,
-          resolved: gossipResolved,
-          result: gossipResolved ? gossipResult : undefined,
+          resolved: gossipResolved || crdtResolved,
+          result: gossipResolved ? gossipResult : (crdtResolved ? crdtResult : undefined),
           term: proposal.term,
           quorumPreset: proposal.quorumPreset,
           byzantineVoters: proposal.byzantineVoters?.length ? proposal.byzantineVoters : undefined,
@@ -1807,6 +2085,13 @@ export const hiveMindTools: MCPTool[] = [
           settled: gossipSettleResult?.settled,
           exhausted: gossipSettleResult?.exhausted,
           noVotes: gossipSettleResult?.noVotes,
+          // ADR-0121 (T3): CRDT-only telemetry on status response.
+          crdtState: proposalStrategy === 'crdt' ? proposal.crdtState : undefined,
+          crdtVerdict: proposalStrategy === 'crdt' ? crdtVerdictValue : undefined,
+          crdtApprovers: proposalStrategy === 'crdt' ? crdtApproverList : undefined,
+          crdtVoteCount: proposalStrategy === 'crdt' ? crdtVoteTotal : undefined,
+          crdtExpectedVoters: proposal.crdtExpectedVoters,
+          crdtTimedOut: proposalStrategy === 'crdt' ? crdtTimedOut : undefined,
         };
       }
 
