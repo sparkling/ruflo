@@ -25,6 +25,120 @@ const STORAGE_DIR = '.claude-flow';
 const HIVE_DIR = 'hive-mind';
 const HIVE_FILE = 'state.json';
 
+// ── ADR-0122 (T4): typed memory entries with TTL ──────────────────────
+//
+// USERGUIDE block "Collective Memory Types:" advertises 8 distinct memory
+// types each with documented TTL. Pre-T4 the runtime stored everything as
+// a flat `state.sharedMemory[key] = rawValue` with no type or TTL. This is
+// the type discriminator + TTL infrastructure; eviction is lazy-on-read AND
+// a periodic sweep, both under withHiveStoreLock.
+//
+// Per feedback-no-fallbacks.md: a missing/unknown `type` argument throws
+// rather than silently defaulting to 'system' (permanent retention) — the
+// soft default would mis-route a caller who forgot `type: 'task'` (30-min
+// TTL) into permanent retention.
+
+export type MemoryType =
+  | 'knowledge'
+  | 'context'
+  | 'task'
+  | 'result'
+  | 'error'
+  | 'metric'
+  | 'consensus'
+  | 'system';
+
+export interface MemoryEntry {
+  value: unknown;
+  type: MemoryType;
+  ttlMs: number | null;        // null = permanent
+  expiresAt: number | null;    // null = permanent; epoch ms otherwise
+  createdAt: number;           // epoch ms (set on first write)
+  updatedAt: number;           // epoch ms (refreshed on every write)
+}
+
+const MEMORY_TYPES: readonly MemoryType[] = [
+  'knowledge',
+  'context',
+  'task',
+  'result',
+  'error',
+  'metric',
+  'consensus',
+  'system',
+] as const;
+
+// Per-type defaults derived from USERGUIDE "Collective Memory Types:" table.
+// `null` means permanent (never expires).
+export const DEFAULT_TTL_MS_BY_TYPE: Record<MemoryType, number | null> = {
+  knowledge: null,
+  context: 3_600_000,    // 1 hour
+  task: 1_800_000,       // 30 minutes
+  result: null,
+  error: 86_400_000,     // 24 hours
+  metric: 3_600_000,     // 1 hour
+  consensus: null,
+  system: null,
+};
+
+// Custom error classes for fail-loud validation per feedback-no-fallbacks.md.
+export class MissingMemoryTypeError extends Error {
+  constructor() {
+    super(
+      `hive-mind_memory.set: \`type\` is required (one of: ${MEMORY_TYPES.join(', ')})`,
+    );
+    this.name = 'MissingMemoryTypeError';
+  }
+}
+
+export class InvalidMemoryTypeError extends Error {
+  constructor(type: unknown) {
+    super(
+      `hive-mind_memory.set: invalid type ${JSON.stringify(type)} (one of: ${MEMORY_TYPES.join(', ')})`,
+    );
+    this.name = 'InvalidMemoryTypeError';
+  }
+}
+
+export class InvalidTTLError extends Error {
+  constructor(ttlMs: unknown) {
+    super(
+      `hive-mind_memory.set: ttlMs must be a finite number, got ${JSON.stringify(ttlMs)}`,
+    );
+    this.name = 'InvalidTTLError';
+  }
+}
+
+function isMemoryType(v: unknown): v is MemoryType {
+  return typeof v === 'string' && (MEMORY_TYPES as readonly string[]).includes(v);
+}
+
+// Eviction predicate. Same predicate is used by lazy eviction (get/list)
+// and the periodic sweep — no behavioural divergence.
+//
+// `now` defaults to Date.now(); injectable for fake-timer tests.
+function isExpired(entry: MemoryEntry, now: number = Date.now()): boolean {
+  return entry.expiresAt !== null && now >= entry.expiresAt;
+}
+
+// Detect the four required-presence keys of a MemoryEntry. Used by
+// loadHiveState() to distinguish a typed entry from a legacy raw value
+// during migration. Documented limitation per ADR-0122 §Refinement: a
+// legacy user-stored object that happens to contain all four top-level
+// keys would be misread as a MemoryEntry. Probability is low (legacy
+// storage stores raw user value at sharedMemory[key], not in a `.value`
+// sub-key) but non-zero. Tests assert the four-key shape boundary.
+function isMemoryEntryShape(v: unknown): v is MemoryEntry {
+  if (v === null || typeof v !== 'object') return false;
+  const obj = v as Record<string, unknown>;
+  return (
+    'type' in obj &&
+    'ttlMs' in obj &&
+    'expiresAt' in obj &&
+    'createdAt' in obj
+  );
+}
+
 interface HiveState {
   initialized: boolean;
   topology: 'mesh' | 'hierarchical' | 'ring' | 'star';
@@ -38,13 +152,42 @@ interface HiveState {
     pending: ConsensusProposal[];
     history: ConsensusResult[];
   };
-  sharedMemory: Record<string, unknown>;
+  // ADR-0122 (T4): typed memory entries with TTL. Legacy raw values are
+  // migrated to `system`/permanent on first read (loadHiveState).
+  sharedMemory: Record<string, MemoryEntry>;
   createdAt: string;
   updatedAt: string;
 }
 
-type ConsensusStrategy = 'bft' | 'raft' | 'quorum';
+type ConsensusStrategy = 'bft' | 'raft' | 'quorum' | 'weighted';
 type QuorumPreset = 'unanimous' | 'majority' | 'supermajority';
+
+/**
+ * QUEEN_WEIGHT — fixed multiplier applied to the queen's vote in the
+ * 'weighted' consensus strategy. Pinned to 3 by the USERGUIDE contract
+ * (`Weighted (Queen 3x)` in the Hive Mind §Consensus Mechanisms block).
+ *
+ * Per ADR-0119 §Decision Outcome: not configurable via MCP tool input,
+ * not stored on `ConsensusProposal`. If retuning is ever required, write
+ * a follow-up ADR (B/C options in ADR-0119 §Considered Options).
+ */
+const QUEEN_WEIGHT = 3;
+
+/**
+ * Thrown when a 'weighted' consensus operation runs without a queen elected.
+ * Surface loudly per ADR-0119 §Decision Outcome (Queen-absent stance: throw,
+ * not permissive math) — `state.queen === undefined` during weighted indicates
+ * a caller bug (init race, dangling shutdown, queen nulled by error path).
+ */
+export class MissingQueenForWeightedConsensusError extends Error {
+  constructor(action: string) {
+    super(
+      `Cannot ${action} with strategy 'weighted': no queen elected (state.queen === undefined). ` +
+      `Per ADR-0119, weighted consensus requires an elected queen at propose- and vote-time.`,
+    );
+    this.name = 'MissingQueenForWeightedConsensusError';
+  }
+}
 
 interface ConsensusProposal {
   proposalId: string;
@@ -74,11 +217,17 @@ interface ConsensusResult {
 
 /**
  * Calculate required votes for a given strategy and total node count.
+ *
+ * ADR-0119 (T1): adds 'weighted' branch — denominator is `(N - 1) + queenWeight`
+ * where N is totalNodes and queenWeight defaults to QUEEN_WEIGHT (3). Replaces
+ * the previous silent majority `default:` arm with a synchronous throw, applied
+ * across ALL strategies (bft/raft/quorum/weighted) per `feedback-no-fallbacks.md`.
  */
 function calculateRequiredVotes(
   strategy: ConsensusStrategy,
   totalNodes: number,
   quorumPreset: QuorumPreset = 'majority',
+  queenWeight: number = QUEEN_WEIGHT,
 ): number {
   if (totalNodes <= 0) return 1;
   switch (strategy) {
@@ -98,9 +247,41 @@ function calculateRequiredVotes(
         default:
           return Math.floor(totalNodes / 2) + 1;
       }
+    case 'weighted': {
+      // ADR-0119: queen-weighted denominator. Workers contribute 1 each;
+      // the queen contributes `queenWeight` (default 3 per USERGUIDE).
+      // totalWorkers = max(0, N - 1) — the queen counts as one node.
+      const totalWorkers = Math.max(0, totalNodes - 1);
+      return totalWorkers + queenWeight;
+    }
     default:
-      return Math.floor(totalNodes / 2) + 1;
+      // ADR-0119 / feedback-no-fallbacks (global scope): no silent majority
+      // fallback for unknown strategies. Synchronous throw covers typos and
+      // future enum values that were added without a dispatch arm.
+      throw new Error(`Unknown consensus strategy: ${strategy}`);
   }
+}
+
+/**
+ * Compute weighted vote tally for a 'weighted' proposal.
+ *
+ * Precondition (asserted in propose/vote handlers): `queenId` is defined.
+ * The voter whose `voterId` matches `queenId` contributes `queenWeight`;
+ * all others contribute 1. Returns { votesFor, votesAgainst } as weighted sums.
+ */
+function weightedTally(
+  proposal: ConsensusProposal,
+  queenId: string,
+  queenWeight: number = QUEEN_WEIGHT,
+): { votesFor: number; votesAgainst: number } {
+  let votesFor = 0;
+  let votesAgainst = 0;
+  for (const [voterId, vote] of Object.entries(proposal.votes)) {
+    const contribution = voterId === queenId ? queenWeight : 1;
+    if (vote) votesFor += contribution;
+    else votesAgainst += contribution;
+  }
+  return { votesFor, votesAgainst };
 }
 
 /**
@@ -130,18 +311,60 @@ function detectByzantineVoters(
 /**
  * Try to resolve a proposal based on its strategy.
  * Returns 'approved', 'rejected', or null if still pending.
+ *
+ * ADR-0119 (T1): when `proposal.strategy === 'weighted'`, both the tally and
+ * the deadlock arithmetic use weighted sums (queen contributes QUEEN_WEIGHT,
+ * workers contribute 1). Comparing raw vote counts to a weighted denominator
+ * — or summing raw uncast voters into the deadlock check — would mark
+ * legitimate live proposals as deadlocked once the queen weight is in play.
+ *
+ * `queenId` is required when `proposal.strategy === 'weighted'`. Callers must
+ * pass `state.queen?.agentId`; the precondition that `state.queen !== undefined`
+ * is enforced in the propose/vote handlers (see MissingQueenForWeightedConsensusError).
  */
 function tryResolveProposal(
   proposal: ConsensusProposal,
   totalNodes: number,
+  queenId?: string,
 ): 'approved' | 'rejected' | null {
-  const votesFor = Object.values(proposal.votes).filter(v => v).length;
-  const votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
   const required = calculateRequiredVotes(
     proposal.strategy,
     totalNodes,
     proposal.quorumPreset,
   );
+
+  if (proposal.strategy === 'weighted') {
+    // Precondition asserted in propose/vote: `state.queen` is defined.
+    if (!queenId) {
+      // Defensive — the handler check should have already thrown. If we
+      // reach here, the caller bypassed the precondition (programming error).
+      throw new MissingQueenForWeightedConsensusError('resolve');
+    }
+    const { votesFor, votesAgainst } = weightedTally(proposal, queenId);
+
+    if (votesFor >= required) return 'approved';
+    if (votesAgainst >= required) return 'rejected';
+
+    // Weighted deadlock: compute remaining weighted capacity. Workers not yet
+    // voted contribute 1 each; the queen, if uncast, contributes QUEEN_WEIGHT.
+    const castVoters = new Set(Object.keys(proposal.votes));
+    const queenStillUncast = !castVoters.has(queenId);
+    // Worker slots remaining = totalWorkers - workers already cast.
+    const workersAlreadyCast = Array.from(castVoters).filter(v => v !== queenId).length;
+    const totalWorkers = Math.max(0, totalNodes - 1);
+    const workerSlotsRemaining = Math.max(0, totalWorkers - workersAlreadyCast);
+    const weightedRemaining = workerSlotsRemaining + (queenStillUncast ? QUEEN_WEIGHT : 0);
+
+    if (votesFor + weightedRemaining < required && votesAgainst + weightedRemaining < required) {
+      // Deadlock: neither side can reach `required` even with all remaining votes.
+      return 'rejected';
+    }
+
+    return null;
+  }
+
+  const votesFor = Object.values(proposal.votes).filter(v => v).length;
+  const votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
 
   if (votesFor >= required) return 'approved';
   if (votesAgainst >= required) return 'rejected';
@@ -182,7 +405,32 @@ function loadHiveState(): HiveState {
     const path = getHivePath();
     if (existsSync(path)) {
       const data = readFileSync(path, 'utf-8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data) as HiveState;
+      // ADR-0122 (T4): migrate legacy untyped entries on read. Non-destructive:
+      // no value mutated, no entry dropped. Per feedback-data-loss-zero-tolerance,
+      // even malformed legacy entries (undefined/null) are preserved as
+      // `{ value: <that>, type: 'system', ttlMs: null, expiresAt: null, ... }`.
+      if (parsed && typeof parsed === 'object' && parsed.sharedMemory) {
+        const now = Date.now();
+        const migrated: Record<string, MemoryEntry> = {};
+        for (const [key, entry] of Object.entries(parsed.sharedMemory)) {
+          if (isMemoryEntryShape(entry)) {
+            migrated[key] = entry;
+          } else {
+            // Legacy raw value: wrap as `system`/permanent.
+            migrated[key] = {
+              value: entry,
+              type: 'system',
+              ttlMs: null,
+              expiresAt: null,
+              createdAt: now,
+              updatedAt: now,
+            };
+          }
+        }
+        parsed.sharedMemory = migrated;
+      }
+      return parsed;
     }
   } catch {
     // Return default state on error
@@ -375,6 +623,10 @@ export const hiveMindTools: MCPTool[] = [
       };
 
       saveHiveState(state);
+
+      // ADR-0122 (T4): register periodic sweep timer for TTL eviction. Idempotent —
+      // re-init without intervening shutdown reuses the existing handle.
+      startHiveMindSweepTimer();
 
       return {
         success: true,
@@ -572,7 +824,10 @@ export const hiveMindTools: MCPTool[] = [
         value: { description: 'Proposal value (for propose)' },
         vote: { type: 'boolean', description: 'Vote (true=for, false=against)' },
         voterId: { type: 'string', description: 'Voter agent ID' },
-        strategy: { type: 'string', enum: ['bft', 'raft', 'quorum'], description: 'Consensus strategy (default: raft)' },
+        // ADR-0119 (T1): 'weighted' added (queen 3x voting power per USERGUIDE).
+        // 'byzantine' is an alias for 'bft' (carry-forward from ADR-0106 R1 per
+        // ADR-0118 review-notes-triage 2026-05-02); normalized to 'bft' at handler entry.
+        strategy: { type: 'string', enum: ['bft', 'raft', 'quorum', 'weighted', 'byzantine'], description: 'Consensus strategy (default: raft). "byzantine" is an alias for "bft".' },
         quorumPreset: { type: 'string', enum: ['unanimous', 'majority', 'supermajority'], description: 'Quorum threshold preset (for quorum strategy, default: majority)' },
         term: { type: 'number', description: 'Term number (for raft strategy)' },
         timeoutMs: { type: 'number', description: 'Timeout in ms for raft re-proposal (default: 30000)' },
@@ -582,10 +837,27 @@ export const hiveMindTools: MCPTool[] = [
     handler: async (input) => {
       const state = loadHiveState();
       const action = input.action as string;
+
+      // ADR-0119 (T1) — carry-forward from ADR-0106 R1: 'byzantine' is a wire-
+      // boundary alias for 'bft'. Normalize before dispatch so the runtime sees
+      // only the canonical 'bft' value (per ADR-0118 review-notes-triage 2026-05-02).
+      // Mutates `input.strategy` so downstream lookups (proposal.strategy when
+      // resuming via vote/status) all see the same canonical value.
+      if (input.strategy === 'byzantine') {
+        input.strategy = 'bft';
+      }
+
       const strategy = (input.strategy as ConsensusStrategy) || 'raft';
       const totalNodes = state.workers.length || 1;
 
       if (action === 'propose') {
+        // ADR-0119 §Decision Outcome: weighted strategy requires an elected queen.
+        // Throw synchronously rather than degrade to permissive math when state.queen
+        // is undefined (init race, dangling shutdown, queen nulled by error path).
+        if (strategy === 'weighted' && !state.queen) {
+          throw new MissingQueenForWeightedConsensusError('propose');
+        }
+
         const proposalId = `proposal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const quorumPreset = (input.quorumPreset as QuorumPreset) || 'majority';
         const term = (input.term as number) || (state.queen?.term ?? 1);
@@ -653,6 +925,14 @@ export const hiveMindTools: MCPTool[] = [
 
         const voteValue = input.vote as boolean;
         const proposalStrategy = proposal.strategy || 'raft';
+
+        // ADR-0119 §Decision Outcome: weighted vote requires an elected queen
+        // at vote-time too (not just propose-time). Covers the case where the
+        // queen abdicated between propose and vote.
+        if (proposalStrategy === 'weighted' && !state.queen) {
+          throw new MissingQueenForWeightedConsensusError('vote');
+        }
+
         const required = calculateRequiredVotes(
           proposalStrategy,
           totalNodes,
@@ -737,11 +1017,24 @@ export const hiveMindTools: MCPTool[] = [
         // Record the vote
         proposal.votes[voterId] = voteValue;
 
-        const votesFor = Object.values(proposal.votes).filter(v => v).length;
-        const votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
+        // ADR-0119 (T1): when proposalStrategy === 'weighted', report weighted
+        // vote totals (queen contributes QUEEN_WEIGHT, workers contribute 1) so
+        // the caller's view of `votesFor`/`votesAgainst` matches what
+        // tryResolveProposal consumes against the weighted denominator.
+        let votesFor: number;
+        let votesAgainst: number;
+        if (proposalStrategy === 'weighted') {
+          // state.queen guaranteed defined by the precondition check above.
+          const tally = weightedTally(proposal, state.queen!.agentId);
+          votesFor = tally.votesFor;
+          votesAgainst = tally.votesAgainst;
+        } else {
+          votesFor = Object.values(proposal.votes).filter(v => v).length;
+          votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
+        }
 
-        // Try to resolve
-        const resolution = tryResolveProposal(proposal, totalNodes);
+        // Try to resolve — pass queenId for the weighted branch (ignored otherwise).
+        const resolution = tryResolveProposal(proposal, totalNodes, state.queen?.agentId);
         let resolved = false;
 
         if (resolution !== null) {
@@ -793,9 +1086,20 @@ export const hiveMindTools: MCPTool[] = [
           return { action, error: 'Proposal not found' };
         }
 
-        const votesFor = Object.values(proposal.votes).filter(v => v).length;
-        const votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
         const proposalStrategy = proposal.strategy || 'raft';
+        // ADR-0119 (T1): mirror vote-handler accounting — when proposal is
+        // weighted, report weighted tallies so callers get a coherent view of
+        // votesFor/votesAgainst against the weighted `required` denominator.
+        let votesFor: number;
+        let votesAgainst: number;
+        if (proposalStrategy === 'weighted' && state.queen) {
+          const tally = weightedTally(proposal, state.queen.agentId);
+          votesFor = tally.votesFor;
+          votesAgainst = tally.votesAgainst;
+        } else {
+          votesFor = Object.values(proposal.votes).filter(v => v).length;
+          votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
+        }
         const required = calculateRequiredVotes(
           proposalStrategy,
           totalNodes,
@@ -875,9 +1179,15 @@ export const hiveMindTools: MCPTool[] = [
 
       const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-      // Store in shared memory
-      const messages = (state.sharedMemory.broadcasts as Array<unknown>) || [];
-      messages.push({
+      // Store in shared memory (ADR-0122 T4: wrap broadcasts in typed entry).
+      // Broadcasts are operational system state — type='system'/permanent — so
+      // they survive sweeps unless cleared by the trim-to-100 logic below.
+      const now = Date.now();
+      const existing = state.sharedMemory.broadcasts;
+      const priorMessages = (existing && isMemoryEntryShape(existing) && Array.isArray(existing.value))
+        ? (existing.value as Array<unknown>)
+        : [];
+      priorMessages.push({
         messageId,
         message: input.message,
         priority: input.priority || 'normal',
@@ -886,7 +1196,14 @@ export const hiveMindTools: MCPTool[] = [
       });
 
       // Keep only last 100 broadcasts
-      state.sharedMemory.broadcasts = messages.slice(-100);
+      state.sharedMemory.broadcasts = {
+        value: priorMessages.slice(-100),
+        type: 'system',
+        ttlMs: null,
+        expiresAt: null,
+        createdAt: existing && isMemoryEntryShape(existing) ? existing.createdAt : now,
+        updatedAt: now,
+      };
       saveHiveState(state);
 
       return {
@@ -952,6 +1269,10 @@ export const hiveMindTools: MCPTool[] = [
       state.sharedMemory = {};
       saveHiveState(state);
 
+      // ADR-0122 (T4): clear the periodic sweep timer. MUST run on shutdown
+      // or the timer leaks across hive sessions and re-init creates a duplicate.
+      stopHiveMindSweepTimer();
+
       return {
         success: true,
         shutdownAt: shutdownTime,
@@ -965,7 +1286,7 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_memory',
-    description: 'Access hive shared memory',
+    description: 'Access hive shared memory (ADR-0122: 8 typed memory types with TTL)',
     category: 'hive-mind',
     inputSchema: {
       type: 'object',
@@ -973,6 +1294,16 @@ export const hiveMindTools: MCPTool[] = [
         action: { type: 'string', enum: ['get', 'set', 'delete', 'list'], description: 'Memory action' },
         key: { type: 'string', description: 'Memory key' },
         value: { description: 'Value to store (for set)' },
+        // ADR-0122: required on `set`; missing/unknown throws (no silent default).
+        type: {
+          type: 'string',
+          enum: ['knowledge', 'context', 'task', 'result', 'error', 'metric', 'consensus', 'system'],
+          description: 'Memory type (required for set; one of 8 USERGUIDE types). Optional filter on list.',
+        },
+        ttlMs: {
+          type: 'number',
+          description: 'Override TTL in ms (default per type from USERGUIDE)',
+        },
       },
       required: ['action'],
     },
@@ -980,41 +1311,120 @@ export const hiveMindTools: MCPTool[] = [
       const action = input.action as string;
       const key = input.key as string;
 
-      // Read-only paths: no lock needed.
+      // ADR-0122 (T4): ALL four actions run inside withHiveStoreLock because
+      // get/list mutate state.sharedMemory during lazy eviction. The previous
+      // lock-free read fast path is forfeit — required for correctness when
+      // eviction can race writers.
+
       if (action === 'get') {
         if (!key) return { action, error: 'Key required' };
-        const state = loadHiveState();
-        return {
-          action,
-          key,
-          value: state.sharedMemory[key],
-          exists: key in state.sharedMemory,
-        };
+        return withHiveStoreLock(async () => {
+          const state = loadHiveState();
+          const entry = state.sharedMemory[key];
+          if (entry === undefined) {
+            return { action, key, value: undefined, exists: false };
+          }
+          if (isExpired(entry)) {
+            // Lazy eviction: drop and persist. Caller never observes expired data.
+            delete state.sharedMemory[key];
+            saveHiveState(state);
+            return { action, key, value: undefined, exists: false, evicted: true };
+          }
+          return {
+            action,
+            key,
+            value: entry.value,
+            exists: true,
+            type: entry.type,
+            ttlMs: entry.ttlMs,
+            expiresAt: entry.expiresAt,
+          };
+        });
       }
 
       if (action === 'list') {
-        const state = loadHiveState();
-        return {
-          action,
-          keys: Object.keys(state.sharedMemory),
-          count: Object.keys(state.sharedMemory).length,
-        };
+        return withHiveStoreLock(async () => {
+          const state = loadHiveState();
+          const filterType = input.type as MemoryType | undefined;
+          // Validate filter type if supplied (fail-loud per feedback-no-fallbacks).
+          if (filterType !== undefined && !isMemoryType(filterType)) {
+            throw new InvalidMemoryTypeError(filterType);
+          }
+          const keys: string[] = [];
+          let mutated = false;
+          const now = Date.now();
+          for (const [k, entry] of Object.entries(state.sharedMemory)) {
+            if (isExpired(entry, now)) {
+              delete state.sharedMemory[k];
+              mutated = true;
+              continue;
+            }
+            if (filterType && entry.type !== filterType) continue;
+            keys.push(k);
+          }
+          if (mutated) saveHiveState(state);
+          return {
+            action,
+            keys,
+            count: keys.length,
+            ...(filterType ? { type: filterType } : {}),
+          };
+        });
       }
 
       // ADR-0104 §5: load → mutate → save under cross-process lock.
       // §6's parallel Task workers calling hive-mind_memory({action:'set'})
       // would race-clobber without this.
+      //
+      // ADR-0122 (T4): `type` is REQUIRED. A missing/unknown `type` argument
+      // throws synchronously per feedback-no-fallbacks — silently defaulting
+      // to 'system' (permanent) would mis-route a caller who forgot
+      // `type: 'task'` (30-min TTL) into permanent retention.
       if (action === 'set') {
         if (!key) return { action, error: 'Key required' };
+
+        // Validate BEFORE acquiring the lock. No partial write on either throw.
+        const rawType = input.type;
+        if (rawType === undefined) {
+          throw new MissingMemoryTypeError();
+        }
+        if (!isMemoryType(rawType)) {
+          throw new InvalidMemoryTypeError(rawType);
+        }
+        const memoryType: MemoryType = rawType;
+
+        const rawTtlMs = input.ttlMs;
+        if (rawTtlMs !== undefined && rawTtlMs !== null) {
+          if (typeof rawTtlMs !== 'number' || !Number.isFinite(rawTtlMs)) {
+            throw new InvalidTTLError(rawTtlMs);
+          }
+        }
+        const ttlMs: number | null = (rawTtlMs === undefined || rawTtlMs === null)
+          ? DEFAULT_TTL_MS_BY_TYPE[memoryType]
+          : (rawTtlMs as number);
+
         return withHiveStoreLock(async () => {
           const state = loadHiveState();
-          state.sharedMemory[key] = input.value;
+          const now = Date.now();
+          const expiresAt: number | null = ttlMs === null ? null : now + ttlMs;
+          const prior = state.sharedMemory[key];
+          state.sharedMemory[key] = {
+            value: input.value,
+            type: memoryType,
+            ttlMs,
+            expiresAt,
+            createdAt: (prior && isMemoryEntryShape(prior)) ? prior.createdAt : now,
+            updatedAt: now,
+          };
           saveHiveState(state);
           return {
             action,
             key,
             success: true,
-            updatedAt: new Date().toISOString(),
+            type: memoryType,
+            ttlMs,
+            expiresAt,
+            updatedAt: new Date(now).toISOString(),
           };
         });
       }
@@ -1038,3 +1448,74 @@ export const hiveMindTools: MCPTool[] = [
     },
   },
 ];
+
+// ── ADR-0122 (T4): periodic sweep timer lifecycle ──────────────────────
+//
+// Bounds memory growth for entries no caller touches between TTL expiry
+// and the next get/list. Default 60s, env-overridable via
+// CLAUDE_FLOW_HIVE_SWEEP_MS (per ADR-0118 review-notes-triage row 19;
+// CLAUDE_FLOW_* is the runtime convention, NOT RUFLO_*).
+//
+// Lifecycle: registered by startHiveMindSweepTimer() on hive-mind_init,
+// cleared by stopHiveMindSweepTimer() on hive-mind_shutdown. Handle is
+// module-scoped so the timer persists across handler invocations within
+// the same process. Multiple init calls without intervening shutdown
+// reuse the existing handle (no duplicate timer).
+
+let sweepHandle: ReturnType<typeof setInterval> | null = null;
+
+function getSweepIntervalMs(): number {
+  const raw = process.env.CLAUDE_FLOW_HIVE_SWEEP_MS;
+  if (raw === undefined || raw === '') return 60_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 60_000;
+  return parsed;
+}
+
+async function performSweep(): Promise<void> {
+  await withHiveStoreLock(async () => {
+    const state = loadHiveState();
+    let mutated = false;
+    const now = Date.now();
+    for (const [key, entry] of Object.entries(state.sharedMemory)) {
+      if (isExpired(entry, now)) {
+        delete state.sharedMemory[key];
+        mutated = true;
+      }
+    }
+    if (mutated) saveHiveState(state);
+  });
+}
+
+export function startHiveMindSweepTimer(): void {
+  if (sweepHandle !== null) return; // already running
+  const intervalMs = getSweepIntervalMs();
+  sweepHandle = setInterval(() => {
+    // Sweep errors are logged: lazy eviction guarantees correctness, sweep
+    // is hygiene-only.
+    performSweep().catch(err => {
+      // eslint-disable-next-line no-console
+      console.warn('[hive-mind] sweep cycle failed:', err instanceof Error ? err.message : String(err));
+    });
+  }, intervalMs);
+  // Don't keep Node alive on sweep timer alone (relevant for short-lived MCP runners).
+  if (typeof sweepHandle.unref === 'function') sweepHandle.unref();
+}
+
+export function stopHiveMindSweepTimer(): void {
+  if (sweepHandle !== null) {
+    clearInterval(sweepHandle);
+    sweepHandle = null;
+  }
+}
+
+// Test-only accessor for the active sweep handle.
+export function _getSweepHandleForTest(): unknown {
+  return sweepHandle;
+}
+
+// Test-only export for direct sweep invocation (lets tests advance fake
+// timers and observe sweep behaviour without scheduling jitter).
+export async function _performSweepForTest(): Promise<void> {
+  return performSweep();
+}
