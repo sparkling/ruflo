@@ -9,23 +9,68 @@ capabilities:
   - state_synchronization
   - conflict_resolution
   - scalability_optimization
+allowed-tools:
+  - mcp__ruflo__hive-mind_consensus
 priority: medium
 hooks:
   pre: |
-    echo "📡 Gossip Coordinator broadcasting: $TASK"
+    echo "Gossip Coordinator broadcasting: $TASK"
     # Initialize peer connections
     if [[ "$TASK" == *"dissemination"* ]]; then
-      echo "🌐 Establishing peer network topology"
+      echo "Establishing peer network topology"
     fi
   post: |
-    echo "🔄 Gossip protocol cycle complete"
+    echo "Gossip protocol cycle complete"
     # Check convergence status
-    echo "📊 Monitoring eventual consistency convergence"
+    echo "Monitoring eventual consistency convergence"
 ---
 
 # Gossip Protocol Coordinator
 
 Coordinates gossip-based consensus protocols for scalable eventually consistent distributed systems.
+
+## Runtime Integration
+
+This agent drives consensus rounds through the `mcp__ruflo__hive-mind_consensus`
+MCP tool with `strategy: 'gossip'` (added per ADR-0120, T2 of ADR-0118).
+Push-style epidemic propagation is the chosen anti-entropy variant; settling
+is detected by a round-counter plus no-vote-changed predicate
+(`gossipRound >= ceil(log2(N))` AND `gossipRound > lastVoteChangedRound`).
+
+### Example: drive a consensus round
+
+```jsonc
+// Propose with gossip strategy.
+{
+  "tool": "mcp__ruflo__hive-mind_consensus",
+  "params": {
+    "action": "propose",
+    "type": "deployment-approval",
+    "value": { "deploy": "v1.2.3" },
+    "strategy": "gossip",
+    "roundTimeoutMs": 5000
+  }
+}
+
+// Each peer votes. Re-broadcast bookkeeping is automatic.
+{
+  "tool": "mcp__ruflo__hive-mind_consensus",
+  "params": {
+    "action": "vote",
+    "proposalId": "proposal-...",
+    "voterId": "worker-1",
+    "vote": true
+  }
+}
+
+// Poll for settling. Returns { settled: true, result: ... } once the
+// predicate fires, OR { settled: false, exhausted: true } if the hard
+// budget (2 * ceil(log2(N))) was exceeded — never silently coerced.
+{
+  "tool": "mcp__ruflo__hive-mind_consensus",
+  "params": { "action": "status", "proposalId": "proposal-..." }
+}
+```
 
 ## Core Responsibilities
 

@@ -161,8 +161,81 @@ interface HiveState {
   updatedAt: string;
 }
 
-type ConsensusStrategy = 'bft' | 'raft' | 'quorum' | 'weighted';
+// ADR-0120 (T2): 'gossip' added — push-style epidemic propagation with
+// eventual-consistency settling. See ADR-0120 §Specification for the
+// settle predicate, fanout function, and round-budget contract.
+type ConsensusStrategy = 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip';
 type QuorumPreset = 'unanimous' | 'majority' | 'supermajority';
+
+/**
+ * ADR-0120 (T2): default per-round timeout for gossip rounds (ms).
+ *
+ * Bounds settling latency in the presence of a slow voter that never sends.
+ * Without a per-round timeout, a single non-voting worker would block
+ * `currentRoundBroadcastSet` from ever covering all voters, so `gossipRound`
+ * never advances and settling never fires (per §Refinement edge case
+ * "Slow voter that never sends").
+ *
+ * Configurable per-proposal via the `roundTimeoutMs` input on the `propose`
+ * action (Row 6 DEFER-TO-IMPL: gossip-only knob, defaulted here).
+ */
+export const GOSSIP_ROUND_TIMEOUT_MS_DEFAULT = 5000;
+
+/**
+ * Compute fanout size for gossip: `ceil(log2(N))` for N >= 2, with 0 for N=1.
+ *
+ * Per ADR-0120 §Specification "Fanout function". The N=1 short-circuit is
+ * handled at vote-time (no peers to broadcast to) and at settle-time
+ * (predicate's second clause has an `N == 1` short-circuit).
+ */
+export function gossipFanout(totalNodes: number): number {
+  if (totalNodes <= 1) return 0;
+  return Math.ceil(Math.log2(totalNodes));
+}
+
+/**
+ * Deterministic-per-round target selection for gossip re-broadcast.
+ *
+ * Two voters seeing the same `(proposalId, gossipRound, voterSet)` MUST pick
+ * the same target subset, otherwise the `O(log N)` convergence bound does
+ * not hold (per ADR-0120 §Risks). The voter set is canonicalised
+ * (lexicographic sort) before the seeded shuffle.
+ *
+ * Implementation: simple Fisher-Yates with a string-hash seed derived from
+ * `(proposalId, gossipRound)`. Determinism is the contract; cryptographic
+ * randomness is not required.
+ */
+export function selectGossipTargets(
+  proposalId: string,
+  gossipRound: number,
+  voterSet: string[],
+  excludeIds: Set<string>,
+  fanoutSize: number,
+): string[] {
+  // Canonicalise: lexicographic sort gives same input order across nodes.
+  const candidates = [...voterSet].sort().filter(v => !excludeIds.has(v));
+  if (candidates.length === 0 || fanoutSize === 0) return [];
+
+  // Seeded RNG (mulberry32-style) keyed on (proposalId, gossipRound).
+  // Hash the seed string to a 32-bit int.
+  const seedStr = `${proposalId}:${gossipRound}`;
+  let h = 2166136261 >>> 0;  // FNV-1a basis
+  for (let i = 0; i < seedStr.length; i++) {
+    h = Math.imul(h ^ seedStr.charCodeAt(i), 16777619) >>> 0;
+  }
+  // Fisher-Yates shuffle deriving each random pick from `h`.
+  const shuffled = [...candidates];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
+    h = Math.imul(h ^ (h >>> 13), 3266489909) >>> 0;
+    h = (h ^ (h >>> 16)) >>> 0;
+    const j = h % (i + 1);
+    const tmp = shuffled[i]!;
+    shuffled[i] = shuffled[j]!;
+    shuffled[j] = tmp;
+  }
+  return shuffled.slice(0, Math.min(fanoutSize, shuffled.length));
+}
 
 /**
  * QUEEN_WEIGHT — fixed multiplier applied to the queen's vote in the
@@ -191,7 +264,7 @@ export class MissingQueenForWeightedConsensusError extends Error {
   }
 }
 
-interface ConsensusProposal {
+export interface ConsensusProposal {
   proposalId: string;
   type: string;
   value: unknown;
@@ -204,6 +277,16 @@ interface ConsensusProposal {
   quorumPreset?: QuorumPreset; // Quorum: threshold preset
   byzantineVoters?: string[]; // BFT: detected Byzantine voters
   timeoutAt?: string;         // Raft: timeout for re-proposal
+  // ADR-0120 (T2): gossip-only fields. Snapshotted at propose-time and
+  // mutated through the vote/status code path. Persisted in `state.json`
+  // and survive process restarts (re-seeded on next vote per §Architecture
+  // "Persistence of pending re-broadcasts is opportunistic").
+  gossipRound?: number;                  // current propagation round; 0 at proposal creation
+  lastVoteChangedRound?: number;         // round number when tally last mutated
+  totalNodes?: number;                   // snapshot of state.workers.length at propose-time
+  currentRoundBroadcastSet?: string[];   // voterIds already broadcast-from or targeted in this round
+  roundTimeoutMs?: number;               // per-round timeout (default GOSSIP_ROUND_TIMEOUT_MS_DEFAULT)
+  roundStartedAt?: string;               // ISO timestamp when current round began (for timeout)
 }
 
 interface ConsensusResult {
@@ -385,6 +468,121 @@ function tryResolveProposal(
   }
 
   return null;
+}
+
+// ── ADR-0120 (T2): gossip helpers ─────────────────────────────────────
+//
+// Push-style epidemic propagation. Each `vote` action where strategy is
+// 'gossip' triggers fanout-bounded re-broadcast bookkeeping. In a
+// single-process MCP server, the "re-broadcast" is the bookkeeping itself
+// — peers' state is shared via `state.consensus.pending`, so target
+// voters observe the merged proposal on their next vote/status call.
+// The round counter (gossipRound) and broadcast-set tracking enforce the
+// O(log N) convergence bound; settling is detected by the predicate
+// below (§Specification settle predicate).
+
+/**
+ * Settle-check result shape per ADR-0120 §Pseudocode `settle_check`.
+ *
+ * - `{ settled: true, ... }` — predicate fired, callers may act on the tally.
+ * - `{ settled: false, exhausted: true, ... }` — hard budget exceeded; per
+ *   `feedback-no-fallbacks.md`, callers handle by retrying / escalating /
+ *   treating as inconclusive. NEVER silently coerce to settled.
+ * - `{ settled: false, ... }` — still propagating; callers may poll again.
+ */
+export interface GossipSettleStatus {
+  settled: boolean;
+  exhausted?: boolean;
+  gossipRound: number;
+  bound: number;
+  result?: 'approved' | 'rejected';
+  noVotes?: boolean;
+}
+
+/**
+ * Apply per-round timeout: if the current round has been open longer than
+ * `roundTimeoutMs`, force-advance `gossipRound` and clear
+ * `currentRoundBroadcastSet`. Caller must `saveHiveState` after invocation
+ * if any mutation happened.
+ *
+ * Per ADR-0120 §Specification "Per-round timeout": without this, a single
+ * non-voting worker would block all rounds indefinitely (the broadcast set
+ * never covers all voters → `gossipRound` never advances → settling never
+ * fires). With the timeout, the round advances after `roundTimeoutMs`; the
+ * dropped voter's vote is simply absent from the tally; the predicate
+ * still fires once `lastVoteChangedRound` quiesces.
+ *
+ * Returns `true` if a round-advance happened (the caller saves state).
+ */
+function maybeAdvanceGossipRoundOnTimeout(
+  proposal: ConsensusProposal,
+  now: number = Date.now(),
+): boolean {
+  if (proposal.strategy !== 'gossip') return false;
+  if (!proposal.roundStartedAt) return false;
+  const roundTimeoutMs = proposal.roundTimeoutMs ?? GOSSIP_ROUND_TIMEOUT_MS_DEFAULT;
+  const elapsed = now - new Date(proposal.roundStartedAt).getTime();
+  if (elapsed < roundTimeoutMs) return false;
+  // Round timeout fired — advance.
+  proposal.gossipRound = (proposal.gossipRound ?? 0) + 1;
+  proposal.currentRoundBroadcastSet = [];
+  proposal.roundStartedAt = new Date(now).toISOString();
+  return true;
+}
+
+/**
+ * ADR-0120 §Pseudocode `settle_check`. Compute the settle status of a
+ * gossip proposal. Mirrors the predicate at §Specification.
+ *
+ * Predicate: settled iff
+ *   `gossipRound >= ceil(log2(totalNodes))`
+ *     AND
+ *   `(gossipRound > lastVoteChangedRound OR totalNodes == 1)`
+ *
+ * Hard budget: `gossipRound > 2 * ceil(log2(totalNodes))` returns
+ *   `{ settled: false, exhausted: true }` per `feedback-no-fallbacks.md`.
+ *
+ * No-vote rejection: a settle_check on a proposal with zero votes
+ *   returns `{ settled: false, gossipRound: 0, noVotes: true }` —
+ *   never `{ settled: true }`.
+ */
+export function settleCheckGossip(proposal: ConsensusProposal): GossipSettleStatus {
+  const totalNodes = proposal.totalNodes ?? 1;
+  const bound = gossipFanout(totalNodes);
+  const gossipRound = proposal.gossipRound ?? 0;
+  const lastVoteChangedRound = proposal.lastVoteChangedRound ?? 0;
+  const hasVotes = Object.keys(proposal.votes).length > 0;
+
+  // No-vote rejection per §Refinement edge case "Caller invokes vote with
+  // no votes received yet". An empty tally is not a settled tally.
+  if (!hasVotes) {
+    return { settled: false, gossipRound, bound, noVotes: true };
+  }
+
+  // Hard budget exhaustion per §Specification "Round budget".
+  if (gossipRound > 2 * bound) {
+    return { settled: false, exhausted: true, gossipRound, bound };
+  }
+
+  // Settle predicate. The N=1 short-circuit handles the degenerate case
+  // where bound=0 makes the first clause trivially true and
+  // gossipRound=0=lastVoteChangedRound makes a strict-greater check fail.
+  if (
+    gossipRound >= bound &&
+    (gossipRound > lastVoteChangedRound || totalNodes === 1)
+  ) {
+    // Compute final tally. Workers each contribute 1 vote; gossip has no
+    // queen-multiplier semantics. Result decided by simple majority of
+    // recorded votes (not against `totalNodes`, since gossip permits
+    // partial participation per §Refinement "voter dropouts").
+    const votesFor = Object.values(proposal.votes).filter(v => v).length;
+    const votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
+    const result: 'approved' | 'rejected' =
+      votesFor > votesAgainst ? 'approved' : 'rejected';
+    return { settled: true, gossipRound, bound, result };
+  }
+
+  return { settled: false, gossipRound, bound };
 }
 
 function getHiveDir(): string {
@@ -1117,7 +1315,7 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_consensus',
-    description: 'Propose or vote on consensus with BFT, Raft, or Quorum strategies',
+    description: 'Propose or vote on consensus with BFT, Raft, Quorum, Weighted, or Gossip strategies',
     category: 'hive-mind',
     inputSchema: {
       type: 'object',
@@ -1129,12 +1327,17 @@ export const hiveMindTools: MCPTool[] = [
         vote: { type: 'boolean', description: 'Vote (true=for, false=against)' },
         voterId: { type: 'string', description: 'Voter agent ID' },
         // ADR-0119 (T1): 'weighted' added (queen 3x voting power per USERGUIDE).
+        // ADR-0120 (T2): 'gossip' added (push-style epidemic propagation; eventual consistency).
         // 'byzantine' is an alias for 'bft' (carry-forward from ADR-0106 R1 per
         // ADR-0118 review-notes-triage 2026-05-02); normalized to 'bft' at handler entry.
-        strategy: { type: 'string', enum: ['bft', 'raft', 'quorum', 'weighted', 'byzantine'], description: 'Consensus strategy (default: raft). "byzantine" is an alias for "bft".' },
+        strategy: { type: 'string', enum: ['bft', 'raft', 'quorum', 'weighted', 'byzantine', 'gossip'], description: 'Consensus strategy (default: raft). "byzantine" is an alias for "bft". "gossip" uses push-style epidemic propagation with eventual-consistency settling.' },
         quorumPreset: { type: 'string', enum: ['unanimous', 'majority', 'supermajority'], description: 'Quorum threshold preset (for quorum strategy, default: majority)' },
         term: { type: 'number', description: 'Term number (for raft strategy)' },
         timeoutMs: { type: 'number', description: 'Timeout in ms for raft re-proposal (default: 30000)' },
+        // ADR-0120 (T2): per-round timeout for gossip strategy. Bounds settling
+        // latency in the presence of slow voters; without this knob a single
+        // non-voting worker would block all gossip rounds indefinitely.
+        roundTimeoutMs: { type: 'number', description: 'Per-round timeout in ms for gossip strategy (default: 5000)' },
       },
       required: ['action'],
     },
@@ -1184,6 +1387,15 @@ export const hiveMindTools: MCPTool[] = [
 
         const required = calculateRequiredVotes(strategy, totalNodes, quorumPreset);
 
+        // ADR-0120 (T2): gossip needs `totalNodes` snapshot at propose-time
+        // (per §Specification: "snapshotted at propose-time and stays fixed").
+        // Late-joining workers are admitted into the candidate pool via the
+        // canonical voter-set lookup but do not change the bound.
+        const isGossip = strategy === 'gossip';
+        const roundTimeoutMs = isGossip
+          ? ((input.roundTimeoutMs as number) || GOSSIP_ROUND_TIMEOUT_MS_DEFAULT)
+          : undefined;
+
         const proposal: ConsensusProposal = {
           proposalId,
           type: (input.type as string) || 'general',
@@ -1197,6 +1409,13 @@ export const hiveMindTools: MCPTool[] = [
           quorumPreset: strategy === 'quorum' ? quorumPreset : undefined,
           byzantineVoters: strategy === 'bft' ? [] : undefined,
           timeoutAt: strategy === 'raft' ? new Date(Date.now() + timeoutMs).toISOString() : undefined,
+          // Gossip-only fields (ADR-0120 §Implementation §3).
+          gossipRound: isGossip ? 0 : undefined,
+          lastVoteChangedRound: isGossip ? 0 : undefined,
+          totalNodes: isGossip ? totalNodes : undefined,
+          currentRoundBroadcastSet: isGossip ? [] : undefined,
+          roundTimeoutMs,
+          roundStartedAt: isGossip ? new Date().toISOString() : undefined,
         };
 
         state.consensus.pending.push(proposal);
@@ -1213,6 +1432,11 @@ export const hiveMindTools: MCPTool[] = [
           term: proposal.term,
           quorumPreset: proposal.quorumPreset,
           timeoutAt: proposal.timeoutAt,
+          // ADR-0120 (T2): expose gossip parameters so callers know the
+          // expected round budget and timeout.
+          gossipRound: proposal.gossipRound,
+          gossipBound: isGossip ? gossipFanout(totalNodes) : undefined,
+          roundTimeoutMs: proposal.roundTimeoutMs,
         };
       }
 
@@ -1318,6 +1542,12 @@ export const hiveMindTools: MCPTool[] = [
           }
         }
 
+        // ADR-0120 (T2): gossip needs prior-tally snapshot to detect tally
+        // mutation (drives lastVoteChangedRound). For non-gossip strategies
+        // this is a no-op tracking variable.
+        const priorVotesFor = Object.values(proposal.votes).filter(v => v).length;
+        const priorVotesAgainst = Object.values(proposal.votes).filter(v => !v).length;
+
         // Record the vote
         proposal.votes[voterId] = voteValue;
 
@@ -1337,10 +1567,103 @@ export const hiveMindTools: MCPTool[] = [
           votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
         }
 
-        // Try to resolve — pass queenId for the weighted branch (ignored otherwise).
-        const resolution = tryResolveProposal(proposal, totalNodes, state.queen?.agentId);
+        // ────────────────────────────────────────────────────────────────
+        // ADR-0120 (T2): gossip propagation bookkeeping.
+        //
+        // On each vote (where strategy === 'gossip'):
+        //   1. Update lastVoteChangedRound if the tally changed (drives the
+        //      "quiescent round" clause of the settle predicate).
+        //   2. Pick `fanout(N)` deterministic-per-round targets from the
+        //      voter set, excluding self and already-broadcast set members.
+        //   3. Add (voterId ∪ targets) to currentRoundBroadcastSet.
+        //   4. If broadcastSet covers all voters, advance gossipRound and
+        //      clear the set (round complete).
+        //   5. Apply per-round timeout if elapsed > roundTimeoutMs.
+        //   6. Settling decided by settleCheckGossip (NOT tryResolveProposal —
+        //      gossip uses eventual-consistency semantics, not threshold-based
+        //      resolution).
+        //
+        // Per ADR §Architecture: re-broadcasts in single-process MCP server
+        // are bookkeeping only — peer voters observe the merged proposal on
+        // their next vote/status call (state shared via state.consensus.pending).
+        // ────────────────────────────────────────────────────────────────
+        let resolution: 'approved' | 'rejected' | null = null;
         let resolved = false;
+        let gossipSettleResult: GossipSettleStatus | undefined;
 
+        if (proposalStrategy === 'gossip') {
+          const gossipTotalNodes = proposal.totalNodes ?? Math.max(1, totalNodes);
+          const gossipRound = proposal.gossipRound ?? 0;
+
+          // (1) Update lastVoteChangedRound if tally changed.
+          const tallyChanged =
+            votesFor !== priorVotesFor || votesAgainst !== priorVotesAgainst;
+          if (tallyChanged) {
+            proposal.lastVoteChangedRound = gossipRound;
+          }
+
+          // (2) Voter set = all known workers AT VOTE-TIME (anti-entropy:
+          // late joiners admitted into candidate pool but totalNodes is fixed).
+          // Per §Refinement "Voter set changes mid-round": canonical voter set
+          // is `state.workers`, so a worker that joined post-propose appears
+          // in candidates without changing the round budget.
+          const voterSet = [...state.workers];
+          const fanoutSize = gossipFanout(gossipTotalNodes);
+          const broadcastSet = new Set(proposal.currentRoundBroadcastSet ?? []);
+          // (3) Always add the voter themselves to the round's broadcast set —
+          // they have "broadcast from" their position by voting.
+          broadcastSet.add(voterId);
+
+          // Pick targets only when fanout > 0 (N > 1).
+          if (fanoutSize > 0) {
+            const targets = selectGossipTargets(
+              proposal.proposalId,
+              gossipRound,
+              voterSet,
+              broadcastSet,
+              fanoutSize,
+            );
+            for (const t of targets) broadcastSet.add(t);
+          }
+
+          proposal.currentRoundBroadcastSet = [...broadcastSet];
+
+          // (4) Round complete? Covers-all-voters check uses voterSet (not
+          // totalNodes snapshot) so late joiners don't permanently block the
+          // round. If voterSet is empty (no workers joined) the round trivially
+          // completes.
+          const voterSetCanonical = voterSet.length === 0 ? [] : [...voterSet].sort();
+          const coversAll = voterSetCanonical.length === 0
+            || voterSetCanonical.every(v => broadcastSet.has(v));
+          if (coversAll) {
+            proposal.gossipRound = gossipRound + 1;
+            proposal.currentRoundBroadcastSet = [];
+            proposal.roundStartedAt = new Date().toISOString();
+          }
+
+          // (5) Per-round timeout (force-advance if a round has been open too long).
+          maybeAdvanceGossipRoundOnTimeout(proposal);
+
+          // (6) Settle predicate.
+          gossipSettleResult = settleCheckGossip(proposal);
+          if (gossipSettleResult.settled && gossipSettleResult.result) {
+            resolution = gossipSettleResult.result;
+            resolved = true;
+            proposal.status = resolution;
+          } else if (gossipSettleResult.exhausted) {
+            // Hard budget exhausted: per `feedback-no-fallbacks.md`, do NOT
+            // silently coerce to a settled tally. Surface explicitly via the
+            // response payload; status stays 'pending' so callers can decide
+            // (retry / escalate / treat as inconclusive). Proposal is NOT
+            // moved to history because it didn't resolve.
+            // resolved stays false.
+          }
+        } else {
+          // Non-gossip: existing tryResolveProposal path.
+          resolution = tryResolveProposal(proposal, totalNodes, state.queen?.agentId);
+        }
+
+        // Move to history if resolved (unified for gossip + non-gossip).
         if (resolution !== null) {
           resolved = true;
           proposal.status = resolution;
@@ -1376,6 +1699,14 @@ export const hiveMindTools: MCPTool[] = [
           status: proposal.status,
           term: proposal.term,
           byzantineVoters: proposal.byzantineVoters?.length ? proposal.byzantineVoters : undefined,
+          // ADR-0120 (T2): gossip-only telemetry on vote response.
+          gossipRound: proposal.gossipRound,
+          lastVoteChangedRound: proposal.lastVoteChangedRound,
+          gossipBound: proposalStrategy === 'gossip'
+            ? gossipFanout(proposal.totalNodes ?? totalNodes)
+            : undefined,
+          settled: gossipSettleResult?.settled,
+          exhausted: gossipSettleResult?.exhausted,
         };
       }
 
@@ -1416,6 +1747,40 @@ export const hiveMindTools: MCPTool[] = [
           timedOut = new Date().getTime() > new Date(proposal.timeoutAt).getTime();
         }
 
+        // ADR-0120 (T2): gossip settle_check folds into the status action
+        // (per ADR-0120 §Review notes row 5 DEFER-TO-IMPL: extend `status` to
+        // surface the predicate). Status invocation may mutate state via
+        // maybeAdvanceGossipRoundOnTimeout — if a timeout fires, we must
+        // persist + move to history if settled.
+        let gossipSettleResult: GossipSettleStatus | undefined;
+        let gossipResolved = false;
+        let gossipResult: 'approved' | 'rejected' | undefined;
+        if (proposalStrategy === 'gossip') {
+          const advanced = maybeAdvanceGossipRoundOnTimeout(proposal);
+          gossipSettleResult = settleCheckGossip(proposal);
+          if (gossipSettleResult.settled && gossipSettleResult.result) {
+            gossipResult = gossipSettleResult.result;
+            gossipResolved = true;
+            proposal.status = gossipResult;
+            // Move to history (mirrors vote-action resolution path).
+            state.consensus.history.push({
+              proposalId: proposal.proposalId,
+              type: proposal.type,
+              result: gossipResult,
+              votes: { for: votesFor, against: votesAgainst },
+              decidedAt: new Date().toISOString(),
+              strategy: proposalStrategy,
+            });
+            state.consensus.pending = state.consensus.pending.filter(
+              p => p.proposalId !== proposal.proposalId,
+            );
+            saveHiveState(state);
+          } else if (advanced) {
+            // Timeout-driven mutation, no settle yet — still need to persist.
+            saveHiveState(state);
+          }
+        }
+
         return {
           action,
           proposalId: proposal.proposalId,
@@ -1427,13 +1792,21 @@ export const hiveMindTools: MCPTool[] = [
           totalVotes: Object.keys(proposal.votes).length,
           required,
           totalNodes,
-          resolved: false,
+          resolved: gossipResolved,
+          result: gossipResolved ? gossipResult : undefined,
           term: proposal.term,
           quorumPreset: proposal.quorumPreset,
           byzantineVoters: proposal.byzantineVoters?.length ? proposal.byzantineVoters : undefined,
           timedOut,
           timeoutAt: proposal.timeoutAt,
           hint: timedOut ? `Raft timeout reached. Re-propose with term ${(proposal.term || 1) + 1}.` : undefined,
+          // ADR-0120 (T2): gossip-only telemetry on status response.
+          gossipRound: proposal.gossipRound,
+          lastVoteChangedRound: proposal.lastVoteChangedRound,
+          gossipBound: gossipSettleResult?.bound,
+          settled: gossipSettleResult?.settled,
+          exhausted: gossipSettleResult?.exhausted,
+          noVotes: gossipSettleResult?.noVotes,
         };
       }
 
