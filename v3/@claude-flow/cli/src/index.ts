@@ -5,31 +5,13 @@
  * Created with ❤️ by ruv.io
  */
 
-// MUST run before any agentic-flow / agentdb imports — this file is
-// imported by every entry point (bin/cli.js, ruflo/bin/ruflo.js via
-// dist/src/index.js, and tests). Patching the console here ensures the
-// suppression applies regardless of how the CLI was invoked. Previously
-// the suppression lived only in bin/cli.js, so the ruflo wrapper (which
-// imports dist/src/index.js directly) leaked the cosmetic warning.
-//
-// Tight match: requires BOTH "[AgentDB Patch]" AND "Controller index not
-// found" so other [AgentDB Patch] messages (real issues) still flow.
-{
-  const _isCosmeticAgentdbPatchNoise = (msg: unknown): boolean => {
-    const s = String(msg ?? '');
-    return s.includes('[AgentDB Patch]') && s.includes('Controller index not found');
-  };
-  const _origWarn = console.warn.bind(console);
-  const _origLog = console.log.bind(console);
-  console.warn = (...args: unknown[]) => {
-    if (_isCosmeticAgentdbPatchNoise(args[0])) return;
-    _origWarn(...args);
-  };
-  console.log = (...args: unknown[]) => {
-    if (_isCosmeticAgentdbPatchNoise(args[0])) return;
-    _origLog(...args);
-  };
-}
+// MUST be the first import — installs console filter for the cosmetic
+// "[AgentDB Patch] Controller index not found" warning before any
+// agentic-flow / agentdb code can load. ES module imports are evaluated
+// in source order, so this file runs its side effects before any other
+// import in this module's import graph (including transitive imports of
+// agentic-flow via commands/index.js).
+import './log-filters.js';
 
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
