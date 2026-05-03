@@ -134,8 +134,11 @@ export class CLI {
       // No command - show help or suggest correction
       if (commandPath.length === 0 || flags.help || flags.h) {
         if (commandPath.length > 0) {
-          // Show command-specific help
-          await this.showCommandHelp(commandPath[0]);
+          // Show command-specific help. Pass the full path so e.g.
+          // `hive-mind spawn --help` shows the spawn subcommand's options
+          // (including ADR-0108 --worker-types) rather than the parent
+          // command's subcommand list.
+          await this.showCommandHelp(commandPath);
         } else if (positional.length > 0 && !positional[0].startsWith('-')) {
           // First positional looks like an attempted command - suggest correction
           const attemptedCommand = positional[0];
@@ -281,8 +284,9 @@ export class CLI {
           process.exit(0);
         }, 500).unref();
       } else {
-        // No action - show command help
-        this.showCommandHelp(commandName);
+        // No action - show command help (drill into subcommand path so the
+        // user sees the subcommand's options, not the parent's child list).
+        this.showCommandHelp(commandPath);
       }
     } catch (error) {
       // Don't re-handle if this is a process.exit error (from mocked tests)
@@ -386,24 +390,50 @@ export class CLI {
   }
 
   /**
-   * Show command-specific help
+   * Show command-specific help.
+   *
+   * Accepts either a string (top-level command) or an array of names that
+   * walks the subcommand tree, so `hive-mind spawn --help` (path:
+   * `['hive-mind', 'spawn']`) shows the spawn subcommand's options instead
+   * of the parent command's child list. Per ADR-0108 §AC#1: --worker-types
+   * is only discoverable via the subcommand-specific --help; the parent
+   * command's help has no per-subcommand option visibility.
    */
-  private async showCommandHelp(commandName: string): Promise<void> {
+  private async showCommandHelp(commandPath: string | string[]): Promise<void> {
+    const path = Array.isArray(commandPath) ? commandPath : [commandPath];
+    const rootName = path[0];
     // Try sync first, then lazy load
-    let command = getCommand(commandName);
-    if (!command && hasCommand(commandName)) {
-      command = await getCommandAsync(commandName);
+    let command = getCommand(rootName);
+    if (!command && hasCommand(rootName)) {
+      command = await getCommandAsync(rootName);
     }
 
     if (!command) {
-      this.output.printError(`Unknown command: ${commandName}`);
+      this.output.printError(`Unknown command: ${rootName}`);
       return;
     }
 
+    // Drill into subcommands following the resolved path. If the path's
+    // remaining segment isn't a known subcommand we stay on the parent —
+    // matches the dispatch behaviour for a typo'd subcommand.
+    let resolved = command;
+    let displayPath = command.name;
+    for (let i = 1; i < path.length; i++) {
+      const sub = resolved.subcommands?.find(
+        sc => sc.name === path[i] || sc.aliases?.includes(path[i])
+      );
+      if (!sub) break;
+      resolved = sub;
+      displayPath = `${displayPath} ${sub.name}`;
+    }
+
     this.output.writeln();
-    this.output.writeln(this.output.bold(`${this.name} ${command.name}`));
-    this.output.writeln(command.description);
+    this.output.writeln(this.output.bold(`${this.name} ${displayPath}`));
+    this.output.writeln(resolved.description);
     this.output.writeln();
+    // Reassign `command` so the rest of this method (subcommands, options,
+    // examples) renders the resolved subcommand's surface.
+    command = resolved;
 
     // Subcommands
     if (command.subcommands && command.subcommands.length > 0) {

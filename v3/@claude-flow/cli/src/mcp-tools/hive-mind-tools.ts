@@ -68,7 +68,9 @@ export interface MemoryEntry {
   updatedAt: number;           // epoch ms (refreshed on every write)
 }
 
-const MEMORY_TYPES: readonly MemoryType[] = [
+// Exported so the CLI memory subcommand can offer --type with the same
+// fixed enum surfaced at the MCP boundary (no drift).
+export const MEMORY_TYPES: readonly MemoryType[] = [
   'knowledge',
   'context',
   'task',

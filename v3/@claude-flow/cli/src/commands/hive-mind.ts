@@ -17,6 +17,10 @@ import {
   WORKER_TYPES,
   type QueenType,
 } from '../mcp-tools/validate-input.js';
+// ADR-0122 (T4) / ADR-0118 H4: surface MEMORY_TYPES on the CLI memory
+// subcommand --type flag so the choices are derived from the same source
+// the MCP handler validates against (no drift).
+import { MEMORY_TYPES } from '../mcp-tools/hive-mind-tools.js';
 import { spawn as childSpawn, execSync } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -1931,16 +1935,40 @@ const memorySubCommand: Command = {
   options: [
     { name: 'action', short: 'a', description: 'Memory action', type: 'string', choices: ['get', 'set', 'delete', 'list'], default: 'list' },
     { name: 'key', short: 'k', description: 'Memory key', type: 'string' },
-    { name: 'value', short: 'v', description: 'Value to store', type: 'string' }
+    { name: 'value', short: 'v', description: 'Value to store', type: 'string' },
+    // ADR-0122 (T4): `set` requires a memory type at the MCP boundary
+    // (MissingMemoryTypeError). Surface --type on the CLI so users can
+    // pass it without dropping to `mcp exec`. `list` and the optional
+    // type-filter on list also re-use this flag.
+    {
+      name: 'type',
+      short: 't',
+      description: `Memory type (one of: ${MEMORY_TYPES.join(', ')}). Required for set; optional filter on list.`,
+      type: 'string',
+      choices: [...MEMORY_TYPES],
+    },
+    {
+      name: 'ttl-ms',
+      description: 'TTL in milliseconds (optional override; default per type)',
+      type: 'number',
+    },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const action = ctx.flags.action as string || 'list';
     const key = ctx.flags.key as string;
     const value = ctx.flags.value as string;
+    const memType = ctx.flags.type as string | undefined;
+    const ttlMs = ctx.flags.ttlMs ?? ctx.flags['ttl-ms'];
     if ((action === 'get' || action === 'delete') && !key) { output.printError('Key required for get/delete.'); return { success: false, exitCode: 1 }; }
     if (action === 'set' && (!key || value === undefined)) { output.printError('Key and value required for set.'); return { success: false, exitCode: 1 }; }
     try {
-      const result = await callMCPTool<Record<string, unknown>>('hive-mind_memory', { action, key, value });
+      // Build params lean: only include type/ttlMs when supplied so the
+      // MCP handler's per-action validation surfaces correctly. `set`
+      // without `type` produces MissingMemoryTypeError at the boundary.
+      const params: Record<string, unknown> = { action, key, value };
+      if (memType !== undefined) params.type = memType;
+      if (ttlMs !== undefined && ttlMs !== null) params.ttlMs = ttlMs;
+      const result = await callMCPTool<Record<string, unknown>>('hive-mind_memory', params);
       if (ctx.flags.format === 'json') { output.printJson(result); return { success: true, data: result }; }
       if (action === 'list') {
         const keys = (result.keys as string[]) || [];
