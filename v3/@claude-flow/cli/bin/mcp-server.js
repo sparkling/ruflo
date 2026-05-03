@@ -9,11 +9,22 @@
 
 import { randomUUID } from 'crypto';
 
-// Suppress [AgentDB Patch] warnings (cosmetic, from agentic-flow v1.x compat patch)
+// Suppress the SPECIFIC cosmetic "[AgentDB Patch] Controller index not found"
+// noise. Tight match (both prefix AND "Controller index not found") so other
+// [AgentDB Patch] warnings about real issues still flow through. Also patch
+// console.log because the underlying call site uses it. See bin/cli.js for
+// the same rationale.
 const _origWarn = console.warn;
+const _origLog = console.log;
+const _isCosmeticAgentdbPatchNoise = (msg) =>
+  msg.includes('[AgentDB Patch]') && msg.includes('Controller index not found');
 console.warn = (...args) => {
-  if (String(args[0] ?? '').includes('[AgentDB Patch]')) return;
+  if (_isCosmeticAgentdbPatchNoise(String(args[0] ?? ''))) return;
   _origWarn.apply(console, args);
+};
+console.log = (...args) => {
+  if (_isCosmeticAgentdbPatchNoise(String(args[0] ?? ''))) return;
+  _origLog.apply(console, args);
 };
 
 import { listMCPTools, callMCPTool, hasTool } from '../dist/src/mcp-client.js';

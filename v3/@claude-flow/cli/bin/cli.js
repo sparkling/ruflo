@@ -10,13 +10,29 @@
 
 import { randomUUID } from 'crypto';
 
-// Suppress noisy [AgentDB Patch] warnings from agentic-flow's runtime patch
-// These are cosmetic — the patch tries to fix agentdb v1.x imports but we use v3
+// Suppress the SPECIFIC cosmetic "[AgentDB Patch] Controller index not found"
+// warning from agentic-flow's runtime patch — these are emitted because the
+// patch was written for agentdb v1.x and we use v3, where the controllers
+// dist directory is laid out differently. The warning surfaces on every
+// command and the audit (audit_1776483149979) flagged a too-broad suppression
+// as a security risk because it could hide legitimate [AgentDB Patch] warnings.
+//
+// Tight match: must include both the prefix AND the specific "Controller
+// index not found" text. Anything else (including future [AgentDB Patch]
+// warnings about real issues) flows through unchanged. Also patch
+// console.log because the underlying code uses it (the previous filter
+// only caught console.warn and was therefore a no-op).
 const _origWarn = console.warn;
+const _origLog = console.log;
+const _isCosmeticAgentdbPatchNoise = (msg) =>
+  msg.includes('[AgentDB Patch]') && msg.includes('Controller index not found');
 console.warn = (...args) => {
-  const msg = String(args[0] ?? '');
-  if (msg.includes('[AgentDB Patch]')) return;
+  if (_isCosmeticAgentdbPatchNoise(String(args[0] ?? ''))) return;
   _origWarn.apply(console, args);
+};
+console.log = (...args) => {
+  if (_isCosmeticAgentdbPatchNoise(String(args[0] ?? ''))) return;
+  _origLog.apply(console, args);
 };
 
 // Check if we should run in MCP server mode
