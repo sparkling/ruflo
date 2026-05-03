@@ -2728,13 +2728,24 @@ export const hiveMindTools: MCPTool[] = [
       // or the timer leaks across hive sessions and re-init creates a duplicate.
       stopHiveMindSweepTimer();
 
+      // ADR-0129 (B2): emitted field names align with the CLI shutdown
+      // printer in `commands/hive-mind.ts:shutdownCommand`. The previous shape
+      // (`workersTerminated` / `shutdownAt`, no `stateSaved`) caused the CLI
+      // to render `Agents terminated: undefined` and `State saved: No` (since
+      // `result.stateSaved` was always `undefined`). The CLI side is the
+      // load-bearing surface for users; the MCP shape is internal here (no
+      // external test asserts these field names). `stateSaved` mirrors the
+      // unconditional `saveHiveState(state)` call above — it is always `true`
+      // in the success path, but we surface it as a real boolean rather than
+      // letting it default to undefined.
       return {
         success: true,
-        shutdownAt: shutdownTime,
-        graceful,
-        workersTerminated: workerCount,
+        shutdownTime,
+        stateSaved: true,
+        agentsTerminated: workerCount,
         previousQueen,
         consensusCleared: pendingConsensus,
+        graceful,
         message: `Hive-mind shutdown complete. ${workerCount} workers terminated.`,
       };
     },

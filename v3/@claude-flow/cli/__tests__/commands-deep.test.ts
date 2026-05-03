@@ -1359,6 +1359,193 @@ describe('Suggest Module', () => {
 });
 
 // ============================================================================
+// SECTION 5b: ADR-0129 — hive-mind CLI bug fixes (B1, B4)
+// ============================================================================
+// B1: `memory store` no-op — positional dispatch + `store` alias for `set`.
+// B4: `-t a,b,c` literal-string regression — auto-comma-split into worker-types.
+// (B2 — `shutdown` field-name mismatch — is asserted in mcp-tools-deep.test.ts
+// where the MCP handler under test lives.)
+
+import { callMCPTool as callMCPToolMock } from '../src/mcp-client.js';
+
+function findHiveMindSubcommand(name: string) {
+  const sub = hiveMindCommand.subcommands?.find((s) => s.name === name);
+  expect(sub).toBeDefined();
+  return sub!;
+}
+
+describe('ADR-0129 (B1) hive-mind memory store positional dispatch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('positional `store key value` reaches the MCP boundary as set (not list)', async () => {
+    const memCmd = findHiveMindSubcommand('memory');
+    // Default mock returns {} which the action treats as a non-list response.
+    (callMCPToolMock as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      action: 'set',
+      key: 'foo',
+      success: true,
+    });
+    const result = await memCmd.action!({
+      args: ['store', 'foo', 'bar'],
+      flags: { _: ['store', 'foo', 'bar'], type: 'system' },
+      cwd: '/test',
+      interactive: false,
+    });
+    expect(result.success).toBe(true);
+    // The action label that crosses the MCP boundary must be `set`, not `list`.
+    expect(callMCPToolMock).toHaveBeenCalledWith(
+      'hive-mind_memory',
+      expect.objectContaining({ action: 'set', key: 'foo', value: 'bar' })
+    );
+  });
+
+  it('`set` action choice still works (back-compat with --action set)', async () => {
+    const memCmd = findHiveMindSubcommand('memory');
+    (callMCPToolMock as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      action: 'set',
+      key: 'k',
+      success: true,
+    });
+    const result = await memCmd.action!({
+      args: [],
+      flags: { _: [], action: 'set', key: 'k', value: 'v', type: 'system' },
+      cwd: '/test',
+      interactive: false,
+    });
+    expect(result.success).toBe(true);
+    expect(callMCPToolMock).toHaveBeenCalledWith(
+      'hive-mind_memory',
+      expect.objectContaining({ action: 'set', key: 'k', value: 'v' })
+    );
+  });
+
+  it('positional `store` without key fails loudly (no silent list-fallthrough)', async () => {
+    const memCmd = findHiveMindSubcommand('memory');
+    const result = await memCmd.action!({
+      args: ['store'],
+      flags: { _: ['store'] },
+      cwd: '/test',
+      interactive: false,
+    });
+    expect(result.success).toBe(false);
+    expect(result.exitCode).toBe(1);
+    // No MCP call should have been made — validation rejected before dispatch.
+    expect(callMCPToolMock).not.toHaveBeenCalled();
+  });
+
+  it('unknown positional action throws (no silent fallthrough to list)', async () => {
+    const memCmd = findHiveMindSubcommand('memory');
+    await expect(
+      memCmd.action!({
+        args: ['nuke', 'something'],
+        flags: { _: ['nuke', 'something'] },
+        cwd: '/test',
+        interactive: false,
+      })
+    ).rejects.toThrow(/Unknown memory action "nuke"/);
+    expect(callMCPToolMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('ADR-0129 (B4) hive-mind spawn -t a,b,c comma-split', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('-t researcher,coder produces 2 worker types (array shape, not literal scalar)', async () => {
+    const spawnCmd = findHiveMindSubcommand('spawn');
+    (callMCPToolMock as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      spawned: 2,
+      workers: [
+        { agentId: 'w-1', role: 'worker', joinedAt: new Date().toISOString(), agentType: 'researcher' },
+        { agentId: 'w-2', role: 'worker', joinedAt: new Date().toISOString(), agentType: 'coder' },
+      ],
+      totalWorkers: 2,
+      hiveStatus: 'active',
+      message: 'ok',
+    });
+    const result = await spawnCmd.action!({
+      args: [],
+      flags: { _: [], type: 'researcher,coder', count: 2 },
+      cwd: '/test',
+      interactive: false,
+    });
+    expect(result.success).toBe(true);
+    // The MCP boundary must receive `agentTypes: ['researcher','coder']` —
+    // NOT `agentType: 'researcher,coder'` (the broken pre-fix shape).
+    expect(callMCPToolMock).toHaveBeenCalledWith(
+      'hive-mind_spawn',
+      expect.objectContaining({ agentTypes: ['researcher', 'coder'] })
+    );
+    // And it must NOT carry the literal scalar.
+    const lastCall = (callMCPToolMock as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    expect((lastCall[1] as Record<string, unknown>).agentType).toBeUndefined();
+  });
+
+  it('-t bogus,coder errors with worker-type enum-validation message', async () => {
+    const spawnCmd = findHiveMindSubcommand('spawn');
+    await expect(
+      spawnCmd.action!({
+        args: [],
+        flags: { _: [], type: 'bogus,coder', count: 2 },
+        cwd: '/test',
+        interactive: false,
+      })
+    ).rejects.toThrow(/--type must be one of .*\(got "bogus"\)/);
+    expect(callMCPToolMock).not.toHaveBeenCalled();
+  });
+
+  it('-t a,b,c with --worker-types x,y is mutex (errors instead of silently picking one)', async () => {
+    const spawnCmd = findHiveMindSubcommand('spawn');
+    await expect(
+      spawnCmd.action!({
+        args: [],
+        flags: {
+          _: [],
+          type: 'researcher,coder',
+          'worker-types': 'tester,architect',
+          count: 4,
+        },
+        cwd: '/test',
+        interactive: false,
+      })
+    ).rejects.toThrow(/cannot use both --type with comma-split and --worker-types/);
+    expect(callMCPToolMock).not.toHaveBeenCalled();
+  });
+
+  it('-t researcher (no comma) preserves scalar single-type spawn (back-compat)', async () => {
+    const spawnCmd = findHiveMindSubcommand('spawn');
+    (callMCPToolMock as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      spawned: 1,
+      workers: [
+        { agentId: 'w-1', role: 'worker', joinedAt: new Date().toISOString(), agentType: 'researcher' },
+      ],
+      totalWorkers: 1,
+      hiveStatus: 'active',
+      message: 'ok',
+    });
+    const result = await spawnCmd.action!({
+      args: [],
+      flags: { _: [], type: 'researcher', count: 1 },
+      cwd: '/test',
+      interactive: false,
+    });
+    expect(result.success).toBe(true);
+    // Single-type still goes through the scalar `agentType` path (not the array path).
+    expect(callMCPToolMock).toHaveBeenCalledWith(
+      'hive-mind_spawn',
+      expect.objectContaining({ agentType: 'researcher' })
+    );
+    const lastCall = (callMCPToolMock as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    expect((lastCall[1] as Record<string, unknown>).agentTypes).toBeUndefined();
+  });
+});
+
+// ============================================================================
 // SECTION 6: Init System Tests
 // ============================================================================
 

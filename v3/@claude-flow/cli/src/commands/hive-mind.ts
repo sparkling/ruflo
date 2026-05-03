@@ -535,6 +535,65 @@ Never wait indefinitely. 60s with no result key → 'absent'. Never
 silently drop a worker. The audit trail (state.consensus.history,
 failedWorkers in hive-mind_status) depends on this protocol.
 
+🚨 SUB-QUEEN FAILURE PROTOCOL (ADR-0132 / ADR-0109 R8 carry-forward):
+This protocol is ONLY active in hierarchical-mesh topology, where
+workers partition into sub-hives each led by a sub-queen. Sub-queen
+failure is a distinct mode from worker absence: a missing sub-queen
+strands its entire sub-hive's reports from reaching the top tier.
+Recursion is capped at one nesting level (ADR-0128) — sub-sub-queens
+do not exist; their failure mode does not exist.
+
+Step 1 — DETECT SUB-QUEEN ABSENCE
+A sub-queen is treated as failed when ANY of the following hold:
+  • Its sub-hive-summary memory key
+    (hive-mind/<top-queen>/sub/<sub-hive-id>/summary) is missing more
+    than 60s after the sub-hive's expected completion window.
+  • Its Task spawn returned an error.
+  • A direct probe via hive-mind_status reports the sub-queen agent
+    in an unresponsive state.
+The 60s threshold mirrors ADR-0131's worker-absence threshold; do
+not invent a different value.
+
+Step 2 — CHOOSE ESCALATION STRATEGY
+Inspect the failed sub-queen's sub-hive workers (via the subHives
+field in hive-mind_status) and pick a strategy:
+  • promote-worker: if the sub-hive has ≥1 healthy worker, promote
+    the worker with the LONGEST LINEAGE (first-spawned per the
+    sub-hive's worker-agent-id ordering). The other healthy workers
+    in the sub-hive are reassigned under the promoted interim
+    sub-queen. The sub-hive boundary is preserved.
+  • escalate-to-root: if zero healthy workers remain in the
+    sub-hive, mark the entire sub-hive's subtree FAILED and absorb
+    the orphaned workers into the top tier. Do NOT attempt to
+    re-promote a non-responding worker.
+The decision is data-driven, not policy-driven. One nesting level
+cap forbids spawning a fresh sub-queen at a deeper level — the
+promotion replaces the failed sub-queen at the same tier.
+
+Step 3 — INVOKE THE RUNTIME HANDLER
+Record the chosen strategy by calling the QueenCoordinator's
+subQueenFailed(subQueenId, reason, context) method (queen-coordinator.ts).
+Pass the sub-hive worker IDs ordered by lineage (longest-lived
+first) in context.workersInSubtree, the responsive subset in
+context.healthyWorkerIds, and any pending consensus proposal IDs in
+context.pendingProposalIds. The handler is idempotent — calling it
+twice for the same subQueenId returns 'already-handled' and does
+NOT double-promote.
+
+Step 4 — EMIT LINEAGE TRAIL
+The handler emits a 'queen.subqueen.failure' event whose payload is
+the SubQueenFailureRecord (event: 'sub-queen-failure', subQueenId,
+reason, escalationStrategy, plus strategy-specific fields:
+promotedWorkerId/reassignedWorkerIds for promote-worker;
+abandonedWorkerIds for escalate-to-root). This is the sole audit
+trail surface — record it in the hive's shared memory under
+hive-mind/<top-queen>/sub-queen-failures/<subQueenId> so post-mortem
+reconstruction can read it back without subscribing to the live
+emitter. Never silently drop a sub-queen failure. Cross-hive
+sub-queen migration and multi-failure cascade recovery are
+explicitly out-of-scope (ADR-0132 §Out of scope) — single-failure
+handling only.
+
 💡 COORDINATION TIPS:
 • Use mcp__ruflo__hive-mind_broadcast for swarm-wide announcements
 • Check worker status regularly with mcp__ruflo__hive-mind_status
@@ -1260,7 +1319,44 @@ const spawnCommand: Command = {
     // Parse count with fallback to default
     const count = (ctx.flags.count as number) || 1;
     const role = (ctx.flags.role as string) || 'worker';
-    const agentType = (ctx.flags.type as string) || 'worker';
+    // ADR-0129 (B4): `-t a,b,c` auto-comma-splits.
+    // Pre-fix, a comma-separated `--type` (e.g. `-t researcher,coder`) was
+    // forwarded as a literal scalar to the MCP boundary, where it failed
+    // enum validation downstream. Users typing this clearly intend mixed-type
+    // spawn — the same surface as `--worker-types`. We auto-detect, validate
+    // each member, and route through the array path.
+    //
+    // Mutex: if both `-t` (with comma) and `--worker-types` are supplied, we
+    // fail loudly per `feedback-no-fallbacks.md` rather than silently picking
+    // one. The existing `--type` (scalar, no comma) + `--worker-types` mutex
+    // remains intact below; the comma-split path collapses `--type` to its
+    // 'worker' default for the downstream mutex check.
+    const rawType = ctx.flags.type as string | undefined;
+    let typeFromCommaSplit: string[] | undefined;
+    if (typeof rawType === 'string' && rawType.includes(',')) {
+      const parsed = rawType
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+      if (parsed.length === 0) {
+        throw new Error(
+          `--type comma-list must contain at least one worker type (got "${rawType}")`
+        );
+      }
+      for (const t of parsed) {
+        const check = validateWorkerType(t, '--type entry');
+        if (!check.valid) {
+          throw new Error(
+            `--type must be one of ${WORKER_TYPES.join('|')} (got "${t}")`
+          );
+        }
+      }
+      typeFromCommaSplit = parsed;
+    }
+    const agentType = typeFromCommaSplit !== undefined
+      ? 'worker' // sentinel: treat the comma-split as `--worker-types` and leave the
+                 // scalar at the default so the mutex check downstream allows it.
+      : (rawType || 'worker');
     const prefix = (ctx.flags.prefix as string) || 'hive-worker';
     const launchClaude = ctx.flags.claude as boolean;
     let objective = (ctx.flags.objective as string) || ctx.args.join(' ');
@@ -1302,6 +1398,14 @@ const spawnCommand: Command = {
           `--worker-types must be a comma-separated string of worker types (got ${typeof rawWorkerTypes})`
         );
       }
+      // ADR-0129 (B4) mutex: `-t a,b,c` and `--worker-types x,y` cannot both
+      // be supplied. They are two surfaces for the same array shape;
+      // requiring exactly one prevents a silent "which one wins?" question.
+      if (typeFromCommaSplit !== undefined) {
+        throw new Error(
+          `cannot use both --type with comma-split and --worker-types; use one or the other`
+        );
+      }
       const parsed = rawWorkerTypes
         .split(',')
         .map(s => s.trim())
@@ -1334,6 +1438,10 @@ const spawnCommand: Command = {
         );
       }
       agentTypes = parsed;
+    } else if (typeFromCommaSplit !== undefined) {
+      // ADR-0129 (B4): comma-split `-t` becomes the array shape. Validation
+      // already happened above where `typeFromCommaSplit` was built.
+      agentTypes = typeFromCommaSplit;
     }
 
     output.printInfo(`Spawning ${count} ${role} agent(s)...`);
@@ -1929,11 +2037,28 @@ const broadcastCommand: Command = {
 };
 
 // Memory subcommand
+//
+// ADR-0129 (B1) — `memory store` no-op fix.
+// USERGUIDE / muscle memory has users typing `hive-mind memory store key value`
+// (positional). The previous implementation only honoured `--action` and listed
+// `set` (not `store`) in the choices, so `store key value` silently fell
+// through to the default `list`. The fix has three parts:
+//   1. Accept `store` as an alias for `set` in the action choices.
+//   2. Resolve the action with this precedence (documented per
+//      `feedback-no-fallbacks.md` — explicit, no silent skip):
+//        a. `ctx.args[0]` if it matches a known action.
+//        b. `ctx.flags.action` (the `--action`/`-a` flag).
+//        c. default 'list'.
+//      An unknown positional that doesn't match an action throws.
+//   3. Positional key/value: `memory <action> <key> [<value>]` — flag forms
+//      `-k`/`-v` still work and override the positional fallback.
+const MEMORY_ACTIONS = ['get', 'set', 'store', 'delete', 'list'] as const;
+type MemoryAction = (typeof MEMORY_ACTIONS)[number];
 const memorySubCommand: Command = {
   name: 'memory',
   description: 'Access hive shared memory',
   options: [
-    { name: 'action', short: 'a', description: 'Memory action', type: 'string', choices: ['get', 'set', 'delete', 'list'], default: 'list' },
+    { name: 'action', short: 'a', description: 'Memory action', type: 'string', choices: [...MEMORY_ACTIONS], default: 'list' },
     { name: 'key', short: 'k', description: 'Memory key', type: 'string' },
     { name: 'value', short: 'v', description: 'Value to store', type: 'string' },
     // ADR-0122 (T4): `set` requires a memory type at the MCP boundary
@@ -1954,32 +2079,58 @@ const memorySubCommand: Command = {
     },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const action = ctx.flags.action as string || 'list';
-    const key = ctx.flags.key as string;
-    const value = ctx.flags.value as string;
+    // ADR-0129 (B1): action resolution precedence.
+    //   1. ctx.args[0] when it names a known action  (positional dispatch)
+    //   2. ctx.flags.action                          (--action / -a flag)
+    //   3. 'list'                                    (default)
+    // An ambiguous case — args[0] supplied but unknown — throws per
+    // `feedback-no-fallbacks.md`; we will not silently fall through to `list`.
+    const positional = ctx.args ?? [];
+    const positionalAction = positional[0];
+    let action: string;
+    if (positionalAction !== undefined) {
+      if (!(MEMORY_ACTIONS as readonly string[]).includes(positionalAction)) {
+        throw new Error(
+          `Unknown memory action "${positionalAction}". Must be one of: ${MEMORY_ACTIONS.join(', ')}`
+        );
+      }
+      action = positionalAction;
+    } else {
+      action = (ctx.flags.action as string) || 'list';
+    }
+    // `store` is a user-facing alias for `set` — the MCP boundary only knows
+    // `set`, so normalise here once. The action variable retains the
+    // user-typed form for messaging (`Set ${key}` is correct for both).
+    const mcpAction: MemoryAction = action === 'store' ? 'set' : (action as MemoryAction);
+    // Positional key/value fall back to flags. The first positional was the
+    // action (when present); shift the index appropriately.
+    const positionalArgsAfterAction = positionalAction !== undefined ? positional.slice(1) : positional;
+    const key = (ctx.flags.key as string | undefined) ?? positionalArgsAfterAction[0];
+    const flagValue = ctx.flags.value as string | undefined;
+    const value = flagValue !== undefined ? flagValue : positionalArgsAfterAction[1];
     const memType = ctx.flags.type as string | undefined;
     const ttlMs = ctx.flags.ttlMs ?? ctx.flags['ttl-ms'];
-    if ((action === 'get' || action === 'delete') && !key) { output.printError('Key required for get/delete.'); return { success: false, exitCode: 1 }; }
-    if (action === 'set' && (!key || value === undefined)) { output.printError('Key and value required for set.'); return { success: false, exitCode: 1 }; }
+    if ((mcpAction === 'get' || mcpAction === 'delete') && !key) { output.printError('Key required for get/delete.'); return { success: false, exitCode: 1 }; }
+    if (mcpAction === 'set' && (!key || value === undefined)) { output.printError('Key and value required for set/store.'); return { success: false, exitCode: 1 }; }
     try {
       // Build params lean: only include type/ttlMs when supplied so the
       // MCP handler's per-action validation surfaces correctly. `set`
       // without `type` produces MissingMemoryTypeError at the boundary.
-      const params: Record<string, unknown> = { action, key, value };
+      const params: Record<string, unknown> = { action: mcpAction, key, value };
       if (memType !== undefined) params.type = memType;
       if (ttlMs !== undefined && ttlMs !== null) params.ttlMs = ttlMs;
       const result = await callMCPTool<Record<string, unknown>>('hive-mind_memory', params);
       if (ctx.flags.format === 'json') { output.printJson(result); return { success: true, data: result }; }
-      if (action === 'list') {
+      if (mcpAction === 'list') {
         const keys = (result.keys as string[]) || [];
         output.writeln(output.bold(`\nShared Memory (${result.count} keys)`));
         if (keys.length === 0) output.printInfo('No keys in shared memory');
         else output.printList(keys.map(k => output.highlight(k)));
-      } else if (action === 'get') {
+      } else if (mcpAction === 'get') {
         output.writeln(output.bold(`\nKey: ${key}`));
         output.writeln(result.exists ? `Value: ${JSON.stringify(result.value, null, 2)}` : 'Key not found');
-      } else if (action === 'set') { output.printSuccess(`Set ${key} in shared memory`); }
-      else if (action === 'delete') { output.printSuccess(result.deleted ? `Deleted ${key}` : `Key ${key} did not exist`); }
+      } else if (mcpAction === 'set') { output.printSuccess(`Set ${key} in shared memory`); }
+      else if (mcpAction === 'delete') { output.printSuccess(result.deleted ? `Deleted ${key}` : `Key ${key} did not exist`); }
       return { success: true, data: result };
     } catch (error) { output.printError(`Memory error: ${error instanceof MCPClientError ? error.message : String(error)}`); return { success: false, exitCode: 1 }; }
   }

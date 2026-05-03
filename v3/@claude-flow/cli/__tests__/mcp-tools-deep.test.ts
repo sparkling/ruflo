@@ -875,6 +875,64 @@ describe('MCP Tools Deep Test Suite', () => {
   });
 
   // --------------------------------------------------------------------------
+  // 11.a-bis ADR-0129 (B2) — hive-mind_shutdown emits CLI-aligned field names
+  // --------------------------------------------------------------------------
+  // The CLI reader at `commands/hive-mind.ts:shutdownCommand` reads
+  // `result.agentsTerminated`, `result.stateSaved`, `result.shutdownTime` —
+  // the previous emitter exposed `workersTerminated` / `shutdownAt` / no
+  // `stateSaved` field, so the CLI rendered `Agents terminated: undefined`
+  // and `State saved: No`. These tests pin the contract so a future rename
+  // can't silently re-introduce the mismatch.
+  describe('ADR-0129 (B2) — hive-mind_shutdown field names align with CLI reader', () => {
+    async function freshHiveForB2() {
+      const initTool = hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      await shutdownTool.handler({ force: true });
+      await initTool.handler({ topology: 'mesh' });
+    }
+
+    it('emits agentsTerminated as a real number (not undefined)', async () => {
+      await freshHiveForB2();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      await spawnTool.handler({ count: 3, role: 'worker', agentType: 'coder' });
+      const result: any = await shutdownTool.handler({ force: true });
+      expect(result.success).toBe(true);
+      // CLI reader expects this exact field name. Number, not undefined.
+      expect(typeof result.agentsTerminated).toBe('number');
+      expect(result.agentsTerminated).toBe(3);
+      // Old field name must NOT be emitted (otherwise readers will keep
+      // pulling from the legacy key and silently ignore the rename).
+      expect(result.workersTerminated).toBeUndefined();
+    });
+
+    it('emits stateSaved as a real boolean (not undefined → "No")', async () => {
+      await freshHiveForB2();
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      const result: any = await shutdownTool.handler({ force: true });
+      expect(result.success).toBe(true);
+      // The MCP handler always calls saveHiveState before returning, so
+      // success-path stateSaved is always true. Important: it must be a real
+      // boolean, not undefined (CLI renders `result.stateSaved ? 'Yes' : 'No'`,
+      // and undefined falls through to 'No' which misreports).
+      expect(typeof result.stateSaved).toBe('boolean');
+      expect(result.stateSaved).toBe(true);
+    });
+
+    it('emits shutdownTime as a string (not undefined; old `shutdownAt` removed)', async () => {
+      await freshHiveForB2();
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      const result: any = await shutdownTool.handler({ force: true });
+      expect(result.success).toBe(true);
+      expect(typeof result.shutdownTime).toBe('string');
+      // ISO 8601 sanity: parseable by Date and not 'Invalid Date'.
+      expect(Number.isNaN(Date.parse(result.shutdownTime as string))).toBe(false);
+      // Old field must be gone.
+      expect(result.shutdownAt).toBeUndefined();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // 11.b ADR-0119 (T1) — Hive-mind weighted consensus (Queen 3x voting power)
   // --------------------------------------------------------------------------
   // Cases mirror ADR-0119 §Implementation plan step 9 + §Validation Test list.
