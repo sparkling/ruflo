@@ -488,6 +488,49 @@ This contract replaces v2's 'coordinate via hooks' idiom — v3 hooks are
 for learning, not coordination, so workers must write coordination state
 explicitly via MCP.
 
+🚨 WORKER FAILURE PROTOCOL (ADR-0131 / ADR-0109 Option E §6):
+After every Task spawn that you (the queen) issue, treat absent or
+malformed worker output as a first-class signal. Do not silently drop it.
+
+Step 1 — IMMEDIATE READBACK
+After Task returns, immediately call:
+  mcp__ruflo__hive-mind_memory({action:'get', key:'worker-<id>-result'})
+where <id> is the worker's ID. If the key is missing OR the Task tool
+returned an error OR more than 60s have elapsed since spawn with no
+result, treat the worker as absent.
+
+Step 2 — RECORD ABSENCE
+Mark the worker absent by writing:
+  mcp__ruflo__hive-mind_memory({action:'set',
+    key:'worker-<id>-status',
+    value:'absent',
+    type:'system'})
+The literal status string is 'absent'. Do not invent variants
+('missing', 'failed', 'gone'); downstream tooling reads the literal.
+
+Step 3 — RETRY-ONCE OR PROCEED
+Decide retry-once or proceed-without:
+  • retry-once: re-spawn the worker via Task with a NEW ID following the
+    convention worker-<original-id>-retry-1. Register the retried entry
+    via hive-mind_memory with retryOf set to the original ID so the
+    audit trail can reconstruct lineage. The retry ceiling is one — if
+    the retry also fails, do NOT spawn worker-<original-id>-retry-2;
+    record the gap and proceed.
+  • proceed-without: include the gap explicitly in your final summary
+    (e.g. "worker-<id> absent; N-1 of N results collected").
+
+Step 4 — QUORUM HANDLING
+If a consensus round is in flight when the worker is marked absent and
+quorum is unreachable, hive-mind_consensus({action:'status'}) will
+auto-transition the proposal to 'failed-quorum-not-reached' and surface
+the absent voters. You do not need to mark the proposal failed manually
+— the runtime handles the transition. Read hive-mind_status to see the
+failedWorkers summary.
+
+Never wait indefinitely. 60s with no result key → 'absent'. Never
+silently drop a worker. The audit trail (state.consensus.history,
+failedWorkers in hive-mind_status) depends on this protocol.
+
 💡 COORDINATION TIPS:
 • Use mcp__ruflo__hive-mind_broadcast for swarm-wide announcements
 • Check worker status regularly with mcp__ruflo__hive-mind_status

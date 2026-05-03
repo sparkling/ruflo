@@ -171,6 +171,19 @@ export interface HiveState {
   topology: 'mesh' | 'hierarchical' | 'ring' | 'star';
   queen?: HiveQueenRecord;
   workers: string[];
+  // ADR-0131 (T12): per-worker failure metadata. Keyed by worker ID.
+  // Both fields are independently nullable:
+  //   - failedAt: ms-since-epoch when worker was marked absent; null while live
+  //   - retryOf:  original worker's ID when this entry is a retry; null otherwise
+  // Legacy state files load with this map empty; loadHiveState defaults each
+  // worker's metadata to { failedAt: null, retryOf: null } on first lookup
+  // via the workerMetaFor() helper.
+  //
+  // Per ADR-0131 §Decision Outcome: failure marking is one-way
+  // (failedAt: null → number is the only legal transition; reverse throws).
+  // Per ADR-0131 §Specification: retryOf is a single pointer (NOT a chain
+  // depth); chain reconstruction is the consumer's job via recursive lookup.
+  workerMeta?: Record<string, WorkerMeta>;
   consensus: {
     pending: ConsensusProposal[];
     history: ConsensusResult[];
@@ -180,6 +193,27 @@ export interface HiveState {
   sharedMemory: Record<string, MemoryEntry>;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * ADR-0131 (T12) — per-worker failure metadata.
+ *
+ * Stored on `HiveState.workerMeta[<workerId>]`; defaulted to
+ * `{ failedAt: null, retryOf: null }` on first lookup for legacy state.
+ *
+ * `failedAt`: epoch-ms when the queen marked this worker absent (via
+ *   the §6 prompt protocol writing `worker-<id>-status: 'absent'`).
+ *   `null` while the worker is live. Forward-only: once set, attempts
+ *   to revert to `null` MUST throw (use a new worker ID + `retryOf`
+ *   pointer to record a retry).
+ *
+ * `retryOf`: original worker's ID when this entry is a retry-spawn;
+ *   `null` for direct-queen-spawned workers. Single pointer per ADR-0131
+ *   §Decision Outcome — not a chain depth or graph.
+ */
+export interface WorkerMeta {
+  failedAt: number | null;
+  retryOf: string | null;
 }
 
 const HIVE_QUEEN_TYPES: ReadonlyArray<HiveQueenType> = ['strategic', 'tactical', 'adaptive'];
@@ -302,6 +336,137 @@ export class MissingQueenForWeightedConsensusError extends Error {
   }
 }
 
+// ── ADR-0131 (T12): worker-failure protocol error classes ─────────────────
+
+/**
+ * Thrown by `_consensus({action:'vote'})` when a vote arrives from a worker
+ * whose `failedAt !== null` (the worker has been marked absent by the §6
+ * prompt protocol). Per ADR-0131 §Decision Outcome ("Worker-rejoin-after-
+ * marked-failed stance: throw, not silent admission"), re-admitting a
+ * previously-marked-absent voter would invalidate the `absentVoters`
+ * snapshot already written to history; consistency wins over best-effort
+ * rescue. Workers re-spawned via the §6 retry-once policy carry a
+ * `retryOf` pointer back to the original; they are first-class voters
+ * under their NEW ID, not re-admitted under the old one.
+ */
+export class WorkerAlreadyFailedError extends Error {
+  constructor(voterId: string, failedAt: number) {
+    super(
+      `Vote rejected: worker ${voterId} was marked failed at ${new Date(failedAt).toISOString()}. ` +
+      `Per ADR-0131, a marked-absent worker cannot be re-admitted to the same consensus round. ` +
+      `Re-spawn with a new worker ID and a retryOf pointer per the §6 retry-once policy.`,
+    );
+    this.name = 'WorkerAlreadyFailedError';
+  }
+}
+
+/**
+ * Thrown by `_consensus({action:'vote'})` when a vote arrives against a
+ * proposal whose `proposalId` resolves into `state.consensus.history`
+ * (terminal state, including 'failed-quorum-not-reached'). Per ADR-0131
+ * §Specification invariants, votes against terminal proposals MUST throw
+ * synchronously rather than silently no-op or update history.
+ */
+export class ProposalAlreadyFailedError extends Error {
+  constructor(proposalId: string, status: string) {
+    super(
+      `Vote rejected: proposal ${proposalId} is in terminal state '${status}'. ` +
+      `Per ADR-0131, votes against proposals already moved to history are not accepted; ` +
+      `start a new proposal if a fresh round is needed.`,
+    );
+    this.name = 'ProposalAlreadyFailedError';
+  }
+}
+
+/**
+ * ADR-0131 (T12) — load-time-default helper. Returns the WorkerMeta for a
+ * given worker ID, defaulting both fields to null when the entry is absent
+ * (legacy state files OR direct-queen-spawned workers that have never
+ * been marked failed). The returned object is the SAME reference as the
+ * one in state.workerMeta — mutations through this helper are persisted
+ * by the next saveHiveState.
+ *
+ * Per ADR-0131 §Specification "loadHiveState defaults failedAt/retryOf to
+ * null on older state files".
+ */
+export function workerMetaFor(state: HiveState, workerId: string): WorkerMeta {
+  if (!state.workerMeta) state.workerMeta = {};
+  const existing = state.workerMeta[workerId];
+  if (existing === undefined) {
+    const fresh: WorkerMeta = { failedAt: null, retryOf: null };
+    state.workerMeta[workerId] = fresh;
+    return fresh;
+  }
+  // Defensive: if a legacy state file has a partial shape, fill the gaps.
+  // Per ADR-0131 §Refinement edge case "Queen-failed during retry": partial
+  // entries (id but no failedAt/retryOf populated) load with both fields
+  // defaulted to null. The audit trail is lossy for that entry; documented.
+  const writable = existing as Partial<WorkerMeta> & WorkerMeta;
+  if (writable.failedAt === undefined) writable.failedAt = null;
+  if (writable.retryOf === undefined) writable.retryOf = null;
+  return writable;
+}
+
+/**
+ * ADR-0131 (T12) — mark a worker failed by setting failedAt to the supplied
+ * timestamp. Forward-only transition: re-marking an already-failed worker
+ * is a no-op (idempotent). Per ADR-0131 §Specification invariants,
+ * `failedAt: number → null` is illegal — use a new worker ID + retryOf
+ * pointer to record a retry. The reverse-transition guard lives at the
+ * caller layer (no API surface here exposes a `clearFailed()` action).
+ */
+export function markWorkerFailed(state: HiveState, workerId: string, at: number = Date.now()): void {
+  const meta = workerMetaFor(state, workerId);
+  if (meta.failedAt !== null) {
+    // Idempotent — already marked. Per ADR-0131 §Refinement "Worker re-spawn
+    // with same ID" the timestamp is preserved, not refreshed.
+    return;
+  }
+  meta.failedAt = at;
+}
+
+/**
+ * ADR-0131 (T12) — register a worker entry as a retry of `originalId`.
+ * Sets the new entry's retryOf pointer; idempotent (re-registering the
+ * same lineage is a no-op). Per ADR-0131 §Decision Outcome lineage stays
+ * minimal (single pointer, no chains).
+ */
+export function registerWorkerRetry(state: HiveState, newWorkerId: string, originalId: string): void {
+  const meta = workerMetaFor(state, newWorkerId);
+  meta.retryOf = originalId;
+}
+
+/**
+ * ADR-0131 (T12) — reconcile state.workerMeta with §6 prompt protocol
+ * writes. The §6 protocol instructs the queen LLM to write
+ * `worker-<id>-status: 'absent'` via _memory when a worker is detected as
+ * absent. This helper scans state.sharedMemory for those marker keys
+ * and propagates the absence into state.workerMeta[workerId].failedAt.
+ *
+ * Per ADR-0131 §Implementation plan step 5: "T12's primary failure-marking
+ * path is the prompt → _memory → _consensus/_status chain; no separate
+ * mark-failed action verb is added."
+ *
+ * Returns true if any worker was newly marked failed (caller saves state).
+ */
+export function reconcileFailedFromStatusKeys(state: HiveState, now: number = Date.now()): boolean {
+  let mutated = false;
+  for (const [key, entry] of Object.entries(state.sharedMemory)) {
+    // Match the §6 marker key shape: worker-<id>-status with value 'absent'
+    const m = key.match(/^worker-(.+)-status$/);
+    if (!m) continue;
+    if (!isMemoryEntryShape(entry)) continue;
+    if (entry.value !== 'absent') continue;
+    const workerId = m[1] as string;
+    const meta = workerMetaFor(state, workerId);
+    if (meta.failedAt === null) {
+      meta.failedAt = now;
+      mutated = true;
+    }
+  }
+  return mutated;
+}
+
 export interface ConsensusProposal {
   proposalId: string;
   type: string;
@@ -309,8 +474,16 @@ export interface ConsensusProposal {
   proposedBy: string;
   proposedAt: string;
   votes: Record<string, boolean>;
-  status: 'pending' | 'approved' | 'rejected';
+  // ADR-0131 (T12): status union widened with the literal
+  // 'failed-quorum-not-reached' — verbatim contract per ADR-0131
+  // §Specification. Set by the auto-transition in _consensus({action:'status'})
+  // when `Date.now() >= timeoutAt && totalVotes < required`.
+  status: 'pending' | 'approved' | 'rejected' | 'failed-quorum-not-reached';
   strategy: ConsensusStrategy;
+  // ADR-0131 (T12): snapshot of state.workers IDs that didn't vote when the
+  // auto-transition fired. Populated only on status='failed-quorum-not-reached'
+  // proposals; frozen with the historical row.
+  absentVoters?: string[];
   term?: number;              // Raft: term number
   quorumPreset?: QuorumPreset; // Quorum: threshold preset
   byzantineVoters?: string[]; // BFT: detected Byzantine voters
@@ -341,12 +514,18 @@ export interface ConsensusProposal {
 interface ConsensusResult {
   proposalId: string;
   type: string;
-  result: 'approved' | 'rejected';
+  // ADR-0131 (T12): result union widened with 'failed-quorum-not-reached' —
+  // verbatim contract per ADR-0131 §Specification. Set when the auto-status-
+  // transition fires and the proposal is appended to history.
+  result: 'approved' | 'rejected' | 'failed-quorum-not-reached';
   votes: { for: number; against: number };
   decidedAt: string;
   strategy: ConsensusStrategy;
   term?: number;
   byzantineDetected?: string[];
+  // ADR-0131 (T12): snapshot of state.workers IDs that didn't vote when the
+  // auto-transition fired. Frozen with the historical row.
+  absentVoters?: string[];
 }
 
 /**
@@ -849,6 +1028,10 @@ function defaultHiveState(): HiveState {
     initialized: false,
     topology: 'mesh',
     workers: [],
+    // ADR-0131 (T12): per-worker failure metadata. Defaulted to an empty map
+    // for fresh hives; legacy state files load with the field undefined and
+    // workerMetaFor() lazily initialises on first lookup.
+    workerMeta: {},
     consensus: { pending: [], history: [] },
     sharedMemory: {},
     createdAt: ts,
@@ -1055,11 +1238,20 @@ function saveAgentStore(store: { agents: Record<string, unknown> }): void {
 export const hiveMindTools: MCPTool[] = [
   {
     name: 'hive-mind_spawn',
-    description: 'Spawn workers and automatically join them to the hive-mind (combines agent/spawn + hive-mind/join)',
+    description: 'Spawn workers and automatically join them to the hive-mind (combines agent/spawn + hive-mind/join). ADR-0131 (T12): supports `retryOf` to record retry-lineage for failed workers; supports `action: "retryTask"` for queen-driven retry-once flows.',
     category: 'hive-mind',
     inputSchema: {
       type: 'object',
       properties: {
+        // ADR-0131 (T12): optional `action` discriminator. Default is the
+        // existing spawn behaviour. `action: "retryTask"` is a sugared
+        // single-worker spawn that requires `retryOf` and uses the canonical
+        // worker-<original>-retry-1 ID convention from ADR-0131 §Refinement.
+        action: {
+          type: 'string',
+          enum: ['spawn', 'retryTask'],
+          description: 'Spawn action: "spawn" (default) for new workers, "retryTask" for retrying a failed worker by ID (ADR-0131 §6 retry-once policy).',
+        },
         count: { type: 'number', description: 'Number of workers to spawn (default: 1)', default: 1 },
         role: { type: 'string', enum: ['worker', 'specialist', 'scout'], description: 'Worker role in hive', default: 'worker' },
         // ADR-0108 (T13): `agentType` (scalar, existing) and `agentTypes`
@@ -1075,6 +1267,16 @@ export const hiveMindTools: MCPTool[] = [
           description: `Mixed-type worker spawn (round-robin: agentTypes[i % len]). Mutually exclusive with agentType. Allowed values: ${WORKER_TYPES.join(', ')}.`,
         },
         prefix: { type: 'string', description: 'Prefix for worker IDs', default: 'hive-worker' },
+        // ADR-0131 (T12): retryOf records the original worker's ID when this
+        // spawn is a retry per the §6 retry-once policy. Sets the new entry's
+        // workerMeta.retryOf pointer; downstream audit-trail consumers
+        // (hive-mind_status.failedWorkers) surface this for lineage
+        // reconstruction. Single pointer per ADR-0131 §Decision Outcome —
+        // not a chain depth or graph.
+        retryOf: {
+          type: 'string',
+          description: 'Original worker ID for retry-spawned workers (ADR-0131 retry lineage).',
+        },
       },
     },
     handler: async (input) => {
@@ -1082,6 +1284,21 @@ export const hiveMindTools: MCPTool[] = [
 
       if (!state.initialized) {
         return { success: false, error: 'Hive-mind not initialized. Run hive-mind/init first.' };
+      }
+
+      // ADR-0131 (T12): action discriminator. retryTask is sugar for a
+      // single-worker spawn with retryOf required and the canonical
+      // worker-<original>-retry-1 ID convention enforced.
+      const action = (input.action as string) || 'spawn';
+      const rawRetryOf = (input.retryOf as string) || undefined;
+
+      if (action === 'retryTask') {
+        if (!rawRetryOf) {
+          return {
+            success: false,
+            error: 'retryTask requires `retryOf` (the original worker ID being retried)',
+          };
+        }
       }
 
       const count = Math.min(Math.max(1, (input.count as number) || 1), 20); // Cap at 20
@@ -1141,10 +1358,20 @@ export const hiveMindTools: MCPTool[] = [
 
       const agentStore = loadAgentStore();
 
-      const spawnedWorkers: Array<{ agentId: string; role: string; agentType: string; joinedAt: string }> = [];
+      const spawnedWorkers: Array<{ agentId: string; role: string; agentType: string; joinedAt: string; retryOf?: string }> = [];
 
       for (let i = 0; i < count; i++) {
-        const agentId = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        // ADR-0131 (T12): retryTask uses canonical retry ID convention
+        // worker-<original>-retry-1 per ADR-0131 §Refinement edge case
+        // "Worker re-spawn with same ID". For multi-count retries (rare),
+        // append the iteration index.
+        let agentId: string;
+        if (action === 'retryTask' && rawRetryOf) {
+          const suffix = count === 1 ? 'retry-1' : `retry-${i + 1}`;
+          agentId = `${rawRetryOf}-${suffix}`;
+        } else {
+          agentId = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        }
         const thisType = perWorkerTypes[i] as string;
 
         // Create agent record (like agent/spawn)
@@ -1164,6 +1391,15 @@ export const hiveMindTools: MCPTool[] = [
           state.workers.push(agentId);
         }
 
+        // ADR-0131 (T12): record retry lineage on the new worker entry's
+        // metadata. Per ADR-0131 §Decision Outcome, retryOf is a single
+        // pointer (not a chain depth) — the new entry points to the
+        // immediate predecessor. Chain reconstruction is recursive lookup
+        // at audit-time.
+        if (rawRetryOf) {
+          registerWorkerRetry(state, agentId, rawRetryOf);
+        }
+
         // ADR-0108 (T13): per-worker `agentType` returned in the response
         // so callers (CLI, prompt builder) see the round-robin distribution
         // rather than a single uniform scalar.
@@ -1172,6 +1408,7 @@ export const hiveMindTools: MCPTool[] = [
           role,
           agentType: thisType,
           joinedAt: new Date().toISOString(),
+          ...(rawRetryOf ? { retryOf: rawRetryOf } : {}),
         });
       }
 
@@ -1181,10 +1418,13 @@ export const hiveMindTools: MCPTool[] = [
       return {
         success: true,
         spawned: count,
+        action,
         workers: spawnedWorkers,
         totalWorkers: state.workers.length,
         hiveStatus: 'active',
-        message: `Spawned ${count} worker(s) and joined them to the hive-mind`,
+        message: action === 'retryTask'
+          ? `Spawned ${count} retry-worker(s) for ${rawRetryOf} and joined to the hive-mind`
+          : `Spawned ${count} worker(s) and joined them to the hive-mind`,
       };
     },
   },
@@ -1272,6 +1512,15 @@ export const hiveMindTools: MCPTool[] = [
     handler: async (input) => {
       const state = loadHiveState();
 
+      // ADR-0131 (T12): reconcile §6 absence markers before surfacing status.
+      // The §6 prompt protocol writes `worker-<id>-status: 'absent'` via
+      // _memory; this scan propagates that into per-worker workerMeta.failedAt
+      // so the failedWorkers summary below is current. Persist if anything
+      // changed (the failure-marking is forward-only — no spurious writes).
+      if (reconcileFailedFromStatusKeys(state)) {
+        saveHiveState(state);
+      }
+
       const uptime = state.createdAt ? Date.now() - new Date(state.createdAt).getTime() : 0;
 
       // Load agent store once for all workers
@@ -1296,6 +1545,25 @@ export const hiveMindTools: MCPTool[] = [
       const workerCount = Math.max(1, state.workers.length);
       const realLoad = activeTaskCount / workerCount;
 
+      // ADR-0131 (T12) — failedWorkers summary derived from state.workerMeta.
+      // Every worker whose failedAt !== null is included. Per ADR-0131
+      // §Specification: `state.workers.filter(w => w.failedAt !== null)
+      // .map(w => ({ id: w.id, failedAt: w.failedAt, retryOf: w.retryOf }))`.
+      // Adapted to our parallel workerMeta map shape (state.workers is
+      // string[] of IDs); the result shape is identical.
+      const failedWorkers: Array<{ id: string; failedAt: number; retryOf: string | null }> = [];
+      const allWorkerMetaIds = state.workerMeta ? Object.keys(state.workerMeta) : [];
+      for (const id of allWorkerMetaIds) {
+        const meta = state.workerMeta![id]!;
+        if (meta.failedAt !== null && meta.failedAt !== undefined) {
+          failedWorkers.push({
+            id,
+            failedAt: meta.failedAt,
+            retryOf: meta.retryOf ?? null,
+          });
+        }
+      }
+
       const status = {
         // CLI expected fields
         hiveId: `hive-${state.createdAt ? new Date(state.createdAt).getTime() : Date.now()}`,
@@ -1318,12 +1586,18 @@ export const hiveMindTools: MCPTool[] = [
         } : { id: 'N/A', status: 'offline', load: 0, tasksQueued: 0 },
         workers: state.workers.map(w => {
           const agent = agentStore.agents[w] as Record<string, unknown> | undefined;
+          // ADR-0131 (T12): surface per-worker failure status alongside the
+          // existing agentStore-derived shape. failedAt/retryOf are null
+          // by default for live workers.
+          const meta = state.workerMeta?.[w];
           return {
             id: w,
             type: (agent?.agentType as string) || 'worker',
             status: (agent?.status as string) || 'unknown',
             currentTask: (agent?.currentTask as string) || null,
             tasksCompleted: (agent?.taskCount as number) || 0,
+            failedAt: meta?.failedAt ?? null,
+            retryOf: meta?.retryOf ?? null,
           };
         }),
         metrics: {
@@ -1331,7 +1605,9 @@ export const hiveMindTools: MCPTool[] = [
           completedTasks: completedTaskCount,
           activeTasks: activeTaskCount,
           pendingTasks: pendingTaskCount,
-          failedTasks: 0,
+          // ADR-0131 (T12): failed-task count surfaces the count of workers
+          // marked absent. Derived from failedWorkers length.
+          failedTasks: failedWorkers.length,
           consensusRounds: state.consensus.history.length,
           memoryUsage: `${Object.keys(state.sharedMemory).length * 2} KB`,
         },
@@ -1351,6 +1627,12 @@ export const hiveMindTools: MCPTool[] = [
         uptime,
         createdAt: state.createdAt,
         updatedAt: state.updatedAt,
+        // ADR-0131 (T12) — failedWorkers summary, derived from
+        // state.workerMeta. Empty array when no workers have been marked
+        // absent. Per ADR-0131 §Specification: each entry is
+        // { id, failedAt, retryOf } where retryOf is the original worker's
+        // ID for retry-spawned entries (null for direct-queen-spawned workers).
+        failedWorkers,
       };
 
       if (input.verbose) {
@@ -1525,6 +1807,17 @@ export const hiveMindTools: MCPTool[] = [
           ? ((input.roundTimeoutMs as number) || GOSSIP_ROUND_TIMEOUT_MS_DEFAULT)
           : undefined;
 
+        // ADR-0131 (T12): set `timeoutAt` for ALL threshold-based strategies
+        // so the auto-status-transition predicate in _consensus({action:'status'})
+        // can fire across bft/raft/quorum/weighted. Gossip and CRDT have their
+        // own roundStartedAt/roundTimeoutMs settling mechanism — they retain
+        // `timeoutAt: undefined` and bypass the auto-transition (their own
+        // settle paths handle timeout-driven resolution per ADR-0120/ADR-0121).
+        const isThresholdBased =
+          strategy === 'bft' ||
+          strategy === 'raft' ||
+          strategy === 'quorum' ||
+          strategy === 'weighted';
         const proposal: ConsensusProposal = {
           proposalId,
           type: (input.type as string) || 'general',
@@ -1537,7 +1830,7 @@ export const hiveMindTools: MCPTool[] = [
           term: strategy === 'raft' ? term : undefined,
           quorumPreset: strategy === 'quorum' ? quorumPreset : undefined,
           byzantineVoters: strategy === 'bft' ? [] : undefined,
-          timeoutAt: strategy === 'raft' ? new Date(Date.now() + timeoutMs).toISOString() : undefined,
+          timeoutAt: isThresholdBased ? new Date(Date.now() + timeoutMs).toISOString() : undefined,
           // Gossip-only fields (ADR-0120 §Implementation §3).
           gossipRound: isGossip ? 0 : undefined,
           lastVoteChangedRound: isGossip ? 0 : undefined,
@@ -1581,7 +1874,33 @@ export const hiveMindTools: MCPTool[] = [
       }
 
       if (action === 'vote') {
-        const proposal = state.consensus.pending.find(p => p.proposalId === input.proposalId);
+        // ADR-0131 (T12): reconcile §6 absence markers BEFORE evaluating
+        // worker-failed status. The §6 contract writes
+        // `worker-<id>-status: 'absent'` via _memory; this scan propagates
+        // that into per-worker workerMeta.failedAt so the vote-time guard
+        // observes the freshly-marked worker.
+        if (reconcileFailedFromStatusKeys(state)) {
+          saveHiveState(state);
+        }
+
+        const proposalId = input.proposalId as string;
+
+        // ADR-0131 (T12) — ProposalAlreadyFailedError. A vote against a
+        // proposal already moved to history (terminal state, including
+        // 'failed-quorum-not-reached') throws synchronously. Per ADR-0131
+        // §Specification invariants, votes against terminal proposals MUST
+        // throw rather than silently no-op.
+        const historicalRow = state.consensus.history.find(
+          (h) => h.proposalId === proposalId,
+        );
+        if (historicalRow) {
+          throw new ProposalAlreadyFailedError(
+            proposalId,
+            historicalRow.result,
+          );
+        }
+
+        const proposal = state.consensus.pending.find(p => p.proposalId === proposalId);
         if (!proposal) {
           return { action, error: 'Proposal not found or already resolved' };
         }
@@ -1589,6 +1908,17 @@ export const hiveMindTools: MCPTool[] = [
         const voterId = input.voterId as string;
         if (!voterId) {
           return { action, error: 'voterId is required for voting' };
+        }
+
+        // ADR-0131 (T12) — WorkerAlreadyFailedError. A vote from a worker
+        // whose failedAt !== null throws synchronously. Per ADR-0131
+        // §Decision Outcome ("Worker-rejoin-after-marked-failed stance:
+        // throw, not silent admission"), re-admitting a previously-marked-
+        // absent voter would invalidate the absentVoters snapshot already
+        // written to history. Re-spawn requires a NEW worker ID + retryOf.
+        const voterMeta = workerMetaFor(state, voterId);
+        if (voterMeta.failedAt !== null) {
+          throw new WorkerAlreadyFailedError(voterId, voterMeta.failedAt);
         }
 
         const voteValue = input.vote as boolean;
@@ -2013,12 +2343,30 @@ export const hiveMindTools: MCPTool[] = [
       }
 
       if (action === 'status') {
+        // ADR-0131 (T12) — reconcile §6 prompt-protocol absence markers BEFORE
+        // looking at the proposal. The §6 contract instructs the queen LLM to
+        // write `worker-<id>-status: 'absent'` via _memory; this scan
+        // propagates that marker into per-worker workerMeta.failedAt so the
+        // auto-transition's `absentVoters` snapshot is current.
+        const reconciled = reconcileFailedFromStatusKeys(state);
+        if (reconciled) {
+          saveHiveState(state);
+        }
+
         const proposal = state.consensus.pending.find(p => p.proposalId === input.proposalId);
         if (!proposal) {
           // Check history
           const historical = state.consensus.history.find(h => h.proposalId === input.proposalId);
           if (historical) {
-            return { action, ...historical, historical: true, resolved: true };
+            return {
+              action,
+              ...historical,
+              historical: true,
+              resolved: true,
+              // ADR-0131 (T12): subsequent calls for an already-transitioned
+              // proposal return the historical row with statusJustTransitioned: false.
+              statusJustTransitioned: false,
+            };
           }
           return { action, error: 'Proposal not found' };
         }
@@ -2047,6 +2395,70 @@ export const hiveMindTools: MCPTool[] = [
         let timedOut = false;
         if (proposalStrategy === 'raft' && proposal.timeoutAt) {
           timedOut = new Date().getTime() > new Date(proposal.timeoutAt).getTime();
+        }
+
+        // ADR-0131 (T12) — auto-status-transition for ALL threshold-based
+        // strategies (bft/raft/quorum/weighted). Predicate per
+        // ADR-0131 §Specification:
+        //   `Date.now() >= proposal.timeoutAt && totalVotes < required`
+        // On trigger: status flips to 'failed-quorum-not-reached',
+        // absentVoters populated, proposal moved from pending to history,
+        // state saved.
+        //
+        // Strategy-agnostic at the dispatch boundary; the threshold is
+        // already strategy-aware via calculateRequiredVotes (T1/T2/T3 extended
+        // it to weighted/gossip/crdt). Gossip and CRDT have their own
+        // settle paths and timeoutAt is undefined for them, so the predicate
+        // never trips on those branches — the existing settle-check paths
+        // handle their timeout-driven resolution.
+        let statusJustTransitioned = false;
+        if (
+          proposal.timeoutAt &&
+          Date.now() >= new Date(proposal.timeoutAt).getTime() &&
+          proposal.status === 'pending' &&
+          Object.keys(proposal.votes).length < required
+        ) {
+          // Compute absentVoters: workers in state.workers who didn't vote.
+          // Per ADR-0131 §Specification: `state.workers.filter(w => !(w.id in proposal.votes))`
+          // — the WorkerEntry shape is keyed by worker ID; state.workers is
+          // string[] of IDs in the current schema, so filter by membership.
+          const absentVoters = state.workers.filter(
+            (workerId) => !(workerId in proposal.votes),
+          );
+
+          // Mutate proposal status to the verbatim contract literal per
+          // ADR-0131 §Decision. Downstream tests assert on the exact literal.
+          proposal.status = 'failed-quorum-not-reached';
+          proposal.absentVoters = absentVoters;
+
+          // Idempotency guard per ADR-0131 §Refinement edge case
+          // "Concurrent transitions": dedupe on proposalId before pushing
+          // to history. Two callers serialising via saveHiveState's lock —
+          // the second observes the proposal already in history and skips.
+          const alreadyInHistory = state.consensus.history.some(
+            (h) => h.proposalId === proposal.proposalId,
+          );
+          if (!alreadyInHistory) {
+            // Append to history with the failed-quorum-not-reached marker
+            // and the absentVoters snapshot per ADR-0131 §Architecture data flow.
+            state.consensus.history.push({
+              proposalId: proposal.proposalId,
+              type: proposal.type,
+              result: 'failed-quorum-not-reached',
+              votes: { for: votesFor, against: votesAgainst },
+              decidedAt: new Date().toISOString(),
+              strategy: proposalStrategy,
+              term: proposal.term,
+              absentVoters,
+            });
+          }
+
+          // Remove from pending.
+          state.consensus.pending = state.consensus.pending.filter(
+            (p) => p.proposalId !== proposal.proposalId,
+          );
+          saveHiveState(state);
+          statusJustTransitioned = true;
         }
 
         // ADR-0120 (T2): gossip settle_check folds into the status action
@@ -2143,7 +2555,7 @@ export const hiveMindTools: MCPTool[] = [
           totalVotes: Object.keys(proposal.votes).length,
           required,
           totalNodes,
-          resolved: gossipResolved || crdtResolved,
+          resolved: gossipResolved || crdtResolved || statusJustTransitioned,
           result: gossipResolved ? gossipResult : (crdtResolved ? crdtResult : undefined),
           term: proposal.term,
           quorumPreset: proposal.quorumPreset,
@@ -2151,6 +2563,12 @@ export const hiveMindTools: MCPTool[] = [
           timedOut,
           timeoutAt: proposal.timeoutAt,
           hint: timedOut ? `Raft timeout reached. Re-propose with term ${(proposal.term || 1) + 1}.` : undefined,
+          // ADR-0131 (T12): auto-status-transition surface. statusJustTransitioned
+          // is true on the call that fired the transition; false on subsequent
+          // calls (proposal already in history). absentVoters is the snapshot
+          // of state.workers IDs that didn't cast a vote when the predicate fired.
+          statusJustTransitioned,
+          absentVoters: statusJustTransitioned ? proposal.absentVoters : undefined,
           // ADR-0120 (T2): gossip-only telemetry on status response.
           gossipRound: proposal.gossipRound,
           lastVoteChangedRound: proposal.lastVoteChangedRound,

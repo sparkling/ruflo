@@ -195,6 +195,15 @@ import {
   GOSSIP_ROUND_TIMEOUT_MS_DEFAULT,
   // ADR-0124 (T6) / H6 row 32: queenType type + validator on the queen record
   isHiveQueenType,
+  // ADR-0131 (T12) — worker-failure protocol exports
+  WorkerAlreadyFailedError,
+  ProposalAlreadyFailedError,
+  workerMetaFor,
+  markWorkerFailed,
+  registerWorkerRetry,
+  reconcileFailedFromStatusKeys,
+  loadHiveState,
+  saveHiveState,
   type HiveQueenType,
   type MemoryType,
   type MemoryEntry,
@@ -2887,6 +2896,382 @@ describe('MCP Tools Deep Test Suite', () => {
         if (t === 'researcher') continue;
         expect(prompt).not.toContain(`## Worker role: ${t}`);
       }
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 11.f ADR-0131 (T12) — Worker-failure prompt protocol + auto-status-transitions
+  // --------------------------------------------------------------------------
+  // Cases mirror ADR-0131 §Validation Test list:
+  //  - §6 prompt presence (sentinel substrings)
+  //  - Auto-transition fires for bft/raft/quorum/weighted with timeoutAt elapsed
+  //  - absentVoters populated correctly
+  //  - Proposal moves pending → history
+  //  - statusJustTransitioned true on first transition, false after
+  //  - WorkerAlreadyFailedError on vote from failed worker
+  //  - ProposalAlreadyFailedError on vote against failed proposal
+  //  - Retry lineage round-trip (registerWorkerRetry + state persistence)
+  //  - loadHiveState defaults failedAt/retryOf on legacy state
+  //  - _status.failedWorkers derivation correctness
+  //  - Concurrent-transition idempotency (no duplicate history rows)
+  describe('ADR-0131 (T12) — worker-failure protocol', () => {
+    const initTool = () => hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+    const spawnTool = () => hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+    const consensusTool = () => hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
+    const statusTool = () => hiveMindTools.find(t => t.name === 'hive-mind_status')!;
+    const memoryTool = () => hiveMindTools.find(t => t.name === 'hive-mind_memory')!;
+    const shutdownTool = () => hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+
+    async function freshFailureHive(workerCount: number = 4) {
+      try { await shutdownTool().handler({ force: true }); } catch { /* not initialized */ }
+      _resetHiveCacheForTest();
+      const initOut: any = await initTool().handler({ topology: 'mesh' });
+      const queenId = initOut.queenId as string;
+      const spawnOut: any = await spawnTool().handler({ count: workerCount, role: 'worker' });
+      const workerIds = spawnOut.workers.map((w: any) => w.agentId as string);
+      return { queenId, workerIds };
+    }
+
+    // ── §6 prompt presence (sentinel substrings) ───────────────────────
+    it('t12_§6_prompt_carries_WORKER_FAILURE_PROTOCOL_block', async () => {
+      const mod = await import('../src/commands/hive-mind.js');
+      const prompt = mod.generateHiveMindPrompt(
+        'swarm-t12', 'T12 Hive', 'Probe failure protocol',
+        [{ agentId: 'a1', role: 'worker', type: 'researcher' }],
+        { researcher: [{ agentId: 'a1', role: 'worker', type: 'researcher' }] },
+        { queenType: 'strategic' }
+      );
+      // ADR-0131 §Specification verbatim contract sentinels.
+      expect(prompt).toContain('WORKER FAILURE PROTOCOL');
+      expect(prompt).toContain('60s');
+      expect(prompt).toContain('retry-once');
+      expect(prompt).toContain("'absent'");
+      expect(prompt).toContain('worker-<id>-status');
+    });
+
+    // ── Auto-transition fires across threshold-based strategies ────────
+    for (const strategy of ['bft', 'raft', 'quorum', 'weighted'] as const) {
+      it(`t12_auto_transition_fires_for_${strategy}`, async () => {
+        await freshFailureHive(4);
+        const proposeOut: any = await consensusTool().handler({
+          action: 'propose',
+          type: `t12-${strategy}`,
+          value: 'v',
+          strategy,
+          // Timeout already in the past — predicate fires immediately.
+          timeoutMs: -1000,
+        });
+        expect(proposeOut.proposalId).toBeDefined();
+        // No votes cast — totalVotes (0) < required.
+        // Wait for clock to be safely past timeoutAt (already negative).
+        const statusOut: any = await consensusTool().handler({
+          action: 'status',
+          proposalId: proposeOut.proposalId,
+        });
+        expect(statusOut.status).toBe('failed-quorum-not-reached');
+        expect(statusOut.statusJustTransitioned).toBe(true);
+        expect(Array.isArray(statusOut.absentVoters)).toBe(true);
+        expect(statusOut.absentVoters.length).toBeGreaterThan(0);
+      });
+    }
+
+    // ── absentVoters populated correctly ───────────────────────────────
+    it('t12_absentVoters_matches_state_workers_minus_voted', async () => {
+      const { workerIds } = await freshFailureHive(5);
+      const proposeOut: any = await consensusTool().handler({
+        action: 'propose',
+        type: 't12-absent',
+        value: 'v',
+        strategy: 'raft',
+        timeoutMs: -1000,
+      });
+      // Two workers vote (not enough for quorum; required = floor(5/2)+1 = 3)
+      // Use only voterIds that have not been failed.
+      await consensusTool().handler({
+        action: 'vote',
+        proposalId: proposeOut.proposalId,
+        voterId: workerIds[0],
+        vote: true,
+      });
+      // Auto-transition status query.
+      const statusOut: any = await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+      expect(statusOut.status).toBe('failed-quorum-not-reached');
+      // The 4 workers who didn't vote should be in absentVoters.
+      const expectedAbsent = workerIds.filter(w => w !== workerIds[0]);
+      for (const id of expectedAbsent) {
+        expect(statusOut.absentVoters).toContain(id);
+      }
+      // The voter must NOT be in absentVoters.
+      expect(statusOut.absentVoters).not.toContain(workerIds[0]);
+    });
+
+    // ── Proposal moves from pending to history ────────────────────────
+    it('t12_transition_moves_proposal_pending_to_history', async () => {
+      await freshFailureHive(3);
+      const proposeOut: any = await consensusTool().handler({
+        action: 'propose',
+        type: 't12-pending-history',
+        value: 'v',
+        strategy: 'bft',
+        timeoutMs: -1000,
+      });
+      // Pre-transition: proposal is in pending.
+      const stateBefore = loadHiveState();
+      expect(stateBefore.consensus.pending.find(p => p.proposalId === proposeOut.proposalId)).toBeDefined();
+
+      await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+
+      // Post-transition: proposal removed from pending, present in history.
+      const stateAfter = loadHiveState();
+      expect(stateAfter.consensus.pending.find(p => p.proposalId === proposeOut.proposalId)).toBeUndefined();
+      const histRow = stateAfter.consensus.history.find(h => h.proposalId === proposeOut.proposalId);
+      expect(histRow).toBeDefined();
+      expect(histRow!.result).toBe('failed-quorum-not-reached');
+      expect(histRow!.absentVoters).toBeDefined();
+    });
+
+    // ── statusJustTransitioned: true on first call, false after ────────
+    it('t12_statusJustTransitioned_only_true_on_firing_call', async () => {
+      await freshFailureHive(3);
+      const proposeOut: any = await consensusTool().handler({
+        action: 'propose',
+        type: 't12-once',
+        value: 'v',
+        strategy: 'raft',
+        timeoutMs: -1000,
+      });
+      const first: any = await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+      expect(first.statusJustTransitioned).toBe(true);
+
+      const second: any = await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+      // Subsequent call resolves the proposal from history with statusJustTransitioned: false.
+      expect(second.statusJustTransitioned).toBe(false);
+      expect(second.historical).toBe(true);
+    });
+
+    // ── ProposalAlreadyFailedError on vote against failed proposal ─────
+    it('t12_vote_against_failed_proposal_throws_ProposalAlreadyFailedError', async () => {
+      const { workerIds } = await freshFailureHive(3);
+      const proposeOut: any = await consensusTool().handler({
+        action: 'propose',
+        type: 't12-failed-vote',
+        value: 'v',
+        strategy: 'raft',
+        timeoutMs: -1000,
+      });
+      // Trigger transition.
+      await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+      // Subsequent vote must throw.
+      await expect(
+        consensusTool().handler({
+          action: 'vote',
+          proposalId: proposeOut.proposalId,
+          voterId: workerIds[0],
+          vote: true,
+        }),
+      ).rejects.toThrow(ProposalAlreadyFailedError);
+    });
+
+    // ── WorkerAlreadyFailedError on vote from failed worker ────────────
+    it('t12_vote_from_failed_worker_throws_WorkerAlreadyFailedError', async () => {
+      const { workerIds } = await freshFailureHive(4);
+      // Mark worker[0] as absent via §6 protocol marker key.
+      await memoryTool().handler({
+        action: 'set',
+        key: `worker-${workerIds[0]}-status`,
+        value: 'absent',
+        type: 'system',
+      });
+
+      // Now propose a fresh round (no pre-existing failed-quorum proposal).
+      const proposeOut: any = await consensusTool().handler({
+        action: 'propose',
+        type: 't12-failed-worker-vote',
+        value: 'v',
+        strategy: 'raft',
+        // Generous timeout so the vote-time guard fires (not the auto-transition).
+        timeoutMs: 60_000,
+      });
+      // Worker[0] is failed; its vote must throw.
+      await expect(
+        consensusTool().handler({
+          action: 'vote',
+          proposalId: proposeOut.proposalId,
+          voterId: workerIds[0],
+          vote: true,
+        }),
+      ).rejects.toThrow(WorkerAlreadyFailedError);
+    });
+
+    // ── Retry lineage round-trip ───────────────────────────────────────
+    it('t12_retryOf_round_trip_via_loadHiveState_saveHiveState', async () => {
+      const { workerIds } = await freshFailureHive(2);
+      const original = workerIds[0];
+
+      // Mark original as failed.
+      await memoryTool().handler({
+        action: 'set',
+        key: `worker-${original}-status`,
+        value: 'absent',
+        type: 'system',
+      });
+
+      // Spawn a retry worker via the hive-mind_spawn `retryTask` action.
+      const retryOut: any = await spawnTool().handler({
+        action: 'retryTask',
+        retryOf: original,
+      });
+      expect(retryOut.success).toBe(true);
+      expect(retryOut.workers[0].retryOf).toBe(original);
+
+      // Round-trip: persist + reload, retryOf must survive.
+      invalidateHiveCache();
+      const reloaded = loadHiveState();
+      const retryAgentId = retryOut.workers[0].agentId as string;
+      const retryMeta = reloaded.workerMeta?.[retryAgentId];
+      expect(retryMeta).toBeDefined();
+      expect(retryMeta!.retryOf).toBe(original);
+    });
+
+    // ── loadHiveState defaults failedAt/retryOf on legacy state ────────
+    it('t12_loadHiveState_defaults_workerMeta_on_legacy_state', async () => {
+      await freshFailureHive(0);
+      // Force a state with no workerMeta map to simulate legacy state.
+      const state = loadHiveState();
+      delete (state as any).workerMeta;
+      saveHiveState(state);
+      invalidateHiveCache();
+      const reloaded = loadHiveState();
+      // workerMetaFor() lazily defaults to { failedAt: null, retryOf: null }.
+      const meta = workerMetaFor(reloaded, 'fresh-worker');
+      expect(meta.failedAt).toBe(null);
+      expect(meta.retryOf).toBe(null);
+    });
+
+    // ── _status surface includes failedWorkers summary ─────────────────
+    it('t12_status_response_includes_failedWorkers_summary', async () => {
+      const { workerIds } = await freshFailureHive(3);
+      // Mark workers[0] and workers[1] as absent.
+      await memoryTool().handler({
+        action: 'set',
+        key: `worker-${workerIds[0]}-status`,
+        value: 'absent',
+        type: 'system',
+      });
+      await memoryTool().handler({
+        action: 'set',
+        key: `worker-${workerIds[1]}-status`,
+        value: 'absent',
+        type: 'system',
+      });
+
+      const statusOut: any = await statusTool().handler({});
+      expect(Array.isArray(statusOut.failedWorkers)).toBe(true);
+      expect(statusOut.failedWorkers.length).toBe(2);
+      const failedIds = statusOut.failedWorkers.map((f: any) => f.id);
+      expect(failedIds).toContain(workerIds[0]);
+      expect(failedIds).toContain(workerIds[1]);
+      for (const f of statusOut.failedWorkers) {
+        expect(typeof f.failedAt).toBe('number');
+        // retryOf is null for direct-spawned workers (no retryOf was set).
+        expect(f.retryOf).toBe(null);
+      }
+    });
+
+    // ── Concurrent transition idempotency ──────────────────────────────
+    it('t12_concurrent_status_calls_produce_one_history_row', async () => {
+      await freshFailureHive(2);
+      const proposeOut: any = await consensusTool().handler({
+        action: 'propose',
+        type: 't12-conc',
+        value: 'v',
+        strategy: 'raft',
+        timeoutMs: -1000,
+      });
+      // Two sequential status calls (within the same process can't truly
+      // race against the lock, but the dedupe-on-proposalId check guards
+      // against double-history-write regardless).
+      await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+      await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+      const state = loadHiveState();
+      const histRows = state.consensus.history.filter(h => h.proposalId === proposeOut.proposalId);
+      expect(histRows.length).toBe(1);
+    });
+
+    // ── Backward-compat: pending proposal not yet timed out ───────────
+    it('t12_pending_proposal_status_not_transitioned', async () => {
+      await freshFailureHive(2);
+      const proposeOut: any = await consensusTool().handler({
+        action: 'propose',
+        type: 't12-still-pending',
+        value: 'v',
+        strategy: 'raft',
+        timeoutMs: 60_000,  // far in the future
+      });
+      const statusOut: any = await consensusTool().handler({
+        action: 'status',
+        proposalId: proposeOut.proposalId,
+      });
+      expect(statusOut.statusJustTransitioned).toBe(false);
+      expect(statusOut.status).toBe('pending');
+    });
+
+    // ── Forward-only: marking already-failed worker is idempotent ─────
+    it('t12_markWorkerFailed_is_idempotent', async () => {
+      const { workerIds } = await freshFailureHive(2);
+      const state = loadHiveState();
+      const id = workerIds[0];
+      const at1 = 100;
+      markWorkerFailed(state, id, at1);
+      const meta1 = workerMetaFor(state, id);
+      expect(meta1.failedAt).toBe(at1);
+      // Second call with a different timestamp must NOT overwrite.
+      markWorkerFailed(state, id, 200);
+      const meta2 = workerMetaFor(state, id);
+      expect(meta2.failedAt).toBe(at1);  // preserved
+    });
+
+    // ── reconcileFailedFromStatusKeys propagates §6 markers ───────────
+    it('t12_reconcile_propagates_status_keys_into_workerMeta', async () => {
+      const { workerIds } = await freshFailureHive(2);
+      const state = loadHiveState();
+      // Inject §6-style status marker directly into sharedMemory.
+      state.sharedMemory[`worker-${workerIds[0]}-status`] = {
+        value: 'absent',
+        type: 'system',
+        ttlMs: null,
+        expiresAt: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      saveHiveState(state);
+
+      const reloaded = loadHiveState();
+      const mutated = reconcileFailedFromStatusKeys(reloaded);
+      expect(mutated).toBe(true);
+      const meta = workerMetaFor(reloaded, workerIds[0]);
+      expect(meta.failedAt).not.toBe(null);
     });
   });
 
