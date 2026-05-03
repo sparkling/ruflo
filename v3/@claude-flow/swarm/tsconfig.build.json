@@ -1,0 +1,97 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022"
+    ],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitAny": false,
+    "incremental": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false,
+    "paths": {
+      "@ruvector/attention-wasm": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvector_attention-wasm.d.ts"
+      ],
+      "@ruvector/attention": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvector_attention.d.ts"
+      ],
+      "@ruvector/cognitum-gate-kernel": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvector_cognitum-gate-kernel.d.ts"
+      ],
+      "@ruvector/exotic-wasm": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvector_exotic-wasm.d.ts"
+      ],
+      "@ruvector/gnn-wasm": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvector_gnn-wasm.d.ts"
+      ],
+      "@ruvector/hyperbolic-hnsw-wasm": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvector_hyperbolic-hnsw-wasm.d.ts"
+      ],
+      "@ruvector/micro-hnsw-wasm": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvector_micro-hnsw-wasm.d.ts"
+      ],
+      "@ruvnet/bmssp": [
+        "/tmp/ruflo-tsc-toolchain/stubs/@ruvnet_bmssp.d.ts"
+      ],
+      "agentic-flow/embeddings": [
+        "/tmp/ruflo-tsc-toolchain/stubs/agentic-flow_embeddings.d.ts"
+      ],
+      "bcrypt": [
+        "/tmp/ruflo-tsc-toolchain/stubs/bcrypt.d.ts"
+      ],
+      "cors": [
+        "/tmp/ruflo-tsc-toolchain/stubs/cors.d.ts"
+      ],
+      "express": [
+        "/tmp/ruflo-tsc-toolchain/stubs/express.d.ts"
+      ],
+      "fs-extra": [
+        "/tmp/ruflo-tsc-toolchain/stubs/fs-extra.d.ts"
+      ],
+      "onnxruntime-node": [
+        "/tmp/ruflo-tsc-toolchain/stubs/onnxruntime-node.d.ts"
+      ],
+      "prime-radiant-advanced-wasm": [
+        "/tmp/ruflo-tsc-toolchain/stubs/prime-radiant-advanced-wasm.d.ts"
+      ],
+      "vitest": [
+        "/tmp/ruflo-tsc-toolchain/stubs/vitest.d.ts"
+      ],
+      "zod": [
+        "/tmp/ruflo-tsc-toolchain/node_modules/zod/index.d.ts"
+      ]
+    },
+    "baseUrl": ".",
+    "typeRoots": [
+      "/tmp/ruflo-tsc-toolchain/node_modules/@types",
+      "./node_modules/@types"
+    ],
+    "downlevelIteration": true
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/__tests__/**"
+  ]
+}
