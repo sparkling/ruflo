@@ -56,9 +56,7 @@ const DEFAULT_MANIFEST_URL = 'https://raw.githubusercontent.com/ruvnet/ruflo/{br
 
 async function fetchWitness(branch: string): Promise<Witness> {
   const url = DEFAULT_MANIFEST_URL.replace('{branch}', branch);
-  // audit_1776853149979: bare fetch had no timeout — a hung GitHub CDN would
-  // pin the verify command indefinitely. 30s is generous for a sub-MB JSON.
-  const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Failed to fetch manifest from ${url}: ${res.status} ${res.statusText}`);
   }
@@ -87,13 +85,12 @@ function repoPathToInstalledPath(repoPath: string): string | null {
   if (match) {
     const pkg = match[1];
     const rest = match[2];
+    // Try several anchors: cwd/node_modules, the dirname of this script's package
     const candidates: string[] = [];
-    // 1. cwd/node_modules/<pkg>/<rest> (typical end-user install)
     candidates.push(join(process.cwd(), 'node_modules', pkg, rest));
-    // 2. Walk up from this script looking for node_modules/<pkg>/<rest>
-    //    Covers cases where verify runs from inside a nested module.
     try {
       const __filename = fileURLToPath(import.meta.url);
+      // Walk up looking for node_modules
       let dir = dirname(__filename);
       for (let i = 0; i < 10; i++) {
         candidates.push(join(dir, 'node_modules', pkg, rest));
@@ -102,22 +99,6 @@ function repoPathToInstalledPath(repoPath: string): string | null {
         dir = parent;
       }
     } catch { /* ignore */ }
-    // 3. Source-tree resolution: when verify runs against a checked-out
-    //    repo (the developer's working copy), packages live at
-    //    `<repoRoot>/v3/<pkg>/<rest>` rather than under node_modules.
-    //    Walk up looking for the literal repo-relative path so the verify
-    //    command works for maintainers running it from the repo itself.
-    try {
-      const __filename = fileURLToPath(import.meta.url);
-      let dir = dirname(__filename);
-      for (let i = 0; i < 10; i++) {
-        candidates.push(join(dir, repoPath));
-        const parent = dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-      }
-    } catch { /* ignore */ }
-    candidates.push(join(process.cwd(), repoPath));
     for (const c of candidates) {
       if (existsSync(c)) return c;
     }
