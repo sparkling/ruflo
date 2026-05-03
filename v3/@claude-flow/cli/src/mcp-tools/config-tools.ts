@@ -386,8 +386,16 @@ export const configTools: MCPTool[] = [
       const prefix = input.prefix as string;
       const includeDefaults = input.includeDefaults !== false;
 
+      // ADR-093 F12 (ADR-0162 Batch E hand-port): enumerate the full
+      // configuration union (defaults + stored values + scope-specific)
+      // so config_list matches config_export. The fork carried a
+      // `flatten()` helper to support legacy nested trees; we keep that
+      // logic and apply it before merging into the precedence-aware Map
+      // so both shapes (legacy nested + MCP flat) end up with consistent
+      // dotted keys *and* accurate source labels.
+
       // Flatten both legacy nested trees and MCP flat values into a single
-      // key-set so callers get consistent dotted keys regardless of shape.
+      // dotted-key record (preserved from fork pre-c5915a718).
       const flatten = (
         src: Record<string, unknown>,
         out: Record<string, unknown>,
@@ -400,8 +408,6 @@ export const configTools: MCPTool[] = [
             typeof v === 'object' &&
             !Array.isArray(v)
           ) {
-            // If the key itself is already dotted (flat-mcp shape) keep it
-            // as-is at this level; otherwise recurse.
             flatten(v as Record<string, unknown>, out, full);
           } else {
             out[full] = v;
@@ -409,31 +415,43 @@ export const configTools: MCPTool[] = [
         }
       };
 
-      const configs: Record<string, unknown> = {};
+      // Track the precedence so we can label sources accurately.
+      type Source = 'default' | 'stored' | `scope:${string}`;
+      const merged = new Map<string, { value: unknown; source: Source }>();
+
       if (includeDefaults) {
-        Object.assign(configs, DEFAULT_CONFIG);
+        for (const [key, value] of Object.entries(DEFAULT_CONFIG)) {
+          merged.set(key, { value, source: 'default' });
+        }
       }
-      flatten(store.values, configs);
-      if (scope !== 'default' && store.scopes[scope]) {
-        flatten(store.scopes[scope], configs);
+      const flatStored: Record<string, unknown> = {};
+      flatten(store.values, flatStored);
+      for (const [key, value] of Object.entries(flatStored)) {
+        merged.set(key, { value, source: 'stored' });
+      }
+      // Always include keys from every scope so they're discoverable; the
+      // scope filter only narrows which set is used as the *winner*.
+      for (const [scopeName, scopeValues] of Object.entries(store.scopes)) {
+        const flatScope: Record<string, unknown> = {};
+        flatten(scopeValues, flatScope);
+        for (const [key, value] of Object.entries(flatScope)) {
+          if (scope === scopeName || scope === 'default') {
+            merged.set(key, { value, source: `scope:${scopeName}` });
+          } else if (!merged.has(key)) {
+            // Surface scoped keys that aren't shadowed when listing default scope
+            merged.set(key, { value, source: `scope:${scopeName}` });
+          }
+        }
       }
 
-      // Filter by prefix
-      let entries = Object.entries(configs);
+      let entries = Array.from(merged.entries());
       if (prefix) {
         entries = entries.filter(([key]) => key.startsWith(prefix));
       }
-
-      // Sort by key
       entries.sort(([a], [b]) => a.localeCompare(b));
 
       return {
-        configs: entries.map(([key, value]) => ({
-          key,
-          value,
-          source:
-            resolveValue(store.values, key) !== undefined ? 'stored' : 'default',
-        })),
+        configs: entries.map(([key, { value, source }]) => ({ key, value, source })),
         total: entries.length,
         scope,
         shape: store.__shape ?? 'mcp',

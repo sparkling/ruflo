@@ -470,16 +470,36 @@ export const sessionTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      let sessions = listSessions();
+      // ADR-093 F6: sessions on disk come from two writers with different
+      // shapes — `session_save` writes {sessionId, name, savedAt, stats},
+      // while the auto-session writer (claude-flow daemon) writes
+      // {id, startedAt, ...}. The previous projection assumed only the
+      // first shape, so the second shape collapsed to empty objects in
+      // session_list output.
+      type AnySession = Record<string, unknown> & {
+        sessionId?: string;
+        id?: string;
+        name?: string;
+        description?: string;
+        savedAt?: string;
+        startedAt?: string;
+        stats?: { totalSize?: number };
+      };
+      const raw = listSessions() as unknown as AnySession[];
+      let sessions = raw.map((s): AnySession => ({
+        ...s,
+        sessionId: (s.sessionId as string) || (s.id as string) || 'unknown',
+        savedAt: (s.savedAt as string) || (s.startedAt as string) || '',
+      }));
 
       // Sort
       const sortBy = (input.sortBy as string) || 'date';
       if (sortBy === 'date') {
-        sessions.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+        sessions.sort((a, b) => new Date(String(b.savedAt || '')).getTime() - new Date(String(a.savedAt || '')).getTime());
       } else if (sortBy === 'name') {
-        sessions.sort((a, b) => a.name.localeCompare(b.name));
+        sessions.sort((a, b) => String(a.name || a.sessionId || '').localeCompare(String(b.name || b.sessionId || '')));
       } else if (sortBy === 'size') {
-        sessions.sort((a, b) => b.stats.totalSize - a.stats.totalSize);
+        sessions.sort((a, b) => (b.stats?.totalSize ?? 0) - (a.stats?.totalSize ?? 0));
       }
 
       // Apply limit
@@ -487,13 +507,20 @@ export const sessionTools: MCPTool[] = [
       sessions = sessions.slice(0, limit);
 
       return {
-        sessions: sessions.map(s => ({
-          sessionId: s.sessionId,
-          name: s.name,
-          description: s.description,
-          savedAt: s.savedAt,
-          stats: s.stats,
-        })),
+        sessions: sessions.map(s => {
+          // Project to a stable shape; pull through either source's metadata.
+          const projection: Record<string, unknown> = {
+            sessionId: s.sessionId,
+            name: s.name ?? s.sessionId,
+            description: s.description,
+            savedAt: s.savedAt,
+            stats: s.stats ?? null,
+          };
+          // Preserve auto-session shape fields when present
+          if ((s as Record<string, unknown>).platform) projection.platform = (s as Record<string, unknown>).platform;
+          if ((s as Record<string, unknown>).metrics) projection.metrics = (s as Record<string, unknown>).metrics;
+          return projection;
+        }),
         total: sessions.length,
         limit,
       };

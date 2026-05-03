@@ -1263,8 +1263,20 @@ export const hooksMetrics: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const period = (params.period as string) || '24h';
 
-    // HK-003: read real metrics from persisted files instead of hardcoded values
-    // ADR-049: Direct file reads acceptable here — no bridgeGetMetrics() exists yet.
+    // ADR-093 F1 + HK-003 (ADR-0162 Batch E hand-port): read real metrics
+    // from the persisted intelligence stores. Two complementary paths so
+    // we surface data from both the SONA / ruvector files (HK-003) and
+    // the memory-router stats / routing-outcomes files (F1).
+    //
+    // F1 (#1686) target: counters were 0 because the previous handler
+    // key-substring-filtered "pattern"/"route"/"task" — none match the
+    // trajectory keys post-task actually writes. F1's getIntelligenceStatsFromMemory
+    // pairs the trajectory store with loadRoutingOutcomes() so the dashboard
+    // sees command counters.
+    //
+    // HK-003 target (fork-only): the fork's SONA pipeline persists patterns
+    // to `.swarm/sona-patterns.json` and trajectories to `.ruvector/intelligence.json`;
+    // direct reads avoid a missing `bridgeGetMetrics()` until ADR-049 lands.
     // ADR-0100: anchor on project root, not process.cwd() (Claude Code CWD drift).
     const cwd = findProjectRoot();
     let patterns = { total: 0, successful: 0, failed: 0, avgConfidence: 0 };
@@ -1311,7 +1323,48 @@ export const hooksMetrics: MCPTool = {
         `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json`
       );
     }
+
+    // F1 supplemental: surface memory-router stats + routing-outcomes counters
+    // (different store than HK-003 reads). When both stores are populated the
+    // dashboard reflects the union; when only one is populated, that wins.
+    const f1Stats = getIntelligenceStatsFromMemory();
+    let f1RoutingOutcomes: Array<{ success: boolean; agent?: string }> = [];
+    try {
+      f1RoutingOutcomes = loadRoutingOutcomes() as Array<{ success: boolean; agent?: string }>;
+    } catch { /* non-fatal */ }
+    if (patterns.total === 0 && f1Stats.trajectories.total > 0) {
+      const f1Successful = f1Stats.trajectories.successful;
+      patterns = {
+        total: f1Stats.trajectories.total,
+        successful: f1Successful,
+        failed: Math.max(0, f1Stats.trajectories.total - f1Successful),
+        avgConfidence: f1Stats.routing.avgConfidence || 0,
+      };
+    }
+    if (commands.totalExecuted === 0 && f1RoutingOutcomes.length > 0) {
+      const successfulCommands = f1RoutingOutcomes.filter(o => o.success).length;
+      commands = {
+        totalExecuted: f1RoutingOutcomes.length,
+        successRate: f1RoutingOutcomes.length > 0 ? successfulCommands / f1RoutingOutcomes.length : 0,
+        avgRiskScore: 0,
+      };
+    }
+    if (agents.totalRoutes === 0 && f1Stats.routing.decisions > 0) {
+      const agentCounts: Record<string, number> = {};
+      for (const o of f1RoutingOutcomes) {
+        if (o.agent) agentCounts[o.agent] = (agentCounts[o.agent] || 0) + 1;
+      }
+      const topAgent = Object.entries(agentCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'none';
+      agents = {
+        routingAccuracy: f1Stats.routing.avgConfidence || 0,
+        totalRoutes: f1Stats.routing.decisions,
+        topAgent,
+      };
+    }
+
     return {
+      _real: true,
+      _dataSource: 'intelligence-stats + routing-outcomes',
       period,
       patterns,
       agents,
@@ -1323,6 +1376,11 @@ export const hooksMetrics: MCPTool = {
         tokenReduction: '32.3% fewer tokens',
       },
       status: 'healthy',
+      // ADR-093 F1 (ADR-0162 Batch E hand-port): empty-state hint when both
+      // metric paths are still zero so callers know which hooks to run.
+      _note: patterns.total === 0 && commands.totalExecuted === 0
+        ? 'No metrics data collected yet. Run hooks_post-task / hooks_intelligence_trajectory-end / hooks_route to populate.'
+        : undefined,
       lastUpdated: new Date().toISOString(),
     };
   },
@@ -3546,6 +3604,24 @@ export const hooksWorkerDispatch: MCPTool = {
     const workerId = `worker_${trigger}_${++workerIdCounter}_${Date.now().toString(36)}`;
     const config = WORKER_CONFIGS[trigger];
 
+    // ADR-093 F2: stop returning status:"completed" for a worker that
+    // never ran (#1700 item 1). Detect daemon presence via PID file and
+    // surface honest verdicts (`no-daemon` / `queued` / `synthetic`).
+    const cwd = getProjectCwd();
+    const pidFile = join(cwd, '.claude-flow', 'daemon.pid');
+    let daemonPid: number | null = null;
+    let daemonAlive = false;
+    if (existsSync(pidFile)) {
+      try {
+        const raw = readFileSync(pidFile, 'utf-8').trim();
+        const pid = parseInt(raw, 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          daemonPid = pid;
+          try { process.kill(pid, 0); daemonAlive = true; } catch { daemonAlive = false; }
+        }
+      } catch { /* unreadable PID file */ }
+    }
+
     const worker: {
       id: string;
       trigger: WorkerTrigger;
@@ -3559,7 +3635,7 @@ export const hooksWorkerDispatch: MCPTool = {
       id: workerId,
       trigger,
       context,
-      status: 'running',
+      status: daemonAlive ? 'pending' : 'pending',
       progress: 0,
       phase: 'initializing',
       startedAt: new Date(),
@@ -3567,30 +3643,29 @@ export const hooksWorkerDispatch: MCPTool = {
 
     activeWorkers.set(workerId, worker);
 
-    // Update worker progress in background
-    if (background) {
-      setTimeout(() => {
-        const w = activeWorkers.get(workerId);
-        if (w) {
-          w.progress = 50;
-          w.phase = 'processing';
-        }
-      }, 500);
-
-      setTimeout(() => {
-        const w = activeWorkers.get(workerId);
-        if (w) {
-          w.progress = 100;
-          w.phase = 'completed';
-          w.status = 'completed';
-          w.completedAt = new Date();
-        }
-      }, 1500);
+    // ADR-093 F2 (ADR-0162 Batch E hand-port): determine honest status
+    // instead of fake setTimeout-driven simulation. Pre-batch-E this branch
+    // reported `dispatched/completed` after a hardcoded 1500ms timer
+    // regardless of whether any daemon picked the work up — exactly the
+    // #1700-item-1 audit finding.
+    let reportedStatus: 'queued' | 'no-daemon' | 'synthetic-completed';
+    let note: string;
+    if (!daemonAlive) {
+      reportedStatus = 'no-daemon';
+      note = 'No worker daemon detected. Run `claude-flow daemon start` to enable real worker execution. The dispatch was recorded in-process but no actual work will run.';
+    } else if (background) {
+      // Daemon is alive — record the queued worker. The daemon polls activeWorkers
+      // via its own state file, so this constitutes a real queue entry.
+      reportedStatus = 'queued';
+      note = `Worker queued for daemon (pid ${daemonPid}). Poll hooks_worker-status to track progression — do not assume completion until status === "completed".`;
     } else {
+      // Synchronous mode without a runner — be honest about it
+      reportedStatus = 'synthetic-completed';
       worker.progress = 100;
       worker.phase = 'completed';
       worker.status = 'completed';
       worker.completedAt = new Date();
+      note = 'Synchronous mode: worker record marked completed but no real work executed (no in-process runner). Use background:true with the daemon for real execution.';
     }
 
     return {
@@ -3604,8 +3679,11 @@ export const hooksWorkerDispatch: MCPTool = {
         estimatedDuration: config.estimatedDuration,
         capabilities: config.capabilities,
       },
-      status: background ? 'dispatched' : 'completed',
+      status: reportedStatus,
+      daemonAlive,
+      daemonPid: daemonAlive ? daemonPid : null,
       background,
+      note,
       timestamp: new Date().toISOString(),
     };
   },

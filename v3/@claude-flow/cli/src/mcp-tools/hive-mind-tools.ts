@@ -36,6 +36,15 @@ const STORAGE_DIR = '.claude-flow';
 const HIVE_DIR = 'hive-mind';
 const HIVE_FILE = 'state.json';
 
+// ADR-093 F3 (ADR-0162 Batch E hand-port): persist the consensus
+// *strategy* alongside the existing `consensus` field (which holds
+// protocol pending/history). #1700 item 4 reported that init params for
+// consensus didn't round-trip — they didn't, because the schema lacked
+// the parameter and the state had nowhere to keep it. consensusStrategy
+// fixes both. Type added to the fork's wider HiveState (workerMeta,
+// HiveConfig, etc.) instead of the upstream-narrow shape.
+export type ConsensusStrategyName = 'raft' | 'byzantine' | 'gossip' | 'crdt' | 'quorum';
+
 // ── ADR-0122 (T4): typed memory entries with TTL ──────────────────────
 //
 // USERGUIDE block "Collective Memory Types:" advertises 8 distinct memory
@@ -202,6 +211,9 @@ export interface HiveState {
   // process boundaries instead of only being echoed in the init response.
   config?: HiveConfig;
   queen?: HiveQueenRecord;
+  // ADR-093 F3 (ADR-0162 Batch E hand-port): persisted consensus strategy
+  // — round-trips through hive-mind_init / state.json / hive-mind_status.
+  consensusStrategy?: ConsensusStrategyName;
   workers: string[];
   // ADR-0131 (T12): per-worker failure metadata. Keyed by worker ID.
   // Both fields are independently nullable:
@@ -1486,13 +1498,15 @@ export const hiveMindTools: MCPTool[] = [
         // queen record so hive-mind_status can surface it and the
         // session-archive shape can capture/restore it.
         queenType: { type: 'string', enum: ['strategic', 'tactical', 'adaptive'], description: 'Queen leadership style' },
-        // ADR-0140 Piece 3c: declare the substrate-config inputs the CLI
-        // already passes through `callMCPTool('hive-mind_init', ...)` so the
-        // schema matches reality and the values get persisted into
-        // `state.config` rather than only echoed in the response.
+        // ADR-093 F3 (ADR-0162 Batch E hand-port) + ADR-0140 Piece 3c: the
+        // consensus property previously had no enum constraint — F3 narrows
+        // it to {raft, byzantine, gossip, crdt, quorum} so callers can no
+        // longer pass arbitrary strings, while still letting the CLI flag
+        // round-trip through `state.config`.
         consensus: {
           type: 'string',
-          description: 'Consensus algorithm (byzantine|raft|gossip|crdt|majority|weighted|quorum)',
+          enum: ['raft', 'byzantine', 'gossip', 'crdt', 'quorum'],
+          description: 'Consensus strategy. Default: raft (anti-drift). Use byzantine for f<n/3 fault tolerance.',
         },
         maxAgents: { type: 'number', description: 'Maximum number of worker agents' },
         persist: { type: 'boolean', description: 'Persist hive state across processes' },
@@ -1539,18 +1553,23 @@ export const hiveMindTools: MCPTool[] = [
           ...(queenType !== undefined ? { queenType } : {}),
         };
 
-        // ADR-0140 Piece 3c: persist substrate config to state.json so the
-        // CLI flags `-c/--consensus`, `-m/--max-agents`, `--memory-backend`,
-        // `--persist` survive across process boundaries and re-init calls.
-        // Mirrors the shape returned in the response below.
+        // ADR-0140 Piece 3c + ADR-093 F3 (ADR-0162 Batch E hand-port):
+        // persist substrate config to state.json so CLI flags
+        // `-c/--consensus`, `-m/--max-agents`, `--memory-backend`,
+        // `--persist` survive across process boundaries. Default for
+        // consensus is now 'raft' (anti-drift posture) per F3, was
+        // 'byzantine' in fork's pre-batch-E code. We also write
+        // `state.consensusStrategy` so hive-mind_status surfaces the
+        // persisted value (#1700 item 4).
         const persistedConfig: HiveConfig = {
           topology: state.topology,
-          consensus: (input.consensus as string) || 'byzantine',
+          consensus: (input.consensus as string) || 'raft',
           maxAgents: (input.maxAgents as number) || 15,
           persist: input.persist !== false,
           memoryBackend: (input.memoryBackend as string) || 'hybrid',
           ...(queenType !== undefined ? { queenType } : {}),
         };
+        state.consensusStrategy = persistedConfig.consensus as ConsensusStrategyName;
         state.config = persistedConfig;
 
         saveHiveState(state);
@@ -1647,7 +1666,8 @@ export const hiveMindTools: MCPTool[] = [
         hiveId: `hive-${state.createdAt ? new Date(state.createdAt).getTime() : Date.now()}`,
         status: state.initialized ? 'active' : 'offline',
         topology: state.topology,
-        consensus: 'byzantine', // Default consensus type
+        // ADR-093 F3: surface the persisted strategy instead of a hardcoded "byzantine".
+        consensus: state.consensusStrategy ?? 'byzantine',
         queen: state.queen ? {
           id: state.queen.agentId,
           agentId: state.queen.agentId,

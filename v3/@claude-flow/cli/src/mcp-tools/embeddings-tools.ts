@@ -876,6 +876,24 @@ export const embeddingsTools: MCPTool[] = [
         };
       }
 
+      // ADR-093 F5: distinguish "@ruvector/core installed" from "wired into
+      // the embedding pipeline". Previously this collapsed both into a
+      // single `ruvector: boolean` field, which gave callers no way to
+      // tell whether re-running embeddings_init would help (#1698 partial
+      // regression on the MCP boundary).
+      let ruvectorAvailable = false;
+      let ruvectorVersion: string | undefined;
+      try {
+        const mod = await import('@ruvector/core');
+        ruvectorAvailable = !!(mod as Record<string, unknown>);
+        try {
+          // Best-effort: many packages expose a `version` constant
+          ruvectorVersion = (mod as { version?: string }).version;
+        } catch { /* ignore */ }
+      } catch { /* not installed */ }
+
+      const ruvectorEnabled = config.neural.ruvector?.enabled ?? false;
+
       return {
         success: true,
         initialized: true,
@@ -886,7 +904,16 @@ export const embeddingsTools: MCPTool[] = [
           hyperbolic: config.hyperbolic,
           neural: {
             enabled: config.neural.enabled,
-            ruvector: config.neural.ruvector?.enabled ?? false,
+            // Backwards-compatible: keep the boolean view (truthy when wired).
+            ruvector: ruvectorEnabled,
+            // New shape — additive, non-breaking. Callers that need to
+            // distinguish "package is installed" from "feature wired in"
+            // read these instead of guessing from a single bool.
+            ruvectorStatus: {
+              available: ruvectorAvailable,
+              enabled: ruvectorEnabled,
+              version: ruvectorVersion,
+            },
           },
         },
         paths: {
