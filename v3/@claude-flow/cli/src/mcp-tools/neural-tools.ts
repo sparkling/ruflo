@@ -12,7 +12,7 @@
  * Note: For production neural features, use @claude-flow/neural module
  */
 
-import type { MCPTool } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
@@ -92,7 +92,8 @@ interface NeuralStore {
 }
 
 function getNeuralDir(): string {
-  return join(process.cwd(), STORAGE_DIR, NEURAL_DIR);
+  // ADR-0100: anchor on project root, not process.cwd() (Claude Code CWD drift).
+  return join(findProjectRoot(), STORAGE_DIR, NEURAL_DIR);
 }
 
 function getNeuralPath(): string {

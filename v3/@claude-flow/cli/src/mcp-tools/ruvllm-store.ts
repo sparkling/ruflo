@@ -24,6 +24,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { findProjectRoot } from './types.js';
 
 // ── Storage layout ──────────────────────────────────────────────────
 
@@ -34,7 +35,8 @@ const MICROLORA_FILE = 'microlora-store.json';
 const STORE_VERSION = '1';
 
 function getStoreDir(): string {
-  return join(process.cwd(), STORAGE_SUBDIR);
+  // ADR-0100: anchor on project root, not process.cwd() (Claude Code CWD drift).
+  return join(findProjectRoot(), STORAGE_SUBDIR);
 }
 
 function ensureStoreDir(): void {

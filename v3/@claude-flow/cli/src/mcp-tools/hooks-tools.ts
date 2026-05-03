@@ -5,7 +5,7 @@
 
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type { MCPTool } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
@@ -1851,7 +1851,9 @@ export const hooksSessionStart: MCPTool = {
     if (shouldStartDaemon) {
       try {
         // HK-005: PID-file guard — one daemon per project across processes
-        const _pidDir = join(process.cwd(), '.claude-flow');
+        // ADR-0100: anchor on project root, not process.cwd() (Claude Code CWD drift).
+        const _projectRoot = findProjectRoot();
+        const _pidDir = join(_projectRoot, '.claude-flow');
         const _pidPath = join(_pidDir, 'daemon.pid');
         let _skipDaemon = false;
         try {
@@ -1864,7 +1866,7 @@ export const hooksSessionStart: MCPTool = {
         if (!_skipDaemon) {
           // Dynamic import to avoid circular dependencies
           const { startDaemon } = await import('../services/worker-daemon.js');
-          const daemon = await startDaemon(process.cwd());
+          const daemon = await startDaemon(_projectRoot);
           const status = daemon.getStatus();
           // HK-005: Write PID so other processes detect this daemon
           try {
