@@ -1,8 +1,6 @@
 ---
 name: hive-mind-sessions
 description: Manage hive-mind sessions: list, checkpoint, export, import
-implementation-status: missing
-gap-tracker: [ADR-0118-T6]
 ---
 
 # hive-mind-sessions

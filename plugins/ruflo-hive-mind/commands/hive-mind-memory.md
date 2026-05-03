@@ -1,8 +1,6 @@
 ---
 name: hive-mind-memory
 description: Query and manage collective hive memory across 8 memory types with TTL
-implementation-status: partial
-gap-tracker: [ADR-0118-T4, ADR-0118-T5]
 ---
 
 # hive-mind-memory
@@ -26,5 +24,3 @@ npx @sparkleideas/cli@latest hive-mind hive-mind-memory [options]
 | `metric` | 1h | Performance metrics |
 | `consensus` | permanent | Decisions reached via voting |
 | `system` | permanent | Hive infrastructure state |
-
-> **Implementation status**: `partial` — see ADR-0118 T4 (memory types + TTLs) and T5 (LRU + SQLite WAL backend). The current MCP backend exposes a flat key/value dict with no type discriminator or TTL.
