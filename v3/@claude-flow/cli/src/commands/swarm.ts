@@ -7,20 +7,20 @@ import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { select, confirm, multiSelect } from '../prompt.js';
 import { callMCPTool, MCPClientError } from '../mcp-client.js';
+import { findProjectRoot } from '../mcp-tools/types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
 // ADR-0069: config-chain swarmDir
+// ADR-0100: anchor on findProjectRoot() so subdirectory invocations resolve to
+// the project root's `.claude-flow/config.json`. Previously walked up from
+// process.cwd() — which silently sprawled `.swarm/` at the cwd subdir on miss.
 function getConfigSwarmDir(): string {
   try {
-    let dir = process.cwd();
-    while (dir !== path.dirname(dir)) {
-      const cfgPath = path.join(dir, '.claude-flow', 'config.json');
-      if (fs.existsSync(cfgPath)) {
-        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-        return cfg?.memory?.swarmDir ?? '.swarm';
-      }
-      dir = path.dirname(dir);
+    const cfgPath = path.join(findProjectRoot(), '.claude-flow', 'config.json');
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+      return cfg?.memory?.swarmDir ?? '.swarm';
     }
   } catch { /* fall through */ }
   return '.swarm';
@@ -28,11 +28,15 @@ function getConfigSwarmDir(): string {
 
 // Get dynamic swarm status from memory/session files
 function getSwarmStatus(swarmId?: string) {
-  const swarmDir = path.join(process.cwd(), getConfigSwarmDir());
-  const sessionDir = path.join(process.cwd(), '.claude', 'sessions');
+  // ADR-0100: anchor artifact paths on findProjectRoot(), NOT process.cwd().
+  // When invoked from a project subdirectory, cwd-anchoring duplicated `.swarm/`
+  // at the subdir alongside the canonical one at the project root.
+  const root = findProjectRoot();
+  const swarmDir = path.join(root, getConfigSwarmDir());
+  const sessionDir = path.join(root, '.claude', 'sessions');
   const memoryPaths = [
-    path.join(process.cwd(), getConfigSwarmDir(), 'memory.db'),
-    path.join(process.cwd(), '.claude', 'memory.db'),
+    path.join(root, getConfigSwarmDir(), 'memory.db'),
+    path.join(root, '.claude', 'memory.db'),
   ];
 
   // Check for active swarm state file
@@ -392,7 +396,9 @@ const initCommand: Command = {
 
       // Save swarm state locally for status command to read
       // ADR-0069: config-chain swarmDir
-      const swarmDir = path.join(process.cwd(), getConfigSwarmDir());
+      // ADR-0100: findProjectRoot() so the state file lands at the project
+      // root, not whatever subdir the user happened to invoke from.
+      const swarmDir = path.join(findProjectRoot(), getConfigSwarmDir());
       try {
         if (!fs.existsSync(swarmDir)) {
           fs.mkdirSync(swarmDir, { recursive: true });
@@ -548,7 +554,8 @@ const startCommand: Command = {
 
     // Persist swarm state to disk so `swarm status` can read it
     // ADR-0069: config-chain swarmDir
-    const swarmDir = path.join(process.cwd(), getConfigSwarmDir());
+    // ADR-0100: anchor on findProjectRoot() — see init handler comment.
+    const swarmDir = path.join(findProjectRoot(), getConfigSwarmDir());
     if (!fs.existsSync(swarmDir)) fs.mkdirSync(swarmDir, { recursive: true });
 
     const executionState = {
@@ -715,7 +722,9 @@ const stopCommand: Command = {
 
     // Update persisted swarm state if it exists (#1423)
     // ADR-0069: config-chain swarmDir
-    const swarmStateFile = path.join(process.cwd(), getConfigSwarmDir(), 'state.json');
+    // ADR-0100: anchor on findProjectRoot() — `swarm stop` from a subdir would
+    // otherwise miss the state file written by `swarm init` at the project root.
+    const swarmStateFile = path.join(findProjectRoot(), getConfigSwarmDir(), 'state.json');
     if (fs.existsSync(swarmStateFile)) {
       try {
         const state = JSON.parse(fs.readFileSync(swarmStateFile, 'utf-8'));
