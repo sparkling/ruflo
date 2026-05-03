@@ -53,7 +53,7 @@ COMMIT_MSG=$(git log -1 --pretty=%B)
 echo "📊 Recording commit metrics..."
 
 # Notify ruflo of commit
-npx ruflo@latest hooks notify \\
+npx @sparkleideas/cli@latest hooks notify \\
   --message "Commit: $COMMIT_MSG" \\
   --level info \\
   --metadata '{"hash": "'$COMMIT_HASH'"}' 2>/dev/null || true

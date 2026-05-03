@@ -1425,7 +1425,7 @@ async function writeInitialMetrics(
         patternsLearned: 0,
         sessionsCompleted: 0
       },
-      _note: 'Metrics will update as you use Ruflo. Run: npx ruflo@latest daemon start'
+      _note: 'Metrics will update as you use Ruflo. Run: npx @sparkleideas/cli@latest daemon start'
     };
     fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2), 'utf-8');
     result.created.files.push('.claude-flow/metrics/v3-progress.json');
@@ -1863,7 +1863,7 @@ npx @sparkleideas/cli@latest hive-mind consensus --propose "task"
 ### MCP Server Setup
 \`\`\`bash
 # Add Ruflo MCP
-claude mcp add ruflo -- npx -y ruflo@latest
+claude mcp add ruflo -- npx -y @sparkleideas/cli@latest
 
 # Optional servers
 claude mcp add ruv-swarm -- npx -y ruv-swarm mcp start
@@ -1877,24 +1877,24 @@ claude mcp add flow-nexus -- npx -y flow-nexus@latest mcp start
 ### Essential Commands
 \`\`\`bash
 # Setup
-npx ruflo@latest init --wizard
-npx ruflo@latest daemon start
-npx ruflo@latest doctor --fix
+npx @sparkleideas/cli@latest init --wizard
+npx @sparkleideas/cli@latest daemon start
+npx @sparkleideas/cli@latest doctor --fix
 
 # Swarm
-npx ruflo@latest swarm init --topology hierarchical --max-agents 8
-npx ruflo@latest swarm status
+npx @sparkleideas/cli@latest swarm init --topology hierarchical --max-agents 8
+npx @sparkleideas/cli@latest swarm status
 
 # Agents
-npx ruflo@latest agent spawn -t coder
-npx ruflo@latest agent list
+npx @sparkleideas/cli@latest agent spawn -t coder
+npx @sparkleideas/cli@latest agent list
 
 # Memory
-npx ruflo@latest memory search --query "patterns"
+npx @sparkleideas/cli@latest memory search --query "patterns"
 
 # Hooks
-npx ruflo@latest hooks pre-task --description "task"
-npx ruflo@latest hooks worker dispatch --trigger optimize
+npx @sparkleideas/cli@latest hooks pre-task --description "task"
+npx @sparkleideas/cli@latest hooks worker dispatch --trigger optimize
 \`\`\`
 
 ### File Structure

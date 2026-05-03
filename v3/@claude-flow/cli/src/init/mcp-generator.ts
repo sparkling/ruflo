@@ -47,7 +47,7 @@ function createRufloEntry(env: Record<string, string>, additionalProps: Record<s
       ...additionalProps,
     };
   }
-  return createMCPServerEntry(['ruflo@latest', 'mcp', 'start'], env, additionalProps);
+  return createMCPServerEntry(['@sparkleideas/cli@latest', 'mcp', 'start'], env, additionalProps);
 }
 
 /**
@@ -143,7 +143,7 @@ export function generateMCPCommands(options: InitOptions): string[] {
 
   if (isWindows()) {
     if (config.claudeFlow) {
-      commands.push('claude mcp add claude-flow -- cmd /c npx -y ruflo@latest mcp start');
+      commands.push('claude mcp add claude-flow -- cmd /c npx -y @sparkleideas/cli@latest mcp start');
     }
     if (config.ruvSwarm) {
       commands.push('claude mcp add ruv-swarm -- cmd /c npx -y ruv-swarm mcp start');
@@ -153,7 +153,7 @@ export function generateMCPCommands(options: InitOptions): string[] {
     }
   } else {
     if (config.claudeFlow) {
-      commands.push("claude mcp add claude-flow -- npx -y ruflo@latest mcp start");
+      commands.push("claude mcp add claude-flow -- npx -y @sparkleideas/cli@latest mcp start");
     }
     if (config.ruvSwarm) {
       commands.push("claude mcp add ruv-swarm -- npx -y ruv-swarm mcp start");

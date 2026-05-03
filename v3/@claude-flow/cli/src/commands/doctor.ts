@@ -280,7 +280,7 @@ async function checkMcpServers(): Promise<HealthCheck> {
         if (hasClaudeFlow) {
           return { name: 'MCP Servers', status: 'pass', message: `${count} servers (ruflo configured)` };
         } else {
-          return { name: 'MCP Servers', status: 'warn', message: `${count} servers (ruflo not found)`, fix: 'claude mcp add ruflo -- npx -y ruflo@latest mcp start' };
+          return { name: 'MCP Servers', status: 'warn', message: `${count} servers (ruflo not found)`, fix: 'claude mcp add ruflo -- npx -y @sparkleideas/cli@latest mcp start' };
         }
       } catch {
         // continue to next path
