@@ -10,7 +10,13 @@ import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { select, confirm, input } from '../prompt.js';
 import { callMCPTool, MCPClientError } from '../mcp-client.js';
-import { QUEEN_TYPES, validateQueenType, type QueenType } from '../mcp-tools/validate-input.js';
+import {
+  QUEEN_TYPES,
+  validateQueenType,
+  validateWorkerType,
+  WORKER_TYPES,
+  type QueenType,
+} from '../mcp-tools/validate-input.js';
 import { spawn as childSpawn, execSync } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -163,6 +169,197 @@ interface HiveMindPromptContext {
 }
 
 /**
+ * The 8 USERGUIDE-advertised worker types. Source of truth: USERGUIDE
+ * `**Worker Specializations (8 types):**` block. Validated as a
+ * subset of the `WORKER_TYPES` enum in `validate-input.ts` (which also
+ * carries non-USERGUIDE types — `specialist`, `coordinator`, `monitor`).
+ *
+ * Per ADR-0126 §Specification, `generateHiveMindPrompt` emits a per-type
+ * prose block for any of these 8 types present in the worker pool; types
+ * absent from the pool emit no block. Non-USERGUIDE types appearing in
+ * the pool are tolerated by the count summary but NOT given a prose
+ * block — see `renderWorkerTypeProseBlock` below for the throw.
+ */
+const USERGUIDE_WORKER_TYPES = [
+  'researcher', 'coder', 'analyst', 'architect',
+  'tester', 'reviewer', 'optimizer', 'documenter',
+] as const;
+type UserguideWorkerType = (typeof USERGUIDE_WORKER_TYPES)[number];
+
+/**
+ * ADR-0125 §Specification "Cross-ADR sentinel contract" — the queen-type
+ * sentinel substring each per-worker-type prose block embeds in its
+ * "Working with the active queen" section (per ADR-0126 §Specification
+ * "Queen-prompt / worker cross-reference contract"). Renaming any of
+ * these is a breaking change for ADR-0126's cross-reference test AND
+ * ADR-0125's sentinel test — coordinated edits required.
+ */
+const QUEEN_TYPE_SENTINELS: Record<QueenType, string> = {
+  strategic: 'written plan',
+  tactical: 'spawned workers within',
+  adaptive: 'named your chosen mode',
+};
+
+/**
+ * ADR-0126 §Specification — per-worker-type prose block. Each block
+ * carries three structural-contract sections in fixed order:
+ *
+ *   (a) `## Worker role: <type>` plus a one-sentence role description
+ *   (b) `### Tools you should reach for first` plus a role-specific
+ *       MCP-tool bullet list
+ *   (c) `### Working with the active queen` plus the queen-type sentinel
+ *       substring sourced from ADR-0125
+ *
+ * Section headings ARE the sentinels the structural-contract test asserts on
+ * (per ADR-0126 §Specification). Drift detection lives in tests, not the
+ * type system — adding/removing a section here without updating tests is
+ * a contract violation.
+ *
+ * Per ADR-0126 §Pseudocode and `feedback-no-fallbacks.md`: an unknown
+ * `AgentType` value (one of the non-USERGUIDE members `coordinator`,
+ * `monitor`, `specialist`, `queen`, `worker`) reaching this function
+ * throws — no silent fallback to a generic block. The aggregator filters
+ * non-USERGUIDE types BEFORE this function sees them; the throw is a
+ * defence-in-depth backstop for programmatic callers.
+ */
+function renderWorkerTypeProseBlock(
+  type: string,
+  count: number,
+  queenType: QueenType,
+): string {
+  const queenSentinel = QUEEN_TYPE_SENTINELS[queenType];
+  switch (type) {
+    case 'researcher':
+      return `## Worker role: researcher
+The researcher worker(s) (${count} in pool) gather context, surface prior art, and recall similar past hives — they are the swarm's eyes on what already exists before any coding starts.
+
+### Tools you should reach for first
+• mcp__ruflo__memory_search        — recall similar past hives and decisions
+• mcp__ruflo__embeddings_search    — semantic lookup across the corpus
+• mcp__ruflo__memory_retrieve      — fetch a known memory entry by key
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — direct researchers to surface their findings into the queen's preferred coordination surface (memory store for Strategic; broadcast/status for Tactical; mode-tagged memory for Adaptive).
+`;
+    case 'coder':
+      return `## Worker role: coder
+The coder worker(s) (${count} in pool) implement the planned changes — they edit files, run test commands, and surface diffs back to the queen.
+
+### Tools you should reach for first
+• Read / Write / Edit / Bash      — direct file edits and test runs
+• mcp__ruflo__task_assign          — pull the next coding subtask from the queue
+• mcp__ruflo__hive-mind_memory     — surface intermediate results to the swarm
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — coders should consult the queen's plan-tree (Strategic), respond to dispatch directly (Tactical), or read the named-mode memory key first (Adaptive) before starting an edit.
+`;
+    case 'analyst':
+      return `## Worker role: analyst
+The analyst worker(s) (${count} in pool) profile, measure, and surface bottlenecks — they translate raw observations into the metrics the queen weighs.
+
+### Tools you should reach for first
+• mcp__ruflo__performance_metrics    — capture current performance baseline
+• mcp__ruflo__performance_bottleneck — identify slow paths
+• mcp__ruflo__performance_report     — surface findings to the queen
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — analysts should write findings into the queen's working memory shape (rationale block for Strategic; flight-cycle status for Tactical; mode-tagged for Adaptive).
+`;
+    case 'architect':
+      return `## Worker role: architect
+The architect worker(s) (${count} in pool) shape the structural decisions — they author ADRs, weigh diff-level risk, and define the boundaries the coder workers operate within.
+
+### Tools you should reach for first
+• mcp__ruflo__analyze_diff          — assess proposed changes against the codebase
+• mcp__ruflo__analyze_diff-risk     — weigh structural risk before merge
+• Write (ADR file)                  — author the design rationale
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — architects should produce ADRs that the queen can cite (Strategic plan trees), gate spawn fan-out (Tactical), or annotate as the chosen-mode rationale (Adaptive).
+`;
+    case 'tester':
+      return `## Worker role: tester
+The tester worker(s) (${count} in pool) execute the acceptance harness, write failing-first tests, and verify changes against the test pyramid.
+
+### Tools you should reach for first
+• Bash (test runners)               — invoke the acceptance harness
+• mcp__ruflo__task_status           — track which subtasks need verification
+• mcp__ruflo__hive-mind_memory      — surface pass/fail evidence to the swarm
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — testers should anchor on the queen's plan-tree subtasks (Strategic), confirm dispatch outcomes per cycle (Tactical), or run the consensus-gated checks before mode-flips (Adaptive).
+`;
+    case 'reviewer':
+      return `## Worker role: reviewer
+The reviewer worker(s) (${count} in pool) audit changes for risk, surface diff-level concerns, and recommend reviewers — they are the gate between coder output and merge.
+
+### Tools you should reach for first
+• mcp__ruflo__analyze_diff-risk      — risk-score the proposed changes
+• mcp__ruflo__analyze_diff-reviewers — recommend human reviewers per file
+• mcp__ruflo__analyze_file-risk      — per-file risk score
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — reviewers should hand findings back through the queen's chosen surface (rationale store for Strategic; broadcast for Tactical; consensus-tagged for Adaptive).
+`;
+    case 'optimizer':
+      return `## Worker role: optimizer
+The optimizer worker(s) (${count} in pool) tune neural and runtime hot paths — they trade off correctness against speed within the queen-defined constraints.
+
+### Tools you should reach for first
+• mcp__ruflo__performance_bottleneck — locate the bottleneck to act on
+• mcp__ruflo__neural_optimize        — apply neural-side tuning
+• mcp__ruflo__performance_optimize   — apply runtime-side tuning
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — optimizers should respect the queen's plan-tree budget (Strategic), batch their pings into queen cycles (Tactical), or mode-tag the optimization decision (Adaptive).
+`;
+    case 'documenter':
+      return `## Worker role: documenter
+The documenter worker(s) (${count} in pool) keep the user-facing surfaces honest — they update USERGUIDE, refresh ADR cross-references, and align README copy with shipped behaviour.
+
+### Tools you should reach for first
+• Edit / Write (markdown)             — author USERGUIDE / README updates
+• Use the markdown-editor skill       — format-aware markdown edits
+• mcp__ruflo__memory_search           — recall the canonical claim phrasing
+
+### Working with the active queen
+The active queen mode names the sentinel "${queenSentinel}" — documenters should land prose that matches the queen's framing (plan-first for Strategic; dispatch-first for Tactical; mode-named for Adaptive).
+`;
+    default:
+      // Per `feedback-no-fallbacks.md` — never silently emit a generic
+      // block for a non-USERGUIDE type. The aggregator's filter is the
+      // first line of defence; this throw is the defence-in-depth backstop.
+      throw new Error(`Unknown worker-type for prompt: ${type}`);
+  }
+}
+
+/**
+ * ADR-0126 §Pseudocode — aggregate per-type prose blocks for the worker
+ * pool. For each USERGUIDE worker type present in `workerGroups`, emit one
+ * prose block; non-USERGUIDE types (`coordinator`, `monitor`, `specialist`,
+ * `queen`, `worker`) are tolerated in the pool (the count summary still
+ * surfaces them) but do NOT receive a prose block — they are not
+ * addressed in the USERGUIDE catalog and so have no role contract for the
+ * queen-LLM to cite.
+ */
+function renderWorkerTypeBlocks(
+  workerGroups: WorkerGroups,
+  queenType: QueenType,
+): string {
+  const presentTypes = Object.keys(workerGroups).filter(
+    (t): t is UserguideWorkerType =>
+      (USERGUIDE_WORKER_TYPES as readonly string[]).includes(t),
+  );
+  if (presentTypes.length === 0) {
+    return '';
+  }
+  const blocks = presentTypes.map(type =>
+    renderWorkerTypeProseBlock(type, workerGroups[type].length, queenType),
+  );
+  return `\n🐝 WORKER ROLES IN THIS HIVE (per-type playbook):\n\n${blocks.join('\n')}\n`;
+}
+
+/**
  * Shared header rendered by all three queen-type prompts. Contains the
  * config block, worker distribution, and the MCP tool catalog. The per-type
  * mission framing, preferred-tool list, and self-check criteria are appended
@@ -172,6 +369,13 @@ interface HiveMindPromptContext {
  * shape (per-type sections) varies between the three renderers. The shared
  * header preserves layering: substrate (MCP catalog) and protocol (4-phase
  * coordination) are constant; only the queen's framing differs.
+ *
+ * ADR-0126 §Decision — between the count-only `WORKER DISTRIBUTION:` line
+ * and the MCP tool catalog, the header now interpolates per-worker-type
+ * prose blocks for any USERGUIDE type present in the pool. The count
+ * summary remains (the queen-LLM still needs its census per
+ * ADR-0126 §Refinement); the prose blocks anchor what each present type
+ * does and how it cooperates with the active queen mode.
  */
 function renderHiveMindHeader(ctx: HiveMindPromptContext, queenType: QueenType): string {
   const workerTypes = Object.keys(ctx.workerGroups);
@@ -192,7 +396,7 @@ ${renderTopologyProtocolBlock(ctx.topology)}
 
 WORKER DISTRIBUTION:
 ${workerTypes.map(type => `• ${type}: ${ctx.workerGroups[type].length} agents`).join('\n')}
-
+${renderWorkerTypeBlocks(ctx.workerGroups, queenType)}
 🔧 AVAILABLE MCP TOOLS FOR HIVE MIND COORDINATION:
 
 1️⃣ **COLLECTIVE INTELLIGENCE**
@@ -851,6 +1055,22 @@ const spawnCommand: Command = {
       type: 'string',
       default: 'worker'
     },
+    // ADR-0108 (T13): V2-parity comma-separated worker types for mixed-type
+    // spawn. Distribution is round-robin (`types[i % types.length]`) across
+    // `--n`. Mutually exclusive with `--type` (when `--type` is explicitly
+    // provided): the action surfaces a fail-loud error per
+    // `feedback-no-fallbacks.md` rather than silently picking one.
+    //
+    // Per `feedback-no-value-judgements-on-features.md`, the validation set
+    // is the existing `WORKER_TYPES` constant in validate-input.ts (11 types
+    // — 8 USERGUIDE domain values + 3 role labels). ADR-0108 §R5 nominally
+    // restricts to 8 domain values; widening to the full validator surface
+    // matches the "wire all features" memory rule.
+    {
+      name: 'worker-types',
+      description: `Comma-separated worker types for mixed-type spawn (one of: ${WORKER_TYPES.join(', ')}). Mutually exclusive with --type. Round-robin distribution: types[i % types.length].`,
+      type: 'string'
+    },
     {
       name: 'prefix',
       short: 'p',
@@ -912,6 +1132,7 @@ const spawnCommand: Command = {
     { command: 'claude-flow hive-mind spawn -n 5', description: 'Spawn 5 workers' },
     { command: 'claude-flow hive-mind spawn -n 3 -r specialist', description: 'Spawn 3 specialists' },
     { command: 'claude-flow hive-mind spawn -t coder -p my-coder', description: 'Spawn coder with custom prefix' },
+    { command: 'claude-flow hive-mind spawn -n 6 --worker-types researcher,coder,tester', description: 'V2-parity mixed spawn (round-robin: 2 researcher + 2 coder + 2 tester)' },
     { command: 'claude-flow hive-mind spawn --claude -o "Build a REST API"', description: 'Launch Claude Code with objective' },
     { command: 'claude-flow hive-mind spawn -n 5 --claude -o "Research AI patterns"', description: 'Spawn workers and launch Claude Code' },
     { command: 'claude-flow hive-mind spawn --claude -o "Optimize" --queen-type adaptive', description: 'Adaptive queen (mode-switching by complexity)' }
@@ -943,6 +1164,59 @@ const spawnCommand: Command = {
       }
     }
 
+    // ADR-0108 (T13): parse `--worker-types` (comma-separated mixed-type spawn).
+    // Per `feedback-no-fallbacks.md`, every value is validated against the
+    // existing `validateWorkerType` enum (one of WORKER_TYPES). Unknown values
+    // produce a user-visible error before any spawn happens.
+    //
+    // Mutex rule: `--type` and `--worker-types` are mutually exclusive when
+    // `--type` is set to a non-default value. The CLI parser populates
+    // `--type`'s default 'worker' even when the user did not pass it, so the
+    // mutex check fires only when the user provides a non-default `--type`.
+    // Per ADR-0108 §Backward compatibility, `--type researcher -n 5` continues
+    // to work as the degenerate one-element round-robin case.
+    const rawWorkerTypes = ctx.flags.workerTypes ?? ctx.flags['worker-types'];
+    let agentTypes: string[] | undefined;
+    if (rawWorkerTypes !== undefined && rawWorkerTypes !== null && rawWorkerTypes !== '') {
+      if (typeof rawWorkerTypes !== 'string') {
+        throw new Error(
+          `--worker-types must be a comma-separated string of worker types (got ${typeof rawWorkerTypes})`
+        );
+      }
+      const parsed = rawWorkerTypes
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+      if (parsed.length === 0) {
+        throw new Error(
+          `--worker-types must contain at least one worker type (got "${rawWorkerTypes}")`
+        );
+      }
+      // Validate every member against the enum — fail loudly on the first
+      // unknown value per `feedback-no-fallbacks.md`. No silent skip.
+      for (const t of parsed) {
+        const check = validateWorkerType(t, '--worker-types entry');
+        if (!check.valid) {
+          throw new Error(
+            `--worker-types must be one of ${WORKER_TYPES.join('|')} (got "${t}")`
+          );
+        }
+      }
+      // Mutex against an explicit non-default --type. The CLI parser fills
+      // `agentType` with the default 'worker' even when the user didn't pass
+      // --type, so the test must be against that default. Passing
+      // `--type worker --worker-types coder,tester` is allowed (worker is the
+      // sentinel for "no explicit type"); passing
+      // `--type coder --worker-types coder,tester` errors.
+      const typeWasExplicit = agentType !== 'worker';
+      if (typeWasExplicit) {
+        throw new Error(
+          `--type and --worker-types are mutually exclusive; use --worker-types for mixed spawns`
+        );
+      }
+      agentTypes = parsed;
+    }
+
     output.printInfo(`Spawning ${count} ${role} agent(s)...`);
 
     try {
@@ -953,6 +1227,7 @@ const spawnCommand: Command = {
           agentId: string;
           role: string;
           joinedAt: string;
+          agentType?: string;
         }>;
         totalWorkers: number;
         hiveStatus: string;
@@ -962,7 +1237,12 @@ const spawnCommand: Command = {
       }>('hive-mind_spawn', {
         count,
         role,
-        agentType,
+        // ADR-0108: forward either the scalar (existing) or the array
+        // (new mixed-type) shape. The MCP tool handler at
+        // `hive-mind-tools.ts:hive-mind_spawn` enforces the same mutex via
+        // its schema (oneOf agentType / agentTypes) and round-robins inside
+        // the spawn loop.
+        ...(agentTypes !== undefined ? { agentTypes } : { agentType }),
         prefix,
       });
 
@@ -1036,11 +1316,14 @@ const spawnCommand: Command = {
           // Use defaults if status call fails
         }
 
-        // Convert workers to expected format
+        // Convert workers to expected format. ADR-0108 (T13): respect the
+        // per-worker agentType the MCP handler emits when round-robin
+        // distribution applies. Falls back to the scalar `agentType` for
+        // legacy single-type spawns.
         const workers: HiveWorker[] = (result.workers || []).map(w => ({
           agentId: w.agentId,
           role: w.role,
-          type: agentType,
+          type: w.agentType ?? agentType,
           joinedAt: w.joinedAt
         }));
 

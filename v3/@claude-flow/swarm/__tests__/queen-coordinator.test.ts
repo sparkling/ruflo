@@ -559,7 +559,13 @@ describe('QueenCoordinator', () => {
     });
 
     it('should prefer idle agents over busy agents', async () => {
-      const task = createMockTask('task_1', 'analysis');
+      // ADR-0126 (T8) — uses task.type='coding' so the pool's coder
+      // (agent_1, idle) and architect (agent_3, busy) both match the
+      // updated typeMatches row `coding: ['coder', 'architect']`. The
+      // empty-pool throw added by ADR-0126 fires when no agent matches;
+      // both pool members match here, so we exercise availability
+      // ordering as the test intent intends.
+      const task = createMockTask('task_1', 'coding');
       const analysis = await queen.analyzeTask(task);
 
       const scores = queen.scoreAgents(task, analysis.matchedPatterns);

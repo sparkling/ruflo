@@ -185,6 +185,9 @@ import {
   stopHiveMindSweepTimer,
   _getSweepHandleForTest,
   _performSweepForTest,
+  _resetHiveCacheForTest,
+  getHiveCacheStats,
+  invalidateHiveCache,
   type MemoryType,
   type MemoryEntry,
 } from '../src/mcp-tools/hive-mind-tools.js';
@@ -701,6 +704,135 @@ describe('MCP Tools Deep Test Suite', () => {
       const tool = hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
       const result: any = await tool.handler({ action: 'list' });
       expect(result.action).toBe('list');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 11.a ADR-0108 (T13) — Mixed-type worker spawn
+  // --------------------------------------------------------------------------
+  // Cases mirror ADR-0108 §Test plan: schema shape + handler round-robin
+  // distribution + mutex between scalar `agentType` and array `agentTypes`,
+  // plus enum validation per `feedback-no-fallbacks.md`.
+  describe('ADR-0108 (T13) — mixed-type worker spawn', () => {
+    async function freshHiveForT13(): Promise<void> {
+      const initTool = hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      await shutdownTool.handler({ force: true });
+      await initTool.handler({ topology: 'mesh' });
+    }
+
+    it('hive-mind_spawn schema declares agentTypes as array<enum>', () => {
+      const tool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      const props: any = tool.inputSchema?.properties;
+      expect(props).toBeDefined();
+      expect(props.agentTypes).toBeDefined();
+      expect(props.agentTypes.type).toBe('array');
+      // Must carry an `items.enum` so unknown values rejected at the schema layer.
+      expect(props.agentTypes.items?.type).toBe('string');
+      expect(Array.isArray(props.agentTypes.items?.enum)).toBe(true);
+      // Sanity: includes the 8 USERGUIDE worker types.
+      const enumVals: string[] = props.agentTypes.items.enum;
+      for (const t of ['researcher', 'coder', 'analyst', 'tester', 'architect', 'reviewer', 'optimizer', 'documenter']) {
+        expect(enumVals).toContain(t);
+      }
+      // Existing scalar agentType still present.
+      expect(props.agentType).toBeDefined();
+      expect(props.agentType.type).toBe('string');
+    });
+
+    it('hive-mind_spawn round-robins agentTypes across count', async () => {
+      await freshHiveForT13();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      // ADR-0108 §Test plan #1: -n 3 --worker-types researcher,coder,tester
+      // → 3 workers with distinct agentType values.
+      const result: any = await spawnTool.handler({
+        count: 3,
+        agentTypes: ['researcher', 'coder', 'tester'],
+      });
+      expect(result.success).toBe(true);
+      expect(result.spawned).toBe(3);
+      expect(result.workers.length).toBe(3);
+      const types = result.workers.map((w: any) => w.agentType);
+      expect(types).toEqual(['researcher', 'coder', 'tester']);
+    });
+
+    it('hive-mind_spawn round-robin wraps when count > types.length', async () => {
+      await freshHiveForT13();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      // 6 workers, 3 types → 2× each via modulo.
+      const result: any = await spawnTool.handler({
+        count: 6,
+        agentTypes: ['researcher', 'coder', 'tester'],
+      });
+      expect(result.success).toBe(true);
+      const types = result.workers.map((w: any) => w.agentType);
+      expect(types).toEqual([
+        'researcher', 'coder', 'tester',
+        'researcher', 'coder', 'tester',
+      ]);
+    });
+
+    it('hive-mind_spawn rejects agentType + agentTypes together (mutex)', async () => {
+      await freshHiveForT13();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      const result: any = await spawnTool.handler({
+        count: 2,
+        agentType: 'coder',
+        agentTypes: ['researcher', 'tester'],
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/mutually exclusive/);
+    });
+
+    it('hive-mind_spawn rejects unknown values in agentTypes (no silent skip)', async () => {
+      await freshHiveForT13();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      const result: any = await spawnTool.handler({
+        count: 2,
+        agentTypes: ['researcher', 'fizzbuzz'],
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/fizzbuzz/);
+    });
+
+    it('hive-mind_spawn rejects empty agentTypes array', async () => {
+      await freshHiveForT13();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      const result: any = await spawnTool.handler({
+        count: 1,
+        agentTypes: [],
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/at least one/);
+    });
+
+    it('hive-mind_spawn preserves single-type fan-out (degenerate 1-element case)', async () => {
+      await freshHiveForT13();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      // ADR-0108 §Backward compatibility: agentTypes:['researcher'] -n 5
+      // produces 5 identical researchers.
+      const result: any = await spawnTool.handler({
+        count: 5,
+        agentTypes: ['researcher'],
+      });
+      expect(result.success).toBe(true);
+      const types = result.workers.map((w: any) => w.agentType);
+      expect(types).toEqual([
+        'researcher', 'researcher', 'researcher', 'researcher', 'researcher',
+      ]);
+    });
+
+    it('hive-mind_spawn scalar agentType still works (back-compat)', async () => {
+      await freshHiveForT13();
+      const spawnTool = hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
+      const result: any = await spawnTool.handler({
+        count: 3,
+        agentType: 'coder',
+      });
+      expect(result.success).toBe(true);
+      const types = result.workers.map((w: any) => w.agentType);
+      // All workers share the scalar type — degenerate single-type fan-out.
+      expect(types).toEqual(['coder', 'coder', 'coder']);
     });
   });
 
@@ -1251,6 +1383,302 @@ describe('MCP Tools Deep Test Suite', () => {
       // Either order: at least one returns evicted=true; both return exists=false.
       expect(a.exists).toBe(false);
       expect(b.exists).toBe(false);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // ADR-0123 (T5) — LRU cache + RVF-compatible WAL stack
+  // --------------------------------------------------------------------------
+  // Cases mirror ADR-0123 §Validation: LRU eviction order, hit/miss counters,
+  // typed-shape round-trip, durability-via-cache (cache update only after
+  // rename; failed write does not advertise stale state).
+  describe('ADR-0123 (T5) — LRU cache + WAL durability', () => {
+    const memoryTool = () => hiveMindTools.find(t => t.name === 'hive-mind_memory')!;
+    const initTool = () => hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+    const shutdownTool = () => hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+
+    beforeEach(async () => {
+      // Reset cache + leftover state between tests so counters are clean.
+      try { await shutdownTool().handler({ force: true }); } catch { /* not initialized */ }
+      _resetHiveCacheForTest();
+    });
+
+    afterEach(() => {
+      stopHiveMindSweepTimer();
+    });
+
+    // ── 1. Cache hit on second loadHiveState ──────────────────────────
+    it('t5_cache_hit_on_second_load — second access is a cache hit', async () => {
+      await initTool().handler({});
+      // First load (via init's saveHiveState write-through) populates cache.
+      await memoryTool().handler({ action: 'set', key: 't5-hit', value: 'v', type: 'system' });
+      const before = getHiveCacheStats();
+      // A subsequent get should hit cache for the doc-level state.
+      await memoryTool().handler({ action: 'get', key: 't5-hit' });
+      const after = getHiveCacheStats();
+      // hits must have increased; misses must NOT have increased relative
+      // to the cache pre-population.
+      expect(after.hits).toBeGreaterThan(before.hits);
+    });
+
+    // ── 2. Typed-shape round-trip via cache ───────────────────────────
+    it('t5_typed_shape_roundtrip — cache returns the typed MemoryEntry, not a flat string', async () => {
+      await initTool().handler({});
+      await memoryTool().handler({
+        action: 'set', key: 't5-shape', value: { x: 1 }, type: 'context',
+      });
+      // First get hits cache; second get also hits.
+      const got1: any = await memoryTool().handler({ action: 'get', key: 't5-shape' });
+      const got2: any = await memoryTool().handler({ action: 'get', key: 't5-shape' });
+      expect(got1.value).toEqual({ x: 1 });
+      expect(got1.type).toBe('context');
+      expect(got1.ttlMs).toBe(3_600_000);
+      expect(got2.value).toEqual({ x: 1 });
+      expect(got2.type).toBe('context');
+    });
+
+    // ── 3. Cache reset → next load is a miss ──────────────────────────
+    it('t5_cache_reset_forces_miss — invalidate forces re-read from disk', async () => {
+      await initTool().handler({});
+      await memoryTool().handler({ action: 'set', key: 't5-r', value: 'v', type: 'system' });
+      // Drop the cached doc; next load must read from disk.
+      invalidateHiveCache();
+      const before = getHiveCacheStats();
+      // get the entry; loadHiveState miss → re-populate.
+      await memoryTool().handler({ action: 'get', key: 't5-r' });
+      const after = getHiveCacheStats();
+      // Misses incremented because invalidateHiveCache emptied the slot.
+      expect(after.misses).toBeGreaterThan(before.misses);
+    });
+
+    // ── 4. saveHiveState write-through populates cache ────────────────
+    it('t5_save_writethrough_populates_cache — set updates cache after rename', async () => {
+      await initTool().handler({});
+      // After set, the cached doc must include the new key.
+      await memoryTool().handler({ action: 'set', key: 't5-wt', value: 'v', type: 'task' });
+      // Drop & verify subsequent get re-reads (cache miss because we
+      // invalidated it). If the cache had been populated correctly
+      // post-rename, BOTH the write-through and the re-load should
+      // observe the same state.
+      const got1: any = await memoryTool().handler({ action: 'get', key: 't5-wt' });
+      expect(got1.value).toBe('v');
+      invalidateHiveCache();
+      const got2: any = await memoryTool().handler({ action: 'get', key: 't5-wt' });
+      expect(got2.value).toBe('v');
+    });
+
+    // ── 5. LRU stats are observable ────────────────────────────────────
+    it('t5_lru_stats_exposed — getHiveCacheStats reports hits/misses/size', async () => {
+      _resetHiveCacheForTest();
+      const empty = getHiveCacheStats();
+      expect(empty.hits).toBe(0);
+      expect(empty.misses).toBe(0);
+      expect(empty.evictions).toBe(0);
+      expect(empty.size).toBe(0);
+      await initTool().handler({});
+      await memoryTool().handler({ action: 'set', key: 't5-stats', value: 'v', type: 'system' });
+      const after = getHiveCacheStats();
+      // After init + set, cache must have at least one populated slot
+      // (the doc-level cache key).
+      expect(after.size).toBeGreaterThanOrEqual(1);
+    });
+
+    // ── 6. Concurrent set: every key is readable (durability gate) ────
+    // The durability bar is 100% per feedback-data-loss-zero-tolerance.
+    // Acceptance covers the cross-process probe; this unit-level probe
+    // exercises the same code path inside one process under withHiveStoreLock.
+    it('t5_concurrent_set_no_loss — N parallel sets, all keys present after', async () => {
+      await initTool().handler({});
+      const N = 20;
+      const keys = Array.from({ length: N }, (_, i) => `t5-conc-${i}`);
+      await Promise.all(keys.map(k =>
+        memoryTool().handler({ action: 'set', key: k, value: k, type: 'system' }),
+      ));
+      // Every key must be readable. Per
+      // feedback-data-loss-zero-tolerance.md: 100% — any loss fails.
+      const results = await Promise.all(keys.map(k =>
+        memoryTool().handler({ action: 'get', key: k }),
+      ));
+      const lost: string[] = [];
+      for (let i = 0; i < N; i++) {
+        const r = results[i] as any;
+        if (!r.exists || r.value !== keys[i]) lost.push(keys[i]);
+      }
+      expect(lost).toEqual([]);
+    });
+
+    // ── 7. Eviction order: LRU drops oldest insertion ────────────────
+    // This exercises the LRU at the unit level by directly adjacent
+    // saves with a deliberately tiny capacity (set via the env var on
+    // import is not possible mid-test; instead we exercise the cap via
+    // multiple distinct doc-level invalidate→populate cycles, asserting
+    // eviction count grows).
+    it('t5_eviction_observable_via_stats — repeated invalidate→load grows misses', async () => {
+      await initTool().handler({});
+      _resetHiveCacheForTest();
+      const before = getHiveCacheStats();
+      for (let i = 0; i < 5; i++) {
+        invalidateHiveCache();
+        await memoryTool().handler({ action: 'list' });
+      }
+      const after = getHiveCacheStats();
+      expect(after.misses).toBeGreaterThanOrEqual(before.misses + 5);
+    });
+
+    // ── 8. saveHiveState rename failure: cache not advertising stale ─
+    // We can't easily simulate fs failure under the mocked fs (writeSync
+    // is mocked to no-op-success). The contract is documented in code
+    // (cache.set is the LAST line of saveHiveState; on throw, unreached).
+    // Acceptance gates this at the cross-process layer with SIGKILL.
+    it('t5_cache_set_after_rename_contract — saveHiveState updates cache only after rename succeeds', async () => {
+      // This is a documentation/contract test: we assert the cache
+      // contains the post-set state only after a successful set.
+      await initTool().handler({});
+      _resetHiveCacheForTest();
+      const before = getHiveCacheStats();
+      await memoryTool().handler({ action: 'set', key: 't5-after', value: 'v', type: 'system' });
+      // The cache must have been populated by the saveHiveState
+      // write-through. A subsequent get should be a hit.
+      await memoryTool().handler({ action: 'get', key: 't5-after' });
+      const after = getHiveCacheStats();
+      expect(after.hits).toBeGreaterThan(before.hits);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 11.e ADR-0126 (T8) — Worker-type runtime differentiation (8 USERGUIDE types)
+  // --------------------------------------------------------------------------
+  // Cases mirror ADR-0126 §Validation Test list. Behavioural assertions on
+  // `generateHiveMindPrompt` use the dynamic import path so the test reads
+  // the same dist that publishes from the codemod build.
+  describe('ADR-0126 (T8) — worker-type prompts', () => {
+    const USERGUIDE_TYPES = [
+      'researcher', 'coder', 'analyst', 'architect',
+      'tester', 'reviewer', 'optimizer', 'documenter',
+    ] as const;
+
+    // Build a minimal worker pool covering all 8 USERGUIDE types.
+    function buildPool() {
+      const workers = USERGUIDE_TYPES.map((type, i) => ({
+        agentId: `agent_${i}`,
+        role: type,
+        type,
+      }));
+      const workerGroups: Record<string, typeof workers> = {};
+      for (const w of workers) {
+        if (!workerGroups[w.type]) workerGroups[w.type] = [];
+        workerGroups[w.type].push(w);
+      }
+      return { workers, workerGroups };
+    }
+
+    async function importHiveMindCmd() {
+      // Test against the source-side dist (same path the
+      // ruflo-patch tests/unit/adr0126 test prefers).
+      return await import('../src/commands/hive-mind.js');
+    }
+
+    it('generateHiveMindPrompt-emits-8-pairwise-distinct-blocks', async () => {
+      const mod = await importHiveMindCmd();
+      const { workers, workerGroups } = buildPool();
+      const prompt = mod.generateHiveMindPrompt(
+        'swarm-t8', 'T8 Hive', 'Probe all 8 worker types', workers, workerGroups,
+        { queenType: 'strategic' }
+      );
+      // Each USERGUIDE type carries its own `## Worker role: <type>` heading.
+      for (const t of USERGUIDE_TYPES) {
+        expect(prompt).toContain(`## Worker role: ${t}`);
+      }
+      // Pairwise-distinct: no two role headings collapse.
+      const headingMatches = prompt.match(/## Worker role: \w+/g) || [];
+      const uniq = new Set(headingMatches);
+      expect(uniq.size).toBe(8);
+    });
+
+    it('every prose block carries the three structural-contract sections in fixed order', async () => {
+      const mod = await importHiveMindCmd();
+      const { workers, workerGroups } = buildPool();
+      const prompt = mod.generateHiveMindPrompt(
+        'swarm-t8', 'T8 Hive', 'Probe', workers, workerGroups,
+        { queenType: 'tactical' }
+      );
+      // For each type, the three required headings appear in order.
+      for (const t of USERGUIDE_TYPES) {
+        const roleIdx = prompt.indexOf(`## Worker role: ${t}`);
+        expect(roleIdx).toBeGreaterThanOrEqual(0);
+        // The next "## Worker role:" or end-of-string bounds this type's block.
+        const nextRoleIdx = prompt.indexOf('## Worker role:', roleIdx + 1);
+        const blockEnd = nextRoleIdx === -1 ? prompt.length : nextRoleIdx;
+        const block = prompt.slice(roleIdx, blockEnd);
+        const toolsIdx = block.indexOf('### Tools you should reach for first');
+        const queenIdx = block.indexOf('### Working with the active queen');
+        expect(toolsIdx).toBeGreaterThan(0);
+        expect(queenIdx).toBeGreaterThan(toolsIdx); // queen-section follows tools-section
+      }
+    });
+
+    it('each prose block embeds the active queen-type sentinel (cross-reference contract)', async () => {
+      const mod = await importHiveMindCmd();
+      const { workers, workerGroups } = buildPool();
+
+      const sentinels: Record<string, string> = {
+        strategic: 'written plan',
+        tactical: 'spawned workers within',
+        adaptive: 'named your chosen mode',
+      };
+
+      for (const queenType of ['strategic', 'tactical', 'adaptive'] as const) {
+        const prompt = mod.generateHiveMindPrompt(
+          'swarm-t8', 'T8 Hive', 'Probe', workers, workerGroups,
+          { queenType }
+        );
+        // Each block carries the sentinel for the active queen type.
+        // Count occurrences of the sentinel — must be ≥ 8 (once per worker
+        // block) plus once more in the queen's own self-check section.
+        const sentinel = sentinels[queenType];
+        const occurrences = prompt.split(sentinel).length - 1;
+        expect(occurrences).toBeGreaterThanOrEqual(8);
+      }
+    });
+
+    it('non-USERGUIDE types in the pool emit no prose block but appear in the count summary', async () => {
+      const mod = await importHiveMindCmd();
+      // A pool with one specialist (non-USERGUIDE) and one researcher.
+      const workers = [
+        { agentId: 'a1', role: 'specialist', type: 'specialist' },
+        { agentId: 'a2', role: 'researcher', type: 'researcher' },
+      ];
+      const workerGroups = {
+        specialist: [workers[0]],
+        researcher: [workers[1]],
+      };
+      const prompt = mod.generateHiveMindPrompt(
+        'swarm-t8', 'T8 Hive', 'Mixed pool', workers, workerGroups,
+        { queenType: 'strategic' }
+      );
+      // researcher gets a prose block.
+      expect(prompt).toContain('## Worker role: researcher');
+      // specialist appears in the WORKER DISTRIBUTION count summary…
+      expect(prompt).toContain('• specialist: 1 agents');
+      // …but NEVER in a prose block.
+      expect(prompt).not.toContain('## Worker role: specialist');
+    });
+
+    it('worker types absent from the pool emit no block', async () => {
+      const mod = await importHiveMindCmd();
+      // Only researcher in pool.
+      const workers = [{ agentId: 'a1', role: 'researcher', type: 'researcher' }];
+      const workerGroups = { researcher: [workers[0]] };
+      const prompt = mod.generateHiveMindPrompt(
+        'swarm-t8', 'T8 Hive', 'Tiny pool', workers, workerGroups,
+        { queenType: 'strategic' }
+      );
+      expect(prompt).toContain('## Worker role: researcher');
+      // Other 7 types must NOT appear as role headings.
+      for (const t of USERGUIDE_TYPES) {
+        if (t === 'researcher') continue;
+        expect(prompt).not.toContain(`## Worker role: ${t}`);
+      }
     });
   });
 

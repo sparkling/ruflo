@@ -1235,14 +1235,46 @@ export class QueenCoordinator extends EventEmitter {
     };
   }
 
+  /**
+   * Score one agent's fit for a task. Capability score combines (a) a
+   * type-match boost (`typeMatches`) and (b) a per-task-type capability
+   * nudge (`caps.X`).
+   *
+   * ADR-0126 (T8) — empty-pool contract: when `typeMatches[task.type]`
+   * resolves a non-empty list and zero agents in the pool match any
+   * member of that list, this function THROWS rather than returning the
+   * baseline `0.5` score (which the fork's prior behaviour did, silently
+   * routing non-matching agents). Per `feedback-no-fallbacks.md`, the
+   * empty-pool case must surface as a queen-visible error rather than
+   * collapse into opaque mis-execution downstream. The throw fires once
+   * per delegation pass — `scoreAgents` invokes this per-agent and the
+   * first call surfaces the empty-pool condition.
+   *
+   * ADR-0126 §Implementation plan change #2 — chose option (b)
+   * co-placement: `architect` is co-placed on `coding` (architects design
+   * structure before coders implement); `optimizer` is co-placed on
+   * `analysis` (optimizers profile, identify bottlenecks, then tune —
+   * analysis is the natural task-type fit). This avoids extending the
+   * `TaskType` union and the audit of `task-orchestrator.ts:125` callers
+   * that option (a) would require. Multi-match disposition (highest-score
+   * + enum-order tiebreak) remains as documented in ADR-0126
+   * §Specification.
+   *
+   * Capability nudges cover all 8 USERGUIDE worker types per ADR-0126
+   * §Specification "Capability-score nudge surface": existing 4
+   * (coding/review/testing/coordination) stay; 4 new branches added for
+   * research, analysis, documentation, and the architect/optimizer
+   * co-placed cases.
+   */
   private calculateCapabilityScore(agent: AgentState, task: TaskDefinition): number {
-    let score = 0.5; // Base score
-
-    // Check type match
+    // Check type match — order is preserved as the effective enum-order
+    // tiebreak documented in ADR-0126 §Specification "Multi-match
+    // disposition contract": researcher < coder < analyst < architect <
+    // tester < reviewer < optimizer < documenter.
     const typeMatches: Record<TaskType, AgentType[]> = {
       research: ['researcher'],
-      analysis: ['analyst', 'researcher'],
-      coding: ['coder'],
+      analysis: ['analyst', 'researcher', 'optimizer'],
+      coding: ['coder', 'architect'],
       testing: ['tester'],
       review: ['reviewer'],
       documentation: ['documenter'],
@@ -1252,16 +1284,53 @@ export class QueenCoordinator extends EventEmitter {
     };
 
     const preferredTypes = typeMatches[task.type] || ['worker'];
+
+    // ADR-0126 §Specification "Empty-pool contract": when no agent of
+    // any matching type is in the pool, throw. This replaces the prior
+    // `score = 0.5` baseline disposition for empty-pool inputs (the
+    // fork's silent fallback per `feedback-no-fallbacks.md`).
+    //
+    // Note: the throw fires only when the WHOLE pool lacks a matching
+    // type. A pool that contains a matching type but happens to call
+    // `calculateCapabilityScore` on a non-matching member still falls
+    // through to the baseline + (no-match) path — that is legitimate
+    // scoring fallthrough, not the silent fallback we're fixing.
+    const allAgents = this.swarm.getAllAgents();
+    const poolHasMatchingType = allAgents.some(a => preferredTypes.includes(a.type));
+    if (!poolHasMatchingType && preferredTypes.length > 0 && task.type !== 'custom') {
+      throw new Error(
+        `No agent of matching type for task.type=${task.type} available in pool`
+      );
+    }
+
+    let score = 0.5; // Base score (legitimate fallthrough for non-matching agents in a pool that DOES carry the matching type)
+
     if (preferredTypes.includes(agent.type)) {
       score += 0.3;
     }
 
-    // Check specific capabilities
+    // Check specific capabilities — nudges per ADR-0126 §Specification
+    // "Capability-score nudge surface". Every USERGUIDE worker type has at
+    // least one branch that fires for its matching `task.type` literal.
     const caps = agent.capabilities;
+    // Existing 4 (kept):
     if (task.type === 'coding' && caps.codeGeneration) score += 0.1;
     if (task.type === 'review' && caps.codeReview) score += 0.1;
     if (task.type === 'testing' && caps.testing) score += 0.1;
     if (task.type === 'coordination' && caps.coordination) score += 0.1;
+    // ADR-0126 (T8) — 4 new nudges to cover the remaining USERGUIDE types:
+    if (task.type === 'research' && caps.research) score += 0.1;
+    if (task.type === 'analysis' && caps.analysis) score += 0.1;
+    if (task.type === 'documentation' && caps.documentation) score += 0.1;
+    // architect co-placed on coding (option-b co-placement) — nudge fires
+    // when an architect lands on a coding task (the analyse-then-design
+    // sub-task per `decomposeCodingTask`).
+    if (task.type === 'coding' && agent.type === 'architect') score += 0.1;
+    // optimizer co-placed on analysis (option-b co-placement) — nudge
+    // fires when an optimizer lands on an analysis task. Optimizers
+    // profile/identify-bottleneck during analysis tasks before applying
+    // their tuning patches.
+    if (task.type === 'analysis' && agent.type === 'optimizer') score += 0.1;
 
     return Math.min(score, 1.0);
   }

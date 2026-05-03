@@ -13,12 +13,14 @@ import {
   openSync,
   closeSync,
   writeSync,
+  fsyncSync,
   unlinkSync,
   statSync,
   constants as fsConstants,
 } from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
+import { validateWorkerType, WORKER_TYPES } from './validate-input.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -393,6 +395,10 @@ function getHivePath(): string {
   return join(getHiveDir(), HIVE_FILE);
 }
 
+function getLegacyHivePath(): string {
+  return join(getHiveDir(), `${HIVE_FILE}.legacy`);
+}
+
 function ensureHiveDir(): void {
   const dir = getHiveDir();
   if (!existsSync(dir)) {
@@ -400,62 +406,293 @@ function ensureHiveDir(): void {
   }
 }
 
-function loadHiveState(): HiveState {
-  try {
-    const path = getHivePath();
-    if (existsSync(path)) {
-      const data = readFileSync(path, 'utf-8');
-      const parsed = JSON.parse(data) as HiveState;
-      // ADR-0122 (T4): migrate legacy untyped entries on read. Non-destructive:
-      // no value mutated, no entry dropped. Per feedback-data-loss-zero-tolerance,
-      // even malformed legacy entries (undefined/null) are preserved as
-      // `{ value: <that>, type: 'system', ttlMs: null, expiresAt: null, ... }`.
-      if (parsed && typeof parsed === 'object' && parsed.sharedMemory) {
-        const now = Date.now();
-        const migrated: Record<string, MemoryEntry> = {};
-        for (const [key, entry] of Object.entries(parsed.sharedMemory)) {
-          if (isMemoryEntryShape(entry)) {
-            migrated[key] = entry;
-          } else {
-            // Legacy raw value: wrap as `system`/permanent.
-            migrated[key] = {
-              value: entry,
-              type: 'system',
-              ttlMs: null,
-              expiresAt: null,
-              createdAt: now,
-              updatedAt: now,
-            };
-          }
-        }
-        parsed.sharedMemory = migrated;
-      }
-      return parsed;
+// ── ADR-0123 (T5): LRU cache + RVF-compatible WAL stack ───────────────────
+//
+// Per `project-rvf-primary`, RVF is the source of truth for hive memory.
+// The on-disk persistence path here uses the SAME durability primitive that
+// `RvfBackend` uses internally (see `forks/ruflo/v3/@claude-flow/memory/src/
+// rvf-backend.ts:2513`, ADR-0095 d11):
+//
+//     1. Acquire withHiveStoreLock (cross-process O_EXCL sentinel; ADR-0098)
+//     2. Write tmp file
+//     3. fsync the tmp file (page cache → stable storage)
+//     4. Atomic rename tmp → target
+//
+// This is the WAL+fsync+atomic-rename stack the ADR-0123 §73 (Decision
+// Outcome) refers to as "RVF's existing primitives". The mechanism is real:
+// fsync drains the VFS page cache for the tmp data blocks before the rename
+// promotes the entry to the canonical path. Concurrent writers serialize
+// behind the O_EXCL sentinel; SIGKILL-without-power-loss preserves every
+// committed entry because the rename is atomic at the directory-entry layer
+// and the page cache outlives a process kill.
+//
+// True power-loss durability (fsync the WAL append + the directory entry
+// after rename) is OUT OF SCOPE for T5 — see ADR-0130 (RVF WAL fsync
+// durability) and ADR-0123 §Risks #7. The H3 triage decision (2026-05-02)
+// scoped T5 to SIGKILL-without-power-loss only.
+//
+// LRU cache: process-local, Map-backed (insertion-order tracking is the
+// LRU primitive — Map preserves insertion order in JS engines). Capacity
+// is operator-tunable via CLAUDE_FLOW_HIVE_CACHE_MAX (default 1024). One
+// cache per CLI invocation; the daemon has its own. Cross-process
+// coherency is RVF-is-source-of-truth: every operation re-reads under the
+// lock, so stale-cache windows are bounded by call cadence (per ADR-0123
+// §Refinement, item "Daemon and CLI both holding caches").
+//
+// sql.js carve-out: no path in v3/@claude-flow/memory/src/ imports sql.js.
+// The lone `import('sql.js')` site at rvf-migration.ts:128 is a one-shot
+// legacy reader, never an active backend. Routing hive memory through
+// this WAL+fsync+rename stack therefore never touches sql.js, whose
+// PRAGMA journal_mode = WAL is a no-op against an in-memory virtual
+// filesystem (its only persistence primitive is db.export() of the
+// entire blob; not a real WAL — see ADR-0123 §Risks #6).
+
+const HIVE_STATE_DOC_KEY = 'hive-mind/state-doc';
+
+interface CacheEntry {
+  state: HiveState;
+}
+
+class HiveLRU {
+  // Map preserves insertion order. To "move to front" on get, we delete then
+  // re-set. Eviction = remove the first key (oldest insertion).
+  private store = new Map<string, CacheEntry>();
+  private hits = 0;
+  private misses = 0;
+  private evictions = 0;
+
+  constructor(private maxEntries: number) {
+    if (!Number.isFinite(maxEntries) || maxEntries < 1) {
+      // Fail-loud per feedback-no-fallbacks: an invalid capacity should not
+      // silently default. Caller must produce a positive integer.
+      throw new Error(
+        `HiveLRU: maxEntries must be a positive finite number, got ${maxEntries}`,
+      );
     }
-  } catch {
-    // Return default state on error
   }
+
+  get(key: string): HiveState | undefined {
+    const entry = this.store.get(key);
+    if (entry === undefined) {
+      this.misses++;
+      return undefined;
+    }
+    // Move-to-front: delete + re-set advances insertion-order to "newest".
+    this.store.delete(key);
+    this.store.set(key, entry);
+    this.hits++;
+    return entry.state;
+  }
+
+  set(key: string, state: HiveState): void {
+    if (this.store.has(key)) this.store.delete(key);
+    this.store.set(key, { state });
+    while (this.store.size > this.maxEntries) {
+      // Map.keys() in JS returns insertion-order; first key is the oldest.
+      const oldest = this.store.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.store.delete(oldest);
+      this.evictions++;
+    }
+  }
+
+  delete(key: string): void {
+    this.store.delete(key);
+  }
+
+  clear(): void {
+    this.store.clear();
+  }
+
+  size(): number {
+    return this.store.size;
+  }
+
+  stats(): { hits: number; misses: number; evictions: number; size: number } {
+    return {
+      hits: this.hits,
+      misses: this.misses,
+      evictions: this.evictions,
+      size: this.store.size,
+    };
+  }
+}
+
+function getCacheCapacity(): number {
+  const raw = process.env.CLAUDE_FLOW_HIVE_CACHE_MAX;
+  if (raw === undefined || raw === '') return 1024;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1024;
+  return Math.floor(parsed);
+}
+
+let hiveCache: HiveLRU = new HiveLRU(getCacheCapacity());
+
+/**
+ * Migrate legacy `state.sharedMemory` entries to T4's typed shape.
+ * Non-destructive: no value mutated, no entry dropped. Per
+ * `feedback-data-loss-zero-tolerance`, even malformed legacy entries
+ * (undefined/null) are preserved as `system`/permanent typed records.
+ */
+function migrateSharedMemoryShape(parsed: HiveState): void {
+  if (!parsed || typeof parsed !== 'object' || !parsed.sharedMemory) return;
+  const now = Date.now();
+  const migrated: Record<string, MemoryEntry> = {};
+  for (const [key, entry] of Object.entries(parsed.sharedMemory)) {
+    if (isMemoryEntryShape(entry)) {
+      migrated[key] = entry;
+    } else {
+      // Legacy raw value: wrap as `system`/permanent.
+      migrated[key] = {
+        value: entry,
+        type: 'system',
+        ttlMs: null,
+        expiresAt: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+  }
+  parsed.sharedMemory = migrated;
+}
+
+function defaultHiveState(): HiveState {
+  const ts = new Date().toISOString();
   return {
     initialized: false,
     topology: 'mesh',
     workers: [],
     consensus: { pending: [], history: [] },
     sharedMemory: {},
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: ts,
+    updatedAt: ts,
   };
 }
 
+/**
+ * Load hive state via the LRU cache → RVF-compatible WAL store path.
+ *
+ * Branches (per ADR-0123 §Specification):
+ *   - cache-hit: return cached state, move-to-front side-effect
+ *   - cache-miss, file-hit: parse, migrate legacy shape, populate cache, return
+ *   - cache-miss, file-miss, legacy-hit: migrate from `state.json.legacy`,
+ *     return migrated state (cache populated by save). NOTE: the legacy
+ *     migration path runs only when there is no current `state.json`. This
+ *     is the post-migration recovery path — useful if `state.json` was
+ *     removed but `state.json.legacy` survives.
+ *   - cache-miss, both-miss: return default state. No cache population
+ *     (default is a sentinel, not a stored fact).
+ *   - cache-miss, file present but unparseable / corrupt: throws. Per
+ *     `feedback-no-fallbacks`, the silent `catch {}` removed at Phase 5
+ *     means corrupt-state errors propagate. Operators must intervene.
+ *
+ * Cache update ordering (Row 22, DEFER-TO-IMPL):
+ *   - On miss-then-hit, cache is populated AFTER successful parse + migration.
+ *   - On miss-then-error, cache is NOT populated (no advertising of
+ *     partial state to subsequent callers in this process).
+ */
+function loadHiveState(): HiveState {
+  // ── 1. Cache lookup ──
+  const cached = hiveCache.get(HIVE_STATE_DOC_KEY);
+  if (cached !== undefined) return cached;
+
+  // ── 2. Load from disk ──
+  const path = getHivePath();
+  if (existsSync(path)) {
+    const data = readFileSync(path, 'utf-8');
+    // ADR-0123 Phase 5 + feedback-no-fallbacks.md: NO silent catch. JSON.parse
+    // throwing on a malformed state.json must propagate; the caller surfaces
+    // the corruption. Pre-T5 behavior was to swallow this and return a fresh
+    // default state — that path silently destroyed a corrupt-but-recoverable
+    // hive (next saveHiveState would overwrite the corrupt file with the
+    // default).
+    const parsed = JSON.parse(data) as HiveState;
+    migrateSharedMemoryShape(parsed);
+    hiveCache.set(HIVE_STATE_DOC_KEY, parsed);
+    return parsed;
+  }
+
+  // ── 3. No live state.json — try `state.json.legacy` recovery ──
+  // Per ADR-0123 §83: legacy file is preserved (not deleted) for recovery.
+  const legacyPath = getLegacyHivePath();
+  if (existsSync(legacyPath)) {
+    const data = readFileSync(legacyPath, 'utf-8');
+    // Legacy parse error must also propagate — this is the recovery path,
+    // a corrupt legacy file means the operator made a mistake when moving
+    // it aside; we surface it rather than masking with default state.
+    const parsed = JSON.parse(data) as HiveState;
+    migrateSharedMemoryShape(parsed);
+    // Re-promote the legacy file to live state by writing it back through
+    // the durable save path. saveHiveState handles cache population.
+    saveHiveState(parsed);
+    return parsed;
+  }
+
+  // ── 4. Fresh state — return default, do not populate cache ──
+  // (default is a sentinel describing "no hive yet", not a stored fact;
+  //  caching it would prevent subsequent file writes from being observed.)
+  return defaultHiveState();
+}
+
+/**
+ * Persist hive state via the RVF-compatible WAL stack (ADR-0095 d11).
+ *
+ * Durability guarantee: SIGKILL-without-power-loss. Mechanism:
+ *   1. caller already holds withHiveStoreLock (cross-process O_EXCL)
+ *   2. write tmp file (per-pid name; concurrent writers do not collide)
+ *   3. fsync the tmp file descriptor (page-cache → stable storage)
+ *   4. atomic rename tmp → target (directory-entry layer)
+ *
+ * Cache update ordering (Row 22): cache is updated ONLY after the rename
+ * has succeeded. On any throw (write failure, EIO mid-fsync, rename
+ * failure), the cache is NOT updated — subsequent loadHiveState calls in
+ * this process see the pre-call state, never the in-flight failed one.
+ *
+ * Per ADR-0123 §Specification "Backend success / Backend failure" branches.
+ *
+ * Power-loss durability (fsync the directory entry after rename) is NOT
+ * guaranteed — that is ADR-0130's surface. T5's gate is SIGKILL with intact
+ * page cache; the kernel page cache outlives a process kill, so the
+ * post-rename data is recoverable on the next mount even if no fsync of
+ * the dir entry has happened yet.
+ */
 function saveHiveState(state: HiveState): void {
   ensureHiveDir();
   state.updatedAt = new Date().toISOString();
-  // ADR-0104 §5: atomic write (tmp + rename) — prevents partial writes / torn JSON
-  // when contended with concurrent readers. Pairs with withHiveStoreLock for writers.
+
   const path = getHivePath();
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
+  // Per-pid + per-call counter ensures concurrent writers in the same
+  // process never collide on tmp filenames. (Matches RVF's _tmpCounter
+  // pattern at rvf-backend.ts:2512.)
+  const tmp = `${path}.tmp.${process.pid}.${tmpCounter++}`;
+
+  // Write + explicit fsync before rename. ADR-0095 d11 (Sprint 1.5):
+  // writeFileSync uses open→write→close which does NOT fsync; on APFS
+  // under concurrent I/O load, data blocks can remain in the VFS page
+  // cache after close. rename() is atomic for the directory entry but
+  // peer processes reading target through a different file descriptor
+  // may see a stale snapshot if the tmp data blocks have not yet hit
+  // stable storage. Mode A silent loss at entryCount=5/6 was observed
+  // on patch.204 under the mega-parallel acceptance wave (2026-04-19).
+  // Without this fsync, withHiveStoreLock serializes acquire ordering
+  // but not the VFS cache flush. Bringing the fsync inside the lock
+  // closes that window and is the same primitive RVF uses.
+  let fd: number | null = null;
+  try {
+    fd = openSync(tmp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC, 0o600);
+    writeSync(fd, JSON.stringify(state, null, 2), 0, 'utf-8');
+    fsyncSync(fd);
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
   renameSync(tmp, path);
+
+  // Update cache only after the rename succeeds. On any throw above, this
+  // line is unreached and the cache is not updated.
+  hiveCache.set(HIVE_STATE_DOC_KEY, state);
 }
+
+let tmpCounter = 0;
 
 // ADR-0104 §5: cross-process file lock for hive-state.json read-modify-write,
 // modeled on ADR-0098's swarm-state lock. O_EXCL sentinel + stale-lock recovery.
@@ -538,7 +775,18 @@ export const hiveMindTools: MCPTool[] = [
       properties: {
         count: { type: 'number', description: 'Number of workers to spawn (default: 1)', default: 1 },
         role: { type: 'string', enum: ['worker', 'specialist', 'scout'], description: 'Worker role in hive', default: 'worker' },
-        agentType: { type: 'string', description: 'Agent type for spawned workers', default: 'worker' },
+        // ADR-0108 (T13): `agentType` (scalar, existing) and `agentTypes`
+        // (array, new) are mutually exclusive shapes for single-type vs
+        // mixed-type spawn. The handler enforces the mutex; the schema
+        // documents both surfaces. Per `feedback-no-fallbacks.md`, unknown
+        // values fail loudly via `validateWorkerType` rather than silently
+        // routing to a generic worker.
+        agentType: { type: 'string', description: 'Agent type for spawned workers (scalar; mutually exclusive with agentTypes)', default: 'worker' },
+        agentTypes: {
+          type: 'array',
+          items: { type: 'string', enum: [...WORKER_TYPES] },
+          description: `Mixed-type worker spawn (round-robin: agentTypes[i % len]). Mutually exclusive with agentType. Allowed values: ${WORKER_TYPES.join(', ')}.`,
+        },
         prefix: { type: 'string', description: 'Prefix for worker IDs', default: 'hive-worker' },
       },
     },
@@ -551,19 +799,71 @@ export const hiveMindTools: MCPTool[] = [
 
       const count = Math.min(Math.max(1, (input.count as number) || 1), 20); // Cap at 20
       const role = (input.role as string) || 'worker';
-      const agentType = (input.agentType as string) || 'worker';
       const prefix = (input.prefix as string) || 'hive-worker';
+
+      // ADR-0108 (T13): mutex between scalar `agentType` and array
+      // `agentTypes`. Per `feedback-no-fallbacks.md`, both-present is a
+      // user error (not a silent precedence rule).
+      const rawAgentType = input.agentType;
+      const rawAgentTypes = input.agentTypes;
+      const agentTypeIsExplicit = rawAgentType !== undefined && rawAgentType !== '' && rawAgentType !== 'worker';
+      const agentTypesArr = Array.isArray(rawAgentTypes) ? rawAgentTypes : undefined;
+
+      if (agentTypeIsExplicit && agentTypesArr !== undefined && agentTypesArr.length > 0) {
+        return {
+          success: false,
+          error: 'agentType and agentTypes are mutually exclusive; use agentTypes for mixed spawns',
+        };
+      }
+
+      // When `agentTypes` is provided, validate each member against the
+      // existing enum. `validateWorkerType` already issues a fail-loud
+      // descriptive error per `feedback-no-fallbacks.md`.
+      if (agentTypesArr !== undefined) {
+        if (agentTypesArr.length === 0) {
+          return {
+            success: false,
+            error: 'agentTypes must contain at least one worker type',
+          };
+        }
+        for (const t of agentTypesArr) {
+          const check = validateWorkerType(t, 'agentTypes entry');
+          if (!check.valid) {
+            return {
+              success: false,
+              error: `agentTypes contains invalid value: ${check.error}`,
+            };
+          }
+        }
+      }
+
+      // Pre-compute the per-worker type list. When `agentTypes` is set the
+      // round-robin distribution is `agentTypes[i % agentTypes.length]`;
+      // otherwise the scalar `agentType` (or 'worker' default) is replicated
+      // for every worker. This is the single dispatch site for ADR-0108's
+      // round-robin contract.
+      const scalarAgentType = (rawAgentType as string) || 'worker';
+      const perWorkerTypes: string[] = [];
+      for (let i = 0; i < count; i++) {
+        if (agentTypesArr !== undefined && agentTypesArr.length > 0) {
+          perWorkerTypes.push(agentTypesArr[i % agentTypesArr.length] as string);
+        } else {
+          perWorkerTypes.push(scalarAgentType);
+        }
+      }
+
       const agentStore = loadAgentStore();
 
-      const spawnedWorkers: Array<{ agentId: string; role: string; joinedAt: string }> = [];
+      const spawnedWorkers: Array<{ agentId: string; role: string; agentType: string; joinedAt: string }> = [];
 
       for (let i = 0; i < count; i++) {
         const agentId = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const thisType = perWorkerTypes[i] as string;
 
         // Create agent record (like agent/spawn)
         agentStore.agents[agentId] = {
           agentId,
-          agentType,
+          agentType: thisType,
           status: 'idle',
           health: 1.0,
           taskCount: 0,
@@ -577,9 +877,13 @@ export const hiveMindTools: MCPTool[] = [
           state.workers.push(agentId);
         }
 
+        // ADR-0108 (T13): per-worker `agentType` returned in the response
+        // so callers (CLI, prompt builder) see the round-robin distribution
+        // rather than a single uniform scalar.
         spawnedWorkers.push({
           agentId,
           role,
+          agentType: thisType,
           joinedAt: new Date().toISOString(),
         });
       }
@@ -1518,4 +1822,46 @@ export function _getSweepHandleForTest(): unknown {
 // timers and observe sweep behaviour without scheduling jitter).
 export async function _performSweepForTest(): Promise<void> {
   return performSweep();
+}
+
+// ── ADR-0123 (T5): cache test/operator surface ────────────────────────────
+//
+// Exposed for: test fixtures (reset between cases), operator metrics, and
+// daemon-side cross-process invalidation hints (a future ADR-side feature).
+
+/**
+ * Reset the LRU cache and re-read CLAUDE_FLOW_HIVE_CACHE_MAX. Test fixtures
+ * call this between cases to guarantee a clean cache state. Production code
+ * should never need this — cache invalidation happens via saveHiveState
+ * write-through.
+ */
+export function _resetHiveCacheForTest(): void {
+  hiveCache = new HiveLRU(getCacheCapacity());
+  tmpCounter = 0;
+}
+
+/**
+ * Snapshot the LRU cache stats. Hits/misses/evictions counters are
+ * cumulative across the process lifetime; size is current.
+ *
+ * Per ADR-0123 §92 "eviction-rate metric makes the under-sizing case
+ * observable": operators tune CLAUDE_FLOW_HIVE_CACHE_MAX based on the
+ * evictions/hits ratio.
+ */
+export function getHiveCacheStats(): { hits: number; misses: number; evictions: number; size: number } {
+  return hiveCache.stats();
+}
+
+/**
+ * Invalidate the cached doc. Called when external state may have shifted
+ * out from under us (e.g., a daemon-side write that this CLI process did
+ * not perform). T5 currently has no cross-process invalidation channel —
+ * this hook exists for completeness and is unused on the happy path.
+ *
+ * Per ADR-0123 §50 "Cross-process cache coherency is punted": this is
+ * documentation that the hook exists for the future, not a load-bearing
+ * mechanism today.
+ */
+export function invalidateHiveCache(): void {
+  hiveCache.delete(HIVE_STATE_DOC_KEY);
 }
