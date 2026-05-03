@@ -283,13 +283,35 @@ export async function listEmbeddingModels(): Promise<Array<{
 }
 
 /**
- * Download embedding model
+ * Download embedding model.
+ *
+ * #1700 item 2: previously this propagated `Cannot find package 'agentic-flow'`
+ * when the optional peer wasn't installed, breaking `embeddings init` even
+ * though the rest of the embedding pipeline (Xenova/transformers ONNX) does
+ * not need agentic-flow. Now we try the agentic-flow path first and fall
+ * back to a no-op success when it isn't installed — the model still loads
+ * lazily on first `embeddings_generate` call via @xenova/transformers.
  */
 export async function downloadEmbeddingModel(
   modelId: string,
   targetDir?: string,
   onProgress?: (progress: { percent: number; bytesDownloaded: number; totalBytes: number }) => void
 ): Promise<string> {
-  const { downloadModel } = await import('agentic-flow/embeddings');
-  return downloadModel(modelId, targetDir ?? '.models', onProgress);
+  try {
+    const { downloadModel } = await import('agentic-flow/embeddings');
+    return await downloadModel(modelId, targetDir ?? '.models', onProgress);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Distinguish "package missing" from real download errors so callers
+    // can surface the right hint to users.
+    if (/Cannot find package 'agentic-flow'|Cannot find module/.test(msg)) {
+      console.warn('[embeddings] agentic-flow not installed — skipping eager model download. ' +
+        'Models will be fetched lazily by @xenova/transformers on first generate. ' +
+        'For pre-downloaded models, run: npm install agentic-flow');
+      // Resolve to the target dir as a no-op completion — generate() will
+      // download via @xenova/transformers when first called.
+      return targetDir ?? '.models';
+    }
+    throw err;
+  }
 }
