@@ -1263,7 +1263,8 @@ export const hooksMetrics: MCPTool = {
 
     // HK-003: read real metrics from persisted files instead of hardcoded values
     // ADR-049: Direct file reads acceptable here — no bridgeGetMetrics() exists yet.
-    const cwd = process.cwd();
+    // ADR-0100: anchor on project root, not process.cwd() (Claude Code CWD drift).
+    const cwd = findProjectRoot();
     let patterns = { total: 0, successful: 0, failed: 0, avgConfidence: 0 };
     let agents: { routingAccuracy: number; totalRoutes: number; topAgent: string } = { routingAccuracy: 0, totalRoutes: 0, topAgent: 'none' };
     let commands = { totalExecuted: 0, successRate: 0, avgRiskScore: 0 };
