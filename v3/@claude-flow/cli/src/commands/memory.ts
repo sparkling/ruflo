@@ -1496,7 +1496,7 @@ const initMemoryCommand: Command = {
 // into .claude-flow/memory.rvf via RvfBackend.bulkInsert(). Preserves source row IDs
 // so reruns are idempotent (entries.set + keyIndex.set on same id replace, never duplicate).
 async function runFromSqlite(ctx: CommandContext): Promise<CommandResult> {
-  const cwd = process.cwd();
+  const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   const sourcePath = (ctx.flags.source as string) || `${cwd}/.swarm/memory.db`;
   const destPath = (ctx.flags.dest as string) || `${cwd}/.claude-flow/memory.rvf`;
   const dryRun = ctx.flags['dry-run'] as boolean;

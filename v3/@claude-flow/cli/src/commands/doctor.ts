@@ -180,7 +180,7 @@ async function checkMemoryBackend(): Promise<HealthCheck> {
   // Read configured backend from config.json
   let configuredBackend = 'hybrid';
   try {
-    const cfgPath = join(process.cwd(), '.claude-flow', 'config.json');
+    const cfgPath = join(process.cwd(), '.claude-flow', 'config.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     if (existsSync(cfgPath)) {
       const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
       if (cfg.memory && cfg.memory.backend) configuredBackend = cfg.memory.backend;
@@ -374,7 +374,7 @@ async function checkVersionFreshness(): Promise<HealthCheck> {
     // Check if running via npx (look for _npx in process path or argv)
     const isNpx = process.argv[1]?.includes('_npx') ||
                   process.env.npm_execpath?.includes('npx') ||
-                  process.cwd().includes('_npx');
+                  process.cwd().includes('_npx'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
     // Query npm for latest version (using alpha tag since that's what we publish to)
     let latestVersion = currentVersion;
@@ -483,8 +483,8 @@ async function checkAgenticFlow(): Promise<HealthCheck> {
   try {
     // Walk common node_modules paths to find agentic-flow/package.json
     const candidates = [
-      join(process.cwd(), 'node_modules', 'agentic-flow', 'package.json'),
-      join(process.cwd(), '..', 'node_modules', 'agentic-flow', 'package.json'),
+      join(process.cwd(), 'node_modules', 'agentic-flow', 'package.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      join(process.cwd(), '..', 'node_modules', 'agentic-flow', 'package.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     ];
     let pkgJsonPath: string | null = null;
     for (const p of candidates) {

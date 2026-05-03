@@ -85,7 +85,7 @@ const commands = {
     const session = {
       id: sessionId,
       startedAt: new Date().toISOString(),
-      cwd: process.cwd(),
+      cwd: process.cwd(), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       context: {},
       metrics: {
         edits: 0,
@@ -1110,7 +1110,7 @@ const homeDir = os.homedir();
 
 // Get data directory based on platform
 function getDataDir() {
-  const localDir = path.join(process.cwd(), '.claude-flow', 'sessions');
+  const localDir = path.join(process.cwd(), '.claude-flow', 'sessions'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   if (fs.existsSync(path.dirname(localDir))) {
     return localDir;
   }
@@ -1143,7 +1143,7 @@ const commands = {
       id: sessionId,
       startedAt: new Date().toISOString(),
       platform: platform,
-      cwd: process.cwd(),
+      cwd: process.cwd(), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       context: {},
       metrics: { edits: 0, commands: 0, tasks: 0, errors: 0 }
     };

@@ -975,7 +975,7 @@ export class ControllerRegistry extends EventEmitter {
     try {
       const { existsSync, readFileSync } = await import('node:fs');
       const { join } = await import('node:path');
-      const routesPath = join(process.cwd(), '.claude-flow', 'semantic-routes.json');
+      const routesPath = join(process.cwd(), '.claude-flow', 'semantic-routes.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       if (!existsSync(routesPath)) return;
       const routes = JSON.parse(readFileSync(routesPath, 'utf-8'));
       if (!Array.isArray(routes)) return;

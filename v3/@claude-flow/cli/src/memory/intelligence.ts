@@ -34,7 +34,7 @@ let _embeddingsJsonWarned = false;
  * falling back to home directory
  */
 function getDataDir(): string {
-  const cwd = process.cwd();
+  const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   const localDir = join(cwd, '.claude-flow', 'neural');
   const homeDir = join(homedir(), '.claude-flow', 'neural');
 
@@ -334,7 +334,7 @@ class LocalSonaCoordinator {
       // Uses ESM imports (existsSync, readFileSync, dirname, join) already at top of file
       let ewcDim = 768;
       try {
-        let _dir = process.cwd();
+        let _dir = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
         let _embPath = '';
         // Walk up to find .claude-flow/embeddings.json
         while (_dir !== dirname(_dir)) {

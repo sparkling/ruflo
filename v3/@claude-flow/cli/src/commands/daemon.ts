@@ -35,7 +35,7 @@ const startCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const quiet = ctx.flags.quiet as boolean;
     const foreground = ctx.flags.foreground as boolean;
-    const projectRoot = process.cwd();
+    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const isDaemonProcess = process.env.CLAUDE_FLOW_DAEMON === '1';
 
     // Parse resource threshold overrides from CLI flags
@@ -215,7 +215,7 @@ function validatePath(path: string, label: string): void {
   // Prevent path traversal outside expected directories
   if (!resolved.includes('.claude-flow') && !resolved.includes('bin')) {
     // Allow only paths within project structure
-    const cwd = process.cwd();
+    const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     if (!resolved.startsWith(cwd)) {
       throw new Error(`${label} escapes project directory`);
     }
@@ -337,7 +337,7 @@ const stopCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const quiet = ctx.flags.quiet as boolean;
-    const projectRoot = process.cwd();
+    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
     try {
       if (!quiet) {
@@ -507,7 +507,7 @@ const statusCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const verbose = ctx.flags.verbose as boolean;
     const showModes = ctx.flags['show-modes'] as boolean;
-    const projectRoot = process.cwd();
+    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
     try {
       const daemon = getDaemon(projectRoot);
@@ -669,7 +669,7 @@ const triggerCommand: Command = {
     }
 
     try {
-      const daemon = getDaemon(process.cwd());
+      const daemon = getDaemon(process.cwd()); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
       const spinner = output.createSpinner({ text: `Running ${workerType} worker...`, spinner: 'dots' });
       spinner.start();
@@ -718,7 +718,7 @@ const enableCommand: Command = {
     }
 
     try {
-      const daemon = getDaemon(process.cwd());
+      const daemon = getDaemon(process.cwd()); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       daemon.setWorkerEnabled(workerType, !disable);
 
       output.printSuccess(`Worker ${workerType} ${disable ? 'disabled' : 'enabled'}`);

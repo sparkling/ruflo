@@ -108,7 +108,7 @@ const DEFAULT_GRAPH_SIMILARITY_THRESHOLD = 0.25;
 
 /** Walk up from cwd looking for `.claude-flow/embeddings.json`. */
 function readEmbeddingsJson(): Record<string, unknown> | null {
-  let dir = process.cwd();
+  let dir = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const candidate = join(dir, '.claude-flow', 'embeddings.json');

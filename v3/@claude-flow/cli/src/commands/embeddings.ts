@@ -657,7 +657,7 @@ const initCommand: Command = {
       const path = await import('path');
 
       // Create directories
-      const configDir = path.join(process.cwd(), '.claude-flow');
+      const configDir = path.join(process.cwd(), '.claude-flow'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       const modelDir = path.join(configDir, 'models');
       const configPath = path.join(configDir, 'embeddings.json');
 
@@ -1071,7 +1071,7 @@ const neuralCommand: Command = {
     // Check if embeddings config exists
     const fs = await import('fs');
     const path = await import('path');
-    const configPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json');
+    const configPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
     if (!fs.existsSync(configPath)) {
       output.printWarning('Embeddings not initialized');

@@ -91,7 +91,7 @@ type ResolvedConfig = Required<Omit<LearningBridgeConfig, 'neuralLoader' | 'embe
 // ADR-0069 A5: config-chain EWC lambda
 function readEwcLambdaFromConfig(fallback: number): number {
   try {
-    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
+    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const raw = readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw);
     const val = parsed?.neural?.ewcLambda;

@@ -344,7 +344,7 @@ export const importCommand: Command = {
       output.writeln();
 
       // Write to temp file for execution
-      const tempFile = path.join(process.cwd(), '.ruvector-import-temp.sql');
+      const tempFile = path.join(process.cwd(), '.ruvector-import-temp.sql'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       try {
         fs.writeFileSync(tempFile, fullSQL);
 

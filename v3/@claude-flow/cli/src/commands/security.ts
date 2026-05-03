@@ -557,7 +557,7 @@ const auditCommand: Command = {
     const { join } = await import('path');
 
     const auditEntries: { timestamp: string; event: string; user: string; status: string }[] = [];
-    const swarmDir = join(process.cwd(), '.swarm');
+    const swarmDir = join(process.cwd(), '.swarm'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
     // Check session files for real audit events
     if (existsSync(swarmDir)) {

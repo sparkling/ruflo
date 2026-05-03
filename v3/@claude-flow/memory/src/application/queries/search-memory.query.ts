@@ -19,7 +19,7 @@ import {
 // ADR-0069: wire similarityThreshold consumer — read from config chain at module level
 function getConfigSimilarityThreshold(fallback: number): number {
   try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     if (typeof cfg?.memory?.similarityThreshold === 'number') {
       return cfg.memory.similarityThreshold;
     }

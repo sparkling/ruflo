@@ -237,7 +237,7 @@ export class MemoryDomainService {
       const fs = await import('node:fs');
       const path = await import('node:path');
       const _cfg = JSON.parse(fs.readFileSync(
-        path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+        path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       _cfgDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
     } catch { /* use default */ }
     const threshold = options.threshold ?? _cfgDedupThreshold; // ADR-0069 A11: config-chain-aware

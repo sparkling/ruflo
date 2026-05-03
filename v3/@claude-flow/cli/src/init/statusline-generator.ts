@@ -51,7 +51,7 @@ const CONFIG = {
   maxAgents: ${maxAgents},
 };
 
-const CWD = process.cwd();
+const CWD = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
 // ANSI colors
 const c = {

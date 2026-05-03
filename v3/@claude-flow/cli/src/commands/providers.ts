@@ -76,7 +76,7 @@ const configureCommand: Command = {
         return { success: false, exitCode: 1 };
       }
 
-      const cwd = process.cwd();
+      const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       const config = configManager.getConfig(cwd);
 
       // Ensure agents.providers array exists
@@ -144,7 +144,7 @@ const testCommand: Command = {
       output.writeln(output.bold('Provider Connectivity Test'));
       output.writeln(output.dim('─'.repeat(50)));
 
-      const cwd = process.cwd();
+      const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       const config = configManager.getConfig(cwd);
       const agents = (config.agents ?? {}) as Record<string, unknown>;
       const configuredProviders = (agents.providers ?? []) as Array<Record<string, unknown>>;

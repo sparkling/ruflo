@@ -830,7 +830,7 @@ export class SONAOptimizer {
    */
   private loadFromDisk(): boolean {
     try {
-      const fullPath = join(process.cwd(), this.persistencePath);
+      const fullPath = join(process.cwd(), this.persistencePath); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       if (!existsSync(fullPath)) {
         return false;
       }
@@ -872,7 +872,7 @@ export class SONAOptimizer {
    */
   private saveToDisk(): boolean {
     try {
-      const fullPath = join(process.cwd(), this.persistencePath);
+      const fullPath = join(process.cwd(), this.persistencePath); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       const dir = dirname(fullPath);
 
       // Ensure directory exists

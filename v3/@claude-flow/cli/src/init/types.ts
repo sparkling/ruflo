@@ -382,7 +382,7 @@ export interface InitOptions {
  * Default init options - full V3 setup
  */
 export const DEFAULT_INIT_OPTIONS: InitOptions = {
-  targetDir: process.cwd(),
+  targetDir: process.cwd(), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   force: false,
   interactive: true,
   components: {

@@ -306,7 +306,7 @@ const trainCommand: Command = {
       try {
         const { LoRAAdapter } = await import('../ruvector/lora-adapter.js');
         const path = await import('path');
-        const cpDir = path.join(process.cwd(), '.claude-flow', 'neural');
+        const cpDir = path.join(process.cwd(), '.claude-flow', 'neural'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
         const cpPath = path.join(cpDir, `lora-checkpoint-${Date.now()}.json`);
         const adapter = new LoRAAdapter({ inputDim: dim, outputDim: dim, rank: 4 });
         await adapter.initBackend();
@@ -852,7 +852,7 @@ const optimizeCommand: Command = {
       } catch { /* background learning is best-effort */ }
 
       // Get actual pattern storage size
-      const patternDir = path.join(process.cwd(), '.claude-flow', 'neural');
+      const patternDir = path.join(process.cwd(), '.claude-flow', 'neural'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       let beforeSize = 0;
       try {
         const patternFile = path.join(patternDir, 'patterns.json');
@@ -1073,7 +1073,7 @@ const exportCommand: Command = {
       };
 
       // Load patterns from local storage
-      const memoryDir = path.join(process.cwd(), '.claude-flow', 'memory');
+      const memoryDir = path.join(process.cwd(), '.claude-flow', 'memory'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       const patternsFile = path.join(memoryDir, 'patterns.json');
 
       if (fs.existsSync(patternsFile)) {
@@ -1556,7 +1556,7 @@ const importCommand: Command = {
       }
 
       // Save to local memory
-      const memoryDir = path.join(process.cwd(), '.claude-flow', 'memory');
+      const memoryDir = path.join(process.cwd(), '.claude-flow', 'memory'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       if (!fs.existsSync(memoryDir)) {
         fs.mkdirSync(memoryDir, { recursive: true });
       }

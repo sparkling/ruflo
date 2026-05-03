@@ -24,7 +24,7 @@ const statusCommand: Command = {
   name: 'status',
   description: 'Check migration status',
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const cwd = ctx.cwd || process.cwd();
+    const cwd = ctx.cwd || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
     interface ComponentStatus {
       component: string;
@@ -184,7 +184,7 @@ const runCommand: Command = {
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const cwd = ctx.cwd || process.cwd();
+    const cwd = ctx.cwd || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const dryRun = ctx.flags['dry-run'] === true;
     const skipBackup = ctx.flags.backup === false;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -392,7 +392,7 @@ const verifyCommand: Command = {
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const cwd = ctx.cwd || process.cwd();
+    const cwd = ctx.cwd || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const v3Dir = path.join(cwd, '.claude-flow');
     const migrationStatePath = path.join(v3Dir, 'migration-state.json');
 
@@ -536,7 +536,7 @@ const rollbackCommand: Command = {
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const cwd = ctx.cwd || process.cwd();
+    const cwd = ctx.cwd || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const v3Dir = path.join(cwd, '.claude-flow');
     const migrationStatePath = path.join(v3Dir, 'migration-state.json');
 

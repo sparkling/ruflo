@@ -92,7 +92,7 @@ export async function buildRabitqIndex(options?: {
     }
 
     const dimensions = options?.dimensions ?? 384;
-    const swarmDir = path.resolve(process.cwd(), '.swarm');
+    const swarmDir = path.resolve(process.cwd(), '.swarm'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const dbPath = options?.dbPath ? path.resolve(options.dbPath) : path.join(swarmDir, 'memory.db');
 
     const entries: RabitqEntry[] = [];

@@ -53,7 +53,7 @@ const pretrainCommand: Command = {
 
       // Save to file if requested
       if (saveFile) {
-        const resultsDir = join(process.cwd(), '.claude-flow', 'benchmarks');
+        const resultsDir = join(process.cwd(), '.claude-flow', 'benchmarks'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
         if (!existsSync(resultsDir)) {
           mkdirSync(resultsDir, { recursive: true });
         }
@@ -456,7 +456,7 @@ const allCommand: Command = {
     // Save if requested
     const saveFile = ctx.flags.save as string | undefined;
     if (saveFile) {
-      const resultsDir = join(process.cwd(), '.claude-flow', 'benchmarks');
+      const resultsDir = join(process.cwd(), '.claude-flow', 'benchmarks'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
       if (!existsSync(resultsDir)) {
         mkdirSync(resultsDir, { recursive: true });
       }

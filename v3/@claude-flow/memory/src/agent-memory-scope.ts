@@ -132,7 +132,7 @@ export function resolveAgentMemoryDir(
   }
 
   // For project and local scopes, find git root
-  const effectiveDir = workingDir || process.cwd();
+  const effectiveDir = workingDir || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   const gitRoot = findGitRootSync(effectiveDir);
   const baseDir = gitRoot || effectiveDir;
 
@@ -288,7 +288,7 @@ export async function transferKnowledge(
 export function listAgentScopes(
   workingDir?: string,
 ): Array<{ scope: AgentMemoryScope; agents: string[] }> {
-  const effectiveDir = workingDir || process.cwd();
+  const effectiveDir = workingDir || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   const gitRoot = findGitRootSync(effectiveDir);
   const baseDir = gitRoot || effectiveDir;
   const home = process.env.HOME

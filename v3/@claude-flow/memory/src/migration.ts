@@ -32,7 +32,7 @@ import { AgentDBAdapter } from './agentdb-adapter.js';
 const _configBatchSize = (() => {
   try {
     const cfg = JSON.parse(_readFileSync(
-      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const val = cfg?.memory?.migrationBatchSize;
     if (typeof val === 'number' && val > 0) return val;
   } catch { /* use default */ }

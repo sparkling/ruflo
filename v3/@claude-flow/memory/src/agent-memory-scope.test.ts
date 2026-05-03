@@ -192,7 +192,7 @@ describe('resolveAgentMemoryDir', () => {
 
   it('should use cwd as fallback for project scope when workingDir is omitted', () => {
     mockExistsSync.mockReturnValue(false);
-    const cwd = process.cwd();
+    const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
 
     const result = resolveAgentMemoryDir('coder', 'project');
     expect(result).toBe(

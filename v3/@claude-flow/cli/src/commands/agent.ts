@@ -17,7 +17,7 @@ import * as path from 'path';
  */
 function updateSwarmActivityMetrics(agentCountDelta: number): void {
   try {
-    const metricsDir = path.join(process.cwd(), '.claude-flow', 'metrics');
+    const metricsDir = path.join(process.cwd(), '.claude-flow', 'metrics'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const activityPath = path.join(metricsDir, 'swarm-activity.json');
 
     let data: Record<string, unknown> = {
@@ -506,7 +506,7 @@ const metricsCommand: Command = {
     const typeCounts: Record<string, { count: number; tasks: number; success: number }> = {};
 
     // Read swarm agent state
-    const swarmDir = join(process.cwd(), '.swarm');
+    const swarmDir = join(process.cwd(), '.swarm'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     const agentsDir = join(swarmDir, 'agents');
     if (existsSync(agentsDir)) {
       try {

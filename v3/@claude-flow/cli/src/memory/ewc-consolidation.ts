@@ -151,11 +151,11 @@ const DEFAULT_EWC_CONFIG: EWCConfig = {
   maxPatterns: 1000,
   fisherDecayRate: 0.01,
   importanceThreshold: 0.3,
-  storagePath: path.join(process.cwd(), '.swarm', 'ewc-fisher.json'),
+  storagePath: path.join(process.cwd(), '.swarm', 'ewc-fisher.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   onlineMode: true,
   // ADR-0069: config-chain embedding dimension (uses ESM imports — fs/path already imported at top)
   dimensions: (() => { try {
-    let _dir = process.cwd();
+    let _dir = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     let _embPath = '';
     // Walk up to find .claude-flow/embeddings.json
     while (_dir !== path.dirname(_dir)) {

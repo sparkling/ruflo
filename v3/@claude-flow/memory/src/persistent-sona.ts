@@ -44,7 +44,7 @@ export interface PersistentSonaConfig {
 // ADR-0069 A7: read pattern threshold from config chain, fall back to 0.85
 function getDefaultPatternThreshold(): number {
   try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     if (typeof cfg?.memory?.similarityThreshold === 'number') {
       return cfg.memory.similarityThreshold;
     }

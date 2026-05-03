@@ -1028,9 +1028,9 @@ function findSourceHelpersDir(sourceBaseDir?: string): string | null {
 
   // Strategy 4: Check cwd-relative paths (for local dev)
   const cwdBased = [
-    path.join(process.cwd(), '.claude', 'helpers'),
-    path.join(process.cwd(), '..', '.claude', 'helpers'),
-    path.join(process.cwd(), '..', '..', '.claude', 'helpers'),
+    path.join(process.cwd(), '.claude', 'helpers'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), '..', '.claude', 'helpers'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), '..', '..', '.claude', 'helpers'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   ];
   possiblePaths.push(...cwdBased);
 
@@ -2080,24 +2080,24 @@ function findSourceDir(type: 'skills' | 'commands' | 'agents', sourceBaseDir?: s
 
   // Also check relative to process.cwd() for development
   const cwdBased = [
-    path.join(process.cwd(), '.claude', type),
-    path.join(process.cwd(), '..', '.claude', type),
-    path.join(process.cwd(), '..', '..', '.claude', type),
+    path.join(process.cwd(), '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), '..', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), '..', '..', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   ];
   possiblePaths.push(...cwdBased);
 
   // Check v2 directory for agents
   if (type === 'agents') {
     possiblePaths.push(
-      path.join(process.cwd(), 'v2', '.claude', type),
-      path.join(process.cwd(), '..', 'v2', '.claude', type),
+      path.join(process.cwd(), 'v2', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      path.join(process.cwd(), '..', 'v2', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
     );
   }
 
   // Plugin directory
   possiblePaths.push(
-    path.join(process.cwd(), 'plugin', type),
-    path.join(process.cwd(), '..', 'plugin', type),
+    path.join(process.cwd(), 'plugin', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), '..', 'plugin', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
   );
 
   for (const p of possiblePaths) {
