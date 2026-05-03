@@ -590,6 +590,99 @@ export interface MemoryStoreEntry {
 }
 
 // =============================================================================
+// ADR-0132 (T14) — Sub-queen failure escalation types
+// =============================================================================
+//
+// `subQueenFailed()` carries forward ADR-0109 R8 and extends ADR-0131 (T12)
+// to the hierarchical-mesh topology. The handler is invoked by the top-tier
+// queen when it detects a sub-queen non-response (Task error, missing
+// summary memory key past timeout, or explicit subtree health probe).
+//
+// Decision per ADR-0132 §Decision Outcome: hybrid (Option c) — promote a
+// sub-hive worker to interim sub-queen when the subtree has ≥1 healthy
+// worker; escalate-to-root and abandon the subtree when zero healthy
+// workers remain. Single-failure handling only — multi-failure cascades and
+// cross-hive sub-queen migration are out-of-scope per ADR-0132.
+
+/** Reason for sub-queen failure as observed by the top-tier queen. */
+export type SubQueenFailureReason = 'timeout' | 'error';
+
+/** Strategy chosen by `subQueenFailed()` for the failed sub-queen's subtree. */
+export type SubQueenEscalationStrategy =
+  | 'promote-worker'
+  | 'escalate-to-root'
+  | 'already-handled';
+
+/**
+ * Caller-supplied context describing the failed sub-queen's subtree.
+ *
+ * The QueenCoordinator does NOT crawl shared hive state itself — the
+ * top-tier queen (or its MCP-layer caller) gathers the snapshot and passes
+ * it in. This keeps the handler pure: state transitions are driven by
+ * inputs, not by I/O against `state.queen`.
+ *
+ * Fatal-error invariants (re-thrown per
+ * `feedback-best-effort-must-rethrow-fatals.md`):
+ *   - `workersInSubtree` MUST NOT include the sub-queen's own ID.
+ *   - `healthyWorkerIds` MUST be a subset of `workersInSubtree`.
+ * Either violation indicates corruption in the caller's state snapshot;
+ * `subQueenFailed()` throws synchronously rather than degrading silently.
+ */
+export interface SubQueenFailContext {
+  /**
+   * Worker IDs the failed sub-queen was coordinating, ordered by lineage
+   * (longest-lived / first-spawned first). Order is load-bearing — element
+   * 0 of `healthyWorkerIds` is the promotion candidate.
+   */
+  workersInSubtree: string[];
+  /**
+   * Subset of `workersInSubtree` whose probe responded successfully (or
+   * whose `worker-<id>-result` key is present per ADR-0131). Order MUST
+   * preserve the lineage ordering from `workersInSubtree`.
+   */
+  healthyWorkerIds: string[];
+  /**
+   * Optional sub-hive identifier assigned by `dispatchByTopology` (e.g.
+   * `'sub-0'`). Recorded on the lineage event for audit reconstruction.
+   */
+  subHiveId?: string;
+  /**
+   * Optional list of consensus proposal IDs the sub-queen had pending at
+   * failure time. Recorded on the lineage event so the queen prompt can
+   * decide whether to re-issue them at the top tier or mark them
+   * `failed-quorum-not-reached` per ADR-0131.
+   */
+  pendingProposalIds?: string[];
+}
+
+/**
+ * Outcome record returned by `subQueenFailed()` and emitted on the
+ * `queen.subqueen.failure` event.
+ *
+ * `promotedWorkerId` is set only for `'promote-worker'`; `reassignedWorkerIds`
+ * are the remaining workers placed under the promoted interim sub-queen.
+ * For `'escalate-to-root'`, `abandonedWorkerIds` lists the orphaned workers
+ * the top-tier queen must absorb (or mark failed).
+ */
+export interface SubQueenFailureRecord {
+  event: 'sub-queen-failure';
+  subQueenId: string;
+  reason: SubQueenFailureReason;
+  escalationStrategy: SubQueenEscalationStrategy;
+  /** Set only when `escalationStrategy === 'promote-worker'`. */
+  promotedWorkerId?: string;
+  /** Set only when `escalationStrategy === 'promote-worker'`. */
+  reassignedWorkerIds?: string[];
+  /** Set only when `escalationStrategy === 'escalate-to-root'`. */
+  abandonedWorkerIds?: string[];
+  /** Echo of the input context for audit-trail reconstruction. */
+  subHiveId?: string;
+  pendingProposalIds?: string[];
+  /** ms-since-epoch when the handler resolved. */
+  timestamp: number;
+}
+
+// =============================================================================
 // Queen Coordinator Class
 // =============================================================================
 
@@ -643,6 +736,24 @@ export class QueenCoordinator extends EventEmitter {
   // attached, it can call `setFlipsInWindow()` to update this snapshot
   // each time it acts.
   private flipsInWindowSnapshot: FlipsInWindow = { scale: 0, topology: 0 };
+
+  // ADR-0132 (T14) — sub-queen failure handling.
+  //
+  // `failedSubQueens` is the idempotency guard. The handler MUST be safe
+  // to call twice for the same sub-queen ID (e.g. retry-on-timeout-then-
+  // late-arrival): the second call returns `'already-handled'` instead of
+  // double-promoting another worker. Recovery (a sub-queen coming back
+  // online after promotion) does NOT re-arm the entry — promotion is
+  // one-way for the lifetime of the coordinator instance per
+  // ADR-0132 §Refinement reuse from ADR-0131's one-way `failedAt`
+  // transition stance.
+  //
+  // `subQueenFailureHistory` keeps an ordered audit trail; it is not used
+  // by the handler logic itself but is exposed via `getSubQueenFailures()`
+  // for tests and for the top-tier queen prompt to read back recent
+  // escalations without subscribing to the event emitter.
+  private failedSubQueens: Set<string> = new Set();
+  private subQueenFailureHistory: SubQueenFailureRecord[] = [];
 
   constructor(
     swarm: ISwarmCoordinator,
@@ -1794,6 +1905,172 @@ export class QueenCoordinator extends EventEmitter {
    */
   setFlipsInWindow(flips: FlipsInWindow): void {
     this.flipsInWindowSnapshot = { ...flips };
+  }
+
+  // ===========================================================================
+  // ADR-0132 (T14) — Sub-queen failure escalation
+  // ===========================================================================
+
+  /**
+   * Handle a sub-queen non-response in `hierarchical-mesh` topology.
+   *
+   * R8 carry-forward from ADR-0109; sibling to ADR-0131 (T12) worker-failure
+   * protocol. When the top-tier queen detects a sub-queen failure (Task
+   * error, missing summary memory key past timeout, or explicit subtree
+   * health probe), it calls this handler with a snapshot of the affected
+   * subtree. The handler picks an escalation strategy and emits the
+   * lineage trail.
+   *
+   * Strategy (per ADR-0132 §Decision Outcome, hybrid Option c):
+   *   - `'promote-worker'` if `context.healthyWorkerIds.length >= 1` —
+   *     element 0 (longest-lived per caller's lineage ordering) is
+   *     promoted; the remaining healthy workers are reassigned under it.
+   *   - `'escalate-to-root'` if zero healthy workers — the subtree is
+   *     marked abandoned and the top-tier queen absorbs / fails the
+   *     remaining workers.
+   *   - `'already-handled'` if `subQueenId` was previously processed —
+   *     idempotent no-op; no double-promotion.
+   *
+   * Throws (re-raised; not swallowed):
+   *   - `Error` if `context.workersInSubtree` includes `subQueenId`
+   *     (data-integrity corruption — the sub-queen cannot coordinate
+   *     itself).
+   *   - `Error` if any element of `context.healthyWorkerIds` is not in
+   *     `context.workersInSubtree` (caller snapshot inconsistency).
+   *
+   * Per `feedback-best-effort-must-rethrow-fatals.md`, the above are
+   * fatal data-integrity conditions and propagate. Recoverable conditions
+   * (already-handled, empty subtree) resolve through the strategy
+   * dispatch.
+   *
+   * Out-of-scope per ADR-0132: cross-hive sub-queen migration, multi-failure
+   * cascade recovery, sub-sub-queen failure (recursion is capped at 1 per
+   * ADR-0128).
+   *
+   * @param subQueenId   ID of the failed sub-queen
+   * @param reason       Failure observation kind (`'timeout'` or `'error'`)
+   * @param context      Caller-supplied subtree snapshot (see
+   *                     `SubQueenFailContext` for invariants)
+   * @returns `SubQueenFailureRecord` describing the chosen strategy
+   * @event `queen.subqueen.failure` — payload is the returned record
+   */
+  subQueenFailed(
+    subQueenId: string,
+    reason: SubQueenFailureReason,
+    context: SubQueenFailContext,
+  ): SubQueenFailureRecord {
+    // Fatal-error guard 1: sub-queen-in-its-own-subtree.
+    // The caller's snapshot is corrupt if the sub-queen appears as one of
+    // the workers it is supposedly coordinating. Re-throw rather than
+    // silently dropping the entry, per
+    // `feedback-best-effort-must-rethrow-fatals.md`.
+    if (context.workersInSubtree.includes(subQueenId)) {
+      throw new Error(
+        `subQueenFailed: data-integrity error — sub-queen ${subQueenId} appears in its own workersInSubtree snapshot`,
+      );
+    }
+
+    // Fatal-error guard 2: healthy-set-not-subset-of-subtree.
+    // If a healthy worker is reported that is not in the subtree, the
+    // caller's bookkeeping is inconsistent. The promotion / reassignment
+    // logic depends on this invariant — fail loud.
+    const subtreeMembership = new Set(context.workersInSubtree);
+    for (const healthy of context.healthyWorkerIds) {
+      if (!subtreeMembership.has(healthy)) {
+        throw new Error(
+          `subQueenFailed: data-integrity error — healthy worker ${healthy} not in workersInSubtree for sub-queen ${subQueenId}`,
+        );
+      }
+    }
+
+    // Idempotency: if we've already escalated this sub-queen, return the
+    // recorded outcome rather than picking a fresh strategy. Recovery
+    // (sub-queen coming back online) does NOT re-arm the slot — promotion
+    // is one-way for the lifetime of the coordinator instance, mirroring
+    // ADR-0131's one-way `failedAt: null → number` stance.
+    if (this.failedSubQueens.has(subQueenId)) {
+      const previous = this.subQueenFailureHistory.find(
+        (r) => r.subQueenId === subQueenId,
+      );
+      const record: SubQueenFailureRecord = {
+        event: 'sub-queen-failure',
+        subQueenId,
+        reason,
+        escalationStrategy: 'already-handled',
+        subHiveId: context.subHiveId,
+        pendingProposalIds: context.pendingProposalIds,
+        timestamp: Date.now(),
+        // Echo whichever resolution shape the prior call produced so
+        // downstream consumers don't have to re-resolve it themselves.
+        promotedWorkerId: previous?.promotedWorkerId,
+        reassignedWorkerIds: previous?.reassignedWorkerIds,
+        abandonedWorkerIds: previous?.abandonedWorkerIds,
+      };
+      this.emitEvent('queen.subqueen.failure', record as unknown as Record<string, unknown>);
+      return record;
+    }
+
+    // Mark the sub-queen as handled before strategy dispatch so that any
+    // re-entrant call (e.g. an event listener triggers another probe)
+    // sees the idempotency guard.
+    this.failedSubQueens.add(subQueenId);
+
+    let record: SubQueenFailureRecord;
+    if (context.healthyWorkerIds.length >= 1) {
+      // Promote-worker: caller orders `healthyWorkerIds` by lineage, so
+      // element 0 is the longest-lived / first-spawned candidate per
+      // ADR-0132 §Pseudocode.
+      const promotedWorkerId = context.healthyWorkerIds[0];
+      const reassignedWorkerIds = context.healthyWorkerIds.slice(1);
+      record = {
+        event: 'sub-queen-failure',
+        subQueenId,
+        reason,
+        escalationStrategy: 'promote-worker',
+        promotedWorkerId,
+        reassignedWorkerIds,
+        subHiveId: context.subHiveId,
+        pendingProposalIds: context.pendingProposalIds,
+        timestamp: Date.now(),
+      };
+    } else {
+      // Escalate-to-root: zero healthy workers means the subtree is
+      // beyond local recovery; the top-tier queen absorbs / fails the
+      // remaining (unresponsive) workers. The abandoned-worker list is
+      // the full subtree — even unhealthy workers count as orphans
+      // because the sub-queen they reported to is gone.
+      record = {
+        event: 'sub-queen-failure',
+        subQueenId,
+        reason,
+        escalationStrategy: 'escalate-to-root',
+        abandonedWorkerIds: [...context.workersInSubtree],
+        subHiveId: context.subHiveId,
+        pendingProposalIds: context.pendingProposalIds,
+        timestamp: Date.now(),
+      };
+    }
+
+    this.subQueenFailureHistory.push(record);
+    this.emitEvent('queen.subqueen.failure', record as unknown as Record<string, unknown>);
+    return record;
+  }
+
+  /**
+   * Read back the ordered audit trail of sub-queen failures handled by
+   * this coordinator instance. Returned array is a defensive copy; the
+   * caller may mutate it without affecting internal state.
+   */
+  getSubQueenFailures(): SubQueenFailureRecord[] {
+    return [...this.subQueenFailureHistory];
+  }
+
+  /**
+   * Test-helper: report whether a given sub-queen ID has already been
+   * marked failed by `subQueenFailed()`. Pure read; no side effects.
+   */
+  isSubQueenFailed(subQueenId: string): boolean {
+    return this.failedSubQueens.has(subQueenId);
   }
 
   private computeDomainHealth(domains: DomainStatus[]): Map<AgentDomain, DomainHealthStatus> {
