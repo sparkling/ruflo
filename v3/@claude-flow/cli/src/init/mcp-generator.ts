@@ -92,7 +92,7 @@ export function generateMCPConfig(options: InitOptions): object {
   // Claude Flow MCP server (core) — uses ruflo wrapper for portable npm-resolved invocation
   // ADR-0104 §4a: prefer directly-resolved binary path over npx cold-start
   if (config.claudeFlow) {
-    mcpServers['claude-flow'] = createRufloEntry(
+    mcpServers['ruflo'] = createRufloEntry(
       {
         ...npmEnv,
         CLAUDE_FLOW_MODE: 'v3',
