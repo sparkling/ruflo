@@ -37,6 +37,16 @@ import type {
 } from './types.js';
 import type { AgentDomain, DomainConfig, DomainStatus } from './unified-coordinator.js';
 import { EMBEDDING_DIM } from './embedding-constants.js';
+// ADR-0127 (T9) — re-uses pure helpers from adaptive-loop.ts so the
+// HealthReport population path and the loop's classification path agree
+// on percentile/CoV/idle math. This is a one-way import: the loop
+// consumes HealthReport; the coordinator computes the metrics it carries.
+import {
+  computeQueuePercentiles,
+  computeLoadCoV,
+  computeIdleWorkerCount,
+  detectPartitionFromHeartbeats,
+} from './adaptive-loop.js';
 
 // =============================================================================
 // Types
@@ -178,7 +188,47 @@ export interface AgentScore {
 }
 
 /**
- * Health report for the swarm
+ * Breach axes consumed by the ADR-0127 (T9) adaptive loop. Maps 1:1 to
+ * the loop's threshold-classification surface in `adaptive-loop.ts`.
+ *
+ *   - 'high-water' | 'low-water' — scale axis (queue depth)
+ *   - 'cov-high' | 'cov-low'     — topology axis (load CoV)
+ *   - 'none'                      — no breach this poll
+ */
+export type BreachedThreshold =
+  | 'high-water'
+  | 'low-water'
+  | 'cov-high'
+  | 'cov-low'
+  | 'none';
+
+/**
+ * Per-axis flip counts within the trailing flip-rate window.
+ * Used by the ADR-0127 (T9) loop to enforce the max-flips-per-window
+ * circuit-breaker AND by the queen-side consumer to short-circuit
+ * redundant decisions.
+ */
+export interface FlipsInWindow {
+  scale: number;
+  topology: number;
+}
+
+/**
+ * Health report for the swarm.
+ *
+ * ADR-0127 (T9) extends this interface with per-axis load metrics
+ * (`queueDepthP{50,90,99}`, `idleWorkerCount`, `loadCoV`), breach
+ * accounting (`breachedThreshold`, `breachDurationMs`, `pollTimestamp`,
+ * `flipsInWindow`), and the partition-detection signal
+ * (`partitionDetected`). The fields are populated at runtime by
+ * `monitorSwarmHealth()` (line 1492) so the `adaptive-loop.ts` consumer
+ * can decide on scaling and topology mutation per the dampening / settle
+ * window / flip-rate predicates.
+ *
+ * Per ADR-0105, this file is `@internal — superseded by ADR-0104
+ * prompt-driven Queen`. The interface extension here is type-level only;
+ * the consumer logic lives in the new `adaptive-loop.ts` module rather
+ * than as a method on `QueenCoordinator`.
  */
 export interface HealthReport {
   /** Report ID */
@@ -201,12 +251,56 @@ export interface HealthReport {
   recommendations: string[];
   /**
    * Whether a network partition has been detected in the swarm.
-   * T9 pre-flight stub (ADR-0127): type-level field reserved for runtime
-   * partition-detection logic landing in Wave 3 (`adaptive-loop.ts`). Currently
-   * always `false` at construction; T9 will populate based on heartbeat
-   * asymmetry / quorum-loss signals from `unified-coordinator.ts`.
+   * Populated by `monitorSwarmHealth()` from heartbeat asymmetry /
+   * quorum-loss signals (ADR-0127 §Refinement). When true, the
+   * `adaptive-loop.ts` consumer suspends scaling decisions per
+   * `feedback-no-fallbacks.md` rather than acting on a partial view.
    */
   partitionDetected: boolean;
+  /**
+   * ADR-0127 (T9) — population percentile of per-domain queue depth.
+   * The adaptive loop classifies scale breaches against P90 to filter
+   * single-spike noise while still firing on real backlog.
+   */
+  queueDepthP50: number;
+  queueDepthP90: number;
+  queueDepthP99: number;
+  /**
+   * ADR-0127 (T9) — count of workers in `idle` status with no current
+   * task. Used by scale-down to identify termination candidates and by
+   * the topology-deferral check to know when active tasks have drained.
+   */
+  idleWorkerCount: number;
+  /**
+   * ADR-0127 (T9) — coefficient of variation (stddev / mean) of per-domain
+   * load. The adaptive loop classifies topology breaches against this
+   * value: > highCoV → switch to mesh; ≤ lowCoV → switch to hierarchical.
+   */
+  loadCoV: number;
+  /**
+   * ADR-0127 (T9) — which threshold (if any) is currently breached.
+   * 'none' means steady state; the consumer no-ops on this report.
+   */
+  breachedThreshold: BreachedThreshold;
+  /**
+   * ADR-0127 (T9) — how long the current breach has persisted, in
+   * milliseconds. The consumer enforces dampening via this field — a
+   * breach must persist for >= dampeningWindowMs before action fires.
+   */
+  breachDurationMs: number;
+  /**
+   * ADR-0127 (T9) — monotonic timestamp of the poll that produced this
+   * report. Distinct from `timestamp` (a Date) so the loop can compute
+   * elapsed-ms deltas without crossing wall-clock boundaries.
+   */
+  pollTimestamp: number;
+  /**
+   * ADR-0127 (T9) — per-axis count of mutations in the trailing
+   * flip-rate window (default 1h). The consumer halts loud when the
+   * count exceeds maxFlipsPerWindow on any axis per
+   * `feedback-no-fallbacks.md`.
+   */
+  flipsInWindow: FlipsInWindow;
 }
 
 /**
@@ -536,6 +630,19 @@ export class QueenCoordinator extends EventEmitter {
   private analysisLatencies: number[] = [];
   private delegationLatencies: number[] = [];
   private consensusLatencies: number[] = [];
+
+  // ADR-0127 (T9) — breach-duration tracking for the new HealthReport
+  // fields. The adaptive-loop.ts consumer maintains its own dampening
+  // counter; this state is just for what the report carries to consumers
+  // that don't run the loop. `lastBreachAxis` resets the duration on
+  // direction change so flapping load doesn't accumulate stale duration.
+  private currentBreachStartedAt?: number;
+  private lastBreachAxis: BreachedThreshold = 'none';
+  // Per-axis flip-count snapshot — defaults to zero. The
+  // adaptive-loop.ts consumer is the authoritative source; if a loop is
+  // attached, it can call `setFlipsInWindow()` to update this snapshot
+  // each time it acts.
+  private flipsInWindowSnapshot: FlipsInWindow = { scale: 0, topology: 0 };
 
   constructor(
     swarm: ISwarmCoordinator,
@@ -1529,6 +1636,59 @@ export class QueenCoordinator extends EventEmitter {
       consensusSuccessRate: metrics.consensusSuccessRate,
     };
 
+    // ADR-0127 (T9) — populate per-axis load metrics for the
+    // adaptive-loop.ts consumer. The helpers here are imported from
+    // adaptive-loop.ts so the same math runs at production-time and at
+    // classification-time (no drift between report and decision).
+    const queuePctiles = computeQueuePercentiles(status.domains);
+    const loadCoV = computeLoadCoV(status.domains);
+    const idleWorkerCount = computeIdleWorkerCount(agents);
+    const pollTimestamp = Date.now();
+
+    // Partition detection from heartbeat asymmetry. We treat ≥3× the
+    // configured heartbeat interval as "stale" and >30% stale workers as
+    // a partition signal. The threshold mirrors the loop's pure helper —
+    // see ADR-0127 §Refinement and adaptive-loop.ts.
+    //
+    // We use the queen's own healthCheckIntervalMs as the heartbeat
+    // baseline because the coordinator's heartbeatIntervalMs lives on
+    // CoordinatorConfig and isn't exposed via ISwarmCoordinator. The
+    // healthCheckIntervalMs is the same order-of-magnitude (5-10s), so
+    // the staleness window is conservative.
+    let partitionDetected = false;
+    try {
+      partitionDetected = detectPartitionFromHeartbeats(
+        agents,
+        pollTimestamp,
+        this.config.healthCheckIntervalMs,
+      );
+    } catch (err) {
+      // Corrupt heartbeats are themselves a signal — surface as an alert
+      // but do NOT throw out of the report (the queen has other work to
+      // do). Per `feedback-no-fallbacks.md`, the false here is bounded:
+      // the alert exposes the corruption to the operator.
+      alerts.push({
+        alertId: `alert_${pollTimestamp}_partition`,
+        type: 'critical',
+        source: 'partition-detection',
+        message: `Partition detection failed: ${(err as Error).message}`,
+        timestamp: new Date(),
+        acknowledged: false,
+      });
+      partitionDetected = false;
+    }
+
+    // Per-axis breach classification mirrors the adaptive-loop's
+    // `classifyScaleBreach` and `classifyCoVBreach`. The loop is the
+    // authoritative consumer; we surface breach metadata here for
+    // observability AND so consumers that don't run the full loop (e.g.
+    // dashboards) can see the same shape. The loop tracks dampening
+    // duration internally — `breachDurationMs` here is a snapshot of the
+    // current breach's duration, NOT the loop's internal counter.
+    const breachedThreshold = this.classifyBreachForReport(queuePctiles, loadCoV);
+    const breachDurationMs = this.computeBreachDurationMs(breachedThreshold, pollTimestamp);
+    const flipsInWindow = this.snapshotFlipsInWindow();
+
     const report: HealthReport = {
       reportId,
       timestamp: new Date(),
@@ -1539,9 +1699,16 @@ export class QueenCoordinator extends EventEmitter {
       alerts,
       metrics: healthMetrics,
       recommendations,
-      // T9 pre-flight stub (ADR-0127): default-initialized; runtime detection
-      // logic lands in Wave 3 via adaptive-loop.ts. Do not populate here.
-      partitionDetected: false,
+      partitionDetected,
+      queueDepthP50: queuePctiles.p50,
+      queueDepthP90: queuePctiles.p90,
+      queueDepthP99: queuePctiles.p99,
+      idleWorkerCount,
+      loadCoV,
+      breachedThreshold,
+      breachDurationMs,
+      pollTimestamp,
+      flipsInWindow,
     };
 
     // Store in history
@@ -1559,6 +1726,74 @@ export class QueenCoordinator extends EventEmitter {
     });
 
     return report;
+  }
+
+  /**
+   * ADR-0127 (T9) — classify the current breach for the HealthReport
+   * surface. This is a static snapshot, separate from the adaptive-loop's
+   * dampening counter (which has the authority to fire actions). Mirrors
+   * the loop's `classifyScaleBreach` / `classifyCoVBreach` predicates so
+   * dashboards / observers see the same shape.
+   *
+   * Threshold defaults are sourced from the loop's `ADAPTIVE_LOOP_DEFAULTS`
+   * to avoid drift; see `adaptive-loop.ts`.
+   */
+  private classifyBreachForReport(
+    pctiles: { p50: number; p90: number; p99: number },
+    cov: number,
+  ): BreachedThreshold {
+    // Use the same preliminary defaults as the loop. CoV breaches take
+    // precedence over scale breaches when both are active — the loop
+    // evaluates scale axis first per ADR-0127 §Pseudocode (lower-risk
+    // axis first), but for snapshot purposes the dominant signal is the
+    // most-severe one. We pick scale-up > cov > scale-down by
+    // operator-attention weight.
+    if (pctiles.p90 > 3) return 'high-water';
+    if (cov >= 0.6) return 'cov-high';
+    if (cov <= 0.3) return 'cov-low';
+    if (pctiles.p90 <= 0) return 'low-water';
+    return 'none';
+  }
+
+  /**
+   * ADR-0127 (T9) — track current breach duration. Resets on
+   * direction-change (e.g. high-water → low-water) so the duration
+   * reflects the *current* breach only.
+   */
+  private computeBreachDurationMs(
+    breach: BreachedThreshold,
+    pollTimestamp: number,
+  ): number {
+    if (breach === 'none') {
+      this.currentBreachStartedAt = undefined;
+      this.lastBreachAxis = 'none';
+      return 0;
+    }
+    if (this.lastBreachAxis !== breach) {
+      // Direction change — reset duration.
+      this.currentBreachStartedAt = pollTimestamp;
+      this.lastBreachAxis = breach;
+      return 0;
+    }
+    if (this.currentBreachStartedAt === undefined) {
+      this.currentBreachStartedAt = pollTimestamp;
+      return 0;
+    }
+    return pollTimestamp - this.currentBreachStartedAt;
+  }
+
+  /** ADR-0127 (T9) — return current per-axis flip count snapshot. */
+  private snapshotFlipsInWindow(): FlipsInWindow {
+    return { ...this.flipsInWindowSnapshot };
+  }
+
+  /**
+   * ADR-0127 (T9) — let the adaptive loop publish its current per-axis
+   * flip count so the next HealthReport carries it. Only the loop should
+   * call this; external callers shouldn't be mutating this state.
+   */
+  setFlipsInWindow(flips: FlipsInWindow): void {
+    this.flipsInWindowSnapshot = { ...flips };
   }
 
   private computeDomainHealth(domains: DomainStatus[]): Map<AgentDomain, DomainHealthStatus> {

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename, appendFile, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, appendFile, unlink, open } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type {
   IMemoryBackend,
@@ -100,6 +100,28 @@ export class RvfBackend implements IMemoryBackend {
   private walPath = '';
   private lockPath = '';
   private walEntryCount = 0;
+
+  // ADR-0130 (T11) WAL fsync metrics. The fsync happens INSIDE appendToWal,
+  // before the JS lock is released, on every WAL append. Counters are
+  // process-local; fsync latency is recorded as an unbounded array but
+  // capped to the most recent N samples for p50/p99 reporting (matches
+  // existing `queryTimes` / `searchTimes` pattern, lines 95-96).
+  //
+  // _walFsyncFallback is set true on the first ENOSYS from fdatasync; once
+  // tripped, subsequent calls go directly to fsync without retrying
+  // fdatasync. Single-fork; no env var; automatic platform detection.
+  //
+  // Per-platform durability semantics (documented in appendToWal JSDoc):
+  //   Linux:  fdatasync(2) -> durable through power loss on ext4/xfs/btrfs
+  //   Darwin: fsync(2)     -> durable through process-kill / OS-crash;
+  //                          power-loss durability bounded by disk write
+  //                          cache (Node fs.fsync does NOT issue
+  //                          fcntl(F_FULLFSYNC); macOS power-loss
+  //                          durability requires F_FULLFSYNC, out of scope
+  //                          for this ADR — see ADR-0130 §Specification).
+  private _walFsyncCount = 0;
+  private _walFsyncLatencyMs: number[] = [];
+  private _walFsyncFallback = false;
 
   // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant
   // counter for the JS advisory lock. Lets `store()` hold the lock
@@ -1913,7 +1935,41 @@ export class RvfBackend implements IMemoryBackend {
 
   // ===== WAL (Write-Ahead Log) methods =====
 
-  /** Append a single entry to the WAL sidecar file (O(1) per write) */
+  /**
+   * Append a single entry to the WAL sidecar file (O(1) per write).
+   *
+   * Durability semantics (ADR-0130, T11 — RVF WAL fsync durability):
+   *
+   *   Linux:  appendFile() writes to kernel page cache; fdatasync(2) on
+   *           the WAL fd flushes data + minimum metadata through the page
+   *           cache to the underlying storage. Durable through power loss
+   *           on ext4/xfs/btrfs (filesystems that honour fsync semantics).
+   *
+   *   Darwin: appendFile() writes to kernel page cache; fsync(2) on the
+   *           WAL fd flushes data through the page cache to the disk's
+   *           onboard cache, but does NOT flush the disk cache itself.
+   *           True power-loss durability on macOS requires
+   *           fcntl(fd, F_FULLFSYNC) (issues SCSI SYNCHRONIZE CACHE /
+   *           NVMe Flush). Node's fs.fsync does NOT call F_FULLFSYNC.
+   *           Therefore: durable through process-kill and OS-crash;
+   *           power-loss durability is bounded by the disk write cache.
+   *           Operators on macOS with power-loss exposure must disable
+   *           the disk write cache at the filesystem/hardware level or
+   *           accept the residual window — see ADR-0130 §Refinement
+   *           for the honest framing of this gap.
+   *
+   * The fsync is awaited INSIDE the JS lock region so a concurrent
+   * compactWal cannot observe an un-fsynced WAL line. A failure in the
+   * fdatasync/fsync syscall propagates as a thrown error from this
+   * method (no try/catch swallow); the originating store() call sees
+   * the failure. feedback-no-fallbacks.md is satisfied by the absence
+   * of error swallowing on the durability primitive.
+   *
+   * fdatasync is preferred over fsync where available (Linux). On
+   * platforms without fdatasync, ENOSYS triggers a one-time fallback
+   * to fsync and the _walFsyncFallback flag short-circuits subsequent
+   * attempts — no env var, no opt-in, automatic platform detection.
+   */
   private async appendToWal(entry: MemoryEntry): Promise<void> {
     if (!this.walPath) return; // :memory: mode
     const serialized = {
@@ -1930,11 +1986,66 @@ export class RvfBackend implements IMemoryBackend {
       const walSizeBefore = existsSync(this.walPath) ? (await import('node:fs')).statSync(this.walPath).size : 0;
       await appendFile(this.walPath, Buffer.concat([lenBuf, json]));
       const walSizeAfter = existsSync(this.walPath) ? (await import('node:fs')).statSync(this.walPath).size : 0;
-      this._diag(`appendToWal key=${entry.key} entryBytes=${json.length + 4} walSize=${walSizeBefore}->${walSizeAfter}`);
+
+      // ADR-0130 (T11): fsync the WAL fd BEFORE releasing the lock.
+      // appendFile resolves once the data is in the kernel page cache
+      // but does NOT guarantee it has reached stable storage. Without
+      // this fsync, an acked store() call followed by power loss drops
+      // the just-appended WAL entry. Per feedback-data-loss-zero-tolerance
+      // the bar is 100% durability or not done; this is the primitive
+      // that closes the residual fsync-drop window left open by ADR-0123.
+      const fsyncStart = Date.now();
+      const walFd = await open(this.walPath, 'a');
+      try {
+        if (this._walFsyncFallback) {
+          // Once ENOSYS observed, skip fdatasync and go straight to fsync.
+          await walFd.sync();
+        } else {
+          try {
+            await walFd.datasync();
+          } catch (err: any) {
+            if (err && (err.code === 'ENOSYS' || err.code === 'ENOTSUP')) {
+              this._walFsyncFallback = true;
+              this._diag('appendToWal.fdatasyncENOSYS_falling_back_to_fsync');
+              await walFd.sync();
+            } else {
+              throw err; // surface EIO, ENOSPC, EDQUOT, EBADF — feedback-no-fallbacks
+            }
+          }
+        }
+      } finally {
+        await walFd.close();
+      }
+      const fsyncElapsed = Date.now() - fsyncStart;
+      this._walFsyncCount++;
+      this._walFsyncLatencyMs.push(fsyncElapsed);
+      // Cap latency samples at 1000 (matches queryTimes pattern, line 95-96).
+      if (this._walFsyncLatencyMs.length > 1000) {
+        this._walFsyncLatencyMs.shift();
+      }
+
+      this._diag(`appendToWal key=${entry.key} entryBytes=${json.length + 4} walSize=${walSizeBefore}->${walSizeAfter} fsyncMs=${fsyncElapsed} fsyncCount=${this._walFsyncCount} fallback=${this._walFsyncFallback}`);
     } finally {
       await this.releaseLock();
     }
     this.walEntryCount++;
+  }
+
+  /**
+   * Returns ADR-0130 (T11) WAL fsync metrics: total count + p50/p99 latency.
+   * Mirrors the eviction-rate-style observability surface ADR-0123 introduced.
+   * Returns zero counters and undefined latencies if no fsync calls have
+   * happened yet (e.g. :memory: mode or pre-first-store).
+   */
+  public getWalFsyncMetrics(): { count: number; p50Ms?: number; p99Ms?: number; usedFallback: boolean } {
+    const samples = this._walFsyncLatencyMs;
+    if (samples.length === 0) {
+      return { count: this._walFsyncCount, usedFallback: this._walFsyncFallback };
+    }
+    const sorted = [...samples].sort((a, b) => a - b);
+    const p50 = sorted[Math.floor(sorted.length * 0.5)];
+    const p99 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))];
+    return { count: this._walFsyncCount, p50Ms: p50, p99Ms: p99, usedFallback: this._walFsyncFallback };
   }
 
   /** Replay WAL entries into in-memory state (called after loadFromDisk) */
