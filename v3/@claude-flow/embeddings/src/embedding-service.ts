@@ -402,11 +402,21 @@ export class TransformersEmbeddingService extends BaseEmbeddingService {
     if (this.initialized) return;
 
     try {
-      const { pipeline } = await import('@xenova/transformers');
-      this.pipeline = await pipeline('feature-extraction', this.modelName);
+      // ADR-094: try @huggingface/transformers first (clears the
+      // protobufjs <7.5.5 critical RCE chain), fall back to legacy
+      // @xenova/transformers for backwards compatibility.
+      const { loadTransformersPipeline } = await import('./transformers-loader.js');
+      const handle = await loadTransformersPipeline();
+      if (!handle) {
+        throw new Error(
+          'No transformers package available. Install @huggingface/transformers (preferred) ' +
+          'or @xenova/transformers to enable ONNX embeddings.',
+        );
+      }
+      this.pipeline = await handle.pipeline('feature-extraction', this.modelName);
       this.initialized = true;
     } catch (error) {
-      throw new Error(`Failed to initialize transformers.js: ${error}`);
+      throw new Error(`Failed to initialize transformers pipeline: ${error}`);
     }
   }
 
