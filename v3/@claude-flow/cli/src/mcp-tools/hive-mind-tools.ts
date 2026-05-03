@@ -907,13 +907,13 @@ export function ensureHiveSessionsDir(): void {
 // lock, so stale-cache windows are bounded by call cadence (per ADR-0123
 // §Refinement, item "Daemon and CLI both holding caches").
 //
-// sql.js carve-out: no path in v3/@claude-flow/memory/src/ imports sql.js.
-// The lone `import('sql.js')` site at rvf-migration.ts:128 is a one-shot
-// legacy reader, never an active backend. Routing hive memory through
-// this WAL+fsync+rename stack therefore never touches sql.js, whose
-// PRAGMA journal_mode = WAL is a no-op against an in-memory virtual
-// filesystem (its only persistence primitive is db.export() of the
-// entire blob; not a real WAL — see ADR-0123 §Risks #6).
+// Legacy in-memory SQL backend carve-out: no path in v3/@claude-flow/memory/src/
+// imports it. The lone dynamic-import site at rvf-migration.ts:128 is a one-shot
+// legacy reader, never an active backend. Routing hive memory through this
+// WAL+fsync+rename stack therefore never touches that legacy backend, whose
+// PRAGMA journal_mode=WAL is a no-op against an in-memory virtual filesystem
+// (its only persistence primitive is db.export() of the entire blob; not a
+// real WAL — see ADR-0123 §Risks #6).
 
 const HIVE_STATE_DOC_KEY = 'hive-mind/state-doc';
 
