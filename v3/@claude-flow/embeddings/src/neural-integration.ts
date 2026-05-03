@@ -298,8 +298,23 @@ export async function downloadEmbeddingModel(
   onProgress?: (progress: { percent: number; bytesDownloaded: number; totalBytes: number }) => void
 ): Promise<string> {
   try {
-    const { downloadModel } = await import('agentic-flow/embeddings');
-    return await downloadModel(modelId, targetDir ?? '.models', onProgress);
+    const mod = await import('agentic-flow/embeddings').catch((err) => {
+      throw err;
+    });
+    const downloadFn = (mod as Record<string, unknown>).downloadModel;
+    if (typeof downloadFn !== 'function') {
+      // agentic-flow is installed but has no downloadModel export (the
+      // 2.x line shipped clearEmbeddingCache/computeEmbedding* but not
+      // downloadModel; the function lives on a different path or version).
+      // Treat as lazy-fetch path — @xenova/transformers will download on
+      // first generate(). #1700 item 2 follow-up.
+      console.warn('[embeddings] agentic-flow installed but does not expose downloadModel — ' +
+        'falling back to lazy fetch via @xenova/transformers on first generate.');
+      return targetDir ?? '.models';
+    }
+    return await (downloadFn as (id: string, dir: string, cb?: typeof onProgress) => Promise<string>)(
+      modelId, targetDir ?? '.models', onProgress
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Distinguish "package missing" from real download errors so callers
@@ -308,8 +323,6 @@ export async function downloadEmbeddingModel(
       console.warn('[embeddings] agentic-flow not installed — skipping eager model download. ' +
         'Models will be fetched lazily by @xenova/transformers on first generate. ' +
         'For pre-downloaded models, run: npm install agentic-flow');
-      // Resolve to the target dir as a no-op completion — generate() will
-      // download via @xenova/transformers when first called.
       return targetDir ?? '.models';
     }
     throw err;
