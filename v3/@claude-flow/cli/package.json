@@ -76,6 +76,7 @@
   "files": [
     "dist",
     "bin",
+    "scripts",
     ".claude",
     "README.md"
   ],
@@ -84,7 +85,7 @@
     "test": "vitest run",
     "test:plugin-store": "npx tsx src/plugins/tests/standalone-test.ts",
     "test:pattern-store": "npx tsx src/transfer/store/tests/standalone-test.ts",
-    "postinstall": "node -e \"const{existsSync,cpSync,readdirSync,statSync}=require('fs');const{join,dirname}=require('path');try{const r=require.resolve('agentdb');const base=r.includes('dist/src')?join(dirname(r),'..','..'):(r.includes('dist')?join(dirname(r),'..'):dirname(r));const srcDist=join(base,'dist','src');if(!existsSync(srcDist))process.exit(0);for(const e of readdirSync(srcDist)){const s=join(srcDist,e);const t=join(base,'dist',e);try{if(statSync(s).isDirectory()&&!existsSync(t)){cpSync(s,t,{recursive:true});}}catch{}}}catch{}\"",
+    "postinstall": "node ./scripts/postinstall.cjs",
     "prepublishOnly": "cp ../../../README.md ./README.md",
     "release": "npm version prerelease --preid=alpha && npm run publish:all",
     "publish:all": "./scripts/publish.sh"
