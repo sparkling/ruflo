@@ -1282,12 +1282,6 @@ export const hiveMindTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const state = loadHiveState();
-
-      if (!state.initialized) {
-        return { success: false, error: 'Hive-mind not initialized. Run hive-mind/init first.' };
-      }
-
       // ADR-0131 (T12): action discriminator. retryTask is sugar for a
       // single-worker spawn with retryOf required and the canonical
       // worker-<original>-retry-1 ID convention enforced.
@@ -1358,76 +1352,88 @@ export const hiveMindTools: MCPTool[] = [
         }
       }
 
-      const agentStore = loadAgentStore();
+      // ADR-0129 (B1) race-fix: wrap load → mutate → save under
+      // `withHiveStoreLock` so concurrent spawns / inits don't lost-update
+      // each other's `state.sharedMemory` or `state.workers`. Validation
+      // (above) stays outside the lock to fail fast without blocking peers.
+      return withHiveStoreLock(async () => {
+        const state = loadHiveState();
 
-      const spawnedWorkers: Array<{ agentId: string; role: string; agentType: string; joinedAt: string; retryOf?: string }> = [];
-
-      for (let i = 0; i < count; i++) {
-        // ADR-0131 (T12): retryTask uses canonical retry ID convention
-        // worker-<original>-retry-1 per ADR-0131 §Refinement edge case
-        // "Worker re-spawn with same ID". For multi-count retries (rare),
-        // append the iteration index.
-        let agentId: string;
-        if (action === 'retryTask' && rawRetryOf) {
-          const suffix = count === 1 ? 'retry-1' : `retry-${i + 1}`;
-          agentId = `${rawRetryOf}-${suffix}`;
-        } else {
-          agentId = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        if (!state.initialized) {
+          return { success: false, error: 'Hive-mind not initialized. Run hive-mind/init first.' };
         }
-        const thisType = perWorkerTypes[i] as string;
 
-        // Create agent record (like agent/spawn)
-        agentStore.agents[agentId] = {
-          agentId,
-          agentType: thisType,
-          status: 'idle',
-          health: 1.0,
-          taskCount: 0,
-          config: { role, hiveRole: role },
-          createdAt: new Date().toISOString(),
-          domain: 'hive-mind',
+        const agentStore = loadAgentStore();
+
+        const spawnedWorkers: Array<{ agentId: string; role: string; agentType: string; joinedAt: string; retryOf?: string }> = [];
+
+        for (let i = 0; i < count; i++) {
+          // ADR-0131 (T12): retryTask uses canonical retry ID convention
+          // worker-<original>-retry-1 per ADR-0131 §Refinement edge case
+          // "Worker re-spawn with same ID". For multi-count retries (rare),
+          // append the iteration index.
+          let agentId: string;
+          if (action === 'retryTask' && rawRetryOf) {
+            const suffix = count === 1 ? 'retry-1' : `retry-${i + 1}`;
+            agentId = `${rawRetryOf}-${suffix}`;
+          } else {
+            agentId = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          }
+          const thisType = perWorkerTypes[i] as string;
+
+          // Create agent record (like agent/spawn)
+          agentStore.agents[agentId] = {
+            agentId,
+            agentType: thisType,
+            status: 'idle',
+            health: 1.0,
+            taskCount: 0,
+            config: { role, hiveRole: role },
+            createdAt: new Date().toISOString(),
+            domain: 'hive-mind',
+          };
+
+          // Join to hive-mind (like hive-mind/join)
+          if (!state.workers.includes(agentId)) {
+            state.workers.push(agentId);
+          }
+
+          // ADR-0131 (T12): record retry lineage on the new worker entry's
+          // metadata. Per ADR-0131 §Decision Outcome, retryOf is a single
+          // pointer (not a chain depth) — the new entry points to the
+          // immediate predecessor. Chain reconstruction is recursive lookup
+          // at audit-time.
+          if (rawRetryOf) {
+            registerWorkerRetry(state, agentId, rawRetryOf);
+          }
+
+          // ADR-0108 (T13): per-worker `agentType` returned in the response
+          // so callers (CLI, prompt builder) see the round-robin distribution
+          // rather than a single uniform scalar.
+          spawnedWorkers.push({
+            agentId,
+            role,
+            agentType: thisType,
+            joinedAt: new Date().toISOString(),
+            ...(rawRetryOf ? { retryOf: rawRetryOf } : {}),
+          });
+        }
+
+        saveAgentStore(agentStore);
+        saveHiveState(state);
+
+        return {
+          success: true,
+          spawned: count,
+          action,
+          workers: spawnedWorkers,
+          totalWorkers: state.workers.length,
+          hiveStatus: 'active',
+          message: action === 'retryTask'
+            ? `Spawned ${count} retry-worker(s) for ${rawRetryOf} and joined to the hive-mind`
+            : `Spawned ${count} worker(s) and joined them to the hive-mind`,
         };
-
-        // Join to hive-mind (like hive-mind/join)
-        if (!state.workers.includes(agentId)) {
-          state.workers.push(agentId);
-        }
-
-        // ADR-0131 (T12): record retry lineage on the new worker entry's
-        // metadata. Per ADR-0131 §Decision Outcome, retryOf is a single
-        // pointer (not a chain depth) — the new entry points to the
-        // immediate predecessor. Chain reconstruction is recursive lookup
-        // at audit-time.
-        if (rawRetryOf) {
-          registerWorkerRetry(state, agentId, rawRetryOf);
-        }
-
-        // ADR-0108 (T13): per-worker `agentType` returned in the response
-        // so callers (CLI, prompt builder) see the round-robin distribution
-        // rather than a single uniform scalar.
-        spawnedWorkers.push({
-          agentId,
-          role,
-          agentType: thisType,
-          joinedAt: new Date().toISOString(),
-          ...(rawRetryOf ? { retryOf: rawRetryOf } : {}),
-        });
-      }
-
-      saveAgentStore(agentStore);
-      saveHiveState(state);
-
-      return {
-        success: true,
-        spawned: count,
-        action,
-        workers: spawnedWorkers,
-        totalWorkers: state.workers.length,
-        hiveStatus: 'active',
-        message: action === 'retryTask'
-          ? `Spawned ${count} retry-worker(s) for ${rawRetryOf} and joined to the hive-mind`
-          : `Spawned ${count} worker(s) and joined them to the hive-mind`,
-      };
+      });
     },
   },
   {
@@ -1446,59 +1452,68 @@ export const hiveMindTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const state = loadHiveState();
-      const hiveId = `hive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const queenId = (input.queenId as string) || `queen-${Date.now()}`;
+      // ADR-0129 (B1) race-fix: wrap load → mutate → save under
+      // `withHiveStoreLock` so concurrent CLI invocations of
+      // `hive-mind init` / `hive-mind memory store` don't lost-update
+      // each other's `state.sharedMemory`. The previous unlocked path
+      // let the b1/b2/b4 acceptance checks (which run in parallel against
+      // a shared E2E_DIR) race: b2's init would load pre-store state, and
+      // its save would overwrite b1's stored sharedMemory entry.
+      return withHiveStoreLock(async () => {
+        const state = loadHiveState();
+        const hiveId = `hive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const queenId = (input.queenId as string) || `queen-${Date.now()}`;
 
-      state.initialized = true;
-      state.topology = (input.topology as HiveState['topology']) || 'mesh';
-      state.createdAt = new Date().toISOString();
-      // ADR-0124 (T6) / H6 row 32: validate queenType at the boundary; per
-      // `feedback-no-fallbacks.md`, an unknown value throws rather than
-      // silently defaulting. `undefined` is permitted (older spawn paths
-      // may not pass it; state.queen.queenType stays undefined).
-      const rawQueenType = input.queenType;
-      let queenType: HiveQueenType | undefined;
-      if (rawQueenType !== undefined && rawQueenType !== null && rawQueenType !== '') {
-        if (!isHiveQueenType(rawQueenType)) {
-          throw new Error(
-            `hive-mind_init: queenType must be one of ${HIVE_QUEEN_TYPES.join('|')} (got "${String(rawQueenType)}")`,
-          );
+        state.initialized = true;
+        state.topology = (input.topology as HiveState['topology']) || 'mesh';
+        state.createdAt = new Date().toISOString();
+        // ADR-0124 (T6) / H6 row 32: validate queenType at the boundary; per
+        // `feedback-no-fallbacks.md`, an unknown value throws rather than
+        // silently defaulting. `undefined` is permitted (older spawn paths
+        // may not pass it; state.queen.queenType stays undefined).
+        const rawQueenType = input.queenType;
+        let queenType: HiveQueenType | undefined;
+        if (rawQueenType !== undefined && rawQueenType !== null && rawQueenType !== '') {
+          if (!isHiveQueenType(rawQueenType)) {
+            throw new Error(
+              `hive-mind_init: queenType must be one of ${HIVE_QUEEN_TYPES.join('|')} (got "${String(rawQueenType)}")`,
+            );
+          }
+          queenType = rawQueenType;
         }
-        queenType = rawQueenType;
-      }
-      state.queen = {
-        agentId: queenId,
-        electedAt: new Date().toISOString(),
-        term: 1,
-        ...(queenType !== undefined ? { queenType } : {}),
-      };
+        state.queen = {
+          agentId: queenId,
+          electedAt: new Date().toISOString(),
+          term: 1,
+          ...(queenType !== undefined ? { queenType } : {}),
+        };
 
-      saveHiveState(state);
+        saveHiveState(state);
 
-      // ADR-0122 (T4): register periodic sweep timer for TTL eviction. Idempotent —
-      // re-init without intervening shutdown reuses the existing handle.
-      startHiveMindSweepTimer();
+        // ADR-0122 (T4): register periodic sweep timer for TTL eviction. Idempotent —
+        // re-init without intervening shutdown reuses the existing handle.
+        startHiveMindSweepTimer();
 
-      return {
-        success: true,
-        hiveId,
-        topology: state.topology,
-        consensus: (input.consensus as string) || 'byzantine',
-        queenId,
-        // ADR-0124 (T6): echo back queenType so callers (CLI spawn, status
-        // probes) can confirm the persisted value.
-        ...(queenType !== undefined ? { queenType } : {}),
-        status: 'initialized',
-        config: {
+        return {
+          success: true,
+          hiveId,
           topology: state.topology,
-          consensus: input.consensus || 'byzantine',
-          maxAgents: input.maxAgents || 15,
-          persist: input.persist !== false,
-          memoryBackend: input.memoryBackend || 'hybrid',
-        },
-        createdAt: state.createdAt,
-      };
+          consensus: (input.consensus as string) || 'byzantine',
+          queenId,
+          // ADR-0124 (T6): echo back queenType so callers (CLI spawn, status
+          // probes) can confirm the persisted value.
+          ...(queenType !== undefined ? { queenType } : {}),
+          status: 'initialized',
+          config: {
+            topology: state.topology,
+            consensus: input.consensus || 'byzantine',
+            maxAgents: input.maxAgents || 15,
+            persist: input.persist !== false,
+            memoryBackend: input.memoryBackend || 'hybrid',
+          },
+          createdAt: state.createdAt,
+        };
+      });
     },
   },
   {

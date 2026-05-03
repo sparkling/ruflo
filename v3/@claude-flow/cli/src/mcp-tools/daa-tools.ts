@@ -10,7 +10,7 @@
  */
 
 import { type MCPTool, findProjectRoot } from './types.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Storage paths
@@ -81,7 +81,71 @@ function loadDAAStore(): DAAStore {
 
 function saveDAAStore(store: DAAStore): void {
   ensureDAADir();
-  writeFileSync(getDAAPath(), JSON.stringify(store, null, 2), 'utf-8');
+  // Atomic write: tmp + rename so a crashed writer can't leave truncated JSON.
+  const target = getDAAPath();
+  const tmp = `${target}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
+  writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf-8');
+  renameSync(tmp, target);
+}
+
+/**
+ * ADR-0129 (B1) race-fix: cross-process advisory lock for DAA store
+ * read-modify-write sequences. Without this, parallel `daa_workflow_create`
+ * + `daa_workflow_execute` calls race the load→mutate→save sequence
+ * (lost-update class — ADR-0094 P9). atomic rename in saveDAAStore protects
+ * per-write but not against concurrent read-modify-write.
+ *
+ * Pattern: O_EXCL sentinel + stale-lock recovery, matches workflow-tools'
+ * withWorkflowLock and rvf-backend's acquireLock (ADR-0095). 5s budget,
+ * exponential backoff with jitter, fails loudly on timeout.
+ */
+function withDAALock<T>(cb: () => T): T {
+  ensureDAADir();
+  const lockPath = getDAAPath() + '.lock';
+  const budgetMs = 5000;
+  const deadline = Date.now() + budgetMs;
+  let waitMs = 10;
+  while (true) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lockPath, 'wx'); // O_CREAT|O_EXCL — atomic
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+      closeSync(fd); fd = undefined;
+      try {
+        return cb();
+      } finally {
+        try { unlinkSync(lockPath); } catch { /* already gone */ }
+      }
+    } catch (err: unknown) {
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch { /* already closed */ }
+      }
+      const code = (err as { code?: string }).code;
+      if (code !== 'EEXIST') throw err;
+      // Someone else holds the lock. Detect stale (dead PID) and force.
+      let stale = false;
+      try {
+        const existing = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: number };
+        if (typeof existing?.pid === 'number' && existing.pid !== process.pid) {
+          try { process.kill(existing.pid, 0); } catch { stale = true; }
+        }
+      } catch { stale = true; }
+      if (stale) {
+        try { unlinkSync(lockPath); } catch { /* already gone */ }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `[daa-tools] store lock contention: could not acquire ${lockPath} within ${budgetMs}ms`
+        );
+      }
+      const jitter = Math.floor(Math.random() * waitMs);
+      const sleepMs = Math.min(waitMs + jitter, Math.max(1, deadline - Date.now()));
+      const end = Date.now() + sleepMs;
+      while (Date.now() < end) { /* busy-wait — sync API */ }
+      waitMs = Math.min(waitMs * 2, 400);
+    }
+  }
 }
 
 export const daaTools: MCPTool[] = [
@@ -103,42 +167,46 @@ export const daaTools: MCPTool[] = [
       required: ['id'],
     },
     handler: async (input) => {
-      const store = loadDAAStore();
-      const id = input.id as string;
+      // ADR-0129 (B1) race-fix: load → mutate → save under withDAALock so
+      // parallel `daa_agent_create` invocations don't lost-update each other.
+      return withDAALock(() => {
+        const store = loadDAAStore();
+        const id = input.id as string;
 
-      const agent: DAAAgent = {
-        id,
-        name: (input.name as string) || `DAA-${id}`,
-        type: (input.type as string) || 'autonomous',
-        status: 'active',
-        cognitivePattern: (input.cognitivePattern as string) || 'adaptive',
-        learningRate: (input.learningRate as number) || 0.01,
-        memory: (input.enableMemory as boolean) ?? true,
-        capabilities: (input.capabilities as string[]) || ['reasoning', 'learning'],
-        metrics: {
-          tasksCompleted: 0,
-          successRate: 1.0,
-          adaptations: 0,
-        },
-        createdAt: new Date().toISOString(),
-        lastActivity: new Date().toISOString(),
-      };
+        const agent: DAAAgent = {
+          id,
+          name: (input.name as string) || `DAA-${id}`,
+          type: (input.type as string) || 'autonomous',
+          status: 'active',
+          cognitivePattern: (input.cognitivePattern as string) || 'adaptive',
+          learningRate: (input.learningRate as number) || 0.01,
+          memory: (input.enableMemory as boolean) ?? true,
+          capabilities: (input.capabilities as string[]) || ['reasoning', 'learning'],
+          metrics: {
+            tasksCompleted: 0,
+            successRate: 1.0,
+            adaptations: 0,
+          },
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+        };
 
-      store.agents[id] = agent;
-      saveDAAStore(store);
+        store.agents[id] = agent;
+        saveDAAStore(store);
 
-      return {
-        success: true,
-        agent: {
-          id: agent.id,
-          name: agent.name,
-          type: agent.type,
-          status: agent.status,
-          cognitivePattern: agent.cognitivePattern,
-          capabilities: agent.capabilities,
-        },
-        createdAt: agent.createdAt,
-      };
+        return {
+          success: true,
+          agent: {
+            id: agent.id,
+            name: agent.name,
+            type: agent.type,
+            status: agent.status,
+            cognitivePattern: agent.cognitivePattern,
+            capabilities: agent.capabilities,
+          },
+          createdAt: agent.createdAt,
+        };
+      });
     },
   },
   {
@@ -156,22 +224,40 @@ export const daaTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (input) => {
-      const store = loadDAAStore();
-      const agentId = input.agentId as string;
-      const agent = store.agents[agentId];
+      // ADR-0129 (B1) race-fix: load → mutate → save under withDAALock.
+      // Returns the post-update agent metrics so the post-lock AgentDB
+      // tail-call can read consistent values.
+      const lockResult = withDAALock(() => {
+        const store = loadDAAStore();
+        const agentId = input.agentId as string;
+        const agent = store.agents[agentId];
 
-      if (!agent) {
+        if (!agent) {
+          return { found: false as const, agentId };
+        }
+
+        const performanceScore = (input.performanceScore as number) || 0.8;
+
+        // Update agent metrics
+        agent.metrics.adaptations++;
+        agent.metrics.successRate = (agent.metrics.successRate + performanceScore) / 2;
+        agent.lastActivity = new Date().toISOString();
+        agent.status = 'active';
+        saveDAAStore(store);
+
+        return {
+          found: true as const,
+          agentId,
+          performanceScore,
+          adaptations: agent.metrics.adaptations,
+          successRate: agent.metrics.successRate,
+          status: agent.status,
+        };
+      });
+
+      if (!lockResult.found) {
         return { success: false, error: 'Agent not found' };
       }
-
-      const performanceScore = (input.performanceScore as number) || 0.8;
-
-      // Update agent metrics
-      agent.metrics.adaptations++;
-      agent.metrics.successRate = (agent.metrics.successRate + performanceScore) / 2;
-      agent.lastActivity = new Date().toISOString();
-      agent.status = 'active';
-      saveDAAStore(store);
 
       // Store adaptation feedback in AgentDB for pattern learning (backward compat: JSON store above)
       let _storedIn: 'agentdb' | 'json-store' = 'json-store';
@@ -179,11 +265,11 @@ export const daaTools: MCPTool[] = [
         const { routeMemoryOp } = await import('../memory/memory-router.js');
         await routeMemoryOp({
           type: 'store',
-          key: `adapt-${agentId}-${agent.metrics.adaptations}`,
+          key: `adapt-${lockResult.agentId}-${lockResult.adaptations}`,
           value: JSON.stringify({
-            success: performanceScore >= 0.5,
-            quality: performanceScore,
-            agent: agentId,
+            success: lockResult.performanceScore >= 0.5,
+            quality: lockResult.performanceScore,
+            agent: lockResult.agentId,
           }),
           namespace: 'daa-feedback',
         });
@@ -192,14 +278,14 @@ export const daaTools: MCPTool[] = [
 
       return {
         success: true,
-        agentId,
+        agentId: lockResult.agentId,
         adaptation: {
           feedback: input.feedback,
-          performanceScore,
-          adaptations: agent.metrics.adaptations,
-          newSuccessRate: agent.metrics.successRate,
+          performanceScore: lockResult.performanceScore,
+          adaptations: lockResult.adaptations,
+          newSuccessRate: lockResult.successRate,
         },
-        status: agent.status,
+        status: lockResult.status,
         _storedIn,
       };
     },
@@ -220,32 +306,36 @@ export const daaTools: MCPTool[] = [
       required: ['id', 'name'],
     },
     handler: async (input) => {
-      const store = loadDAAStore();
-      const id = input.id as string;
+      // ADR-0129 (B1) race-fix: load → mutate → save under withDAALock so
+      // parallel `daa_workflow_create` invocations don't lost-update each other.
+      return withDAALock(() => {
+        const store = loadDAAStore();
+        const id = input.id as string;
 
-      const workflow: DAAWorkflow = {
-        id,
-        name: input.name as string,
-        status: 'pending',
-        steps: ((input.steps as unknown[]) || []).map((s, i) => ({
-          name: typeof s === 'string' ? s : `Step ${i + 1}`,
+        const workflow: DAAWorkflow = {
+          id,
+          name: input.name as string,
           status: 'pending',
-        })),
-        strategy: (input.strategy as string) || 'adaptive',
-        createdAt: new Date().toISOString(),
-      };
+          steps: ((input.steps as unknown[]) || []).map((s, i) => ({
+            name: typeof s === 'string' ? s : `Step ${i + 1}`,
+            status: 'pending',
+          })),
+          strategy: (input.strategy as string) || 'adaptive',
+          createdAt: new Date().toISOString(),
+        };
 
-      store.workflows[id] = workflow;
-      saveDAAStore(store);
+        store.workflows[id] = workflow;
+        saveDAAStore(store);
 
-      return {
-        success: true,
-        workflowId: id,
-        name: workflow.name,
-        steps: workflow.steps.length,
-        strategy: workflow.strategy,
-        createdAt: workflow.createdAt,
-      };
+        return {
+          success: true,
+          workflowId: id,
+          name: workflow.name,
+          steps: workflow.steps.length,
+          strategy: workflow.strategy,
+          createdAt: workflow.createdAt,
+        };
+      });
     },
   },
   {
@@ -262,25 +352,33 @@ export const daaTools: MCPTool[] = [
       required: ['workflowId'],
     },
     handler: async (input) => {
-      const store = loadDAAStore();
-      const workflowId = input.workflowId as string;
-      const workflow = store.workflows[workflowId];
+      // ADR-0129 (B1) race-fix: load → mutate → save under withDAALock so
+      // parallel `daa_workflow_execute` invocations don't observe a stale
+      // pre-image (e.g. missing the workflow that was just created by a
+      // concurrent `daa_workflow_create`). Without this, `p3-da-wf-exec`
+      // can fail with `Workflow not found` when its sibling `p3-da-wf-create`
+      // racing in the same E2E_DIR overwrote the just-created workflow.
+      return withDAALock(() => {
+        const store = loadDAAStore();
+        const workflowId = input.workflowId as string;
+        const workflow = store.workflows[workflowId];
 
-      if (!workflow) {
-        return { success: false, error: 'Workflow not found' };
-      }
+        if (!workflow) {
+          return { success: false, error: 'Workflow not found' };
+        }
 
-      workflow.status = 'running';
-      saveDAAStore(store);
+        workflow.status = 'running';
+        saveDAAStore(store);
 
-      return {
-        success: true,
-        workflowId,
-        status: workflow.status,
-        steps: workflow.steps,
-        startedAt: new Date().toISOString(),
-        _note: 'Steps are tracked but not auto-executed. Use agent tools to execute each step.',
-      };
+        return {
+          success: true,
+          workflowId,
+          status: workflow.status,
+          steps: workflow.steps,
+          startedAt: new Date().toISOString(),
+          _note: 'Steps are tracked but not auto-executed. Use agent tools to execute each step.',
+        };
+      });
     },
   },
   {
@@ -298,7 +396,6 @@ export const daaTools: MCPTool[] = [
       required: ['sourceAgentId', 'targetAgentIds'],
     },
     handler: async (input) => {
-      const store = loadDAAStore();
       const sourceId = input.sourceAgentId as string;
       const targetIds = input.targetAgentIds as string[];
       const domain = (input.knowledgeDomain as string) || 'general';
@@ -326,9 +423,13 @@ export const daaTools: MCPTool[] = [
         _storedIn = 'agentdb';
       } catch { /* AgentDB not available */ }
 
-      // Backward compat: always persist in JSON store
-      store.knowledge[knowledgeId] = knowledgeEntry;
-      saveDAAStore(store);
+      // ADR-0129 (B1) race-fix: load → mutate → save under withDAALock so
+      // backward-compat JSON-store writes don't lost-update each other.
+      withDAALock(() => {
+        const store = loadDAAStore();
+        store.knowledge[knowledgeId] = knowledgeEntry;
+        saveDAAStore(store);
+      });
 
       return {
         success: true,
@@ -412,40 +513,47 @@ export const daaTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadDAAStore();
       const agentId = input.agentId as string;
       const action = (input.action as string) || 'analyze';
 
       if (agentId) {
+        if (action === 'change' && input.pattern) {
+          // ADR-0129 (B1) race-fix: pattern change is load → mutate → save.
+          return withDAALock(() => {
+            const store = loadDAAStore();
+            const agent = store.agents[agentId];
+            if (!agent) {
+              return { success: false, error: 'Agent not found' };
+            }
+            const oldPattern = agent.cognitivePattern;
+            agent.cognitivePattern = input.pattern as string;
+            saveDAAStore(store);
+
+            return {
+              success: true,
+              agentId,
+              previousPattern: oldPattern,
+              newPattern: agent.cognitivePattern,
+              changedAt: new Date().toISOString(),
+            };
+          });
+        }
+
+        // Read-only path (analyze) — load is safe without lock; the worst
+        // case is reading a slightly stale pre-image. No write happens.
+        const store = loadDAAStore();
         const agent = store.agents[agentId];
         if (!agent) {
           return { success: false, error: 'Agent not found' };
         }
-
-        if (action === 'analyze') {
-          return {
-            success: true,
-            agentId,
-            currentPattern: agent.cognitivePattern,
-            learningRate: agent.learningRate,
-            metrics: agent.metrics,
-            _note: 'Pattern analysis requires real cognitive modeling. Current pattern and metrics shown.',
-          };
-        }
-
-        if (action === 'change' && input.pattern) {
-          const oldPattern = agent.cognitivePattern;
-          agent.cognitivePattern = input.pattern as string;
-          saveDAAStore(store);
-
-          return {
-            success: true,
-            agentId,
-            previousPattern: oldPattern,
-            newPattern: agent.cognitivePattern,
-            changedAt: new Date().toISOString(),
-          };
-        }
+        return {
+          success: true,
+          agentId,
+          currentPattern: agent.cognitivePattern,
+          learningRate: agent.learningRate,
+          metrics: agent.metrics,
+          _note: 'Pattern analysis requires real cognitive modeling. Current pattern and metrics shown.',
+        };
       }
 
       // Return general pattern info
