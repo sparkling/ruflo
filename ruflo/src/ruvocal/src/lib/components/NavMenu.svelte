@@ -32,6 +32,7 @@
 	import { isPro } from "$lib/stores/isPro";
 	import IconPro from "$lib/components/icons/IconPro.svelte";
 	import MCPServerManager from "./mcp/MCPServerManager.svelte";
+	import RufloHelpModal from "./RufloHelpModal.svelte";
 
 	const publicConfig = usePublicConfig();
 	const client = useAPIClient();
@@ -117,6 +118,7 @@
 	let isDark = $state(false);
 	let unsubscribeTheme: (() => void) | undefined;
 	let showMcpModal = $state(false);
+	let showHelpModal = $state(false);
 
 	if (browser) {
 		unsubscribeTheme = subscribeToTheme(({ isDark: nextIsDark }) => {
@@ -248,6 +250,18 @@
 			Settings
 		</a>
 		<button
+			onclick={() => (showHelpModal = true)}
+			aria-label="Open help and tool documentation"
+			title="RuFlo capabilities & tool docs"
+			class="flex size-9 min-w-[1.5em] flex-none items-center justify-center rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4">
+				<circle cx="12" cy="12" r="10" />
+				<path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+				<line x1="12" y1="17" x2="12.01" y2="17" />
+			</svg>
+		</button>
+		<button
 			onclick={() => {
 				switchTheme();
 			}}
@@ -267,6 +281,10 @@
 
 {#if showMcpModal}
 	<MCPServerManager onclose={() => (showMcpModal = false)} />
+{/if}
+
+{#if showHelpModal}
+	<RufloHelpModal onclose={() => (showHelpModal = false)} />
 {/if}
 
 <style>

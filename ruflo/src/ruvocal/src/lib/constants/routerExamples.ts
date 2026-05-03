@@ -14,195 +14,119 @@ export type RouterExample = {
 	attachments?: RouterExampleAttachment[];
 };
 
+// RuFlo-themed router examples — shown on the empty-state welcome screen
+// when the user hasn't enabled the full MCP toolset. Keep these light enough
+// that even a model without tool-calling can answer (no explicit tool names).
 export const routerExamples: RouterExample[] = [
 	{
-		title: "HTML game",
-		prompt: "Code a minimal Flappy Bird game using HTML and Canvas",
+		title: "Build a coding swarm",
+		prompt: "Design a 5-agent coding swarm to refactor a Python CLI to TypeScript. Suggest topology, roles, and the order each agent should run.",
 		followUps: [
 			{
-				title: "README.md file",
-				prompt: "Create a comprehensive README.md for the Flappy Bird game project.",
+				title: "Add tests",
+				prompt: "Add a tester agent and a security-auditor. What should each one own?",
 			},
 			{
-				title: "CRT Screen",
-				prompt: "Add a CRT screen effect to the game",
+				title: "Trade-offs",
+				prompt: "Compare hierarchical vs mesh topology for this swarm.",
 			},
 			{
-				title: "Add power-ups",
-				prompt:
-					"Add collectible coins between pipes that award bonus points and a shield power-up that allows one collision.",
-			},
-			{
-				title: "Explain collision detection",
-				prompt:
-					"Explain the collision detection algorithm for the bird and pipes in simple terms with examples.",
+				title: "Failure mode",
+				prompt: "What happens if the architect agent fails halfway through?",
 			},
 		],
 	},
 	{
-		title: "Weird painting",
-		prompt: "is this a real painting?",
-		attachments: [
+		title: "Memory & recall",
+		prompt: "Explain how RuFlo's persistent memory works across sessions, and give me a 3-step example of saving a preference and recalling it later.",
+		followUps: [
 			{
-				src: "huggingchat/castle-example.jpg",
+				title: "Namespaces",
+				prompt: "When should I use separate memory namespaces vs one shared namespace?",
+			},
+			{
+				title: "Vector vs key",
+				prompt: "When should I use semantic search vs exact key retrieval?",
 			},
 		],
 	},
 	{
-		title: "Landing page",
-		prompt:
-			"Build a responsive SaaS landing page for my AI coding assitant using Tailwind CSS. With a hero, features, testimonials, and pricing sections.",
+		title: "Plan a migration",
+		prompt: "Plan a zero-downtime Postgres schema migration. Use Goal-Oriented Action Planning to break it into phases with rollback points.",
 		followUps: [
 			{
-				title: "Dark mode",
-				prompt: "Add dark mode and make it the default",
+				title: "Risk scoring",
+				prompt: "Which phases are highest-risk and how would you mitigate them?",
 			},
 			{
-				title: "Write blog post",
-				prompt: "Write a blog post introducing my service.",
-			},
-			{
-				title: "Translate to Italian",
-				prompt: "Translate only the text content displayed to users into Italian.",
-			},
-			{
-				title: "Architecture review",
-				prompt:
-					"Review the architecture and suggest improvements for scalability, SEO optimization, and performance.",
+				title: "Verification",
+				prompt: "How would you verify each phase before proceeding?",
 			},
 		],
 	},
 	{
-		title: "Eminem song",
-		prompt:
-			"Write an Eminem-style rap battling AI taking over hip-hop, with two energetic verses and a catchy hook.",
+		title: "Review a diff",
+		prompt: "What signals would you use to risk-score a code diff (size, files touched, hot paths) and how would you suggest reviewers?",
 		followUps: [
 			{
-				title: "Psychological analysis",
-				prompt: "Provide a psychological analysis of Eminem's emotions in this song.",
+				title: "Auto-classify",
+				prompt: "Classify a diff as feature/bugfix/refactor/docs from its file mix and message.",
 			},
 			{
-				title: "Wired Article",
-				prompt: "Write an article in the style of Wired explaining this Eminem release.",
-			},
-			{
-				title: "Roleplay",
-				prompt: "Roleplay as Eminem so I can discuss the song with him.",
-			},
-			{
-				title: "Translate to Spanish",
-				prompt: "Translate the rap lyrics to Spanish while maintaining the rhyme scheme and flow.",
+				title: "Security focus",
+				prompt: "Which patterns in a diff should trigger a security review?",
 			},
 		],
 	},
 	{
-		title: "Act as Yoda",
-		prompt: "Act as Yoda",
+		title: "Explain HNSW",
+		prompt: "Explain HNSW vector indexing in plain language, and why it's 150x-12,500x faster than brute-force similarity search at scale.",
 		followUps: [
 			{
-				title: "Give advice",
-				prompt:
-					"Continue acting as Yoda and offer three pieces of life advice for staying focused under pressure.",
+				title: "Quantization",
+				prompt: "What does Int8 quantization buy you, and what's the trade-off?",
 			},
 			{
-				title: "Explain the Force",
-				prompt:
-					"In Yoda's voice, explain the concept of the Force to a young padawan using modern language.",
-			},
-			{
-				title: "Plain English",
-				prompt:
-					"Rewrite the previous response from Yoda into plain English while keeping the same meaning.",
-			},
-			{
-				title: "Compare philosophies",
-				prompt:
-					"Compare Yoda's Jedi philosophy to Stoic philosophy from ancient Greece and explain the similarities and differences.",
+				title: "Use case",
+				prompt: "When would you reach for HNSW vs a relational keyword index?",
 			},
 		],
 	},
 	{
-		title: "Generate prompts",
-		prompt: `Generate 5 creative prompts Text-to-image prompts like: "Cyberpunk cityscape at night, neon lights, flying cars, rain-slicked streets, blade runner aesthetic, highly detailed`,
+		title: "Choose a topology",
+		prompt: "I have 12 agents to coordinate on a multi-step refactor. Compare hierarchical, mesh, hierarchical-mesh, and adaptive topologies — pick one and explain why.",
 		followUps: [
 			{
-				title: "Turn into JSON",
-				prompt: `Generate a detailed JSON object for each prompt. Include fields for subjects (list of objects), scene (setting, environment, background details), actions (what's happening), style (artistic style or medium)`,
+				title: "Anti-drift",
+				prompt: "What's 'anti-drift' coordination and why does it matter for >8 agents?",
 			},
 			{
-				title: "Sci-fi portraits",
-				prompt:
-					"Produce five futuristic character portrait prompts with unique professions and settings.",
-			},
-			{
-				title: "Explain image generation",
-				prompt:
-					"Explain how text-to-image diffusion models work, covering the denoising process and how text prompts guide generation.",
+				title: "Consensus",
+				prompt: "Compare Raft, Byzantine, gossip, and CRDT consensus for this swarm.",
 			},
 		],
 	},
 	{
-		title: "Explain LLMs",
-		prompt:
-			"Explain how large language models based on transformers work, covering attention, embeddings, and training objectives.",
+		title: "Track a long task",
+		prompt: "I'm starting a 4-week migration. How should I structure horizon tracking, milestone checkpoints, and drift detection in RuFlo?",
 		followUps: [
 			{
-				title: "Generate a Quiz",
-				prompt: "Craft a 5-question multiple-choice quiz to validate what I learned.",
-			},
-			{
-				title: "Compare to RNNs",
-				prompt:
-					"Compare transformer-based large language models to recurrent neural networks, focusing on training efficiency and capabilities.",
-			},
-			{
-				title: "Student summary",
-				prompt:
-					"Summarize the explanation of large language models for a high school student using relatable analogies.",
-			},
-			{
-				title: "Write a blog post",
-				prompt:
-					"Write a blog post about how transformers revolutionized NLP, targeting software engineers who are new to AI.",
+				title: "Resume after break",
+				prompt: "What state should be persisted so I can resume next week?",
 			},
 		],
 	},
 	{
-		title: "Translate in Italian",
-		prompt: `Translate in Italian: Some are born great, some achieve greatness, and some have greatness thrust upon 'em`,
+		title: "Local WASM tools",
+		prompt: "What's the difference between the in-browser WASM MCP server and the cloud bridge MCP servers? When should I use each?",
 		followUps: [
 			{
-				title: "Back to English",
-				prompt:
-					"Translate the Italian version back into English while keeping Shakespeare's tone intact.",
+				title: "Privacy",
+				prompt: "Which tools never leave my browser?",
 			},
 			{
-				title: "Explain choices",
-				prompt: "Explain your translation choices for each key phrase from the Italian version.",
-			},
-			{
-				title: "Modernize",
-				prompt:
-					"Modernize the Italian translation into contemporary informal Italian suitable for social media.",
-			},
-			{
-				title: "Teach me Italian",
-				prompt:
-					"Help me practice Italian by conversing about this Shakespeare quote, correcting my grammar when needed.",
-			},
-		],
-	},
-	{
-		title: "Pelican on a bicycle",
-		prompt: "Draw an SVG of a pelican riding a bicycle",
-		followUps: [
-			{
-				title: "Add a top hat",
-				prompt: "Add a fancy top hat to the pelican and make it look distinguished",
-			},
-			{
-				title: "Make it animated",
-				prompt: "Add CSS animations to make the bicycle wheels spin and the pelican's wings flap",
+				title: "Offline",
+				prompt: "What can RuFlo still do if my network drops?",
 			},
 		],
 	},

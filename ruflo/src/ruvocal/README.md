@@ -1,190 +1,164 @@
-# Chat UI
+# RuVocal — RuFlo Web UI
 
-![Chat UI repository thumbnail](https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/chat-ui/chat-ui-2026.png)
+> RuFlo's multi-model AI chat with built-in Model Context Protocol (MCP) tool calling. Live at [**flo.ruv.io**](https://flo.ruv.io/).
 
-A chat interface for LLMs. It is a SvelteKit app and it powers the [HuggingChat app on hf.co/chat](https://huggingface.co/chat).
+[![Try the Web UI — flo.ruv.io](https://img.shields.io/badge/✨_Try_it-flo.ruv.io-6366f1?style=for-the-badge&logo=svelte&logoColor=white)](https://flo.ruv.io/)
 
-0. [Quickstart](#quickstart)
-1. [Database Options](#database-options)
-2. [Launch](#launch)
-3. [Optional Docker Image](#optional-docker-image)
-4. [Extra parameters](#extra-parameters)
-5. [Building](#building)
+RuVocal is the SvelteKit web app that lets you chat with Qwen, Claude, Gemini, or OpenAI while [RuFlo](https://github.com/ruvnet/ruflo) invokes the same ~210 MCP tools the CLI uses — agent orchestration, persistent memory, swarm coordination, code review, GitHub ops — all directly from chat. No install, no API key needed to try the hosted demo.
 
-> [!NOTE]
-> Chat UI only supports OpenAI-compatible APIs via `OPENAI_BASE_URL` and the `/models` endpoint. Provider-specific integrations (legacy `MODELS` env var, GGUF discovery, embeddings, web-search helpers, etc.) are removed, but any service that speaks the OpenAI protocol (llama.cpp server, Ollama, OpenRouter, etc. will work by default).
+It started as a fork of the [HuggingFace chat-ui](https://github.com/huggingface/chat-ui) v0.20.0 and has been extended with a WASM-MCP integration layer, parallel tool execution, an in-browser tool gallery, and a "RuFlo Capabilities" tour modal. See [ADR-033](../../docs/adr/ADR-033-RUVOCAL-WASM-MCP-INTEGRATION.md) for the architecture.
 
-> [!NOTE]
-> The old version is still available on the [legacy branch](https://github.com/huggingface/chat-ui/tree/legacy)
+## What RuVocal adds on top of upstream chat-ui
 
-## Quickstart
+| | |
+|---|---|
+| 🛠️ **~210 MCP tools, prefixed** | Five RuFlo server groups (Core, Intelligence, Agents, Memory, DevTools) plus a 18-tool in-browser WASM gallery |
+| ⚡ **Parallel tool calls** | One model turn fires 4–6+ tools at once via `Promise.all`. The UI shows a *Step N — X tools completed* badge per turn |
+| 📘 **RuFlo Capabilities modal** | Question-mark icon → multi-section tour: models, tools, architecture, shortcuts |
+| 💾 **AgentDB-backed memory** | "Remember my favorite color is indigo" → recalled weeks later via HNSW vector search |
+| 🧠 **6 curated frontier models** | Qwen 3.6 Max (default), Claude Sonnet 4.6, Claude Haiku 4.5, Gemini 2.5 Pro, Gemini 2.5 Flash, OpenAI — via OpenRouter |
+| 🔌 **Bring-your-own MCP servers** | Add HTTP/SSE/stdio endpoints from the chat input; they join the parallel-execution flow |
+| 🦾 **ruvLLM ready** | Native support for [ruvLLM](https://github.com/ruvnet/RuVector/tree/main/examples/ruvLLM) — RuFlo's self-improving local model layer |
+| 🏠 **Self-hostable** | Multi-stage Dockerfile (`INCLUDE_DB=true` builds in MongoDB), `cloudbuild.yaml` for Google Cloud Run |
 
-Chat UI speaks to OpenAI-compatible APIs only. The fastest way to get running is with the Hugging Face Inference Providers router plus your personal Hugging Face access token.
+## Quick Start
 
-**Step 1 – Create `.env.local`:**
+### Hosted (zero install)
+
+[**flo.ruv.io**](https://flo.ruv.io/) — pick a model, type a question. That's it.
+
+### Local dev
+
+```bash
+git clone https://github.com/ruvnet/ruflo
+cd ruflo/ruflo/src/ruvocal
+cp .env .env.local        # then edit .env.local — see below
+npm install
+npm run dev               # → http://localhost:5173
+```
+
+Minimum `.env.local` to use OpenRouter (matches the hosted setup):
 
 ```env
-OPENAI_BASE_URL=https://router.huggingface.co/v1
-OPENAI_API_KEY=hf_************************
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+OPENAI_API_KEY=sk-or-v1-...
+
+# Curated RuFlo model list (optional — defaults to /models from the base URL)
+TASK_MODEL=qwen/qwen3.6-max-preview
+PUBLIC_APP_NAME=RuFlo
+PUBLIC_APP_DESCRIPTION="Intelligent workflow automation assistant powered by Claude/Gemini/Qwen and MCP tools."
 ```
 
-`OPENAI_API_KEY` can come from any OpenAI-compatible endpoint you plan to call. Pick the combo that matches your setup and drop the values into `.env.local`:
+Any OpenAI-compatible endpoint works (vLLM, Ollama, LM Studio, llama.cpp, Together, Groq, self-hosted, …):
 
-| Provider                                      | Example `OPENAI_BASE_URL`          | Example key env                                                         |
-| --------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------- |
-| Hugging Face Inference Providers router       | `https://router.huggingface.co/v1` | `OPENAI_API_KEY=hf_xxx` (or `HF_TOKEN` legacy alias)                    |
-| llama.cpp server (`llama.cpp --server --api`) | `http://127.0.0.1:8080/v1`         | `OPENAI_API_KEY=sk-local-demo` (any string works; llama.cpp ignores it) |
-| Ollama (with OpenAI-compatible bridge)        | `http://127.0.0.1:11434/v1`        | `OPENAI_API_KEY=ollama`                                                 |
-| OpenRouter                                    | `https://openrouter.ai/api/v1`     | `OPENAI_API_KEY=sk-or-v1-...`                                           |
-| Poe                                           | `https://api.poe.com/v1`           | `OPENAI_API_KEY=pk_...`                                                 |
+| Provider | `OPENAI_BASE_URL` | Key |
+| --- | --- | --- |
+| OpenRouter | `https://openrouter.ai/api/v1` | `sk-or-v1-...` |
+| Hugging Face router | `https://router.huggingface.co/v1` | `hf_xxx` |
+| llama.cpp server | `http://127.0.0.1:8080/v1` | any string |
+| Ollama (OAI bridge) | `http://127.0.0.1:11434/v1` | `ollama` |
+| Poe | `https://api.poe.com/v1` | `pk_...` |
 
-Check the root [`.env` template](./.env) for the full list of optional variables you can override.
-
-**Step 2 – Install and launch the dev server:**
+### Docker (with embedded MongoDB)
 
 ```bash
-git clone https://github.com/huggingface/chat-ui
-cd chat-ui
-npm install
-npm run dev -- --open
+docker build -t ruvocal --build-arg INCLUDE_DB=true .
+docker run -p 3000:3000 \
+  -e OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
+  -e OPENAI_API_KEY=sk-or-v1-... \
+  -v ruvocal-data:/data \
+  ruvocal
 ```
 
-You now have Chat UI running locally. Open the browser and start chatting.
+### Google Cloud Run (production-style)
 
-## Database Options
+`cloudbuild.yaml` does a multi-stage build with `INCLUDE_DB=true`, pushes to Artifact Registry, and deploys to Cloud Run. Hosted demo at `flo.ruv.io` runs from this exact pipeline. See [`cloudbuild.yaml`](./cloudbuild.yaml) and the deploy notes in [ADR-033](../../docs/adr/ADR-033-RUVOCAL-WASM-MCP-INTEGRATION.md).
 
-Chat history, users, settings, files, and stats all live in MongoDB. You can point Chat UI at any MongoDB 6/7 deployment.
+## Database
 
-> [!TIP]
-> For quick local development, you can skip this section. When `MONGODB_URL` is not set, Chat UI falls back to an embedded MongoDB that persists to `./db`.
+Chat history, users, settings, files, and stats live in MongoDB. Three options:
 
-### MongoDB Atlas (managed)
+- **Embedded (zero-config)** — omit `MONGODB_URL`; the app uses `MongoMemoryServer` and persists to `./db`. Good for local dev and the `INCLUDE_DB=true` Docker path.
+- **MongoDB Atlas (managed)** — free cluster at [mongodb.com](https://www.mongodb.com/pricing), allow-list your IP, set `MONGODB_URL` to the connection string.
+- **Local container** — `docker run -d -p 27017:27017 --name mongo-ruvocal mongo:latest` then `MONGODB_URL=mongodb://localhost:27017`.
 
-1. Create a free cluster at [mongodb.com](https://www.mongodb.com/pricing).
-2. Add your IP (or `0.0.0.0/0` for development) to the network access list.
-3. Create a database user and copy the connection string.
-4. Paste that string into `MONGODB_URL` in `.env.local`. Keep the default `MONGODB_DB_NAME=chat-ui` or change it per environment.
+`MONGODB_DB_NAME` defaults to `chat-ui` (kept for upstream compatibility); change per environment.
 
-Atlas keeps MongoDB off your laptop, which is ideal for teams or cloud deployments.
+## MCP Tools (the RuFlo difference)
 
-### Local MongoDB (container)
-
-If you prefer to run MongoDB in a container:
-
-```bash
-docker run -d -p 27017:27017 --name mongo-chatui mongo:latest
-```
-
-Then set `MONGODB_URL=mongodb://localhost:27017` in `.env.local`.
-
-## Launch
-
-After configuring your environment variables, start Chat UI with:
-
-```bash
-npm install
-npm run dev
-```
-
-The dev server listens on `http://localhost:5173` by default. Use `npm run build` / `npm run preview` for production builds.
-
-## Optional Docker Image
-
-The `chat-ui-db` image bundles MongoDB inside the container:
-
-```bash
-docker run \
-  -p 3000:3000 \
-  -e OPENAI_BASE_URL=https://router.huggingface.co/v1 \
-  -e OPENAI_API_KEY=hf_*** \
-  -v chat-ui-data:/data \
-  ghcr.io/huggingface/chat-ui-db:latest
-```
-
-All environment variables accepted in `.env.local` can be provided as `-e` flags.
-
-## Extra parameters
-
-### Theming
-
-You can use a few environment variables to customize the look and feel of chat-ui. These are by default:
+RuVocal calls tools exposed by Model Context Protocol servers and feeds results back to the model via OpenAI function calling. Configure trusted servers via env, let users add their own, and the router auto-selects tools-capable models when needed.
 
 ```env
-PUBLIC_APP_NAME=ChatUI
+MCP_SERVERS=[
+  {"name":"RuFlo Core","url":"https://mcp-bridge-...run.app/mcp/core","transport":"sse"},
+  {"name":"RuFlo Intelligence","url":"https://mcp-bridge-...run.app/mcp/intelligence","transport":"sse"},
+  {"name":"RuFlo Agents","url":"https://mcp-bridge-...run.app/mcp/agents","transport":"sse"},
+  {"name":"RuFlo Memory","url":"https://mcp-bridge-...run.app/mcp/memory","transport":"sse"},
+  {"name":"RuFlo DevTools","url":"https://mcp-bridge-...run.app/mcp/devtools","transport":"sse"},
+  {"name":"π Shared Brain","url":"https://mcp.pi.ruv.io","transport":"streamable-http"}
+]
+```
+
+In the chat UI: **MCP (n)** pill in the chat input → *Add Server* to drop in any HTTP/SSE/stdio endpoint. Run a local MCP server on `localhost:3000` and it just works.
+
+When a model calls a tool, the message shows a compact card with parameters, a progress bar while running, and the result. Multiple tools in the same turn render as a parallel-execution group.
+
+## LLM Router (Omni)
+
+RuVocal can do server-side smart routing using [katanemo/Arch-Router-1.5B](https://huggingface.co/katanemo/Arch-Router-1.5B) without a separate router service. Selecting "Omni" in the model picker:
+
+1. Calls Arch once (non-streaming) to pick the best route for recent turns
+2. Emits `RouterMetadata` so the UI shows route + selected model
+3. Streams from the selected model via `OPENAI_BASE_URL`; on errors, tries route fallbacks
+
+Shortcut paths bypass Arch:
+- **Multimodal** — `LLM_ROUTER_ENABLE_MULTIMODAL=true` + image attached → uses `LLM_ROUTER_MULTIMODAL_MODEL`
+- **Tools/Agentic** — `LLM_ROUTER_ENABLE_TOOLS=true` + ≥1 MCP server enabled → uses `LLM_ROUTER_TOOLS_MODEL`
+
+Configure via `LLM_ROUTER_ROUTES_PATH` (JSON array of route entries with `name`, `description`, `primary_model`, optional `fallback_models`), `LLM_ROUTER_ARCH_BASE_URL`, `LLM_ROUTER_ARCH_MODEL`, `LLM_ROUTER_OTHER_ROUTE`, `LLM_ROUTER_FALLBACK_MODEL`, `LLM_ROUTER_ARCH_TIMEOUT_MS`.
+
+Display: `PUBLIC_LLM_ROUTER_ALIAS_ID` (default `omni`), `PUBLIC_LLM_ROUTER_DISPLAY_NAME` (default `Omni`), `PUBLIC_LLM_ROUTER_LOGO_URL`.
+
+## Theming
+
+```env
+PUBLIC_APP_NAME=RuFlo
 PUBLIC_APP_ASSETS=chatui
-PUBLIC_APP_DESCRIPTION="Making the community's best AI chat models available to everyone."
+PUBLIC_APP_DESCRIPTION="Intelligent workflow automation assistant powered by Claude/Gemini/Qwen and MCP tools."
 PUBLIC_APP_DATA_SHARING=
 ```
 
-- `PUBLIC_APP_NAME` The name used as a title throughout the app.
-- `PUBLIC_APP_ASSETS` Is used to find logos & favicons in `static/$PUBLIC_APP_ASSETS`, current options are `chatui` and `huggingchat`.
-- `PUBLIC_APP_DATA_SHARING` Can be set to 1 to add a toggle in the user settings that lets your users opt-in to data sharing with models creator.
+`PUBLIC_APP_ASSETS` picks the logo/favicon directory under `static/$PUBLIC_APP_ASSETS`.
 
-### Models
-
-Models are discovered from `${OPENAI_BASE_URL}/models`, and you can optionally override their metadata via the `MODELS` env var (JSON5). Legacy provider‑specific integrations and GGUF discovery are removed. Authorization uses `OPENAI_API_KEY` (preferred). `HF_TOKEN` remains a legacy alias.
-
-### LLM Router (Optional)
-
-Chat UI can perform server-side smart routing using [katanemo/Arch-Router-1.5B](https://huggingface.co/katanemo/Arch-Router-1.5B) as the routing model without running a separate router service. The UI exposes a virtual model alias called "Omni" (configurable) that, when selected, chooses the best route/model for each message.
-
-- Provide a routes policy JSON via `LLM_ROUTER_ROUTES_PATH`. No sample file ships with this branch, so you must point the variable to a JSON array you create yourself (for example, commit one in your project like `config/routes.chat.json`). Each route entry needs `name`, `description`, `primary_model`, and optional `fallback_models`.
-- Configure the Arch router selection endpoint with `LLM_ROUTER_ARCH_BASE_URL` (OpenAI-compatible `/chat/completions`) and `LLM_ROUTER_ARCH_MODEL` (e.g. `router/omni`). The Arch call reuses `OPENAI_API_KEY` for auth.
-- Map `other` to a concrete route via `LLM_ROUTER_OTHER_ROUTE` (default: `casual_conversation`). If Arch selection fails, calls fall back to `LLM_ROUTER_FALLBACK_MODEL`.
-- Selection timeout can be tuned via `LLM_ROUTER_ARCH_TIMEOUT_MS` (default 10000).
-- Omni alias configuration: `PUBLIC_LLM_ROUTER_ALIAS_ID` (default `omni`), `PUBLIC_LLM_ROUTER_DISPLAY_NAME` (default `Omni`), and optional `PUBLIC_LLM_ROUTER_LOGO_URL`.
-
-When you select Omni in the UI, Chat UI will:
-
-- Call the Arch endpoint once (non-streaming) to pick the best route for the last turns.
-- Emit RouterMetadata immediately (route and actual model used) so the UI can display it.
-- Stream from the selected model via your configured `OPENAI_BASE_URL`. On errors, it tries route fallbacks.
-
-Tool and multimodal shortcuts:
-
-- Multimodal: If `LLM_ROUTER_ENABLE_MULTIMODAL=true` and the user sends an image, the router bypasses Arch and uses the model specified in `LLM_ROUTER_MULTIMODAL_MODEL`. Route name: `multimodal`.
-- Tools: If `LLM_ROUTER_ENABLE_TOOLS=true` and the user has at least one MCP server enabled, the router bypasses Arch and uses `LLM_ROUTER_TOOLS_MODEL`. If that model is missing or misconfigured, it falls back to Arch routing. Route name: `agentic`.
-
-### MCP Tools (Optional)
-
-Chat UI can call tools exposed by Model Context Protocol (MCP) servers and feed results back to the model using OpenAI function calling. You can preconfigure trusted servers via env, let users add their own, and optionally have the Omni router auto‑select a tools‑capable model.
-
-Configure servers (base list for all users):
-
-```env
-# JSON array of servers: name, url, optional headers
-MCP_SERVERS=[
-  {"name": "Web Search (Exa)", "url": "https://mcp.exa.ai/mcp"},
-  {"name": "Hugging Face MCP Login", "url": "https://hf.co/mcp?login"}
-]
-
-# Forward the signed-in user's Hugging Face token to the official HF MCP login endpoint
-# when no Authorization header is set on that server entry.
-MCP_FORWARD_HF_USER_TOKEN=true
-```
-
-Enable router tool path (Omni):
-
-- Set `LLM_ROUTER_ENABLE_TOOLS=true` and choose a tools‑capable target with `LLM_ROUTER_TOOLS_MODEL=<model id or name>`.
-- The target must support OpenAI tools/function calling. Chat UI surfaces a “tools” badge on models that advertise this; you can also force‑enable it per‑model in settings (see below).
-
-Use tools in the UI:
-
-- Open “MCP Servers” from the top‑right menu or from the `+` menu in the chat input to add servers, toggle them on, and run Health Check. The server card lists available tools.
-- When a model calls a tool, the message shows a compact “tool” block with parameters, a progress bar while running, and the result (or error). Results are also provided back to the model for follow‑up.
-
-Per‑model overrides:
-
-- In Settings → Model, you can toggle “Tool calling (functions)” and “Multimodal input” per model. These overrides apply even if the provider metadata doesn’t advertise the capability.
-
-## Building
-
-To create a production version of your app:
+## Build
 
 ```bash
-npm run build
+npm run build         # production bundle
+npm run preview       # preview the build locally
 ```
 
-You can preview the production build with `npm run preview`.
+## Architecture (one-pager)
 
-> To deploy your app, you may need to install an [adapter](https://kit.svelte.dev/docs/adapters) for your target environment.
+- **SvelteKit 2 + Svelte 5 runes** (`$state`, `$derived`, `$effect`)
+- **MongoDB** persistence with `MongoMemoryServer` fallback
+- **TailwindCSS** with `scrollbar-custom` and Tailwind class sorting
+- **OpenAI-compatible** model registry pulled from `${OPENAI_BASE_URL}/models`
+- **MCP bridge** in `src/lib/server/mcp/`; each server group exposes its own SSE endpoint
+- **WASM tool gallery** via Web Worker (`src/lib/wasm/wasm.worker.ts`), opt-in via `?worker=1`
+- **Parallel tool calls** — `Promise.all` in `src/lib/server/tools/toolInvocation.ts`
+- **Capabilities modal** — `src/lib/components/RufloHelpModal.svelte`
+- **Dynamic follow-ups** — tool-call-aware suggested next prompts in `ChatWindow.svelte`
+
+For deeper internals, see [`CLAUDE.md`](./CLAUDE.md) (Claude Code agent guide) and [ADR-033](../../docs/adr/ADR-033-RUVOCAL-WASM-MCP-INTEGRATION.md).
+
+## Related
+
+- 🏠 **Parent project** — [RuFlo](https://github.com/ruvnet/ruflo)
+- 🎯 **Goal Planner UI** — [goal.ruv.io](https://goal.ruv.io/) · [/agents](https://goal.ruv.io/agents)
+- 📖 **ADR-033** — RuVocal/WASM-MCP integration architecture
+- 📋 **Roadmap** — [issue #1689](https://github.com/ruvnet/ruflo/issues/1689)
+- 🍴 **Upstream** — [huggingface/chat-ui](https://github.com/huggingface/chat-ui) (RuVocal is forked from v0.20.0)
+
+## License
+
+MIT — same as the parent [RuFlo](https://github.com/ruvnet/ruflo) project.

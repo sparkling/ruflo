@@ -343,17 +343,135 @@
 	let activeExamples = $derived<RouterExample[]>(
 		$allBaseServersEnabled ? mcpExamples : routerExamples
 	);
+
+	// Map a tool name to follow-up suggestions that make sense after that tool ran.
+	// Order matters: more-specific patterns first. Each entry returns up to 2 prompts.
+	function followUpsForTool(toolName: string): RouterFollowUp[] {
+		const n = toolName.toLowerCase();
+		if (n.includes("memory_store"))
+			return [
+				{ title: "Verify the save", prompt: "Use ruflo__memory_retrieve with the same key and namespace to confirm the save." },
+				{ title: "List the namespace", prompt: "Use ruflo__memory_list to show every entry in that namespace." },
+			];
+		if (n.includes("memory_search") || n.includes("memory_retrieve") || n.includes("memory_list"))
+			return [
+				{ title: "Save a related item", prompt: "Use ruflo__memory_store to add a related entry to the same namespace." },
+				{ title: "Semantic search", prompt: "Run ruvector__hooks_recall on the same query for a semantic match." },
+			];
+		if (n.includes("system_status") || n.includes("system_health"))
+			return [
+				{ title: "Performance metrics", prompt: "Run ruflo__performance_metrics and ruflo__performance_bottleneck in parallel." },
+				{ title: "Memory usage", prompt: "Run ruflo__memory_stats and ruflo__system_metrics in parallel." },
+			];
+		if (n.includes("performance_metrics") || n.includes("performance_bottleneck"))
+			return [
+				{ title: "Optimize", prompt: "Use ruflo__performance_optimize on the slowest component identified." },
+				{ title: "Run benchmarks", prompt: "Run ruflo__performance_benchmark with --suite=all." },
+			];
+		if (n.includes("agent_spawn") || n.includes("swarm_init"))
+			return [
+				{ title: "Track progress", prompt: "Use ruflo__progress_summary to show what each agent is doing right now." },
+				{ title: "Add a tester", prompt: "Spawn a tester agent for the same swarm and have it write integration tests." },
+			];
+		if (n.includes("hooks_route") || n.includes("hooks_swarm_recommend"))
+			return [
+				{ title: "Spawn the agent", prompt: "Use ruflo__agent_spawn to create the recommended agent type now." },
+				{ title: "Track this run", prompt: "Begin a trajectory with ruvector__hooks_trajectory_begin so the system learns from this work." },
+			];
+		if (n.includes("analyze_diff") || n.includes("analyze_file"))
+			return [
+				{ title: "Suggest reviewers", prompt: "Use ruflo__analyze_diff-reviewers to recommend reviewers for the same diff." },
+				{ title: "Risk per file", prompt: "Use ruflo__analyze_file-risk on the highest-risk files." },
+			];
+		if (n.includes("github_repo_analyze") || n.includes("github_pr_manage") || n.includes("github_issue_track"))
+			return [
+				{ title: "Repo metrics", prompt: "Run ruflo__github_metrics on the same repo and summarize health signals." },
+				{ title: "Recent issues", prompt: "List the most recently updated issues with ruflo__github_issue_track." },
+			];
+		if (n.includes("hooks_trajectory_begin") || n.includes("hooks_trajectory_step"))
+			return [
+				{ title: "Record next step", prompt: "Record this step with ruvector__hooks_trajectory_step." },
+				{ title: "End trajectory", prompt: "Close the trajectory with ruvector__hooks_trajectory_end so the system learns from it." },
+			];
+		if (n.includes("hooks_security_scan") || n.includes("aidefence"))
+			return [
+				{ title: "Detail the highest risk", prompt: "Explain the highest-severity finding and propose a concrete fix." },
+				{ title: "Re-scan", prompt: "Re-run ruvector__hooks_security_scan after applying the fix." },
+			];
+		if (n === "search" || n.includes("__search"))
+			return [
+				{ title: "Deep research", prompt: "Run web_research with action='research' on the same topic for a thorough report." },
+				{ title: "Compare alternatives", prompt: "Run web_research with action='compare' to compare the top results." },
+			];
+		if (n === "web_research" || n.includes("__web_research"))
+			return [
+				{ title: "Fact-check it", prompt: "Run web_research with action='fact_check' to verify the key claims." },
+				{ title: "Save findings", prompt: "Use ruflo__memory_store to save the research summary into a 'research' namespace." },
+			];
+		if (n.includes("guidance"))
+			return [
+				{ title: "List my tools", prompt: "Call guidance with topic='overview' to summarize every available tool group." },
+				{ title: "Pick one to try", prompt: "Suggest one underused tool from those groups and walk me through calling it." },
+			];
+		// Default: no specialized follow-up known for this tool.
+		return [];
+	}
+
+	function dedupePrompts(items: RouterFollowUp[], max: number = 4): RouterFollowUp[] {
+		const seen = new Set<string>();
+		const out: RouterFollowUp[] = [];
+		for (const it of items) {
+			const key = it.prompt.trim().toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push(it);
+			if (out.length >= max) break;
+		}
+		return out;
+	}
+
+	// Pull tool names from the latest assistant message.
+	let lastAssistantToolNames = $derived<string[]>(() => {
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.from !== "assistant") continue;
+			const updates = (msg.updates ?? []) as Array<{ type?: string; subtype?: string; call?: { name?: string } }>;
+			const names: string[] = [];
+			for (const u of updates) {
+				if (u.type === "tool" && u.subtype === "call" && u.call?.name) {
+					names.push(u.call.name);
+				}
+			}
+			return names;
+		}
+		return [];
+	}());
+
+	let dynamicFollowUps = $derived<RouterFollowUp[]>(
+		dedupePrompts(lastAssistantToolNames.flatMap(followUpsForTool), 4)
+	);
+
 	let routerFollowUps = $derived<RouterFollowUp[]>(
 		activeRouterExamplePrompt
 			? (activeExamples.find((ex) => ex.prompt === activeRouterExamplePrompt)?.followUps ?? [])
 			: []
 	);
+
+	// Combined: prefer static example follow-ups (curated by us); fall back to
+	// dynamic tool-derived follow-ups generated from the last assistant turn.
+	let effectiveFollowUps = $derived<RouterFollowUp[]>(
+		routerFollowUps.length > 0 ? routerFollowUps : dynamicFollowUps
+	);
+
 	let routerUserMessages = $derived(messages.filter((msg) => msg.from === "user"));
 	let shouldShowRouterFollowUps = $derived(
 		!draft.length &&
-			activeRouterExamplePrompt &&
-			routerFollowUps.length > 0 &&
-			routerUserMessages.length === 1 &&
+			effectiveFollowUps.length > 0 &&
+			// Static followups: only after the very first user message (matches an example)
+			// Dynamic followups: any time we have at least one assistant turn that finished
+			(routerFollowUps.length > 0
+				? routerUserMessages.length === 1
+				: messages.length > 0 && messages[messages.length - 1]?.from === "assistant") &&
 			(currentModel.isRouter || (modelSupportsTools && $allBaseServersEnabled)) &&
 			!hideRouterExamples &&
 			!loading
@@ -585,7 +703,7 @@
 				class="no-scrollbar mb-3 flex w-full select-none justify-start gap-2 overflow-x-auto whitespace-nowrap text-gray-400 dark:text-gray-500"
 			>
 				<!-- <span class=" text-gray-500 dark:text-gray-400">Follow ups</span> -->
-				{#each routerFollowUps as followUp}
+				{#each effectiveFollowUps as followUp}
 					<button
 						class="flex items-center gap-1 rounded-lg bg-gray-100/90 px-2 py-0.5 text-center text-sm backdrop-blur hover:text-gray-500 dark:bg-gray-700/50 dark:hover:text-gray-400"
 						onclick={() => startFollowUp(followUp)}

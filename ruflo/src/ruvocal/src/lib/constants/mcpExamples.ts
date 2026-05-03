@@ -1,134 +1,113 @@
 import type { RouterExample } from "./routerExamples";
 
-// Examples that showcase MCP tool capabilities (web search, Hugging Face, etc.)
+// Examples that showcase RuFlo MCP capabilities — agents, memory,
+// intelligence, dev tools, and the WASM gallery.
 export const mcpExamples: RouterExample[] = [
 	{
-		title: "Generate an image",
-		prompt: "Generate an image of a zebra in front of a volcanic eruption",
-	},
-	{
-		title: "Latest world news",
-		prompt: "What is the latest world news?",
+		title: "Spawn a coding swarm",
+		prompt:
+			"Spawn a hierarchical swarm with 5 agents (architect, coder, tester, reviewer, security-auditor) to refactor a Python CLI tool to TypeScript. Use ruflo__swarm_init then ruflo__agent_spawn for each role.",
 		followUps: [
 			{
-				title: "Tech focus",
-				prompt: "What about technology news?",
+				title: "Show progress",
+				prompt: "Use ruflo__progress_summary to show the swarm's current state.",
 			},
 			{
-				title: "San Francisco",
-				prompt: "What's happening in San Francisco?",
-			},
-			{
-				title: "vs last week",
-				prompt: "How does this compare to last week's news?",
+				title: "Add tests",
+				prompt: "Spawn a tester agent to write integration tests for the swarm output.",
 			},
 		],
 	},
 	{
-		title: "Trending models",
-		prompt: "What are the top trending models on Hugging Face?",
+		title: "Save & recall memory",
+		prompt:
+			"Use ruflo__memory_store to save: namespace='preferences', key='editor_theme', value='solarized-dark'. Then ruflo__memory_search query='theme' to verify.",
 		followUps: [
 			{
-				title: "Text generation",
-				prompt: "What about text generation models?",
+				title: "List entries",
+				prompt: "List all entries in the 'preferences' namespace using ruflo__memory_list.",
 			},
 			{
-				title: "Image generation",
-				prompt: "What about text-to-image models?",
-			},
-			{
-				title: "How to use",
-				prompt: "Show me how to use the most popular one",
+				title: "Semantic search",
+				prompt: "Find related memories with ruvector__hooks_recall query='editor settings'.",
 			},
 		],
 	},
 	{
-		title: "Plan a trip",
-		prompt: "Things to do in Tokyo next week",
+		title: "Route a task",
+		prompt:
+			"Use ruvector__hooks_route on the task: 'add OAuth2 to a SvelteKit API'. Tell me which agent type and topology you'd recommend.",
 		followUps: [
 			{
-				title: "Transport & prices",
-				prompt: "How do I get around and how much will it cost?",
+				title: "Spawn the agent",
+				prompt: "Spawn the recommended agent with ruflo__agent_spawn.",
 			},
 			{
-				title: "Weather",
-				prompt: "What's the weather like in Tokyo next week?",
-			},
-			{
-				title: "Meet people",
-				prompt: "Where can I meet new people and make friends?",
+				title: "Track trajectory",
+				prompt: "Begin a trajectory with ruvector__hooks_trajectory_begin to record the work.",
 			},
 		],
 	},
 	{
-		title: "Compare technologies",
-		prompt: "Search the web to compare React, Vue, and Svelte for building web apps in 2025",
+		title: "Analyze a diff",
+		prompt:
+			"Use ruflo__analyze_diff to assess risk and ruflo__analyze_diff-reviewers to suggest reviewers for the PR at github.com/ruvnet/ruflo/pull/1687.",
 		followUps: [
 			{
-				title: "Performance benchmarks",
-				prompt: "Search for recent performance benchmarks comparing these frameworks",
+				title: "Repo metrics",
+				prompt: "Get repository metrics with ruflo__github_repo_analyze for ruvnet/ruflo.",
 			},
 			{
-				title: "Job market",
-				prompt: "Search for job market trends for each of these frameworks",
-			},
-			{
-				title: "Migration guides",
-				prompt: "Search for guides on migrating from React to Svelte",
+				title: "Open issues",
+				prompt: "List recent issues with ruflo__github_issue_track for ruvnet/ruflo.",
 			},
 		],
 	},
 	{
-		title: "Find a dataset",
-		prompt: "Find datasets on Hugging Face for training a sentiment analysis model",
+		title: "System health check",
+		prompt:
+			"Run ruflo__system_status, ruflo__performance_metrics, and ruflo__performance_bottleneck. Summarize anything concerning.",
 		followUps: [
 			{
-				title: "Dataset details",
-				prompt: "Tell me more about the largest dataset - its size, format, and how to load it",
+				title: "Optimize",
+				prompt: "Use ruflo__performance_optimize on the slowest component identified.",
 			},
 			{
-				title: "Find models",
-				prompt: "Find pre-trained models that were trained on this dataset",
-			},
-			{
-				title: "Code snippet",
-				prompt: "Show me how to load and preprocess this dataset with the datasets library",
+				title: "Benchmark",
+				prompt: "Run ruflo__performance_benchmark with --suite=all.",
 			},
 		],
 	},
 	{
-		title: "Gift ideas",
-		prompt: "Search for unique gift ideas for someone who loves cooking",
+		title: "Browse WASM gallery",
+		prompt:
+			"Show me the templates in the WASM gallery (browser-side rvagent server) and explain what each one does.",
 		followUps: [
 			{
-				title: "Budget options",
-				prompt: "Search for gift ideas under $50",
-			},
-			{
-				title: "Top rated",
-				prompt: "Search for the top-rated cooking gadgets of this year",
-			},
-			{
-				title: "DIY gifts",
-				prompt: "Search for homemade gift ideas for cooking enthusiasts",
+				title: "Load a template",
+				prompt: "Load the most popular template into the local WASM MCP server.",
 			},
 		],
 	},
 	{
-		title: "Learn something new",
-		prompt: "Search for the best resources to learn Rust programming in 2025",
+		title: "Plan with GOAP",
+		prompt:
+			"Use the goal-planner pattern: I want to migrate a Postgres schema with zero downtime. Decompose into ruflo agents and tasks.",
 		followUps: [
 			{
-				title: "Project ideas",
-				prompt: "Search for beginner Rust project ideas to practice with",
+				title: "Risk analysis",
+				prompt: "Run ruflo__analyze_file-risk on the migration file.",
 			},
+		],
+	},
+	{
+		title: "Train neural pattern",
+		prompt:
+			"Use ruvector__neural_train to learn from this successful pattern: 'JWT auth with refresh tokens — store refresh in httpOnly cookie, access in memory'.",
+		followUps: [
 			{
-				title: "Find tools",
-				prompt: "Search for the most popular Rust tools and libraries I should know about",
-			},
-			{
-				title: "Community",
-				prompt: "Search for Rust communities and forums where I can ask questions",
+				title: "Predict",
+				prompt: "Use ruvector__neural_predict for the task 'add session-based auth'.",
 			},
 		],
 	},

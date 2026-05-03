@@ -63,6 +63,12 @@ export interface Settings extends Timestamps {
 	autopilotEnabled: boolean;
 
 	/**
+	 * Maximum number of autopilot steps (tool call loops) before stopping.
+	 * Default is 10. Range: 1-50.
+	 */
+	autopilotMaxSteps: number;
+
+	/**
 	 * Organization to bill inference requests to (HuggingChat only).
 	 * Stores the org's preferred_username. If empty/undefined, bills to personal account.
 	 */
@@ -83,4 +89,5 @@ export const DEFAULT_SETTINGS = {
 	directPaste: false,
 	hapticsEnabled: true,
 	autopilotEnabled: true,
+	autopilotMaxSteps: 10,
 } satisfies SettingsEditable;
