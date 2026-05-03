@@ -20,6 +20,14 @@ import {
 import { spawn as childSpawn, execSync } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
+// ADR-0124 (T6): session lifecycle subcommands — checkpoint / resume /
+// export / import. Wired into the hive-mind subcommand tree below.
+import {
+  sessionsCommand,
+  resumeCommand,
+  SESSION_QUEEN_PROMPT_MEMORY_KEY,
+  SESSION_WORKER_MANIFEST_MEMORY_KEY,
+} from './hive-mind-session.js';
 
 // Worker type definitions for prompt generation
 interface HiveWorker {
@@ -753,6 +761,37 @@ async function spawnClaudeCodeInstance(
 
     const promptFile = join(sessionsDir, `hive-mind-prompt-${swarmId}.txt`);
     await writeFile(promptFile, hiveMindPrompt, 'utf8');
+
+    // ADR-0124 (T6): persist queen prompt + worker manifest into typed
+    // memory so `hive-mind sessions checkpoint <session-id>` can capture
+    // them later. The MCP tool's `set` action is the only legal write site
+    // (it owns the lock, validation, type defaulting). Best-effort: a
+    // failure here logs a warning but does NOT abort the spawn — the
+    // session-checkpoint surface fails loudly later if the keys are
+    // missing per `feedback-no-fallbacks.md`.
+    try {
+      await callMCPTool<{ success: boolean }>('hive-mind_memory', {
+        action: 'set',
+        key: SESSION_QUEEN_PROMPT_MEMORY_KEY,
+        value: hiveMindPrompt,
+        type: 'system',
+      });
+      await callMCPTool<{ success: boolean }>('hive-mind_memory', {
+        action: 'set',
+        key: SESSION_WORKER_MANIFEST_MEMORY_KEY,
+        value: workers.map(w => ({
+          id: w.agentId,
+          type: w.type ?? w.role ?? 'worker',
+          manifest: { joinedAt: w.joinedAt, role: w.role },
+        })),
+        type: 'system',
+      });
+    } catch (err) {
+      output.printWarning(
+        `ADR-0124: failed to persist session checkpoint metadata: ${(err as Error).message}. ` +
+        `'sessions checkpoint' will throw until the next successful spawn.`,
+      );
+    }
     output.writeln();
     output.printSuccess(`Hive Mind prompt saved to: ${promptFile}`);
 
@@ -939,11 +978,23 @@ const initCommand: Command = {
       description: 'Memory backend (agentdb, sqlite, hybrid)',
       type: 'string',
       default: 'hybrid'
+    },
+    // ADR-0124 (T6) / H6 row 32 fold-in: surface --queen-type on `init` so
+    // the persisted state.queen.queenType is set up-front. The CLI
+    // boundary already validates against QUEEN_TYPES via the choices
+    // declaration; the MCP handler also throws on unknown values per
+    // `feedback-no-fallbacks.md`.
+    {
+      name: 'queen-type',
+      description: `Queen leadership style (${QUEEN_TYPES.join(', ')}). Persisted on state.queen.queenType.`,
+      type: 'string',
+      choices: [...QUEEN_TYPES],
     }
   ],
   examples: [
     { command: 'claude-flow hive-mind init -t hierarchical-mesh', description: 'Init hierarchical mesh' },
-    { command: 'claude-flow hive-mind init -c byzantine -m 20', description: 'Init with Byzantine consensus' }
+    { command: 'claude-flow hive-mind init -c byzantine -m 20', description: 'Init with Byzantine consensus' },
+    { command: 'claude-flow hive-mind init --queen-type adaptive', description: 'Init with adaptive queen' }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     let topology = ctx.flags.topology as string;
@@ -965,13 +1016,34 @@ const initCommand: Command = {
       });
     }
 
-    const config = {
+    // ADR-0124 (T6) / H6 row 32: validate --queen-type at the CLI boundary
+    // before forwarding to the MCP tool. Per `feedback-no-fallbacks.md`,
+    // unknown values must fail loudly with a user-visible error before
+    // touching state. `validateQueenType` already issues a fail-loud
+    // descriptive error; we wrap it in the same exact-string contract used
+    // by the spawn action above.
+    const rawInitQueenType = ctx.flags.queenType ?? ctx.flags['queen-type'];
+    let initQueenType: string | undefined;
+    if (rawInitQueenType !== undefined && rawInitQueenType !== null && rawInitQueenType !== '') {
+      const qtCheck = validateQueenType(rawInitQueenType);
+      if (!qtCheck.valid) {
+        throw new Error(
+          `--queen-type must be one of ${QUEEN_TYPES.join('|')} (got "${String(rawInitQueenType)}")`
+        );
+      }
+      initQueenType = String(rawInitQueenType);
+    }
+
+    const config: Record<string, unknown> = {
       topology: topology || 'hierarchical-mesh',
       consensus: consensus || 'byzantine',
       maxAgents: ctx.flags.maxAgents as number || 15,
       persist: ctx.flags.persist as boolean,
       memoryBackend: ctx.flags.memoryBackend as string || 'hybrid'
     };
+    if (initQueenType !== undefined) {
+      config.queenType = initQueenType;
+    }
 
     output.writeln();
     output.writeln(output.bold('Initializing Hive Mind'));
@@ -1921,7 +1993,23 @@ export const hiveMindCommand: Command = {
   name: 'hive-mind',
   aliases: ['hive'],
   description: 'Queen-led consensus-based multi-agent coordination',
-  subcommands: [initCommand, spawnCommand, statusCommand, taskCommand, joinCommand, leaveCommand, consensusCommand, broadcastCommand, memorySubCommand, optimizeMemoryCommand, shutdownCommand],
+  subcommands: [
+    initCommand,
+    spawnCommand,
+    statusCommand,
+    taskCommand,
+    joinCommand,
+    leaveCommand,
+    consensusCommand,
+    broadcastCommand,
+    memorySubCommand,
+    optimizeMemoryCommand,
+    shutdownCommand,
+    // ADR-0124 (T6): hive-mind sessions <list|checkpoint|export|import>
+    // and hive-mind resume <session-id>. See `hive-mind-session.ts`.
+    sessionsCommand,
+    resumeCommand,
+  ],
   options: [],
   examples: [
     { command: 'claude-flow hive-mind init -t hierarchical-mesh', description: 'Initialize hive' },
@@ -1947,7 +2035,10 @@ export const hiveMindCommand: Command = {
       `${output.highlight('broadcast')}       - Broadcast message to workers`,
       `${output.highlight('memory')}          - Access shared memory`,
       `${output.highlight('optimize-memory')} - Optimize patterns and memory`,
-      `${output.highlight('shutdown')}        - Shutdown the hive`
+      `${output.highlight('shutdown')}        - Shutdown the hive`,
+      // ADR-0124 (T6)
+      `${output.highlight('sessions')}        - Manage session checkpoints (list/checkpoint/export/import)`,
+      `${output.highlight('resume')}          - Resume a session from its most recent checkpoint`
     ]);
     output.writeln();
     output.writeln('Features:');

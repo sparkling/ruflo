@@ -193,10 +193,24 @@ import {
   selectGossipTargets,
   settleCheckGossip,
   GOSSIP_ROUND_TIMEOUT_MS_DEFAULT,
+  // ADR-0124 (T6) / H6 row 32: queenType type + validator on the queen record
+  isHiveQueenType,
+  type HiveQueenType,
   type MemoryType,
   type MemoryEntry,
   type ConsensusProposal,
 } from '../src/mcp-tools/hive-mind-tools.js';
+// ADR-0124 (T6): session lifecycle exports
+import {
+  encodeArchive,
+  decodeArchive,
+  buildArchiveFilename,
+  parseArchiveFilename,
+  SESSION_ARCHIVE_SCHEMA_VERSION,
+  SessionArchiveSchemaMismatchError,
+  SessionArchiveCorruptError,
+  type SessionArchiveV1,
+} from '../src/commands/hive-mind-session.js';
 // ADR-0121 (T3) CRDT primitives
 import {
   GCounter,
@@ -2547,6 +2561,195 @@ describe('MCP Tools Deep Test Suite', () => {
       await memoryTool().handler({ action: 'get', key: 't5-after' });
       const after = getHiveCacheStats();
       expect(after.hits).toBeGreaterThan(before.hits);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 11.d.5 ADR-0124 (T6) — Session lifecycle (checkpoint/resume/export/import)
+  // --------------------------------------------------------------------------
+  // Cases mirror ADR-0124 §Validation Test list:
+  //   - schemaVersion mismatch produces SessionArchiveSchemaMismatchError
+  //   - structural validation rejects missing queenPrompt / malformed
+  //     workerManifest / unknown queenType
+  //   - gzip + JSON round-trip is symmetric
+  //   - filename helpers parse roundtrip
+  //   - hive-mind_init persists queenType (H6 row 32 fold-in)
+  //   - hive-mind_status surfaces queenType
+  describe('ADR-0124 (T6) — session lifecycle', () => {
+    function makeArchive(overrides: Partial<SessionArchiveV1> = {}): SessionArchiveV1 {
+      const base: SessionArchiveV1 = {
+        schemaVersion: SESSION_ARCHIVE_SCHEMA_VERSION,
+        hiveState: {
+          initialized: true,
+          topology: 'mesh',
+          queen: {
+            agentId: 'queen-test',
+            electedAt: new Date().toISOString(),
+            term: 1,
+            queenType: 'strategic',
+          },
+          workers: ['hive-worker-1'],
+          consensus: { pending: [], history: [] },
+          sharedMemory: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        queenPrompt: 'You are the queen of swarm-test. Begin coordination.',
+        queenType: 'strategic',
+        workerManifest: [
+          { id: 'hive-worker-1', type: 'researcher' },
+        ],
+        timestamp: new Date().toISOString(),
+      };
+      return { ...base, ...overrides };
+    }
+
+    it('isHiveQueenType accepts strategic|tactical|adaptive only', () => {
+      expect(isHiveQueenType('strategic')).toBe(true);
+      expect(isHiveQueenType('tactical')).toBe(true);
+      expect(isHiveQueenType('adaptive')).toBe(true);
+      expect(isHiveQueenType('unknown')).toBe(false);
+      expect(isHiveQueenType(undefined)).toBe(false);
+      expect(isHiveQueenType(123)).toBe(false);
+    });
+
+    it('encodeArchive + decodeArchive round-trip preserves all fields', () => {
+      const archive = makeArchive();
+      const encoded = encodeArchive(archive);
+      const decoded = decodeArchive(encoded);
+      expect(decoded.schemaVersion).toBe(SESSION_ARCHIVE_SCHEMA_VERSION);
+      expect(decoded.queenPrompt).toBe(archive.queenPrompt);
+      expect(decoded.queenType).toBe('strategic');
+      expect(decoded.workerManifest).toEqual(archive.workerManifest);
+      expect(decoded.hiveState.queen?.queenType).toBe('strategic');
+    });
+
+    it('decodeArchive throws SessionArchiveSchemaMismatchError on wrong version', () => {
+      const archive = makeArchive();
+      const encoded = encodeArchive(archive);
+      // Tamper with the version by re-serialising with a different value.
+      const tampered = encodeArchive({ ...archive, schemaVersion: 2 as unknown as 1 });
+      expect(() => decodeArchive(tampered)).toThrow(SessionArchiveSchemaMismatchError);
+    });
+
+    it('decodeArchive includes the §Consequences exact-error contract phrasing', () => {
+      const tampered = encodeArchive({ ...makeArchive(), schemaVersion: 99 as unknown as 1 });
+      try {
+        decodeArchive(tampered);
+        expect.fail('expected SessionArchiveSchemaMismatchError');
+      } catch (e) {
+        expect((e as Error).message).toContain('schemaVersion 99 not supported');
+        expect((e as Error).message).toContain('expected 1');
+        expect((e as Error).message).toContain('export');
+        expect((e as Error).message).toContain('import');
+      }
+    });
+
+    it('decodeArchive throws SessionArchiveCorruptError on truncated gzip', () => {
+      // Buffer that is not valid gzip — gunzip will throw.
+      // Build a non-gzip Buffer in a way that doesn't depend on Buffer being
+      // a global type binding (the file's tsc setup lacks @types/node so we
+      // construct via Uint8Array which is in lib.es2022).
+      const fake = new Uint8Array([1, 2, 3, 4, 5]) as unknown as Parameters<typeof decodeArchive>[0];
+      expect(() => decodeArchive(fake)).toThrow(SessionArchiveCorruptError);
+    });
+
+    it('decodeArchive throws SessionArchiveCorruptError on missing queenPrompt', () => {
+      const archive = makeArchive() as unknown as Record<string, unknown>;
+      delete archive.queenPrompt;
+      const encoded = encodeArchive(archive as unknown as SessionArchiveV1);
+      expect(() => decodeArchive(encoded)).toThrow(SessionArchiveCorruptError);
+    });
+
+    it('decodeArchive throws SessionArchiveCorruptError on empty queenPrompt', () => {
+      const archive = makeArchive({ queenPrompt: '' });
+      const encoded = encodeArchive(archive);
+      expect(() => decodeArchive(encoded)).toThrow(/queenPrompt is empty/);
+    });
+
+    it('decodeArchive throws SessionArchiveCorruptError on malformed workerManifest entry', () => {
+      const archive = makeArchive({
+        workerManifest: [
+          { id: 'ok-1', type: 'coder' },
+          // Missing `type` — malformed
+          { id: 'broken' } as unknown as { id: string; type: string },
+        ],
+      });
+      const encoded = encodeArchive(archive);
+      expect(() => decodeArchive(encoded)).toThrow(/workerManifest\[1\]\.type/);
+    });
+
+    it('decodeArchive throws SessionArchiveCorruptError on unknown queenType', () => {
+      const archive = makeArchive({ queenType: 'invalid-mode' as unknown as HiveQueenType });
+      const encoded = encodeArchive(archive);
+      expect(() => decodeArchive(encoded)).toThrow(/queenType must be one of strategic\|tactical\|adaptive/);
+    });
+
+    it('decodeArchive accepts an archive with undefined queenType (older builds)', () => {
+      const archive = makeArchive();
+      delete (archive as Record<string, unknown>).queenType;
+      const encoded = encodeArchive(archive);
+      const decoded = decodeArchive(encoded);
+      expect(decoded.queenType).toBeUndefined();
+    });
+
+    it('buildArchiveFilename + parseArchiveFilename roundtrip', () => {
+      const sessionId = 'hive-1730000000000-abc1';
+      const isoTs = '2026-05-03T12:34:56.789Z';
+      const filename = buildArchiveFilename(sessionId, isoTs);
+      expect(filename).toMatch(/\.json\.gz$/);
+      expect(filename).toContain(sessionId);
+      const parsed = parseArchiveFilename(filename);
+      expect(parsed?.sessionId).toBe(sessionId);
+      // The parsed timestamp uses the sanitised form (`-` replaces `:` and `.`)
+      // so equality is against the sanitised version. The contract is that
+      // the same sessionId+timestamp written by buildArchiveFilename can be
+      // read back by parseArchiveFilename — round-trip distinctness, not
+      // string equality with the original ISO.
+      expect(parsed?.checkpointAt).toBe(isoTs.replace(/[:.]/g, '-'));
+    });
+
+    it('parseArchiveFilename returns undefined for unrelated names', () => {
+      expect(parseArchiveFilename('not-an-archive.txt')).toBeUndefined();
+      expect(parseArchiveFilename('orphan.json.gz')).toBeUndefined();
+      expect(parseArchiveFilename('')).toBeUndefined();
+    });
+
+    // ─── H6 row 32 fold-in: queenType persistence ───────────────────────
+    it('hive-mind_init persists queenType on state.queen', async () => {
+      const initTool = hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+      const result: any = await initTool.handler({ topology: 'mesh', queenType: 'tactical' });
+      expect(result.success).toBe(true);
+      expect(result.queenType).toBe('tactical');
+    });
+
+    it('hive-mind_init throws on unknown queenType (no silent default)', async () => {
+      const initTool = hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+      await expect(initTool.handler({ topology: 'mesh', queenType: 'overlord' })).rejects.toThrow(
+        /queenType must be one of strategic\|tactical\|adaptive/,
+      );
+    });
+
+    it('hive-mind_status surfaces queenType when present (H6 row 32)', async () => {
+      const initTool = hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+      const statusTool = hiveMindTools.find(t => t.name === 'hive-mind_status')!;
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      await shutdownTool.handler({ force: true });
+      await initTool.handler({ topology: 'mesh', queenType: 'adaptive' });
+      const status: any = await statusTool.handler({});
+      expect(status.queen).toBeDefined();
+      expect(status.queen.queenType).toBe('adaptive');
+    });
+
+    it('hive-mind_status omits queenType when absent (older hives)', async () => {
+      const initTool = hiveMindTools.find(t => t.name === 'hive-mind_init')!;
+      const statusTool = hiveMindTools.find(t => t.name === 'hive-mind_status')!;
+      const shutdownTool = hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
+      await shutdownTool.handler({ force: true });
+      await initTool.handler({ topology: 'mesh' }); // no queenType
+      const status: any = await statusTool.handler({});
+      expect(status.queen).toBeDefined();
+      expect((status.queen as Record<string, unknown>).queenType).toBeUndefined();
     });
   });
 

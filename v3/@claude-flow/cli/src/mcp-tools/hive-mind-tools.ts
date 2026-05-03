@@ -150,14 +150,26 @@ function isMemoryEntryShape(v: unknown): v is MemoryEntry {
   );
 }
 
-interface HiveState {
+// ADR-0124 (T6) / H6 row 32 fold-in: `queenType` persisted on the queen
+// object in state.json, surfaced via hive-mind_status, captured at
+// checkpoint, restored before queen re-spawn at resume. Per ADR-0125 §Review
+// notes #1, this fold closes the orphan ADR-0107 Option D step 3 (state
+// persistence + status surfacing) that ADR-0125 §Reconciliation declared
+// out of scope. `undefined` is permitted for older hives spawned without an
+// explicit queen type.
+export type HiveQueenType = 'strategic' | 'tactical' | 'adaptive';
+
+export interface HiveQueenRecord {
+  agentId: string;
+  electedAt: string;
+  term: number;
+  queenType?: HiveQueenType;
+}
+
+export interface HiveState {
   initialized: boolean;
   topology: 'mesh' | 'hierarchical' | 'ring' | 'star';
-  queen?: {
-    agentId: string;
-    electedAt: string;
-    term: number;
-  };
+  queen?: HiveQueenRecord;
   workers: string[];
   consensus: {
     pending: ConsensusProposal[];
@@ -168,6 +180,18 @@ interface HiveState {
   sharedMemory: Record<string, MemoryEntry>;
   createdAt: string;
   updatedAt: string;
+}
+
+const HIVE_QUEEN_TYPES: ReadonlyArray<HiveQueenType> = ['strategic', 'tactical', 'adaptive'];
+
+/**
+ * ADR-0124 §Specification: validate a runtime-supplied queenType. Per
+ * `feedback-no-fallbacks.md`, an unknown value throws rather than silently
+ * defaulting. Used by `hive-mind_init` (set) and `sessions import`/`resume`
+ * (restore from archive).
+ */
+export function isHiveQueenType(value: unknown): value is HiveQueenType {
+  return typeof value === 'string' && (HIVE_QUEEN_TYPES as readonly string[]).includes(value);
 }
 
 // ADR-0120 (T2): 'gossip' added — push-style epidemic propagation with
@@ -628,11 +652,11 @@ export function settleCheckGossip(proposal: ConsensusProposal): GossipSettleStat
   return { settled: false, gossipRound, bound };
 }
 
-function getHiveDir(): string {
+export function getHiveDir(): string {
   return join(findProjectRoot(), STORAGE_DIR, HIVE_DIR);
 }
 
-function getHivePath(): string {
+export function getHivePath(): string {
   return join(getHiveDir(), HIVE_FILE);
 }
 
@@ -640,8 +664,30 @@ function getLegacyHivePath(): string {
   return join(getHiveDir(), `${HIVE_FILE}.legacy`);
 }
 
-function ensureHiveDir(): void {
+export function ensureHiveDir(): void {
   const dir = getHiveDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
+/**
+ * ADR-0124 (T6): canonical session-archive directory under
+ * `.claude-flow/hive-mind/sessions/`. Created lazily on first checkpoint
+ * (no init-time directory creation per ADR-0124 §Refinement edge case
+ * "Sessions directory does not exist on first sessions list").
+ */
+export function getHiveSessionsDir(): string {
+  return join(getHiveDir(), 'sessions');
+}
+
+/**
+ * Lazy-create the sessions directory. Call before any archive write
+ * (checkpoint/export). `sessions list` MUST NOT call this — empty
+ * directory returns empty list per ADR-0124 §Refinement.
+ */
+export function ensureHiveSessionsDir(): void {
+  const dir = getHiveSessionsDir();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
@@ -832,7 +878,7 @@ function defaultHiveState(): HiveState {
  *   - On miss-then-error, cache is NOT populated (no advertising of
  *     partial state to subsequent callers in this process).
  */
-function loadHiveState(): HiveState {
+export function loadHiveState(): HiveState {
   // ── 1. Cache lookup ──
   const cached = hiveCache.get(HIVE_STATE_DOC_KEY);
   if (cached !== undefined) return cached;
@@ -897,7 +943,7 @@ function loadHiveState(): HiveState {
  * post-rename data is recoverable on the next mount even if no fsync of
  * the dir entry has happened yet.
  */
-function saveHiveState(state: HiveState): void {
+export function saveHiveState(state: HiveState): void {
   ensureHiveDir();
   state.updatedAt = new Date().toISOString();
 
@@ -937,7 +983,7 @@ let tmpCounter = 0;
 
 // ADR-0104 §5: cross-process file lock for hive-state.json read-modify-write,
 // modeled on ADR-0098's swarm-state lock. O_EXCL sentinel + stale-lock recovery.
-async function withHiveStoreLock<T>(fn: () => Promise<T>): Promise<T> {
+export async function withHiveStoreLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockPath = `${getHivePath()}.lock`;
   const MAX_WAIT_MS = 5000;
   const POLL_MS = 50;
@@ -1151,6 +1197,10 @@ export const hiveMindTools: MCPTool[] = [
       properties: {
         topology: { type: 'string', enum: ['mesh', 'hierarchical', 'ring', 'star'], description: 'Network topology' },
         queenId: { type: 'string', description: 'Initial queen agent ID' },
+        // ADR-0124 (T6) / H6 row 32 fold-in: persist queenType on the
+        // queen record so hive-mind_status can surface it and the
+        // session-archive shape can capture/restore it.
+        queenType: { type: 'string', enum: ['strategic', 'tactical', 'adaptive'], description: 'Queen leadership style' },
       },
     },
     handler: async (input) => {
@@ -1161,10 +1211,25 @@ export const hiveMindTools: MCPTool[] = [
       state.initialized = true;
       state.topology = (input.topology as HiveState['topology']) || 'mesh';
       state.createdAt = new Date().toISOString();
+      // ADR-0124 (T6) / H6 row 32: validate queenType at the boundary; per
+      // `feedback-no-fallbacks.md`, an unknown value throws rather than
+      // silently defaulting. `undefined` is permitted (older spawn paths
+      // may not pass it; state.queen.queenType stays undefined).
+      const rawQueenType = input.queenType;
+      let queenType: HiveQueenType | undefined;
+      if (rawQueenType !== undefined && rawQueenType !== null && rawQueenType !== '') {
+        if (!isHiveQueenType(rawQueenType)) {
+          throw new Error(
+            `hive-mind_init: queenType must be one of ${HIVE_QUEEN_TYPES.join('|')} (got "${String(rawQueenType)}")`,
+          );
+        }
+        queenType = rawQueenType;
+      }
       state.queen = {
         agentId: queenId,
         electedAt: new Date().toISOString(),
         term: 1,
+        ...(queenType !== undefined ? { queenType } : {}),
       };
 
       saveHiveState(state);
@@ -1179,6 +1244,9 @@ export const hiveMindTools: MCPTool[] = [
         topology: state.topology,
         consensus: (input.consensus as string) || 'byzantine',
         queenId,
+        // ADR-0124 (T6): echo back queenType so callers (CLI spawn, status
+        // probes) can confirm the persisted value.
+        ...(queenType !== undefined ? { queenType } : {}),
         status: 'initialized',
         config: {
           topology: state.topology,
@@ -1242,6 +1310,11 @@ export const hiveMindTools: MCPTool[] = [
           tasksQueued: pendingTaskCount,
           electedAt: state.queen.electedAt,
           term: state.queen.term,
+          // ADR-0124 (T6) / H6 row 32 fold-in: surface queenType in the
+          // status response so plugin docs' `mcp__ruflo__hive-mind_status`
+          // queries can read the active leadership style. `undefined` is
+          // omitted from the response (older hives without explicit type).
+          ...(state.queen.queenType !== undefined ? { queenType: state.queen.queenType } : {}),
         } : { id: 'N/A', status: 'offline', load: 0, tasksQueued: 0 },
         workers: state.workers.map(w => {
           const agent = agentStore.agents[w] as Record<string, unknown> | undefined;
