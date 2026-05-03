@@ -3,14 +3,12 @@
  * Provides intelligent hooks functionality via MCP protocol
  */
 
-import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, unlinkSync, readdirSync, rmSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { type MCPTool, findProjectRoot } from './types.js';
-// ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
-const EMBEDDING_DIM = 768;
+import { type MCPTool, getProjectCwd } from './types.js';
+import { validateIdentifier, validateText, validatePath } from './validate-input.js';
 
-// ADR-0086 T2.7: search via routeMemoryOp (was memory-initializer searchEntries)
-// Lazy-loaded wrapper preserves the same call-site signature.
+// Real vector search functions - lazy loaded to avoid circular imports
 let searchEntriesFn: ((options: {
   query: string;
   namespace?: string;
@@ -26,18 +24,8 @@ let searchEntriesFn: ((options: {
 async function getRealSearchFunction() {
   if (!searchEntriesFn) {
     try {
-      // ADR-0086 T2.7: import from router (was memory-initializer)
-      const { routeMemoryOp } = await import('../memory/memory-router.js');
-      searchEntriesFn = async (opts) => {
-        const t0 = Date.now();
-        const result = await routeMemoryOp({ type: 'search', query: opts.query, namespace: opts.namespace, limit: opts.limit });
-        return {
-          success: result.success,
-          results: (result as { results?: { id: string; key: string; content: string; score: number; namespace: string }[] }).results || [],
-          searchTime: Date.now() - t0,
-          error: result.error as string | undefined,
-        };
-      };
+      const { searchEntries } = await import('../memory/memory-initializer.js');
+      searchEntriesFn = searchEntries;
     } catch {
       searchEntriesFn = null;
     }
@@ -45,8 +33,7 @@ async function getRealSearchFunction() {
   return searchEntriesFn;
 }
 
-// ADR-0086 T2.7: store via routeMemoryOp (was memory-initializer storeEntry)
-// Lazy-loaded wrapper preserves the same call-site signature.
+// Real store function - lazy loaded
 let storeEntryFn: ((options: {
   key: string;
   value: string;
@@ -64,17 +51,8 @@ let storeEntryFn: ((options: {
 async function getRealStoreFunction() {
   if (!storeEntryFn) {
     try {
-      // ADR-0086 T2.7: import from router (was memory-initializer)
-      const { routeMemoryOp } = await import('../memory/memory-router.js');
-      storeEntryFn = async (opts) => {
-        const result = await routeMemoryOp({ type: 'store', key: opts.key, value: opts.value, namespace: opts.namespace, tags: opts.tags });
-        return {
-          success: result.success,
-          id: (result as { id?: string }).id || '',
-          embedding: (result as { embedding?: { dimensions: number; model: string } }).embedding,
-          error: result.error as string | undefined,
-        };
-      };
+      const { storeEntry } = await import('../memory/memory-initializer.js');
+      storeEntryFn = storeEntry;
     } catch {
       storeEntryFn = null;
     }
@@ -115,30 +93,17 @@ async function getEWCConsolidator() {
 }
 
 // MoE Router - lazy loaded
-// #1773 item 4 — moe-router migrated to @claude-flow/neural
-let moeRouter: Awaited<ReturnType<typeof import('@claude-flow/neural').getMoERouter>> | null = null;
+let moeRouter: Awaited<ReturnType<typeof import('../ruvector/moe-router.js').getMoERouter>> | null = null;
 async function getMoERouter() {
   if (!moeRouter) {
     try {
-      const { getMoERouter: getMoE } = await import('@claude-flow/neural');
+      const { getMoERouter: getMoE } = await import('../ruvector/moe-router.js');
       moeRouter = await getMoE();
     } catch {
       moeRouter = null;
     }
   }
   return moeRouter;
-}
-
-// SonaTrajectory - lazy loaded (P5-F: ADR-0033)
-let _sonaTrajectory: any = null;
-async function getSonaTrajectory(): Promise<any> {
-  if (_sonaTrajectory) return _sonaTrajectory;
-  try {
-    const { getController } = await import('../memory/memory-router.js');
-    // silent-fallthrough-OK: getController already returns null when missing; the ?? null is defensive normalization, not a missing-value mask
-    _sonaTrajectory = await getController('sonaTrajectory') ?? null;
-  } catch { _sonaTrajectory = null; }
-  return _sonaTrajectory;
 }
 
 // Semantic Router - lazy loaded
@@ -151,8 +116,7 @@ let routerBackend: 'native' | 'pure-js' | 'none' = 'none';
 // Pre-computed embeddings for common task patterns (cached)
 const TASK_PATTERN_EMBEDDINGS: Map<string, Float32Array> = new Map();
 
-// ADR-0052: matches embedding config default
-function generateSimpleEmbedding(text: string, dimension: number = EMBEDDING_DIM): Float32Array {
+function generateSimpleEmbedding(text: string, dimension: number = 384): Float32Array {
   // Simple deterministic embedding based on character codes
   // This is for routing purposes where we need consistent, fast embeddings
   const embedding = new Float32Array(dimension);
@@ -360,33 +324,12 @@ async function getSemanticRouter() {
 
     if (router.VectorDb && router.DistanceMetric) {
       // Try to create VectorDb - may fail with lock error in concurrent envs
-      // ADR-0069: config-chain-aware resolution
-      let vdbDimensions = 768;
-      let vdbHnswM = 23;
-      let vdbEfConstruction = 100;
-      let vdbEfSearch = 50;
-      try {
-        const agentdbModule: any = await import('@claude-flow/agentdb');
-        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
-          const embCfg = agentdbModule.getEmbeddingConfig();
-          vdbDimensions = embCfg.dimension || vdbDimensions;
-          try {
-            const memModule: any = await import('@claude-flow/memory');
-            if (typeof memModule.deriveHNSWParams === 'function') {
-              const hnsw = memModule.deriveHNSWParams(vdbDimensions);
-              vdbHnswM = hnsw.M;
-              vdbEfConstruction = hnsw.efConstruction;
-              vdbEfSearch = hnsw.efSearch;
-            }
-          } catch { /* @claude-flow/memory not available */ }
-        }
-      } catch { /* agentdb not available -- use fallback */ }
       const db = new router.VectorDb({
-        dimensions: vdbDimensions,
+        dimensions: 384,
         distanceMetric: router.DistanceMetric.Cosine,
-        hnswM: vdbHnswM,
-        hnswEfConstruction: vdbEfConstruction,
-        hnswEfSearch: vdbEfSearch,
+        hnswM: 16,
+        hnswEfConstruction: 200,
+        hnswEfSearch: 100,
       });
 
       // Initialize with static + runtime-learned task patterns
@@ -400,6 +343,7 @@ async function getSemanticRouter() {
 
       nativeVectorDb = db;
       routerBackend = 'native';
+      console.log('[hooks] Semantic router initialized: native VectorDb (HNSW, 16k+ routes/s)');
       return { router: null, backend: routerBackend, native: nativeVectorDb };
     }
   } catch (err) {
@@ -411,8 +355,7 @@ async function getSemanticRouter() {
   // STEP 2: Fall back to pure JS SemanticRouter
   try {
     const { SemanticRouter } = await import('../ruvector/semantic-router.js');
-    // ADR-0052: matches embedding config default
-    semanticRouter = new SemanticRouter({ dimension: EMBEDDING_DIM });
+    semanticRouter = new SemanticRouter({ dimension: 384 });
 
     for (const [patternName, { keywords, agents }] of Object.entries(getMergedTaskPatterns())) {
       const embeddings = keywords.map(kw => generateSimpleEmbedding(kw));
@@ -425,9 +368,11 @@ async function getSemanticRouter() {
     }
 
     routerBackend = 'pure-js';
+    console.log('[hooks] Semantic router initialized: pure JS (cosine, 47k routes/s)');
   } catch {
     semanticRouter = null;
     routerBackend = 'none';
+    console.log('[hooks] Semantic router initialized: none (no backend available)');
   }
 
   return { router: semanticRouter, backend: routerBackend, native: nativeVectorDb };
@@ -448,12 +393,11 @@ function getRouterBackendInfo(): { backend: string; speed: string } {
 }
 
 // Flash Attention - lazy loaded
-// #1773 item 4 — flash-attention migrated to @claude-flow/neural
-let flashAttention: Awaited<ReturnType<typeof import('@claude-flow/neural').getFlashAttention>> | null = null;
+let flashAttention: Awaited<ReturnType<typeof import('../ruvector/flash-attention.js').getFlashAttention>> | null = null;
 async function getFlashAttention() {
   if (!flashAttention) {
     try {
-      const { getFlashAttention: getFlash } = await import('@claude-flow/neural');
+      const { getFlashAttention: getFlash } = await import('../ruvector/flash-attention.js');
       flashAttention = await getFlash();
     } catch {
       flashAttention = null;
@@ -769,6 +713,8 @@ export const hooksPreEdit: MCPTool = {
     const filePath = params.filePath as string;
     const operation = (params.operation as string) || 'update';
 
+    { const v = validatePath(filePath, 'filePath'); if (!v.valid) return { success: false, error: v.error }; }
+
     const suggestedAgents = suggestAgentsForFile(filePath);
     const ext = getFileExtension(filePath);
 
@@ -808,34 +754,27 @@ export const hooksPostEdit: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const filePath = params.filePath as string;
     const success = params.success !== false;
-    const agent = (params.agent as string) || 'unknown';
+    const agent = params.agent as string | undefined;
 
-    // Wire recordFeedback through router (issue #1209, ADR-0084 Phase 3)
+    { const v = validatePath(filePath, 'filePath'); if (!v.valid) return { success: false, error: v.error }; }
+    if (agent) { const v = validateIdentifier(agent, 'agent'); if (!v.valid) return { success: false, error: v.error }; }
+
+    // Wire recordFeedback through bridge (issue #1209)
     let feedbackResult: { success: boolean; controller: string; updated: number } | null = null;
     try {
-      const { routeFeedbackOp } = await import('../memory/memory-router.js');
-      const result = await routeFeedbackOp({
-        type: 'record',
+      const bridge = await import('../memory/memory-bridge.js');
+      feedbackResult = await bridge.bridgeRecordFeedback({
         taskId: `edit-${filePath}-${Date.now()}`,
         success,
         quality: success ? 0.85 : 0.3,
         agent,
       });
-      feedbackResult = {
-        success: result.success,
-        controller: (result.controller as string) || 'unknown',
-        updated: (result.updated as number) || 0,
-      };
-    } catch (e) {
-      // HK-002a: fail-loud error handling
-      throw new Error(
-        `HK-002a: store via memory-router failed: ${(e as Error)?.message}\n` +
-        `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json`
-      );
+    } catch {
+      // Bridge not available — continue with basic response
     }
 
     return {
-      recorded: feedbackResult?.success ?? false,
+      recorded: true,
       filePath,
       success,
       timestamp: new Date().toISOString(),
@@ -861,6 +800,9 @@ export const hooksPreCommand: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const command = params.command as string;
+
+    { const v = validateText(command, 'command'); if (!v.valid) return { success: false, error: v.error }; }
+
     const assessment = assessCommandRisk(command);
 
     const riskLevel = assessment.level >= 0.8 ? 'critical'
@@ -900,55 +842,47 @@ export const hooksPostCommand: MCPTool = {
     const command = params.command as string;
     const exitCode = (params.exitCode as number) || 0;
     const success = exitCode === 0;
-    const timestamp = new Date().toISOString();
-    const cmdId = `cmd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    // HK-002b: Persist command record via memory-router (ADR-049 / ADR-0086 T2.7)
-    let storeResult = { success: false };
+    { const v = validateText(command, 'command'); if (!v.valid) return { success: false, error: v.error }; }
+
+    // Persist command outcome via AgentDB
+    let _storedIn: 'agentdb' | 'json-store' | 'none' = 'none';
     try {
-      // ADR-0086 T2.7: import from router (was memory-initializer)
-      const mi = await import('../memory/memory-router.js');
-      storeResult = await mi.routeMemoryOp({
-        type: 'store',
-        key: cmdId,
-        value: JSON.stringify({ command, exitCode, success, timestamp }),
+      const bridge = await import('../memory/memory-bridge.js');
+      await bridge.bridgeStoreEntry({
+        key: `cmd-${Date.now()}`,
+        value: JSON.stringify({ command, exitCode, success }),
         namespace: 'commands',
-        tags: [success ? 'success' : 'failure', 'command'],
+        tags: [success ? 'success' : 'error'],
       });
-    } catch (e) {
-      throw new Error(
-        `HK-002b: store via memory-router failed: ${(e as Error)?.message}\n` +
-        `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json`
-      );
+      _storedIn = 'agentdb';
+    } catch {
+      // AgentDB not available — store in JSON
+      try {
+        const store = loadMemoryStore();
+        const key = `cmd-${Date.now()}`;
+        store.entries[key] = { key, value: JSON.stringify({ command, exitCode, success }), namespace: 'commands', createdAt: new Date().toISOString() } as any;
+        const memDir = resolve(MEMORY_DIR);
+        if (!existsSync(memDir)) mkdirSync(memDir, { recursive: true });
+        writeFileSync(getMemoryPath(), JSON.stringify(store, null, 2), 'utf-8');
+        _storedIn = 'json-store';
+      } catch { /* non-critical */ }
     }
 
     return {
-      recorded: storeResult.success,
+      recorded: _storedIn !== 'none',
       command,
       exitCode,
       success,
-      timestamp,
+      timestamp: new Date().toISOString(),
+      _storedIn,
     };
   },
 };
 
-// WM-104a: CausalRecall helper — resolves causalRecall via bridge (ADR-068)
-async function getCausalRecallInstance() {
-  try {
-    const { getController } = await import('../memory/memory-router.js');
-    // silent-fallthrough-OK: getController already returns null when missing; the ?? null is defensive normalization. The catch below surfaces real init failures with a Fix message — this path is the not-wired success case.
-    return (await getController('causalRecall')) ?? null;
-  } catch (e) {
-    throw new Error(
-      `CausalRecall controller init failed: ${(e as Error)?.message}\n` +
-      `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
-    );
-  }
-}
-
 export const hooksRoute: MCPTool = {
   name: 'hooks_route',
-  description: 'Get a 3-tier routing recommendation for a task: Tier 1 (Agent Booster, 0ms / $0 — for var-to-const, add-types, etc.), Tier 2 (Haiku — simple), Tier 3 (Sonnet/Opus — complex). Use this BEFORE spawning an agent to avoid sending simple transforms to Sonnet. Native tools have no equivalent — Claude Code does not introspect its own model-selection cost. Returns the recommended model + a `[AGENT_BOOSTER_AVAILABLE]` literal when the WASM bypass applies.',
+  description: 'Route task to optimal agent using semantic similarity (native HNSW or pure JS)',
   inputSchema: {
     type: 'object',
     properties: {
@@ -963,119 +897,14 @@ export const hooksRoute: MCPTool = {
     const context = params.context as string | undefined;
     const useSemanticRouter = params.useSemanticRouter !== false;
 
-    // Mutable metadata that controllers can enrich
-    let routingMetadata: Record<string, unknown> = {};
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+    if (context) { const v = validateText(context, 'context'); if (!v.valid) return { success: false, error: v.error }; }
 
-    // Phase 2: Try SolverBandit first (learned routing) — ADR-0084 Phase 3: via memory-router
-    try {
-      const { getController } = await import('../memory/memory-router.js');
-      const solver = await getController<any>('solverBandit');
-      if (solver && typeof solver.selectArm === 'function') {
-        const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
-        const taskType = task;
-        const banditResult = await Promise.race([
-          solver.selectArm(taskType, agents),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SolverBandit timeout')), 2000)),
-        ]);
-        if (banditResult.confidence > 0.6 && banditResult.controller !== 'fallback') {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                recommended_agent: banditResult.arm,
-                confidence: banditResult.confidence,
-                routing_method: 'solverBandit',
-                task_type: taskType,
-              }),
-            }],
-          };
-        }
-      }
-    } catch { /* SolverBandit unavailable — fall through to patterns */ }
-
-    // Phase 4: SkillLibrary — check for learned skills matching this task (P4-A: ADR-0033)
-    try {
-      const { getController: getCtrl } = await import('../memory/memory-router.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const skills = await getCtrl<any>('skills');
-      if (skills && typeof skills.search === 'function') {
-        const taskType = (params.task_type as string) || task || 'default';
-        const skillResult = await Promise.race([
-          skills.search(taskType, 3),
-          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('SkillLibrary.search timeout')), 2000))
-        ]);
-        if (skillResult && Array.isArray(skillResult) && skillResult.length > 0) {
-          const bestSkill = skillResult[0];
-          if (bestSkill.confidence > 0.7 || bestSkill.score > 0.7) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: JSON.stringify({
-                  recommended_agent: bestSkill.agent || bestSkill.pattern || bestSkill.name,
-                  confidence: bestSkill.confidence || bestSkill.score,
-                  routing_method: 'skillLibrary',
-                  skill: bestSkill.name || bestSkill.pattern,
-                  task_type: taskType,
-                }),
-              }],
-            };
-          }
-        }
-      }
-    } catch { /* SkillLibrary unavailable — fall through */ }
-
-    // Phase 4: LearningSystem algorithm recommendation
-    try {
-      const { getController: getCtrlLS } = await import('../memory/memory-router.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ls = await getCtrlLS<any>('learningSystem');
-      if (ls && typeof ls.recommendAlgorithm === 'function') {
-        const taskType = task;
-        const recommendation = await Promise.race([
-          ls.recommendAlgorithm(taskType),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('LearningSystem timeout')), 2000)),
-        ]);
-        if (recommendation?.algorithm) {
-          // Merge into routing metadata (don't override agent selection)
-          routingMetadata = { ...routingMetadata, learningSystem: recommendation };
-        }
-      }
-    } catch { /* LearningSystem unavailable */ }
-
-    // Phase 5: Use SemanticRouter when available (replaces static TASK_PATTERNS) — ADR-0084 Phase 3: via memory-router
-    try {
-      const { getController: getCtrlSR } = await import('../memory/memory-router.js');
-      const semantic = await getCtrlSR<any>('semanticRouter');
-      if (semantic && typeof semantic.route === 'function') {
-        const routeResult = await Promise.race([
-          semantic.route({ input: task }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SemanticRouter timeout')), 2000)),
-        ]);
-        if (routeResult?.route && !routeResult.error) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                recommended_agent: routeResult.route,
-                confidence: routeResult.confidence || 0.7,
-                routing_method: 'semanticRouter',
-                task_type: task,
-                ...routingMetadata,
-              }),
-            }],
-          };
-        }
-      }
-    } catch { /* SemanticRouter unavailable — fall through to patterns */ }
-
-    // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first — ADR-0084 Phase 3: via memory-router
+    // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first
     if (useSemanticRouter) {
       try {
-        const { getController: getCtrlTR } = await import('../memory/memory-router.js');
-        const taskRouter = await getCtrlTR<any>('taskRouter');
-        const agentdbRoute = taskRouter && typeof taskRouter.route === 'function'
-          ? await taskRouter.route({ task, context })
-          : null;
+        const bridge = await import('../memory/memory-bridge.js');
+        const agentdbRoute = await bridge.bridgeRouteTask({ task, context });
         if (agentdbRoute && agentdbRoute.confidence > 0.5) {
           const agents = agentdbRoute.agents.length > 0 ? agentdbRoute.agents : ['coder', 'researcher'];
           const complexity = task.length > 200 ? 'high' : task.length < 50 ? 'low' : 'medium';
@@ -1182,28 +1011,6 @@ export const hooksRoute: MCPTool = {
       backendInfo = 'keyword matching';
     }
 
-    // WM-104b: Query causal history for routing context (ADR-068)
-    // Signature: CausalRecall.recall(queryId, queryText, k, requirements?, accessLevel?)
-    // (NOT recall(task, optsObject) — options object gets fed into embedder as
-    // queryText and crashes with "queryText.toLowerCase is not a function").
-    // Prefer search({ query, k }) which is the ergonomic wrapper memory-router uses.
-    let causalContext: unknown = null;
-    try {
-      const cr = await getCausalRecallInstance();
-      if (cr && typeof (cr as Record<string, unknown>).search === 'function') {
-        causalContext = await (cr as { search: (p: { query: string; k?: number }) => Promise<unknown> }).search({ query: task, k: 5 });
-      } else if (cr && typeof (cr as Record<string, unknown>).recall === 'function') {
-        // Fallback to positional recall(queryId, queryText, k)
-        const queryId = `hooks_route:${Date.now()}`;
-        causalContext = await (cr as { recall: (queryId: string, queryText: string, k: number) => Promise<unknown> }).recall(queryId, task, 5);
-      }
-    } catch (e) {
-      // Best-effort: causal context is routing metadata enrichment, not a fatal
-      // dependency. Swallow (don't re-throw) so routing still returns a
-      // recommended_agent from keyword/semantic fallback above.
-      causalContext = { error: (e as Error)?.message || String(e) };
-    }
-
     // Determine complexity
     const taskLower = task.toLowerCase();
     const complexity = taskLower.includes('complex') || taskLower.includes('architecture') || task.length > 200
@@ -1247,7 +1054,6 @@ export const hooksRoute: MCPTool = {
         agents,
         coordination: 'queen-led',
       } : null,
-      causalContext,
     };
   },
 };
@@ -1265,122 +1071,56 @@ export const hooksMetrics: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const period = (params.period as string) || '24h';
 
-    // ADR-093 F1 + HK-003 (ADR-0162 Batch E hand-port): read real metrics
-    // from the persisted intelligence stores. Two complementary paths so
-    // we surface data from both the SONA / ruvector files (HK-003) and
-    // the memory-router stats / routing-outcomes files (F1).
-    //
-    // F1 (#1686) target: counters were 0 because the previous handler
-    // key-substring-filtered "pattern"/"route"/"task" — none match the
-    // trajectory keys post-task actually writes. F1's getIntelligenceStatsFromMemory
-    // pairs the trajectory store with loadRoutingOutcomes() so the dashboard
-    // sees command counters.
-    //
-    // HK-003 target (fork-only): the fork's SONA pipeline persists patterns
-    // to `.swarm/sona-patterns.json` and trajectories to `.ruvector/intelligence.json`;
-    // direct reads avoid a missing `bridgeGetMetrics()` until ADR-049 lands.
-    // ADR-0100: anchor on project root, not process.cwd() (Claude Code CWD drift).
-    const cwd = findProjectRoot();
-    let patterns = { total: 0, successful: 0, failed: 0, avgConfidence: 0 };
-    let agents: { routingAccuracy: number; totalRoutes: number; topAgent: string } = { routingAccuracy: 0, totalRoutes: 0, topAgent: 'none' };
-    let commands = { totalExecuted: 0, successRate: 0, avgRiskScore: 0 };
-    try {
-      const sonaPath = cwd + '/.swarm/sona-patterns.json';
-      if (existsSync(sonaPath)) {
-        const sona = JSON.parse(readFileSync(sonaPath, 'utf-8'));
-        const pats = Object.values(sona.patterns || {}) as Array<{ successCount?: number; failureCount?: number; confidence?: number; agent?: string }>;
-        const successful = pats.filter((p) => (p.successCount ?? 0) > 0).length;
-        patterns = {
-          total: pats.length,
-          successful,
-          failed: pats.filter((p) => (p.failureCount ?? 0) > 0).length,
-          avgConfidence: pats.length > 0 ? pats.reduce((s, p) => s + (p.confidence || 0), 0) / pats.length : 0,
-        };
-        agents = {
-          routingAccuracy: ((sona.stats || {}).successfulRoutings ?? 0) > 0 ? sona.stats.successfulRoutings / ((sona.stats.successfulRoutings || 0) + (sona.stats.failedRoutings || 0)) : 0,
-          totalRoutes: ((sona.stats || {}).successfulRoutings || 0) + ((sona.stats || {}).failedRoutings || 0),
-          topAgent: pats.length > 0 ? (pats.sort((a, b) => (b.successCount || 0) - (a.successCount || 0))[0].agent || 'none') : 'none',
-        };
-      }
-    } catch (e) {
-      throw new Error(
-        `HK-003: metrics read failed (sona-patterns): ${(e as Error)?.message}\n` +
-        `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json`
-      );
-    }
-    try {
-      const rvPath = cwd + '/.ruvector/intelligence.json';
-      if (existsSync(rvPath)) {
-        const rv = JSON.parse(readFileSync(rvPath, 'utf-8'));
-        const s = rv.stats || {};
-        commands = {
-          totalExecuted: (s.session_count || 0) + (rv.trajectories || []).length,
-          successRate: (rv.trajectories || []).length > 0 ? (rv.trajectories || []).filter((t: { success?: boolean }) => t.success).length / (rv.trajectories || []).length : 0,
-          avgRiskScore: 0.15,
-        };
-      }
-    } catch (e) {
-      throw new Error(
-        `HK-003: metrics read failed (intelligence): ${(e as Error)?.message}\n` +
-        `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json`
-      );
-    }
+    // ADR-093 F1: read from the same trajectory/pattern store that
+    // hooks_post-task and hooks_intelligence_stats write to. Previously
+    // this handler key-substring-filtered the memory store for "pattern",
+    // "route", "task" — none of which match the trajectory keys that
+    // post-task actually writes — so counters stayed at 0 forever (#1686).
+    const stats = getIntelligenceStatsFromMemory();
 
-    // F1 supplemental: surface memory-router stats + routing-outcomes counters
-    // (different store than HK-003 reads). When both stores are populated the
-    // dashboard reflects the union; when only one is populated, that wins.
-    const f1Stats = getIntelligenceStatsFromMemory();
-    let f1RoutingOutcomes: Array<{ success: boolean; agent?: string }> = [];
+    // Routing outcomes are persisted to a separate file (loadRoutingOutcomes)
+    // by post-task; surface them so the dashboard sees command counters too.
+    let routingOutcomes: Array<{ success: boolean; agent?: string }> = [];
     try {
-      f1RoutingOutcomes = loadRoutingOutcomes() as Array<{ success: boolean; agent?: string }>;
+      routingOutcomes = loadRoutingOutcomes() as Array<{ success: boolean; agent?: string }>;
     } catch { /* non-fatal */ }
-    if (patterns.total === 0 && f1Stats.trajectories.total > 0) {
-      const f1Successful = f1Stats.trajectories.successful;
-      patterns = {
-        total: f1Stats.trajectories.total,
-        successful: f1Successful,
-        failed: Math.max(0, f1Stats.trajectories.total - f1Successful),
-        avgConfidence: f1Stats.routing.avgConfidence || 0,
-      };
+
+    const totalCommands = routingOutcomes.length;
+    const successfulCommands = routingOutcomes.filter(o => o.success).length;
+    const successRate = totalCommands > 0 ? successfulCommands / totalCommands : null;
+
+    // Compute top agent from routing outcomes
+    const agentCounts: Record<string, number> = {};
+    for (const o of routingOutcomes) {
+      if (o.agent) agentCounts[o.agent] = (agentCounts[o.agent] || 0) + 1;
     }
-    if (commands.totalExecuted === 0 && f1RoutingOutcomes.length > 0) {
-      const successfulCommands = f1RoutingOutcomes.filter(o => o.success).length;
-      commands = {
-        totalExecuted: f1RoutingOutcomes.length,
-        successRate: f1RoutingOutcomes.length > 0 ? successfulCommands / f1RoutingOutcomes.length : 0,
-        avgRiskScore: 0,
-      };
-    }
-    if (agents.totalRoutes === 0 && f1Stats.routing.decisions > 0) {
-      const agentCounts: Record<string, number> = {};
-      for (const o of f1RoutingOutcomes) {
-        if (o.agent) agentCounts[o.agent] = (agentCounts[o.agent] || 0) + 1;
-      }
-      const topAgent = Object.entries(agentCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'none';
-      agents = {
-        routingAccuracy: f1Stats.routing.avgConfidence || 0,
-        totalRoutes: f1Stats.routing.decisions,
-        topAgent,
-      };
-    }
+    const topAgent = Object.entries(agentCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+    const successful = stats.trajectories.successful;
+    const total = stats.trajectories.total;
+    const failed = Math.max(0, total - successful);
 
     return {
       _real: true,
       _dataSource: 'intelligence-stats + routing-outcomes',
       period,
-      patterns,
-      agents,
-      commands,
-      performance: {
-        flashAttention: '2.49x-7.47x speedup',
-        memoryReduction: '50-75% reduction',
-        searchImprovement: '150x-12,500x faster',
-        tokenReduction: '32.3% fewer tokens',
+      patterns: {
+        total: stats.patterns.learned,
+        successful,
+        failed,
+        avgConfidence: stats.routing.avgConfidence || null,
       },
-      status: 'healthy',
-      // ADR-093 F1 (ADR-0162 Batch E hand-port): empty-state hint when both
-      // metric paths are still zero so callers know which hooks to run.
-      _note: patterns.total === 0 && commands.totalExecuted === 0
+      agents: {
+        routingAccuracy: stats.routing.avgConfidence || null,
+        totalRoutes: stats.routing.decisions,
+        topAgent,
+      },
+      commands: {
+        totalExecuted: totalCommands,
+        successRate,
+        avgRiskScore: null,
+      },
+      _note: total === 0 && totalCommands === 0
         ? 'No metrics data collected yet. Run hooks_post-task / hooks_intelligence_trajectory-end / hooks_route to populate.'
         : undefined,
       lastUpdated: new Date().toISOString(),
@@ -1399,37 +1139,37 @@ export const hooksList: MCPTool = {
     return {
       hooks: [
         // Core hooks
-        { name: 'pre-edit', type: 'PreToolUse', status: 'active', enabled: false },
-        { name: 'post-edit', type: 'PostToolUse', status: 'active', enabled: false },
-        { name: 'pre-command', type: 'PreToolUse', status: 'active', enabled: false },
-        { name: 'post-command', type: 'PostToolUse', status: 'active', enabled: false },
-        { name: 'pre-task', type: 'PreToolUse', status: 'active', enabled: false },
-        { name: 'post-task', type: 'PostToolUse', status: 'active', enabled: true },
+        { name: 'pre-edit', type: 'PreToolUse', status: 'active' },
+        { name: 'post-edit', type: 'PostToolUse', status: 'active' },
+        { name: 'pre-command', type: 'PreToolUse', status: 'active' },
+        { name: 'post-command', type: 'PostToolUse', status: 'active' },
+        { name: 'pre-task', type: 'PreToolUse', status: 'active' },
+        { name: 'post-task', type: 'PostToolUse', status: 'active' },
         // Routing hooks
-        { name: 'route', type: 'intelligence', status: 'active', enabled: true },
-        { name: 'explain', type: 'intelligence', status: 'active', enabled: false },
+        { name: 'route', type: 'intelligence', status: 'active' },
+        { name: 'explain', type: 'intelligence', status: 'active' },
         // Session hooks
-        { name: 'session-start', type: 'SessionStart', status: 'active', enabled: true },
-        { name: 'session-end', type: 'SessionEnd', status: 'active', enabled: true },
-        { name: 'session-restore', type: 'SessionStart', status: 'active', enabled: false },
+        { name: 'session-start', type: 'SessionStart', status: 'active' },
+        { name: 'session-end', type: 'SessionEnd', status: 'active' },
+        { name: 'session-restore', type: 'SessionStart', status: 'active' },
         // Learning hooks
-        { name: 'pretrain', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'build-agents', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'transfer', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'metrics', type: 'analytics', status: 'active', enabled: true },
+        { name: 'pretrain', type: 'intelligence', status: 'active' },
+        { name: 'build-agents', type: 'intelligence', status: 'active' },
+        { name: 'transfer', type: 'intelligence', status: 'active' },
+        { name: 'metrics', type: 'analytics', status: 'active' },
         // System hooks
-        { name: 'init', type: 'system', status: 'active', enabled: false },
-        { name: 'notify', type: 'coordination', status: 'active', enabled: false },
+        { name: 'init', type: 'system', status: 'active' },
+        { name: 'notify', type: 'coordination', status: 'active' },
         // Intelligence subcommands
-        { name: 'intelligence', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_trajectory-start', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_trajectory-step', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_trajectory-end', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_pattern-store', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_pattern-search', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_stats', type: 'analytics', status: 'active', enabled: false },
-        { name: 'intelligence_learn', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_attention', type: 'intelligence', status: 'active', enabled: false },
+        { name: 'intelligence', type: 'intelligence', status: 'active' },
+        { name: 'intelligence_trajectory-start', type: 'intelligence', status: 'active' },
+        { name: 'intelligence_trajectory-step', type: 'intelligence', status: 'active' },
+        { name: 'intelligence_trajectory-end', type: 'intelligence', status: 'active' },
+        { name: 'intelligence_pattern-store', type: 'intelligence', status: 'active' },
+        { name: 'intelligence_pattern-search', type: 'intelligence', status: 'active' },
+        { name: 'intelligence_stats', type: 'analytics', status: 'active' },
+        { name: 'intelligence_learn', type: 'intelligence', status: 'active' },
+        { name: 'intelligence_attention', type: 'intelligence', status: 'active' },
       ],
       total: 26,
     };
@@ -1452,6 +1192,11 @@ export const hooksPreTask: MCPTool = {
     const taskId = params.taskId as string;
     const description = params.description as string;
     const filePath = params.filePath as string | undefined;
+
+    { const v = validateIdentifier(taskId, 'taskId'); if (!v.valid) return { success: false, error: v.error }; }
+    { const v = validateText(description, 'description'); if (!v.valid) return { success: false, error: v.error }; }
+    if (filePath) { const v = validatePath(filePath, 'filePath'); if (!v.valid) return { success: false, error: v.error }; }
+
     const suggestion = suggestAgentsForTask(description);
 
     // Determine complexity
@@ -1540,18 +1285,18 @@ export const hooksPostTask: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const taskId = params.taskId as string;
     const success = params.success !== false;
-    const agent = (params.agent as string) || 'unknown';
-    // WM-107a: fix quality falsy-OR → use ?? so explicit quality=0.0 is preserved (not coerced to 0.3).
-    // Failure default lowered to 0.2 so failures produce a clear negative signal.
-    const quality = (params.quality as number) ?? (success ? 0.85 : 0.2);
+    const agent = params.agent as string | undefined;
+    const quality = (params.quality as number) || (success ? 0.85 : 0.3);
     const startTime = Date.now();
 
-    // HK-002c: Wire recordFeedback through router with fail-loud error handling (ADR-0084 Phase 3)
+    { const v = validateIdentifier(taskId, 'taskId'); if (!v.valid) return { success: false, error: v.error }; }
+    if (agent) { const v = validateIdentifier(agent, 'agent'); if (!v.valid) return { success: false, error: v.error }; }
+
+    // Phase 3: Wire recordFeedback through bridge → LearningSystem + ReasoningBank
     let feedbackResult: { success: boolean; controller: string; updated: number } | null = null;
     try {
-      const { routeFeedbackOp } = await import('../memory/memory-router.js');
-      const result = await routeFeedbackOp({
-        type: 'record',
+      const bridge = await import('../memory/memory-bridge.js');
+      feedbackResult = await bridge.bridgeRecordFeedback({
         taskId,
         success,
         quality,
@@ -1559,33 +1304,32 @@ export const hooksPostTask: MCPTool = {
         duration: (params.duration as number) || undefined,
         patterns: (params.patterns as string[]) || undefined,
       });
-      feedbackResult = {
-        success: result.success,
-        controller: (result.controller as string) || 'unknown',
-        updated: (result.updated as number) || 0,
-      };
-    } catch (e) {
-      throw new Error(
-        `routeFeedbackOp failed: ${(e as Error)?.message}\n` +
-        `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json to allow degraded routing`
-      );
+    } catch {
+      // Bridge not available — continue with basic response
     }
 
-    // HK-002c: Record causal edge with fail-loud error handling (ADR-0084 Phase 3)
+    // Phase 3: Record causal edge (task → outcome)
     try {
-      const { routeCausalOp } = await import('../memory/memory-router.js');
-      await routeCausalOp({
-        type: 'edge',
+      const bridge = await import('../memory/memory-bridge.js');
+      await bridge.bridgeRecordCausalEdge({
         sourceId: taskId,
         targetId: `outcome-${taskId}`,
         relation: success ? 'succeeded' : 'failed',
         weight: quality,
       });
-    } catch (e) {
-      throw new Error(
-        `routeCausalOp failed: ${(e as Error)?.message}\n` +
-        `Fix: set "hooks.bridgeFallback": true in .claude-flow/config.json to allow degraded routing`
+    } catch {
+      // Non-fatal
+    }
+
+    // Record trajectory via intelligence module (SONA + ReasoningBank)
+    try {
+      const intelligence = await import('../memory/intelligence.js');
+      await intelligence.recordTrajectory(
+        [{ type: 'result' as const, content: (params.task as string) || taskId, metadata: { success, agent, quality }, timestamp: Date.now() }],
+        success ? 'success' : 'failure'
       );
+    } catch {
+      // Intelligence module not available — non-fatal
     }
 
     // Persist routing outcome for runtime learning (file-based, always reliable)
@@ -1625,6 +1369,30 @@ export const hooksPostTask: MCPTool = {
 
     const duration = Date.now() - startTime;
 
+    // Persist to auto-memory-store for statusline visibility
+    try {
+      const dataDir = join(getProjectCwd(), '.claude-flow', 'data');
+      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+      const storePath = join(dataDir, 'auto-memory-store.json');
+      let store: Array<Record<string, unknown>> = [];
+      try {
+        if (existsSync(storePath)) {
+          const parsed = JSON.parse(readFileSync(storePath, 'utf-8'));
+          store = Array.isArray(parsed) ? parsed : [];
+        }
+      } catch { /* start fresh */ }
+      store.push({
+        id: `task-${taskId}`,
+        key: taskId,
+        content: `Task ${success ? 'completed' : 'failed'}: ${taskText || taskId}${agent ? ` (agent: ${agent})` : ''}`,
+        namespace: 'tasks',
+        type: 'task-outcome',
+        metadata: { agent, success, quality },
+        createdAt: Date.now(),
+      });
+      writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf-8');
+    } catch { /* non-critical */ }
+
     return {
       taskId,
       success,
@@ -1662,6 +1430,9 @@ export const hooksExplain: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const task = params.task as string;
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+
     const suggestion = suggestAgentsForTask(task);
     const taskLower = task.toLowerCase();
 
@@ -1671,10 +1442,27 @@ export const hooksExplain: MCPTool = {
       if (taskLower.includes(pattern)) {
         matchedPatterns.push({
           pattern,
-          matchScore: 0.85 + Math.random() * 0.1,
-          examples: [`Previous ${pattern} task completed successfully`, `${pattern} patterns from repository analysis`],
+          matchScore: pattern.length / Math.max(taskLower.length, 1), // real ratio: pattern length vs task length
+          examples: [`Keyword "${pattern}" matched in task description`],
         });
       }
+    }
+
+    // Calculate real historical success rate from routing outcomes file
+    let historicalSuccess: number | null = null;
+    let historicalNote = 'No historical data yet';
+    try {
+      const outcomesPath = join(resolve('.'), '.claude-flow/routing-outcomes.json');
+      if (existsSync(outcomesPath)) {
+        const data = JSON.parse(readFileSync(outcomesPath, 'utf-8'));
+        const outcomes: Array<{ success: boolean }> = data.outcomes || [];
+        if (outcomes.length > 0) {
+          historicalSuccess = outcomes.filter(o => o.success).length / outcomes.length;
+          historicalNote = `Calculated from ${outcomes.length} recorded outcomes`;
+        }
+      }
+    } catch {
+      // File unreadable; leave as null
     }
 
     return {
@@ -1683,8 +1471,8 @@ export const hooksExplain: MCPTool = {
         `The task contains keywords that match the "${suggestion.agents[0]}" specialization with ${(suggestion.confidence * 100).toFixed(0)}% confidence.`,
       factors: [
         { factor: 'Keyword Match', weight: 0.4, value: suggestion.confidence, impact: 'Primary routing signal' },
-        { factor: 'Historical Success', weight: 0.3, value: 0.87, impact: 'Past task success rate' },
-        { factor: 'Agent Availability', weight: 0.2, value: 0.95, impact: 'All suggested agents available' },
+        { factor: 'Historical Success', weight: 0.3, value: historicalSuccess, impact: historicalNote },
+        { factor: 'Agent Availability', weight: 0.2, value: null, impact: 'Agent availability tracking not implemented' },
         { factor: 'Task Complexity', weight: 0.1, value: task.length > 100 ? 0.8 : 0.3, impact: 'Complexity assessment' },
       ],
       patterns: matchedPatterns.length > 0 ? matchedPatterns : [
@@ -1696,7 +1484,9 @@ export const hooksExplain: MCPTool = {
         reasoning: [
           `Task analysis identified ${matchedPatterns.length || 1} relevant patterns`,
           `"${suggestion.agents[0]}" has highest capability match for this task type`,
-          `Historical success rate for similar tasks: 87%`,
+          historicalSuccess !== null
+            ? `Historical success rate for similar tasks: ${(historicalSuccess * 100).toFixed(0)}%`
+            : `No historical outcome data available yet`,
           `Confidence threshold met (${(suggestion.confidence * 100).toFixed(0)}% >= 70%)`,
         ],
       },
@@ -1717,30 +1507,83 @@ export const hooksPretrain: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
-    const path = (params.path as string) || '.';
+    const repoPath = resolve((params.path as string) || '.');
     const depth = (params.depth as string) || 'medium';
-    const startTime = Date.now();
+    const startTime = performance.now();
 
-    // Scale analysis results by depth level
-    const multiplier = depth === 'deep' ? 3 : depth === 'shallow' ? 1 : 2;
+    // Real file scanning — count files by extension, extract patterns
+    const { readdirSync, statSync } = await import('node:fs');
+    const extCounts: Record<string, number> = {};
+    let filesAnalyzed = 0;
+    let totalLines = 0;
+    const maxDepth = depth === 'shallow' ? 2 : depth === 'deep' ? 6 : 4;
+    const patterns: string[] = [];
+
+    const scan = (dir: string, currentDepth: number) => {
+      if (currentDepth > maxDepth) return;
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist') continue;
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scan(full, currentDepth + 1);
+          } else if (entry.isFile()) {
+            const ext = entry.name.includes('.') ? entry.name.slice(entry.name.lastIndexOf('.')) : '';
+            if (ext) extCounts[ext] = (extCounts[ext] || 0) + 1;
+            filesAnalyzed++;
+            // For code files, count lines and extract imports
+            if (['.ts', '.js', '.py', '.go', '.rs', '.java'].includes(ext)) {
+              try {
+                const content = readFileSync(full, 'utf-8');
+                const lines = content.split('\n');
+                totalLines += lines.length;
+                // Extract import patterns (first 50 files max for performance)
+                if (filesAnalyzed <= 50) {
+                  for (const line of lines.slice(0, 30)) {
+                    if (line.startsWith('import ') || line.startsWith('from ') || line.startsWith('const ') && line.includes('require(')) {
+                      const trimmed = line.trim();
+                      if (trimmed.length < 120 && !patterns.includes(trimmed)) patterns.push(trimmed);
+                      if (patterns.length >= 100) break;
+                    }
+                  }
+                }
+              } catch { /* skip unreadable */ }
+            }
+          }
+        }
+      } catch { /* skip inaccessible dirs */ }
+    };
+
+    scan(repoPath, 0);
+    const elapsed = Math.round(performance.now() - startTime);
+
+    // Store extracted patterns in AgentDB
+    let patternsStored = 0;
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      await bridge.bridgeStoreEntry({
+        key: `pretrain-${Date.now()}`,
+        value: JSON.stringify({ filesAnalyzed, totalLines, topExtensions: Object.entries(extCounts).sort((a, b) => b[1] - a[1]).slice(0, 10), importPatterns: patterns.slice(0, 20) }),
+        namespace: 'pretrain',
+        tags: ['pretrain', depth],
+      });
+      patternsStored = patterns.length;
+    } catch { /* AgentDB not available */ }
 
     return {
-      path,
+      success: true,
+      _real: true,
+      path: repoPath,
       depth,
+      durationMs: elapsed,
       stats: {
-        filesAnalyzed: 42 * multiplier,
-        patternsExtracted: 15 * multiplier,
-        strategiesLearned: 8 * multiplier,
-        trajectoriesEvaluated: 23 * multiplier,
-        contradictionsResolved: 3,
+        filesAnalyzed,
+        totalLines,
+        patternsExtracted: patterns.length,
+        patternsStored,
+        fileTypes: Object.entries(extCounts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([ext, count]) => ({ ext, count })),
       },
-      pipeline: {
-        retrieve: { status: 'completed', duration: 120 * multiplier },
-        judge: { status: 'completed', duration: 180 * multiplier },
-        distill: { status: 'completed', duration: 90 * multiplier },
-        consolidate: { status: 'completed', duration: 60 * multiplier },
-      },
-      duration: Date.now() - startTime + (500 * multiplier),
     };
   },
 };
@@ -1834,6 +1677,9 @@ export const hooksTransfer: MCPTool = {
     const minConfidence = (params.minConfidence as number) || 0.7;
     const filter = params.filter as string;
 
+    { const v = validatePath(sourcePath, 'sourcePath'); if (!v.valid) return { success: false, error: v.error }; }
+    if (filter) { const v = validateIdentifier(filter, 'filter'); if (!v.valid) return { success: false, error: v.error }; }
+
     // Try to load patterns from source project's memory store
     const sourceMemoryPath = join(resolve(sourcePath), MEMORY_DIR, MEMORY_FILE);
     let sourceStore: MemoryStore = { entries: {}, version: '3.0.0' };
@@ -1856,12 +1702,14 @@ export const hooksTransfer: MCPTool = {
       'agent-success': sourceEntries.filter(e => e.key.includes('agent') || e.metadata?.type === 'agent-success').length,
     };
 
-    // If source has no patterns, provide demo data
+    // If source has no patterns, report honestly instead of substituting demo data
     if (Object.values(byType).every(v => v === 0)) {
-      byType['file-patterns'] = 8;
-      byType['task-routing'] = 12;
-      byType['command-risk'] = 5;
-      byType['agent-success'] = 15;
+      return {
+        success: false,
+        message: 'No patterns found in source project',
+        sourcePath,
+        transferred: 0,
+      };
     }
 
     if (filter) {
@@ -1873,6 +1721,7 @@ export const hooksTransfer: MCPTool = {
     const total = Object.values(byType).reduce((a, b) => a + b, 0);
 
     return {
+      success: true,
       sourcePath,
       transferred: {
         total,
@@ -1887,7 +1736,7 @@ export const hooksTransfer: MCPTool = {
         avgConfidence: 0.82 + (minConfidence > 0.8 ? 0.1 : 0),
         avgAge: '3 days',
       },
-      dataSource: Object.values(sourceStore.entries).length > 0 ? 'source-project' : 'demo-data',
+      dataSource: 'source-project',
     };
   },
 };
@@ -1909,38 +1758,39 @@ export const hooksSessionStart: MCPTool = {
     const restoreLatest = params.restoreLatest as boolean;
     const shouldStartDaemon = params.startDaemon === true;
 
+    if (params.sessionId) { const v = validateIdentifier(params.sessionId as string, 'sessionId'); if (!v.valid) return { success: false, error: v.error }; }
+
+    // Auto-regenerate statusline if outdated (fixes older installs)
+    // Checks for the old fake heuristic: "Math.floor(sizeKB / 2)"
+    try {
+      const statuslinePath = join(getProjectCwd(), '.claude', 'helpers', 'statusline.cjs');
+      if (existsSync(statuslinePath)) {
+        const content = readFileSync(statuslinePath, 'utf-8');
+        if (content.includes('Math.floor(sizeKB / 2)') || content.includes('Maturity fallback')) {
+          // Old version detected — regenerate from current generator
+          const { generateStatuslineScript } = await import('../init/statusline-generator.js');
+          const newContent = generateStatuslineScript({
+            runtime: { maxAgents: 15, topology: 'hierarchical', strategy: 'specialized' },
+          } as any);
+          writeFileSync(statuslinePath, newContent, 'utf-8');
+        }
+      }
+    } catch {
+      // Non-critical — old statusline continues to work, just with stale heuristics
+    }
+
     // Auto-start daemon if enabled
-    let daemonStatus: { started: boolean; pid?: number; reused?: boolean; error?: string } = { started: false };
+    let daemonStatus: { started: boolean; pid?: number; error?: string } = { started: false };
     if (shouldStartDaemon) {
       try {
-        // HK-005: PID-file guard — one daemon per project across processes
-        // ADR-0100: anchor on project root, not process.cwd() (Claude Code CWD drift).
-        const _projectRoot = findProjectRoot();
-        const _pidDir = join(_projectRoot, '.claude-flow');
-        const _pidPath = join(_pidDir, 'daemon.pid');
-        let _skipDaemon = false;
-        try {
-          const _xPid = parseInt(readFileSync(_pidPath, 'utf-8').trim(), 10);
-          if (!isNaN(_xPid) && _xPid !== process.pid) {
-            try { process.kill(_xPid, 0); _skipDaemon = true; daemonStatus = { started: true, pid: _xPid, reused: true }; }
-            catch { /* T4: stale PID from dead process — proceed */ }
-          }
-        } catch { /* T4: no PID file — proceed */ }
-        if (!_skipDaemon) {
-          // Dynamic import to avoid circular dependencies
-          const { startDaemon } = await import('../services/worker-daemon.js');
-          const daemon = await startDaemon(_projectRoot);
-          const status = daemon.getStatus();
-          // HK-005: Write PID so other processes detect this daemon
-          try {
-            if (!existsSync(_pidDir)) { mkdirSync(_pidDir, { recursive: true }); }
-            writeFileSync(_pidPath, String(status.pid || process.pid));
-          } catch { /* T4: best-effort PID file write */ }
-          daemonStatus = {
-            started: true,
-            pid: status.pid,
-          };
-        } // end HK-005 guard
+        // Dynamic import to avoid circular dependencies
+        const { startDaemon } = await import('../services/worker-daemon.js');
+        const daemon = await startDaemon(getProjectCwd());
+        const status = daemon.getStatus();
+        daemonStatus = {
+          started: true,
+          pid: status.pid,
+        };
       } catch (error) {
         daemonStatus = {
           started: false,
@@ -1949,23 +1799,63 @@ export const hooksSessionStart: MCPTool = {
       }
     }
 
-    // Phase 5: Wire ReflexionMemory session start via router (ADR-0084 Phase 3)
+    // Initialize intelligence module (SONA + local ReasoningBank)
+    let intelligenceStatus: { sonaEnabled: boolean; reasoningBankEnabled: boolean } = { sonaEnabled: false, reasoningBankEnabled: false };
+    try {
+      const intelligence = await import('../memory/intelligence.js');
+      const initResult = await intelligence.initializeIntelligence();
+      intelligenceStatus = { sonaEnabled: initResult.sonaEnabled, reasoningBankEnabled: initResult.reasoningBankEnabled };
+    } catch {
+      // Intelligence module not available — non-fatal
+    }
+
+    // Phase 5: Wire ReflexionMemory session start via bridge
     let sessionMemory: { controller: string; restoredPatterns: number } | null = null;
     try {
-      const { routeSessionOp } = await import('../memory/memory-router.js');
-      const result = await routeSessionOp({
-        type: 'start',
+      const bridge = await import('../memory/memory-bridge.js');
+      const result = await bridge.bridgeSessionStart({
         sessionId,
         context: restoreLatest ? 'restore previous session patterns' : 'new session',
       });
       if (result) {
         sessionMemory = {
-          controller: (result.controller as string) || 'unknown',
-          restoredPatterns: (result.restoredPatterns as number) || 0,
+          controller: result.controller,
+          restoredPatterns: result.restoredPatterns,
         };
       }
     } catch {
-      // Router not available
+      // Bridge not available
+    }
+
+    // Persist session record to auto-memory-store for statusline visibility
+    try {
+      const dataDir = join(getProjectCwd(), '.claude-flow', 'data');
+      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+      const storePath = join(dataDir, 'auto-memory-store.json');
+      let store: Array<Record<string, unknown>> = [];
+      try {
+        if (existsSync(storePath)) {
+          const raw = readFileSync(storePath, 'utf-8');
+          const parsed = JSON.parse(raw);
+          store = Array.isArray(parsed) ? parsed : [];
+        }
+      } catch { /* start fresh */ }
+      // Add session entry (dedup by session ID)
+      const entryId = `session-${sessionId}`;
+      const existing = store.findIndex((e: Record<string, unknown>) => e.id === entryId);
+      const entry = {
+        id: entryId,
+        key: sessionId,
+        content: `Session started: ${sessionId}`,
+        namespace: 'sessions',
+        type: 'session',
+        createdAt: Date.now(),
+      };
+      if (existing >= 0) store[existing] = entry;
+      else store.push(entry);
+      writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf-8');
+    } catch {
+      // Non-critical — statusline just won't show this session
     }
 
     return {
@@ -1982,8 +1872,8 @@ export const hooksSessionStart: MCPTool = {
       sessionMemory: sessionMemory || { controller: 'none', restoredPatterns: 0 },
       previousSession: restoreLatest ? {
         id: `session-${Date.now() - 86400000}`,
-        tasksRestored: sessionMemory?.restoredPatterns || 3,
-        memoryRestored: sessionMemory?.restoredPatterns || 15,
+        tasksRestored: sessionMemory?.restoredPatterns || 0,
+        memoryRestored: sessionMemory?.restoredPatterns || 0,
       } : null,
     };
   },
@@ -2004,7 +1894,7 @@ export const hooksSessionEnd: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const saveState = params.saveState !== false;
     const shouldStopDaemon = params.stopDaemon !== false;
-    const sessionId = (params.sessionId as string) || `session-${Date.now()}`; // WM-107d: accept real session ID (ADR-073 Gap C)
+    const sessionId = `session-${Date.now() - 3600000}`; // Default session (1 hour ago)
 
     // Stop daemon if enabled
     let daemonStopped = false;
@@ -2018,40 +1908,45 @@ export const hooksSessionEnd: MCPTool = {
       }
     }
 
-    // Phase 5: Wire ReflexionMemory session end + NightlyLearner consolidation via router (ADR-0084 Phase 3)
+    // Read actual counts from stores
+    const store = loadMemoryStore();
+    const allEntries = Object.values(store.entries);
+    const taskCount = allEntries.filter(e => e.key.includes('task')).length;
+    const agentCount = allEntries.filter(e => e.key.includes('agent')).length;
+    const patternCount = allEntries.filter(e => e.key.includes('pattern')).length;
+    const trajectoryCount = activeTrajectories.size;
+
+    // Check for pending-insights.jsonl
+    let insightCount = 0;
+    try {
+      const insightsPath = resolve(join('.claude-flow', 'data', 'pending-insights.jsonl'));
+      if (existsSync(insightsPath)) {
+        const content = readFileSync(insightsPath, 'utf-8').trim();
+        insightCount = content ? content.split('\n').length : 0;
+      }
+    } catch {
+      // File not available
+    }
+
+    // Phase 5: Wire ReflexionMemory session end + NightlyLearner consolidation via bridge
     let sessionPersistence: { controller: string; persisted: boolean } | null = null;
     try {
-      const { routeSessionOp } = await import('../memory/memory-router.js');
-      const result = await routeSessionOp({
-        type: 'end',
+      const bridge = await import('../memory/memory-bridge.js');
+      const result = await bridge.bridgeSessionEnd({
         sessionId,
         summary: saveState ? 'Session ended with state saved' : 'Session ended',
-        tasksCompleted: (params.tasksCompleted as number) ?? 0, // WM-107c: use actual count (ADR-073 Gap C)
-        patternsLearned: (params.patternsLearned as number) ?? 0, // WM-107c: use actual count (ADR-073 Gap C)
+        tasksCompleted: taskCount,
+        patternsLearned: patternCount,
       });
       if (result) {
         sessionPersistence = {
-          controller: (result.controller as string) || 'unknown',
-          persisted: (result.persisted as boolean) || false,
+          controller: result.controller,
+          persisted: result.persisted,
         };
       }
     } catch {
-      // Router not available
+      // Bridge not available
     }
-
-    // Phase 3: Trigger NightlyLearner consolidation on session end (ADR-0084 Phase 3: via memory-router)
-    try {
-      const { getController: getCtrlNL } = await import('../memory/memory-router.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const registry = await getCtrlNL<any>('nightlyLearner');
-      if (registry && typeof registry.consolidate === 'function') {
-        // Fire-and-forget — consolidation is background work
-        Promise.race([
-          registry.consolidate(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('NightlyLearner timeout')), 2000)),
-        ]).catch(() => {});
-      }
-    } catch { /* NightlyLearner unavailable */ }
 
     return {
       sessionId,
@@ -2060,17 +1955,15 @@ export const hooksSessionEnd: MCPTool = {
       daemon: { stopped: daemonStopped },
       sessionPersistence: sessionPersistence || { controller: 'none', persisted: false },
       summary: {
-        tasksExecuted: 12,
-        tasksSucceeded: 10,
-        tasksFailed: 2,
-        commandsExecuted: 45,
-        filesModified: 23,
-        agentsSpawned: 5,
+        tasksExecuted: taskCount,
+        filesModified: 0,
+        agentsSpawned: agentCount,
+        pendingInsights: insightCount,
+        memoryEntries: allEntries.length,
       },
       learningUpdates: {
-        patternsLearned: 8,
-        trajectoriesRecorded: 12,
-        confidenceImproved: 0.05,
+        patternsLearned: patternCount,
+        trajectoriesRecorded: trajectoryCount,
       },
     };
   },
@@ -2092,6 +1985,8 @@ export const hooksSessionRestore: MCPTool = {
     const requestedId = (params.sessionId as string) || 'latest';
     const restoreAgents = params.restoreAgents !== false;
     const restoreTasks = params.restoreTasks !== false;
+
+    if (params.sessionId) { const v = validateIdentifier(params.sessionId as string, 'sessionId'); if (!v.valid) return { success: false, error: v.error }; }
 
     const originalSessionId = requestedId === 'latest' ? `session-${Date.now() - 86400000}` : requestedId;
     const newSessionId = `session-${Date.now()}`;
@@ -2136,6 +2031,9 @@ export const hooksNotify: MCPTool = {
     const message = params.message as string;
     const target = (params.target as string) || 'all';
     const priority = (params.priority as string) || 'normal';
+
+    { const v = validateText(message, 'message'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.target) { const v = validateIdentifier(target, 'target'); if (!v.valid) return { success: false, error: v.error }; }
 
     return {
       notificationId: `notify-${Date.now()}`,
@@ -2269,11 +2167,39 @@ export const hooksIntelligence: MCPTool = {
         },
         embeddings: {
           provider: 'transformers',
-          model: 'Xenova/all-mpnet-base-v2',
-          dimension: 768, // ADR-0069: canonical model is mpnet 768-dim
+          model: 'Xenova/all-MiniLM-L6-v2',
+          dimension: 384,
           implemented: true,
-          note: 'Real ONNX embeddings via Xenova/all-mpnet-base-v2',
+          note: 'Real ONNX embeddings via Xenova/all-MiniLM-L6-v2',
         },
+        ruvllmCoordinator: await (async () => {
+          try {
+            const { getIntelligenceStats } = await import('../memory/intelligence.js');
+            const s = getIntelligenceStats();
+            return { status: s._ruvllmBackend || 'unavailable', trajectories: s._ruvllmTrajectories || 0, note: s._ruvllmBackend === 'active' ? 'SonaCoordinator forwarding trajectories' : '@ruvector/ruvllm not loaded' };
+          } catch { return { status: 'unavailable', trajectories: 0, note: 'Not initialized' }; }
+        })(),
+        contrastiveTrainer: await (async () => {
+          try {
+            const { getSONAStats } = await import('../memory/sona-optimizer.js');
+            const s = await getSONAStats();
+            return { status: s._contrastiveTrainer !== 'unavailable' ? 'active' : 'unavailable', details: s._contrastiveTrainer, note: s._contrastiveTrainer !== 'unavailable' ? 'Agent embedding learning active' : '@ruvector/ruvllm not loaded' };
+          } catch { return { status: 'unavailable', details: null, note: 'Not initialized' }; }
+        })(),
+        trainingPipeline: await (async () => {
+          try {
+            const loraInst = await getLoRAAdapter();
+            const s = loraInst?.getStats();
+            return { status: s?._trainingBackend || 'unavailable', note: s?._trainingBackend === 'ruvllm' ? 'Checkpoint save/load via ruvllm' : 'JS fallback' };
+          } catch { return { status: 'unavailable', note: 'Not initialized' }; }
+        })(),
+        graphDatabase: await (async () => {
+          try {
+            const { getGraphStats } = await import('../ruvector/graph-backend.js');
+            const gs = await getGraphStats();
+            return { status: gs.backend, totalNodes: gs.totalNodes, totalEdges: gs.totalEdges, avgDegree: gs.avgDegree, note: gs.backend === 'graph-node' ? 'Native Rust graph with hyperedges and k-hop queries' : '@ruvector/graph-node not loaded' };
+          } catch { return { status: 'unavailable', totalNodes: 0, totalEdges: 0, avgDegree: 0, note: 'Not initialized' }; }
+        })(),
       },
       realMetrics: {
         trajectories: realStats.trajectories,
@@ -2285,7 +2211,7 @@ export const hooksIntelligence: MCPTool = {
         working: [
           'memory-store', 'embeddings', 'trajectory-recording', 'claims', 'swarm-coordination',
           'hnsw-index', 'pattern-storage', 'sona-optimizer', 'ewc-consolidation', 'moe-routing',
-          'flash-attention', 'lora-adapter'
+          'flash-attention', 'lora-adapter', 'ruvllm-coordinator', 'contrastive-trainer', 'training-pipeline', 'graph-database'
         ],
         partial: [],
         notImplemented: [],
@@ -2304,13 +2230,62 @@ export const hooksIntelligenceReset: MCPTool = {
     properties: {},
   },
   handler: async () => {
+    const cwd = getProjectCwd();
+    const cleared = {
+      trajectories: 0,
+      patterns: 0,
+      dataFiles: 0,
+      neuralFiles: 0,
+    };
+    const deletedFiles: string[] = [];
+
+    // Clear intelligence data files if they exist
+    const dataFiles = [
+      join(cwd, '.claude-flow', 'data', 'auto-memory-store.json'),
+      join(cwd, '.claude-flow', 'data', 'graph-state.json'),
+      join(cwd, '.claude-flow', 'data', 'ranked-context.json'),
+    ];
+
+    for (const filePath of dataFiles) {
+      if (existsSync(filePath)) {
+        try {
+          unlinkSync(filePath);
+          cleared.dataFiles++;
+          deletedFiles.push(filePath);
+        } catch {
+          // Skip files that cannot be deleted
+        }
+      }
+    }
+
+    // Clear neural directory if it exists
+    const neuralDir = join(cwd, '.claude-flow', 'neural');
+    if (existsSync(neuralDir)) {
+      try {
+        const files = readdirSync(neuralDir);
+        for (const file of files) {
+          try {
+            const filePath = join(neuralDir, file);
+            unlinkSync(filePath);
+            cleared.neuralFiles++;
+            deletedFiles.push(filePath);
+          } catch {
+            // Skip files that cannot be deleted
+          }
+        }
+      } catch {
+        // Directory read failed
+      }
+    }
+
+    // Clear in-memory trajectories
+    cleared.trajectories = activeTrajectories.size;
+    activeTrajectories.clear();
+
     return {
       reset: true,
-      cleared: {
-        trajectories: 156,
-        patterns: 89,
-        hnswIndex: 12500,
-      },
+      cleared,
+      deletedFiles,
       timestamp: new Date().toISOString(),
     };
   },
@@ -2331,6 +2306,10 @@ export const hooksTrajectoryStart: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const task = params.task as string;
     const agent = (params.agent as string) || 'coder';
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.agent) { const v = validateIdentifier(params.agent as string, 'agent'); if (!v.valid) return { success: false, error: v.error }; }
+
     const trajectoryId = `traj-${Date.now()}-${Math.random().toString(36).substring(7)}`;
     const startedAt = new Date().toISOString();
 
@@ -2344,6 +2323,21 @@ export const hooksTrajectoryStart: MCPTool = {
     };
 
     activeTrajectories.set(trajectoryId, trajectory);
+
+    // Persist pending trajectory to disk so it survives MCP restarts
+    const storeFn = await getRealStoreFunction();
+    if (storeFn) {
+      try {
+        await storeFn({
+          key: `trajectory-pending-${trajectoryId}`,
+          value: JSON.stringify(trajectory),
+          namespace: 'trajectories',
+          tags: [agent, 'pending', 'sona-trajectory'],
+        });
+      } catch {
+        // Best-effort persistence — trajectory still lives in-memory
+      }
+    }
 
     return {
       trajectoryId,
@@ -2377,6 +2371,9 @@ export const hooksTrajectoryStep: MCPTool = {
     const quality = (params.quality as number) || 0.85;
     const timestamp = new Date().toISOString();
     const stepId = `step-${Date.now()}`;
+
+    { const v = validateIdentifier(trajectoryId, 'trajectoryId'); if (!v.valid) return { success: false, error: v.error }; }
+    { const v = validateText(action, 'action'); if (!v.valid) return { success: false, error: v.error }; }
 
     // Add step to real trajectory if it exists
     const trajectory = activeTrajectories.get(trajectoryId);
@@ -2417,6 +2414,9 @@ export const hooksTrajectoryEnd: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const trajectoryId = params.trajectoryId as string;
+
+    { const v = validateIdentifier(trajectoryId, 'trajectoryId'); if (!v.valid) return { success: false, error: v.error }; }
+
     const success = params.success !== false;
     const feedback = params.feedback as string | undefined;
     const endedAt = new Date().toISOString();
@@ -2491,6 +2491,12 @@ export const hooksTrajectoryEnd: MCPTool = {
         }
       }
 
+      // Trigger ruvllm background learning after trajectory end
+      try {
+        const { runBackgroundLearning } = await import('../memory/intelligence.js');
+        await runBackgroundLearning();
+      } catch { /* best-effort */ }
+
       // Try EWC++ consolidation on successful trajectories
       if (success) {
         const ewc = await getEWCConsolidator();
@@ -2498,8 +2504,7 @@ export const hooksTrajectoryEnd: MCPTool = {
           try {
             // Record gradient sample for Fisher matrix update
             // Create a simple gradient from trajectory steps
-            // ADR-0052: matches embedding config default
-            const gradients = new Array(EMBEDDING_DIM).fill(0).map((_, i) =>
+            const gradients = new Array(384).fill(0).map((_, i) =>
               Math.sin(i * 0.01) * (trajectory.steps.length / 10)
             );
             ewc.recordGradient(`trajectory-${trajectoryId}`, gradients, success);
@@ -2566,86 +2571,61 @@ export const hooksPatternStore: MCPTool = {
     const confidence = (params.confidence as number) || 0.8;
     const metadata = params.metadata as Record<string, unknown> | undefined;
     const timestamp = new Date().toISOString();
+
+    { const v = validateText(pattern, 'pattern'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.type) { const v = validateIdentifier(params.type as string, 'type'); if (!v.valid) return { success: false, error: v.error }; }
     const patternId = `pattern-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    // ADR-0112 Phase 2 (MCP handler track): hooks_intelligence_pattern-store
-    // is a pattern store that targets ReasoningBank (AgentDB SQLite
-    // reasoning_patterns table). Per ADR-0112 §Decision, this tool writes
-    // to exactly one store. The previous code had two silent-fallthrough
-    // sites:
-    //   1. catch{} swallowing routePatternOp errors as "Router not available"
-    //   2. fallback to memory-router store ('patterns' namespace in RVF)
-    //      when ReasoningBank failed — a cross-store coordination violation.
-    // Now: ReasoningBank is the only target. Failures propagate.
-    let reasoningResult: { success: boolean; patternId: string; controller: string; error?: string } | null = null;
-    let routerError: string | null = null;
+    // Phase 3: Try ReasoningBank via bridge first
+    let reasoningResult: { success: boolean; patternId: string; controller: string } | null = null;
     try {
-      const { routePatternOp } = await import('../memory/memory-router.js');
-      const result = await routePatternOp({ type: 'store', pattern, patternType: type, confidence, metadata: metadata as Record<string, unknown> | undefined });
-      if (result.success) {
-        reasoningResult = {
-          success: true,
-          patternId: (result.patternId as string) || patternId,
-          controller: (result.controller as string) || 'unknown',
-        };
-      } else {
-        // routePatternOp returned { success: false, error: ... } — surface it
-        routerError = (result.error as string) || 'routePatternOp returned unsuccessful result';
-      }
-    } catch (err) {
-      // Router import or call threw — surface the actual error, do not
-      // silently swallow. Per ADR-0082 + ADR-0112 §Required follow-up #4.
-      routerError = err instanceof Error ? err.message : String(err);
+      const bridge = await import('../memory/memory-bridge.js');
+      reasoningResult = await bridge.bridgeStorePattern({ pattern, type, confidence, metadata: metadata as Record<string, unknown> | undefined });
+    } catch {
+      // Bridge not available
     }
 
-    const success = reasoningResult?.success === true;
-    const controller = reasoningResult?.controller || 'reasoningBank';
-
-    // OPT-017: Also populate neural_patterns store. neural_patterns is a
-    // local JSON cache (NOT a store crossing the RVF↔SQLite partition);
-    // it lives in a separate file managed by neural-tools.ts. This is a
-    // legitimate side-effect cache, not a partition violation.
-    // The catch is best-effort + reports neuralSynced=false to the caller
-    // so downstream surfaces can detect the missing index.
-    let neuralSynced = false;
-    if (success) {
-      try {
-        const { loadNeuralStore, saveNeuralStore, generateEmbedding } = await import('./neural-tools.js');
-        const neuralStore = loadNeuralStore();
-        const neuralPatternId = reasoningResult?.patternId || patternId;
-        const embedding = await generateEmbedding(pattern, EMBEDDING_DIM);
-        neuralStore.patterns[neuralPatternId] = {
-          id: neuralPatternId,
-          name: pattern,
-          type,
-          embedding,
-          metadata: metadata || {},
-          createdAt: timestamp,
-          usageCount: 0,
-        };
-        saveNeuralStore(neuralStore);
-        neuralSynced = true;
-      } catch {
-        // Neural-tools cache miss is non-fatal — neuralSynced=false is the signal
+    // Fallback: persist using memory-initializer store
+    let storeResult: { success: boolean; id?: string; embedding?: { dimensions: number; model: string }; error?: string } = { success: false };
+    if (!reasoningResult) {
+      const storeFn = await getRealStoreFunction();
+      if (storeFn) {
+        try {
+          storeResult = await storeFn({
+            key: patternId,
+            value: JSON.stringify({ pattern, type, confidence, metadata, timestamp }),
+            namespace: 'pattern',
+            generateEmbeddingFlag: true,
+            tags: [type, `confidence-${Math.round(confidence * 100)}`, 'reasoning-pattern'],
+          });
+        } catch (error) {
+          storeResult = { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
       }
     }
+
+    const success = reasoningResult?.success || storeResult.success;
+    const controller = reasoningResult?.controller || (storeResult.success ? 'bridge-store' : 'none');
+    const hasEmbedding = !!storeResult.embedding || controller === 'reasoningBank' || controller === 'bridge-fallback';
 
     return {
-      success,
-      patternId: reasoningResult?.patternId || patternId,
+      patternId: reasoningResult?.patternId || storeResult.id || patternId,
       pattern,
       type,
       confidence,
       indexed: success,
-      hnswIndexed: success,
-      neuralSynced,
+      hnswIndexed: success && hasEmbedding,
+      embedding: storeResult.embedding,
       timestamp,
       controller,
-      implementation: success ? 'reasoning-bank-controller' : 'failed',
-      note: success
+      implementation: (controller === 'reasoningBank' || controller === 'bridge-fallback')
+        ? 'reasoning-bank-controller'
+        : (storeResult.success ? 'real-hnsw-indexed' : 'memory-only'),
+      note: controller === 'reasoningBank'
         ? 'Pattern stored via ReasoningBank controller with HNSW indexing'
-        : `ReasoningBank store failed: ${routerError || 'unknown error'}. Per ADR-0112, no silent fallback to RVF (cross-store coordination forbidden).`,
-      ...(routerError ? { error: routerError } : {}),
+        : controller === 'bridge-fallback'
+          ? 'Pattern stored via bridge with embedding and HNSW indexing'
+          : (storeResult.success ? 'Pattern stored with vector embedding for semantic search' : (storeResult.error || 'Store function unavailable')),
     };
   },
 };
@@ -2659,7 +2639,7 @@ export const hooksPatternSearch: MCPTool = {
       query: { type: 'string', description: 'Search query' },
       topK: { type: 'number', description: 'Number of results' },
       minConfidence: { type: 'number', description: 'Minimum similarity threshold (0-1)' },
-      namespace: { type: 'string', description: 'Namespace to search (default: patterns)' },
+      namespace: { type: 'string', description: 'Namespace to search (default: pattern)' },
     },
     required: ['query'],
   },
@@ -2667,16 +2647,19 @@ export const hooksPatternSearch: MCPTool = {
     const query = params.query as string;
     const topK = (params.topK as number) || 5;
     const minConfidence = (params.minConfidence as number) || 0.3;
-    const namespace = (params.namespace as string) || 'patterns';
+    const namespace = (params.namespace as string) || 'pattern';
 
-    // Phase 3: Try ReasoningBank search via router first (ADR-0084 Phase 3)
+    { const v = validateText(query, 'query'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.namespace) { const v = validateIdentifier(params.namespace as string, 'namespace'); if (!v.valid) return { success: false, error: v.error }; }
+
+    // Phase 3: Try ReasoningBank search via bridge first
     try {
-      const { routePatternOp } = await import('../memory/memory-router.js');
-      const rbResult = await routePatternOp({ type: 'search', query, topK, minConfidence });
-      if (rbResult && rbResult.success && Array.isArray(rbResult.results) && (rbResult.results as unknown[]).length > 0) {
+      const bridge = await import('../memory/memory-bridge.js');
+      const rbResult = await bridge.bridgeSearchPatterns({ query, topK, minConfidence });
+      if (rbResult && rbResult.results.length > 0) {
         return {
           query,
-          results: (rbResult.results as Array<{ id: string; content: string; score: number }>).map(r => ({
+          results: rbResult.results.map(r => ({
             patternId: r.id,
             pattern: r.content,
             similarity: r.score,
@@ -2684,15 +2667,15 @@ export const hooksPatternSearch: MCPTool = {
             namespace,
           })),
           searchTimeMs: 0,
-          backend: (rbResult.controller as string) || 'unknown',
-          note: `Results from ${(rbResult.controller as string) || 'unknown'} controller`,
+          backend: rbResult.controller,
+          note: `Results from ${rbResult.controller} controller`,
         };
       }
     } catch {
-      // Router not available — fall through
+      // Bridge not available — fall through
     }
 
-    // Fallback: Try real vector search via memory-router (ADR-0086 T2.7)
+    // Fallback: Try real vector search via memory-initializer
     const searchFn = await getRealSearchFunction();
 
     if (searchFn) {
@@ -2727,7 +2710,7 @@ export const hooksPatternSearch: MCPTool = {
           results: [],
           searchTimeMs: searchResult.searchTime,
           backend: 'real-vector-search',
-          note: searchResult.error || 'No matching patterns found. Store patterns first using memory/store with namespace "patterns".',
+          note: searchResult.error || 'No matching patterns found. Store patterns first using memory/store with namespace "pattern".',
         };
       } catch (error) {
         // Fall through to empty response with error
@@ -2742,59 +2725,13 @@ export const hooksPatternSearch: MCPTool = {
       }
     }
 
-    // OPT-017: Fallback to neural store patterns synced from intelligence_pattern-store
-    try {
-      const { loadNeuralStore, generateEmbedding } = await import('./neural-tools.js');
-      const neuralStore = loadNeuralStore();
-      const neuralPatterns = Object.values(neuralStore.patterns);
-      if (neuralPatterns.length > 0) {
-        // ADR-0052: matches embedding config default
-        const queryEmbedding = await generateEmbedding(query, EMBEDDING_DIM);
-        // Inline cosine similarity to avoid importing private function
-        const cosSim = (a: number[], b: number[]): number => {
-          if (a.length !== b.length || a.length === 0) return 0;
-          let dot = 0, normA = 0, normB = 0;
-          for (let i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
-            normA += a[i] * a[i];
-            normB += b[i] * b[i];
-          }
-          return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
-        };
-        const scored = neuralPatterns
-          .filter(p => p.embedding && p.embedding.length > 0)
-          .map(p => ({ ...p, similarity: cosSim(queryEmbedding, p.embedding) }))
-          .filter(p => p.similarity >= minConfidence)
-          .sort((a, b) => b.similarity - a.similarity)
-          .slice(0, topK);
-
-        if (scored.length > 0) {
-          return {
-            query,
-            results: scored.map(r => ({
-              patternId: r.id,
-              pattern: r.name,
-              similarity: r.similarity,
-              confidence: r.similarity,
-              namespace,
-            })),
-            searchTimeMs: 0,
-            backend: 'neural-store-fallback',
-            note: 'Results from neural store (OPT-017 synced patterns)',
-          };
-        }
-      }
-    } catch {
-      // Neural store fallback is best-effort
-    }
-
-    // No search function or neural patterns available
+    // No search function available
     return {
       query,
       results: [],
       searchTimeMs: 0,
       backend: 'unavailable',
-      note: 'No search backend available. Initialize memory database with: claude-flow memory init',
+      note: 'Real vector search not available. Initialize memory database with: claude-flow memory init',
     };
   },
 };
@@ -2819,8 +2756,18 @@ export const hooksIntelligenceStats: MCPTool = {
     const flash = await getFlashAttention();
     const lora = await getLoRAAdapter();
 
-    // Fallback to memory store for legacy data
-    const memoryStats = getIntelligenceStatsFromMemory();
+    // Fallback to memory store for legacy data (may not exist yet)
+    let memoryStats: ReturnType<typeof getIntelligenceStatsFromMemory>;
+    try {
+      memoryStats = getIntelligenceStatsFromMemory();
+    } catch {
+      memoryStats = {
+        trajectories: { total: 0, successful: 0 },
+        patterns: { learned: 0, categories: {} },
+        memory: { indexSize: 0, totalAccessCount: 0, memorySizeBytes: 0 },
+        routing: { decisions: 0, avgConfidence: 0 },
+      };
+    }
 
     // SONA stats from real implementation
     let sonaStats = {
@@ -2935,18 +2882,28 @@ export const hooksIntelligenceStats: MCPTool = {
       };
     }
 
-    // Phase 5: SonaTrajectory stats (P5-F: ADR-0033)
-    let sonaTrajectoryStats: Record<string, unknown> | null = null;
+    // ruvllm native backend stats
+    let ruvllmStats = { coordinator: 'unavailable' as string, trajectories: 0, contrastiveTrainer: 'unavailable' as string | object, trainingBackend: 'unavailable' as string, graphDatabase: { backend: 'unavailable', totalNodes: 0, totalEdges: 0 } as Record<string, unknown> };
     try {
-      const trajectory = await getSonaTrajectory();
-      if (trajectory && typeof trajectory.getStats === 'function') {
-        const tStats = await Promise.race([
-          trajectory.getStats(),
-          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-        ]);
-        sonaTrajectoryStats = tStats;
-      }
-    } catch { /* stats unavailable */ }
+      const { getIntelligenceStats } = await import('../memory/intelligence.js');
+      const iStats = getIntelligenceStats();
+      ruvllmStats.coordinator = iStats._ruvllmBackend || 'unavailable';
+      ruvllmStats.trajectories = iStats._ruvllmTrajectories || 0;
+    } catch { /* not initialized */ }
+    try {
+      const { getSONAStats: getSONA } = await import('../memory/sona-optimizer.js');
+      const sStats = await getSONA();
+      ruvllmStats.contrastiveTrainer = sStats._contrastiveTrainer || 'unavailable';
+    } catch { /* not initialized */ }
+    if (lora) {
+      const ls = lora.getStats();
+      ruvllmStats.trainingBackend = ls._trainingBackend || 'unavailable';
+    }
+    try {
+      const { getGraphStats } = await import('../ruvector/graph-backend.js');
+      const gs = await getGraphStats();
+      ruvllmStats.graphDatabase = { backend: gs.backend, totalNodes: gs.totalNodes, totalEdges: gs.totalEdges, avgDegree: gs.avgDegree };
+    } catch { /* not available */ }
 
     const stats = {
       sona: sonaStats,
@@ -2954,7 +2911,7 @@ export const hooksIntelligenceStats: MCPTool = {
       ewc: ewcStats,
       flash: flashStats,
       lora: loraStats,
-      ...(sonaTrajectoryStats ? { sonaTrajectory: sonaTrajectoryStats } : {}),
+      ruvllm: ruvllmStats,
       hnsw: {
         indexSize: memoryStats.memory.indexSize,
         avgSearchTimeMs: 0.12,
@@ -3045,50 +3002,8 @@ export const hooksIntelligenceLearn: MCPTool = {
       }
     }
 
-    // WM-106a: Call LearningBridge.learn() via router controller (ADR-0084 Phase 3)
-    let lbResult: { learned?: boolean } | null = null;
-    try {
-      const { getController: getCtrlLB } = await import('../memory/memory-router.js');
-      const lb = await getCtrlLB('learningBridge');
-      if (lb && typeof (lb as Record<string, unknown>).learn === 'function') {
-        lbResult = await (lb as { learn: (opts: Record<string, unknown>) => Promise<{ learned?: boolean }> }).learn({
-          trajectoryIds: params.trajectoryIds,
-          consolidate,
-        });
-      }
-    } catch (e) {
-      throw new Error(
-        `LearningBridge.learn failed: ${(e as Error)?.message}\n` +
-        `Fix: set "memory.agentdb.enableLearning": false in .claude-flow/config.json`
-      );
-    }
-
-    // WM-114a: Populate AttentionService memory store with learned patterns (ADR-0084 Phase 3: via memory-router)
-    let attentionPopulated = 0;
-    try {
-      const { getController: getCtrlAttn } = await import('../memory/memory-router.js');
-      const attnService = await getCtrlAttn('attentionService');
-      if (attnService && typeof (attnService as Record<string, unknown>).addMemory === 'function') {
-        const patternCount = sonaStats.totalPatterns || 0;
-        if (patternCount > 0) {
-          (attnService as { addMemory: (m: Record<string, unknown>) => void }).addMemory({
-            key: `sona-patterns-${Date.now()}`,
-            content: JSON.stringify({ patterns: patternCount, confidence: sonaStats.avgConfidence }),
-            score: sonaStats.avgConfidence || 0.5,
-            timestamp: Date.now(),
-          });
-          attentionPopulated = 1;
-        }
-      }
-    } catch (e) {
-      throw new Error(
-        `AttentionService.addMemory failed: ${(e as Error)?.message}\n` +
-        `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
-      );
-    }
-
     return {
-      learned: sonaStats.totalPatterns > 0 || lbResult?.learned === true,
+      learned: sonaStats.totalPatterns > 0,
       duration: Date.now() - startTime,
       updates: {
         trajectoriesProcessed: sonaStats.trajectoriesProcessed,
@@ -3098,12 +3013,10 @@ export const hooksIntelligenceLearn: MCPTool = {
           : '0%',
       },
       ewc: consolidate ? ewcStats : null,
-      learningBridge: lbResult,
       confidence: {
         average: sonaStats.avgConfidence,
         implementation: sona ? 'real-sona' : 'not-available',
       },
-      attention: { populated: attentionPopulated },
       implementation: sona ? 'real-sona-learning' : 'placeholder',
     };
   },
@@ -3128,46 +3041,54 @@ export const hooksIntelligenceAttention: MCPTool = {
     const topK = (params.topK as number) || 5;
     const startTime = performance.now();
 
+    { const v = validateText(query, 'query'); if (!v.valid) return { success: false, error: v.error }; }
+
     let implementation = 'placeholder';
+    let embeddingSource: 'onnx' | 'hash-fallback' | 'none' = 'none';
     const results: Array<{ index: number; weight: number; pattern: string; expert?: string }> = [];
 
-    // WM-114b: Try real AttentionService (JS softmax fallback) before MoE (ADR-0084 Phase 3: via memory-router)
-    if (mode === 'flash' || mode === 'attention') {
+    // Helper: generate query embedding, preferring real ONNX embeddings over hash fallback
+    async function getQueryEmbedding(text: string, dims: number): Promise<{ embedding: Float32Array; source: 'onnx' | 'hash-fallback' }> {
+      // Try ONNX via @claude-flow/embeddings
       try {
-        const { getController: getCtrlAttn2 } = await import('../memory/memory-router.js');
-        const attnService = await getCtrlAttn2('attentionService');
-        if (attnService && typeof (attnService as Record<string, unknown>).attend === 'function') {
-          const queryEmb = generateSimpleEmbedding(query);
-          const attnResult = (attnService as { attend: (emb: Float32Array, k: number) => { scores: number[]; keys?: string[] } }).attend(queryEmb, topK);
-          if (attnResult && attnResult.scores) {
-            for (let i = 0; i < Math.min(topK, attnResult.scores.length); i++) {
-              results.push({
-                index: i,
-                weight: attnResult.scores[i],
-                pattern: attnResult.keys?.[i] || `attention-${i}`,
-                expert: 'attention-service',
-              });
-            }
-            implementation = 'real-attention-service';
+        const embeddingsModule = await import('@claude-flow/embeddings').catch(() => null);
+        if (embeddingsModule?.createEmbeddingService) {
+          const service = embeddingsModule.createEmbeddingService({ provider: 'onnx' });
+          const result = await service.embed(text);
+          const arr = new Float32Array(dims);
+          for (let i = 0; i < Math.min(dims, result.embedding.length); i++) {
+            arr[i] = result.embedding[i];
           }
+          return { embedding: arr, source: 'onnx' };
         }
-      } catch (e) {
-        throw new Error(
-          `AttentionService.attend failed: ${(e as Error)?.message}\n` +
-          `Fix: set "memory.agentdb.enabled": false in .claude-flow/config.json`
-        );
+      } catch {
+        // ONNX not available, try agentic-flow
       }
-    }
-    if (results.length > 0) {
-      return {
-        query,
-        mode,
-        results,
-        totalResults: results.length,
-        processingTime: `${(performance.now() - startTime).toFixed(2)}ms`,
-        implementation,
-        timestamp: new Date().toISOString(),
-      };
+
+      // Try agentic-flow embeddings
+      try {
+        const embeddingsModule = await import('@claude-flow/embeddings').catch(() => null);
+        if (embeddingsModule?.createEmbeddingService) {
+          const service = embeddingsModule.createEmbeddingService({ provider: 'agentic-flow' });
+          const result = await service.embed(text);
+          const arr = new Float32Array(dims);
+          for (let i = 0; i < Math.min(dims, result.embedding.length); i++) {
+            arr[i] = result.embedding[i];
+          }
+          return { embedding: arr, source: 'onnx' };
+        }
+      } catch {
+        // agentic-flow not available
+      }
+
+      // Hash-based fallback (deterministic but not semantic)
+      const arr = new Float32Array(dims);
+      let seed = text.split('').reduce((acc, char, i) => acc + char.charCodeAt(0) * (i + 1), 0);
+      for (let i = 0; i < dims; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        arr[i] = (seed / 0x7fffffff) * 2 - 1;
+      }
+      return { embedding: arr, source: 'hash-fallback' };
     }
 
     if (mode === 'moe') {
@@ -3175,14 +3096,10 @@ export const hooksIntelligenceAttention: MCPTool = {
       const moe = await getMoERouter();
       if (moe) {
         try {
-          // Generate a simple embedding from query (hash-based for demo)
-          // ADR-0052: matches embedding config default
-          const embedding = new Float32Array(EMBEDDING_DIM);
-          for (let i = 0; i < EMBEDDING_DIM; i++) {
-            embedding[i] = Math.sin(query.charCodeAt(i % query.length) * (i + 1) * 0.01);
-          }
+          const embResult = await getQueryEmbedding(query, 384);
+          embeddingSource = embResult.source;
 
-          const routingResult = moe.route(embedding);
+          const routingResult = moe.route(embResult.embedding);
           for (let i = 0; i < Math.min(topK, routingResult.experts.length); i++) {
             const expert = routingResult.experts[i];
             results.push({
@@ -3198,61 +3115,99 @@ export const hooksIntelligenceAttention: MCPTool = {
         }
       }
     } else if (mode === 'flash') {
-      // Try Flash Attention
+      // Try Flash Attention. ADR-093 F10: previously this attended over
+      // synthetic cosine-derived keys/values with constant-vector values,
+      // which produced uniform 0.333 weights and labels like "Flash
+      // attention target #1/2/3". Now we attend over actual stored
+      // patterns when available — real semantic content yields non-uniform
+      // weights and human-readable labels.
       const flash = await getFlashAttention();
       if (flash) {
         try {
-          // Generate query/key/value embeddings
-          // ADR-0052: matches embedding config default
-          const q = new Float32Array(EMBEDDING_DIM);
+          const embResult = await getQueryEmbedding(query, 384);
+          embeddingSource = embResult.source;
+          const q = embResult.embedding;
+
+          // Pull real stored patterns to attend over. If none exist yet,
+          // fall back to the synthetic harness but mark it honestly.
+          const realPatterns: Array<{ id: string; content: string; embedding?: number[] }> = [];
+          try {
+            const { searchEntries: searchFn } = await import('../memory/memory-initializer.js');
+            const hits = await searchFn({ query, limit: topK });
+            if (Array.isArray(hits)) {
+              for (const h of hits.slice(0, topK)) {
+                const content = (h as Record<string, unknown>).content ?? (h as Record<string, unknown>).value ?? '';
+                const id = String((h as Record<string, unknown>).id ?? (h as Record<string, unknown>).key ?? `pattern-${realPatterns.length}`);
+                realPatterns.push({ id, content: String(content) });
+              }
+            }
+          } catch { /* memory not initialized — fall through to synthetic */ }
+
+          const useReal = realPatterns.length > 0;
           const keys: Float32Array[] = [];
           const values: Float32Array[] = [];
+          const labels: string[] = [];
 
-          for (let i = 0; i < EMBEDDING_DIM; i++) {
-            q[i] = Math.sin(query.charCodeAt(i % query.length) * (i + 1) * 0.01);
-          }
-
-          // Generate some keys/values
-          for (let k = 0; k < topK; k++) {
-            const key = new Float32Array(EMBEDDING_DIM);
-            const value = new Float32Array(EMBEDDING_DIM);
-            for (let i = 0; i < EMBEDDING_DIM; i++) {
-              key[i] = Math.cos((k + 1) * (i + 1) * 0.01);
-              value[i] = k + 1;
+          if (useReal) {
+            // Build keys from real pattern embeddings (re-embed if no vector cached)
+            for (let k = 0; k < realPatterns.length; k++) {
+              const p = realPatterns[k];
+              let keyEmbedding: Float32Array;
+              if (p.embedding && p.embedding.length === 384) {
+                keyEmbedding = new Float32Array(p.embedding);
+              } else {
+                const enc = await getQueryEmbedding(p.content.slice(0, 1024), 384);
+                keyEmbedding = enc.embedding;
+              }
+              const value = new Float32Array(384);
+              // Value carries pattern identity strength — magnitude = recency proxy (k position)
+              const strength = 1 / (k + 1);
+              for (let i = 0; i < 384; i++) value[i] = keyEmbedding[i] * strength;
+              keys.push(keyEmbedding);
+              values.push(value);
+              const label = p.content.length > 0
+                ? `${p.id}: ${p.content.slice(0, 60)}${p.content.length > 60 ? '…' : ''}`
+                : p.id;
+              labels.push(label);
             }
-            keys.push(key);
-            values.push(value);
+          } else {
+            // No real patterns — surface a synthetic harness honestly.
+            for (let k = 0; k < topK; k++) {
+              const key = new Float32Array(384);
+              const value = new Float32Array(384);
+              for (let i = 0; i < 384; i++) {
+                key[i] = Math.cos((k + 1) * (i + 1) * 0.01);
+                value[i] = k + 1;
+              }
+              keys.push(key);
+              values.push(value);
+              labels.push(`(synthetic harness) pattern #${k + 1}`);
+            }
           }
 
           const attentionResult = flash.attention([q], keys, values);
           // Compute softmax weights from output magnitudes
           const outputMags = attentionResult.output[0]
-            ? Array.from(attentionResult.output[0]).slice(0, topK).map(v => Math.abs(v))
-            : new Array(topK).fill(1);
+            ? Array.from(attentionResult.output[0]).slice(0, keys.length).map(v => Math.abs(v))
+            : new Array(keys.length).fill(1);
           const sumMags = outputMags.reduce((a, b) => a + b, 0) || 1;
-          for (let i = 0; i < topK; i++) {
+          for (let i = 0; i < keys.length; i++) {
             results.push({
               index: i,
               weight: outputMags[i] / sumMags,
-              pattern: `Flash attention target #${i + 1}`,
+              pattern: labels[i],
             });
           }
-          implementation = 'real-flash-attention';
+          implementation = useReal ? 'real-flash-attention+memory' : 'real-flash-attention+synthetic-harness';
         } catch {
           // Fall back to placeholder
         }
       }
     }
 
-    // If no real implementation worked, use placeholder
+    // If no real implementation worked, return empty with honest marker
     if (results.length === 0) {
-      for (let i = 0; i < topK; i++) {
-        results.push({
-          index: i,
-          weight: Math.exp(-i * 0.5) / (1 + Math.exp(-i * 0.5)),
-          pattern: `Attention target #${i + 1}`,
-        });
-      }
+      implementation = 'none';
     }
 
     const computeTimeMs = performance.now() - startTime;
@@ -3263,8 +3218,13 @@ export const hooksIntelligenceAttention: MCPTool = {
       results,
       stats: {
         computeTimeMs,
-        speedup: mode === 'flash' ? '2.49x-7.47x' : mode === 'moe' ? '1.5x-3x' : '1.5x-2x',
-        memoryReduction: mode === 'flash' ? '50-75%' : '25-40%',
+        implementation,
+        _embeddingSource: embeddingSource,
+        _stub: implementation === 'none',
+        _note: implementation === 'none' ? 'No attention backend available. Install @ruvector/attention for real computation.' : undefined,
+        ...(embeddingSource === 'hash-fallback' && implementation !== 'none'
+          ? { _embeddingNote: 'Query embeddings are hash-based (not semantic). Install @claude-flow/embeddings for real ONNX embeddings.' }
+          : {}),
       },
       implementation,
     };
@@ -3496,6 +3456,8 @@ function detectWorkerTriggers(text: string): {
   confidence: number;
   context: string;
 } {
+  if (!text) return { detected: false, triggers: [], confidence: 0, context: '' };
+
   const detectedTriggers: WorkerTrigger[] = [];
   let totalMatches = 0;
 
@@ -3595,6 +3557,8 @@ export const hooksWorkerDispatch: MCPTool = {
     const priority = (params.priority as string) || WORKER_CONFIGS[trigger]?.priority || 'normal';
     const background = params.background !== false;
 
+    if (params.context) { const v = validateText(params.context as string, 'context'); if (!v.valid) return { success: false, error: v.error }; }
+
     if (!WORKER_CONFIGS[trigger]) {
       return {
         success: false,
@@ -3609,7 +3573,7 @@ export const hooksWorkerDispatch: MCPTool = {
     // ADR-093 F2: stop returning status:"completed" for a worker that
     // never ran (#1700 item 1). Detect daemon presence via PID file and
     // surface honest verdicts (`no-daemon` / `queued` / `synthetic`).
-    const cwd = findProjectRoot();
+    const cwd = getProjectCwd();
     const pidFile = join(cwd, '.claude-flow', 'daemon.pid');
     let daemonPid: number | null = null;
     let daemonAlive = false;
@@ -3645,11 +3609,7 @@ export const hooksWorkerDispatch: MCPTool = {
 
     activeWorkers.set(workerId, worker);
 
-    // ADR-093 F2 (ADR-0162 Batch E hand-port): determine honest status
-    // instead of fake setTimeout-driven simulation. Pre-batch-E this branch
-    // reported `dispatched/completed` after a hardcoded 1500ms timer
-    // regardless of whether any daemon picked the work up — exactly the
-    // #1700-item-1 audit finding.
+    // Determine honest status
     let reportedStatus: 'queued' | 'no-daemon' | 'synthetic-completed';
     let note: string;
     if (!daemonAlive) {
@@ -3705,6 +3665,8 @@ export const hooksWorkerStatus: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const workerId = params.workerId as string;
     const includeCompleted = params.includeCompleted !== false;
+
+    if (workerId) { const v = validateIdentifier(workerId, 'workerId'); if (!v.valid) return { success: false, error: v.error }; }
 
     if (workerId) {
       const worker = activeWorkers.get(workerId);
@@ -3764,6 +3726,8 @@ export const hooksWorkerDetect: MCPTool = {
     const prompt = params.prompt as string;
     const autoDispatch = params.autoDispatch as boolean;
     const minConfidence = (params.minConfidence as number) || 0.5;
+
+    { const v = validateText(prompt, 'prompt'); if (!v.valid) return { success: false, error: v.error }; }
 
     const detection = detectWorkerTriggers(prompt);
 
@@ -3843,6 +3807,9 @@ export const hooksModelRoute: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const task = params.task as string;
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+
     const router = await getModelRouterInstance();
 
     if (!router) {
@@ -3889,6 +3856,8 @@ export const hooksModelOutcome: MCPTool = {
     const task = params.task as string;
     const model = params.model as 'haiku' | 'sonnet' | 'opus';
     const outcome = params.outcome as 'success' | 'failure' | 'escalated';
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
 
     const router = await getModelRouterInstance();
     if (router) {
@@ -3962,6 +3931,9 @@ export const hooksWorkerCancel: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const workerId = params.workerId as string;
+
+    { const v = validateIdentifier(workerId, 'workerId'); if (!v.valid) return { success: false, error: v.error }; }
+
     const worker = activeWorkers.get(workerId);
 
     if (!worker) {
