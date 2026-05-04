@@ -25,7 +25,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 // Configuration
 const CONFIG = {
@@ -70,19 +70,17 @@ function getUserInfo() {
   let gitBranch = '';
   let modelName = 'Unknown';
 
+  // audit_1776853149979: previously used execSync with a shell string. Switched
+  // to execFileSync('git', argv) on both platforms so there is no shell
+  // interpretation. Cross-platform behavior is preserved by relying on git's
+  // own exit code instead of `|| echo` fallbacks: missing repo / no user.name
+  // throws, caught below, defaults retained.
   try {
-    const gitUserCmd = isWindows
-      ? 'git config user.name 2>NUL || echo user'
-      : 'git config user.name 2>/dev/null || echo "user"';
-    const gitBranchCmd = isWindows
-      ? 'git branch --show-current 2>NUL || echo.'
-      : 'git branch --show-current 2>/dev/null || echo ""';
-    name = execSync(gitUserCmd, { encoding: 'utf-8' }).trim();
-    gitBranch = execSync(gitBranchCmd, { encoding: 'utf-8' }).trim();
-    if (gitBranch === '.') gitBranch = ''; // Windows echo. outputs a dot
-  } catch (e) {
-    // Ignore errors
-  }
+    name = execFileSync('git', ['config', 'user.name'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 'user';
+  } catch { /* keep default */ }
+  try {
+    gitBranch = execFileSync('git', ['branch', '--show-current'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { /* keep empty */ }
 
   // Auto-detect model from Claude Code's config
   try {
