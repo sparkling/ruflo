@@ -38,10 +38,31 @@ if (isMCPMode) {
     `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
   );
 
+  // Audit-flagged DoS protection (audit_1776483149979): cap the
+  // newline-buffered stdin parser so a malicious client cannot pipe
+  // gigabytes of un-newlined data and exhaust memory before
+  // JSON.parse runs. 10MB is far above any legitimate MCP message
+  // (the protocol's largest realistic payloads — tool descriptions,
+  // batch search results — top out at ~1MB).
+  const MCP_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
   let buffer = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', async (chunk) => {
     buffer += chunk;
+    if (buffer.length > MCP_MAX_BUFFER_BYTES) {
+      // Drop the buffer + emit a protocol-level error so the client
+      // sees the rejection rather than a silent OOM.
+      console.log(JSON.stringify({
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: -32700,
+          message: `Buffered stdin exceeds ${MCP_MAX_BUFFER_BYTES} bytes without newline; resetting`,
+        },
+      }));
+      buffer = '';
+      return;
+    }
     let lines = buffer.split('\n');
     buffer = lines.pop() || '';
 

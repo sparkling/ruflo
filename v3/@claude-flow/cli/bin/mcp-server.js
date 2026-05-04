@@ -37,11 +37,27 @@ console.error(JSON.stringify({
 }));
 
 // Handle stdin messages
+// Audit-flagged DoS protection (audit_1776483149979): cap stdin buffer
+// to 10MB. See bin/cli.js for the same protection on the auto-detect path.
+const MCP_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 let buffer = '';
 
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', async (chunk) => {
   buffer += chunk;
+
+  if (buffer.length > MCP_MAX_BUFFER_BYTES) {
+    console.log(JSON.stringify({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: -32700,
+        message: `Buffered stdin exceeds ${MCP_MAX_BUFFER_BYTES} bytes without newline; resetting`,
+      },
+    }));
+    buffer = '';
+    return;
+  }
 
   // Process complete JSON messages (newline-delimited)
   let lines = buffer.split('\n');
