@@ -1511,8 +1511,8 @@ export const hooksPretrain: MCPTool = {
     const depth = (params.depth as string) || 'medium';
     const startTime = performance.now();
 
-    // Real file scanning — count files by extension, extract patterns
-    const { readdirSync, statSync } = await import('node:fs');
+    // Real file scanning — count files by extension, extract patterns.
+    // (readdirSync/statSync already imported statically at the top.)
     const extCounts: Record<string, number> = {};
     let filesAnalyzed = 0;
     let totalLines = 0;
