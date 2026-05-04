@@ -2627,6 +2627,18 @@ export const hiveMindTools: MCPTool[] = [
       return { action, error: 'Unknown action' };
     },
   },
+  /**
+   * hive-mind_broadcast — fan-out message to substrate-registered workers.
+   *
+   * Reaches workers registered via `npx ruflo hive-mind spawn` (recorded in
+   * state.json's worker registry). Does NOT reach workers spawned via Claude
+   * Code's `Agent` tool — those live in a separate in-process registry that
+   * the hive substrate cannot enumerate; the two registries do not bridge.
+   *
+   * Per ADR-0140 §Decision, the canonical pattern is single-round Agent-tool
+   * spawns + queen-composed transcript (validated empirically). Multi-round
+   * dialectic via broadcast is aspirational — not implemented.
+   */
   {
     name: 'hive-mind_broadcast',
     description: 'Broadcast message to all workers',
