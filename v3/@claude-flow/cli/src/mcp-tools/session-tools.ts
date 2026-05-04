@@ -8,7 +8,12 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'nod
 import { writeFile as wfAsync, readFile as rfAsync, unlink as ulAsync, mkdir as mkAsync } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
-import { mkdirRestricted, writeFileRestricted } from '../fs-secure.js';
+import {
+  mkdirRestricted,
+  readFileMaybeEncrypted,
+  writeFileRestricted,
+} from '../fs-secure.js';
+import { validateIdentifier, validateText } from './validate-input.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -142,7 +147,10 @@ function loadSession(sessionId: string): SessionRecord | null {
   try {
     const path = getSessionPath(sessionId);
     if (existsSync(path)) {
-      const data = readFileSync(path, 'utf-8');
+      // ADR-096 Phase 2: readFileMaybeEncrypted transparently handles both
+      // legacy plaintext sessions and post-migration encrypted ones via the
+      // RFE1 magic-byte sniff.
+      const data = readFileMaybeEncrypted(path, 'utf-8');
       return JSON.parse(data);
     }
   } catch {
@@ -155,7 +163,14 @@ function saveSession(session: SessionRecord): void {
   ensureSessionDir();
   // audit_1776853149979: session JSON contains memory snapshots and agent
   // prompts — restrict to owner read/write.
-  writeFileRestricted(getSessionPath(session.sessionId), JSON.stringify(session, null, 2));
+  // ADR-096 Phase 2: opt-in encrypt-at-rest. The encrypt flag is honored
+  // only when CLAUDE_FLOW_ENCRYPT_AT_REST is set; otherwise the legacy
+  // plaintext path runs unchanged.
+  writeFileRestricted(
+    getSessionPath(session.sessionId),
+    JSON.stringify(session, null, 2),
+    { encrypt: true },
+  );
 }
 
 function listSessions(): SessionRecord[] {
@@ -166,7 +181,9 @@ function listSessions(): SessionRecord[] {
   const sessions: SessionRecord[] = [];
   for (const file of files) {
     try {
-      const data = readFileSync(join(dir, file), 'utf-8');
+      // ADR-096 Phase 2: same magic-byte sniff for the listing path so a
+      // mixed plaintext+encrypted dir still enumerates cleanly.
+      const data = readFileMaybeEncrypted(join(dir, file), 'utf-8');
       sessions.push(JSON.parse(data));
     } catch {
       // Skip invalid files
