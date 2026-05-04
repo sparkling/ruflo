@@ -89,7 +89,7 @@ export function createMcpTools(
     },
     {
       name: 'federation_send',
-      description: 'Send a message to a federated peer through the PII pipeline and security gates',
+      description: 'Send a message to a federated peer through the PII pipeline and security gates. Optional budget controls (ADR-097): maxHops defaults to 8 to prevent recursive delegation; maxTokens/maxUsd cap cumulative spend across the hop chain.',
       pluginName: '@claude-flow/plugin-agent-federation',
       version: '1.0.0-alpha.1',
       inputSchema: {
@@ -98,6 +98,33 @@ export function createMcpTools(
           targetNodeId: { type: 'string', description: 'Target node ID' },
           messageType: { type: 'string', description: 'Message type (task-assignment, memory-query, context-share, etc.)' },
           payload: { type: 'object', description: 'Message payload' },
+          // ADR-097 Phase 1: optional budget envelope. Backward compatible —
+          // omitting these preserves the legacy unbounded-tokens/USD path,
+          // with maxHops still defaulting to 8 to defang recursion loops.
+          budget: {
+            type: 'object',
+            description: 'Optional cumulative spend budget for this delegation chain',
+            properties: {
+              maxTokens: { type: 'number', description: 'Hard cap on Σ tokens across hops' },
+              maxUsd: { type: 'number', description: 'Hard cap on Σ USD spent' },
+            },
+          },
+          maxHops: {
+            type: 'number',
+            description: 'Maximum hops this message may travel (default 8, 0 disallows remote delegation)',
+          },
+          hopCount: {
+            type: 'number',
+            description: 'How many hops this message has already taken (0 on the originator)',
+          },
+          spent: {
+            type: 'object',
+            description: 'Caller-reported usage from previous legs (cumulative)',
+            properties: {
+              tokens: { type: 'number' },
+              usd: { type: 'number' },
+            },
+          },
         },
         required: ['targetNodeId', 'messageType', 'payload'],
       },
@@ -107,6 +134,12 @@ export function createMcpTools(
           params['targetNodeId'] as string,
           params['messageType'] as FederationMessageType,
           params['payload'],
+          {
+            budget: params['budget'] as { maxTokens?: number; maxUsd?: number } | undefined,
+            maxHops: params['maxHops'] as number | undefined,
+            hopCount: params['hopCount'] as number | undefined,
+            spent: params['spent'] as { tokens?: number; usd?: number } | undefined,
+          },
         );
         return textResult(JSON.stringify(result, null, 2), !result.success);
       },
