@@ -6,6 +6,18 @@ import type {
   AgentTypeDefinition,
 } from '@claude-flow/shared/src/plugin-interface.js';
 
+import * as ed from '@noble/ed25519';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+// @noble/ed25519 v2 needs a sync sha512 wired explicitly.
+ed.etc.sha512Sync = (...m: Uint8Array[]): Uint8Array => {
+  const h = createHash('sha512');
+  for (const x of m) h.update(x);
+  return h.digest();
+};
+
 import { FederationCoordinator, type FederationCoordinatorConfig } from './application/federation-coordinator.js';
 import { DiscoveryService } from './domain/services/discovery-service.js';
 import { HandshakeService } from './domain/services/handshake-service.js';
@@ -39,19 +51,91 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
     const staticPeers = (config['staticPeers'] as string[]) ?? [];
     const hashSalt = (config['hashSalt'] as string) ?? `salt-${nodeId}`;
 
+    // ADR-095 G2: real Ed25519 keypair instead of empty publicKey + stub
+    // signatures. Persist to .claude-flow/federation/key-<nodeId>.json so
+    // the same node identity survives restarts. Audit log
+    // audit_1776483149979 flagged the previous "verifySignature returns
+    // true unconditionally" as a critical authn bypass; this closes it.
+    const keyDir = join(process.cwd(), '.claude-flow', 'federation');
+    const keyPath = join(keyDir, `key-${nodeId}.json`);
+    let privateKey: Uint8Array;
+    let publicKeyHex: string;
+    try {
+      if (existsSync(keyPath)) {
+        const stored = JSON.parse(readFileSync(keyPath, 'utf-8')) as { privateKey: string; publicKey: string; nodeId: string };
+        privateKey = new Uint8Array(Buffer.from(stored.privateKey, 'hex'));
+        publicKeyHex = stored.publicKey;
+      } else {
+        privateKey = ed.utils.randomPrivateKey();
+        const pk = ed.getPublicKey(privateKey);
+        publicKeyHex = Buffer.from(pk).toString('hex');
+        if (!existsSync(keyDir)) mkdirSync(keyDir, { recursive: true, mode: 0o700 });
+        writeFileSync(keyPath, JSON.stringify({
+          nodeId,
+          privateKey: Buffer.from(privateKey).toString('hex'),
+          publicKey: publicKeyHex,
+          createdAt: new Date().toISOString(),
+        }, null, 2), { mode: 0o600 });
+      }
+    } catch (err) {
+      // Fall back to ephemeral key if persistence fails — still real crypto.
+      privateKey = ed.utils.randomPrivateKey();
+      const pk = ed.getPublicKey(privateKey);
+      publicKeyHex = Buffer.from(pk).toString('hex');
+      context.logger.warn(`Federation: could not persist keypair (${err instanceof Error ? err.message : err}); using ephemeral key for this session`);
+    }
+
     const coordConfig: FederationCoordinatorConfig = {
       nodeId,
-      publicKey: '',
+      publicKey: publicKeyHex,
       endpoint,
       capabilities: ['send', 'receive', 'query-redacted', 'status', 'ping', 'discovery'],
     };
 
     const generateId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+    // ADR-095 G2: real signing + verification using @noble/ed25519. The
+    // sign* helpers use this node's private key; verify* helpers accept
+    // a peer's public key over the wire and check the signature with
+    // ed.verify(). No "return true" stubs.
+    const signBytes = (msg: string): string => {
+      const sig = ed.sign(new TextEncoder().encode(msg), privateKey);
+      return Buffer.from(sig).toString('hex');
+    };
+    const verifyBytes = (msg: string, signatureHex: string, peerPublicKeyHex: string): boolean => {
+      try {
+        if (!signatureHex || !peerPublicKeyHex) return false;
+        return ed.verify(
+          Buffer.from(signatureHex, 'hex'),
+          new TextEncoder().encode(msg),
+          Buffer.from(peerPublicKeyHex, 'hex'),
+        );
+      } catch { return false; }
+    };
+
+    // Canonical manifest serialization for signing — sorts keys to keep
+    // sign/verify deterministic. Excludes the signature field itself.
+    const canonicalize = (obj: Record<string, unknown>): string => {
+      const stripped: Record<string, unknown> = {};
+      for (const k of Object.keys(obj).sort()) {
+        if (k === 'signature') continue;
+        const v = obj[k];
+        stripped[k] = (v && typeof v === 'object' && !Array.isArray(v))
+          ? JSON.parse(canonicalize(v as Record<string, unknown>))
+          : v;
+      }
+      return JSON.stringify(stripped);
+    };
+
     const discovery = new DiscoveryService(
       {
-        signManifest: async () => 'stub-signature',
-        verifyManifest: async () => true,
+        signManifest: async (manifest) => signBytes(canonicalize(manifest as unknown as Record<string, unknown>)),
+        verifyManifest: async (manifest) => {
+          const peerPub = (manifest as { publicKey?: string }).publicKey;
+          const sig = (manifest as { signature?: string }).signature;
+          if (!peerPub || !sig) return false;
+          return verifyBytes(canonicalize(manifest as unknown as Record<string, unknown>), sig, peerPub);
+        },
         onPeerDiscovered: (node) => {
           context.logger.info(`Peer discovered: ${node.nodeId} at ${node.endpoint}`);
         },
@@ -63,10 +147,11 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
       generateSessionId: generateId,
       generateSessionToken: () => `token-${generateId()}`,
       generateNonce: () => `nonce-${Math.random().toString(36).slice(2)}`,
-      signChallenge: async (nonce) => `sig-${nonce}`,
-      verifySignature: async () => true,
+      signChallenge: async (nonce) => signBytes(nonce),
+      verifySignature: async (nonce, signature, peerPublicKey) =>
+        verifyBytes(nonce, signature, peerPublicKey),
       getLocalNodeId: () => nodeId,
-      getLocalPublicKey: () => '',
+      getLocalPublicKey: () => publicKeyHex,
       getLocalCapabilities: () => coordConfig.capabilities,
     });
 

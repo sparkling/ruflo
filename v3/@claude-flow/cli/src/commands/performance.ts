@@ -5,6 +5,9 @@
  * Created with ❤️ by ruv.io
  */
 
+import * as os from 'node:os';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 
@@ -394,10 +397,6 @@ const metricsCommand: Command = {
     output.writeln();
     output.writeln(output.bold(`Performance Metrics (${timeframe})`));
     output.writeln(output.dim('─'.repeat(50)));
-
-    const os = await import('os');
-    const fs = await import('fs');
-    const path = await import('path');
 
     // Real system metrics
     const memUsage = process.memoryUsage();

@@ -355,9 +355,15 @@ User --> Claude Code / CLI
 
 ## Documentation
 
-Full documentation including architecture, configuration, CLI reference, API usage, plugin development, and advanced topics:
+Three docs for three audiences:
 
-**[User Guide](docs/USERGUIDE.md)** -- Complete reference documentation
+| Doc | When to read it |
+|-----|-----------------|
+| **[Status](docs/STATUS.md)** | See what currently works — capability counts, test baselines, recent fixes, what's next. The *is-it-ready* doc. |
+| **[User Guide](docs/USERGUIDE.md)** | Daily reference — every command, every config flag, every plugin. The *how-do-I* doc. |
+| **[Verification](verification.md)** | Cryptographically prove your installed bytes match the signed witness — `ruflo verify`. The *trust-but-verify* doc. |
+
+User Guide section index:
 
 | Section | Topics |
 |---------|--------|

@@ -9,6 +9,126 @@ import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { configManager } from '../services/config-file-manager.js';
 
+/** Static provider catalog used as a reference/fallback */
+interface ProviderCatalogEntry {
+  name: string;
+  type: string;
+  models: string;
+  envVar?: string;
+  configName?: string;
+}
+
+const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
+  { name: 'Anthropic', type: 'LLM', models: 'claude-3.5-sonnet, opus', envVar: 'ANTHROPIC_API_KEY', configName: 'anthropic' },
+  { name: 'OpenAI', type: 'LLM', models: 'gpt-4o, gpt-4-turbo', envVar: 'OPENAI_API_KEY', configName: 'openai' },
+  { name: 'OpenAI', type: 'Embedding', models: 'text-embedding-3-small/large', envVar: 'OPENAI_API_KEY', configName: 'openai' },
+  { name: 'Google', type: 'LLM', models: 'gemini-pro, gemini-ultra', envVar: 'GOOGLE_API_KEY', configName: 'google' },
+  // #1725: Ollama Cloud — Tier-2 default per ADR-026 (~$100/mo flat-rate alternative
+  // to per-token pricing). OpenAI-compat API at https://ollama.com/v1/chat/completions.
+  { name: 'Ollama', type: 'LLM', models: 'gpt-oss:120b-cloud, llama3:70b-cloud, qwen2.5-coder:32b-cloud', envVar: 'OLLAMA_API_KEY', configName: 'ollama' },
+  { name: 'Transformers.js', type: 'Embedding', models: 'Xenova/all-MiniLM-L6-v2' },
+  { name: 'Agentic Flow', type: 'Embedding', models: 'ONNX optimized' },
+  { name: 'Mock', type: 'All', models: 'mock-*' },
+];
+
+/**
+ * Resolve the API key for a provider by checking the config file first,
+ * then falling back to well-known environment variables.
+ */
+function resolveApiKey(
+  providerName: string,
+  configuredProviders: Array<Record<string, unknown>>,
+): string | undefined {
+  // Check config file entry
+  const entry = configuredProviders.find(
+    (p) => typeof p.name === 'string' && p.name.toLowerCase() === providerName.toLowerCase(),
+  );
+  if (entry?.apiKey && typeof entry.apiKey === 'string') {
+    return entry.apiKey;
+  }
+
+  // Check environment variable
+  const envMapping: Record<string, string> = {
+    anthropic: 'ANTHROPIC_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    google: 'GOOGLE_API_KEY',
+    ollama: 'OLLAMA_API_KEY', // #1725 — Tier-2 routing
+  };
+  const envVar = envMapping[providerName.toLowerCase()];
+  if (envVar && process.env[envVar]) {
+    return process.env[envVar];
+  }
+
+  return undefined;
+}
+
+/**
+ * Make a lightweight HTTP request to verify provider API key validity.
+ * Uses a 5-second timeout. Returns { ok, reason }.
+ */
+async function testProviderConnectivity(
+  providerName: string,
+  apiKey: string,
+): Promise<{ ok: boolean; reason: string }> {
+  const endpoints: Record<string, { url: string; headers: Record<string, string> }> = {
+    anthropic: {
+      url: 'https://api.anthropic.com/v1/models',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    },
+    openai: {
+      url: 'https://api.openai.com/v1/models',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    },
+    google: {
+      url: `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+      headers: {},
+    },
+    // #1725 — Ollama Cloud uses an OpenAI-compatible /v1 surface.
+    ollama: {
+      url: 'https://ollama.com/api/tags',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    },
+  };
+
+  const endpointConfig = endpoints[providerName.toLowerCase()];
+  if (!endpointConfig) {
+    return { ok: false, reason: 'No test endpoint available for this provider' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(endpointConfig.url, {
+      method: 'GET',
+      headers: endpointConfig.headers,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (res.ok || res.status === 200) {
+      return { ok: true, reason: 'Connected successfully' };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: `Authentication failed (HTTP ${res.status})` };
+    }
+    // A non-auth error but the server responded — key format may be fine
+    return { ok: false, reason: `Unexpected response (HTTP ${res.status})` };
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { ok: false, reason: 'Connection timed out (5s)' };
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `Connection failed: ${msg}` };
+  }
+}
+
 // List subcommand
 const listCommand: Command = {
   name: 'list',
@@ -23,28 +143,98 @@ const listCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const type = ctx.flags.type as string || 'all';
+    const activeOnly = ctx.flags.active as boolean;
+
+    // Load user configuration
+    const cwd = process.cwd();
+    const config = configManager.getConfig(cwd);
+    const agents = (config.agents ?? {}) as Record<string, unknown>;
+    const configuredProviders = (agents.providers ?? []) as Array<Record<string, unknown>>;
+
+    // Build table rows from the catalog, enriched with configuration status
+    const rows: Array<Record<string, string>> = [];
+
+    for (const entry of PROVIDER_CATALOG) {
+      // Apply type filter
+      if (type !== 'all' && entry.type.toLowerCase() !== type.toLowerCase()) {
+        continue;
+      }
+
+      let status: string;
+      let keySource = '';
+
+      if (entry.configName) {
+        const apiKey = resolveApiKey(entry.configName, configuredProviders);
+        if (apiKey) {
+          // Determine the source for the key
+          const configEntry = configuredProviders.find(
+            (p) => typeof p.name === 'string' && p.name.toLowerCase() === entry.configName!.toLowerCase(),
+          );
+          if (configEntry?.apiKey && typeof configEntry.apiKey === 'string') {
+            keySource = 'config';
+          } else {
+            keySource = 'env';
+          }
+          status = output.success(`Configured (${keySource})`);
+        } else {
+          status = output.warning('Not configured');
+        }
+      } else if (entry.name === 'Mock') {
+        status = output.dim('Dev only');
+      } else {
+        // Local-only providers (Transformers.js, Agentic Flow) — always available
+        status = output.success('Available (local)');
+      }
+
+      if (activeOnly && !status.includes('Configured') && !status.includes('Available')) {
+        continue;
+      }
+
+      rows.push({
+        provider: entry.name,
+        type: entry.type,
+        models: entry.models,
+        status,
+      });
+    }
+
+    // Also show any providers in config that are not in the static catalog
+    for (const cp of configuredProviders) {
+      const cpName = (cp.name as string) || '';
+      const alreadyListed = PROVIDER_CATALOG.some(
+        (e) => e.configName?.toLowerCase() === cpName.toLowerCase() || e.name.toLowerCase() === cpName.toLowerCase(),
+      );
+      if (!alreadyListed && cpName) {
+        const hasKey = !!(cp.apiKey || resolveApiKey(cpName, configuredProviders));
+        rows.push({
+          provider: cpName,
+          type: (cp.type as string) || 'Custom',
+          models: (cp.model as string) || output.dim('(not specified)'),
+          status: hasKey ? output.success('Configured (config)') : output.warning('Not configured'),
+        });
+      }
+    }
 
     output.writeln();
-    output.writeln(output.bold('Available Providers'));
+    output.writeln(output.bold('Providers'));
     output.writeln(output.dim('─'.repeat(60)));
 
-    output.printTable({
-      columns: [
-        { key: 'provider', header: 'Provider', width: 18 },
-        { key: 'type', header: 'Type', width: 12 },
-        { key: 'models', header: 'Models', width: 25 },
-        { key: 'status', header: 'Status', width: 12 },
-      ],
-      data: [
-        { provider: 'Anthropic', type: 'LLM', models: 'claude-3.5-sonnet, opus', status: output.success('Active') },
-        { provider: 'OpenAI', type: 'LLM', models: 'gpt-4o, gpt-4-turbo', status: output.success('Active') },
-        { provider: 'OpenAI', type: 'Embedding', models: 'text-embedding-3-small/large', status: output.success('Active') },
-        { provider: 'Nomic AI', type: 'Embedding', models: 'nomic-embed-text-v1.5', status: output.success('Active') },
-        { provider: 'Transformers.js', type: 'Embedding', models: 'Xenova/all-MiniLM-L6-v2', status: output.success('Active') },
-        { provider: 'Agentic Flow', type: 'Embedding', models: 'ONNX optimized', status: output.success('Active') },
-        { provider: 'Mock', type: 'All', models: 'mock-*', status: output.dim('Dev only') },
-      ],
-    });
+    if (rows.length === 0) {
+      output.writeln(output.dim('  No providers match the current filter.'));
+    } else {
+      output.printTable({
+        columns: [
+          { key: 'provider', header: 'Provider', width: 18 },
+          { key: 'type', header: 'Type', width: 12 },
+          { key: 'models', header: 'Models', width: 25 },
+          { key: 'status', header: 'Status', width: 20 },
+        ],
+        data: rows,
+      });
+    }
+
+    output.writeln();
+    output.writeln(output.dim('Tip: Use "providers configure -p <name> -k <key>" to set API keys.'));
 
     return { success: true };
   },
@@ -76,7 +266,7 @@ const configureCommand: Command = {
         return { success: false, exitCode: 1 };
       }
 
-      const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const cwd = process.cwd();
       const config = configManager.getConfig(cwd);
 
       // Ensure agents.providers array exists
@@ -144,112 +334,101 @@ const testCommand: Command = {
       output.writeln(output.bold('Provider Connectivity Test'));
       output.writeln(output.dim('─'.repeat(50)));
 
-      const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const cwd = process.cwd();
       const config = configManager.getConfig(cwd);
       const agents = (config.agents ?? {}) as Record<string, unknown>;
       const configuredProviders = (agents.providers ?? []) as Array<Record<string, unknown>>;
 
-      // Build list of providers to test
-      interface ProviderCheck {
+      // Collect the set of providers to test
+      interface ProviderTestTarget {
         name: string;
-        test: () => Promise<{ pass: boolean; reason: string }>;
+        configName: string;
       }
 
-      const getConfigApiKey = (name: string): string | undefined => {
-        const entry = configuredProviders.find(
-          (p) => typeof p.name === 'string' && p.name.toLowerCase() === name.toLowerCase(),
-        );
-        return entry?.apiKey as string | undefined;
-      };
-
-      const knownChecks: ProviderCheck[] = [
-        {
-          name: 'Anthropic',
-          test: async () => {
-            const key = process.env.ANTHROPIC_API_KEY || getConfigApiKey('anthropic');
-            if (key) return { pass: true, reason: 'API key found' };
-            return { pass: false, reason: 'ANTHROPIC_API_KEY not set and no apiKey in config' };
-          },
-        },
-        {
-          name: 'OpenAI',
-          test: async () => {
-            const key = process.env.OPENAI_API_KEY || getConfigApiKey('openai');
-            if (key) return { pass: true, reason: 'API key found' };
-            return { pass: false, reason: 'OPENAI_API_KEY not set and no apiKey in config' };
-          },
-        },
-        {
-          name: 'Google',
-          test: async () => {
-            const key = process.env.GOOGLE_API_KEY || getConfigApiKey('google');
-            if (key) return { pass: true, reason: 'API key found' };
-            return { pass: false, reason: 'GOOGLE_API_KEY not set and no apiKey in config' };
-          },
-        },
-        {
-          name: 'Ollama',
-          test: async () => {
-            const entry = configuredProviders.find(
-              (p) => typeof p.name === 'string' && p.name.toLowerCase() === 'ollama',
-            );
-            const baseUrl = (entry?.baseUrl as string) || 'http://localhost:11434';
-            try {
-              const controller = new AbortController();
-              const timeout = setTimeout(() => controller.abort(), 3000);
-              const res = await fetch(baseUrl, { signal: controller.signal });
-              clearTimeout(timeout);
-              if (res.ok) return { pass: true, reason: `Reachable at ${baseUrl}` };
-              return { pass: false, reason: `HTTP ${res.status} from ${baseUrl}` };
-            } catch {
-              return { pass: false, reason: `Unreachable at ${baseUrl}` };
-            }
-          },
-        },
+      const knownTargets: ProviderTestTarget[] = [
+        { name: 'Anthropic', configName: 'anthropic' },
+        { name: 'OpenAI', configName: 'openai' },
+        { name: 'Google', configName: 'google' },
       ];
 
-      // Filter to requested provider or test all
-      let checksToRun: ProviderCheck[];
+      // Add Ollama as a special case (endpoint-based, no API key)
+      const ollamaEntry = configuredProviders.find(
+        (p) => typeof p.name === 'string' && p.name.toLowerCase() === 'ollama',
+      );
+
+      let targets: ProviderTestTarget[];
       if (testAll || !provider) {
-        checksToRun = knownChecks;
+        targets = [...knownTargets];
       } else {
-        const match = knownChecks.find(
-          (c) => c.name.toLowerCase() === provider.toLowerCase(),
+        const match = knownTargets.find(
+          (t) => t.name.toLowerCase() === provider.toLowerCase() || t.configName === provider.toLowerCase(),
         );
-        if (match) {
-          checksToRun = [match];
-        } else {
-          // Unknown provider -- check if it has a config entry with an apiKey
-          checksToRun = [
-            {
-              name: provider,
-              test: async () => {
-                const key = getConfigApiKey(provider);
-                if (key) return { pass: true, reason: 'API key found in config' };
-                return { pass: false, reason: 'No API key in environment or config' };
-              },
-            },
-          ];
+        targets = match ? [match] : [{ name: provider, configName: provider.toLowerCase() }];
+      }
+
+      const results: Array<{ name: string; pass: boolean; reason: string }> = [];
+
+      // Test API-key-based providers with real connectivity checks
+      for (const target of targets) {
+        const apiKey = resolveApiKey(target.configName, configuredProviders);
+        if (!apiKey) {
+          results.push({ name: target.name, pass: false, reason: 'Not configured (no API key found)' });
+          continue;
+        }
+        output.writeln(output.dim(`  Testing ${target.name}...`));
+        const result = await testProviderConnectivity(target.name, apiKey);
+        results.push({ name: target.name, pass: result.ok, reason: result.reason });
+      }
+
+      // Test Ollama separately (endpoint-based, no API key needed)
+      if (testAll || !provider || provider.toLowerCase() === 'ollama') {
+        const baseUrl = (ollamaEntry?.baseUrl as string) || 'http://localhost:11434';
+        output.writeln(output.dim(`  Testing Ollama at ${baseUrl}...`));
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const res = await fetch(baseUrl, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (res.ok) {
+            results.push({ name: 'Ollama', pass: true, reason: `Connected at ${baseUrl}` });
+          } else {
+            results.push({ name: 'Ollama', pass: false, reason: `HTTP ${res.status} from ${baseUrl}` });
+          }
+        } catch {
+          results.push({ name: 'Ollama', pass: false, reason: `Unreachable at ${baseUrl}` });
+        }
+      }
+
+      // Also test any custom providers from config that were not in the known list
+      if (testAll || !provider) {
+        for (const cp of configuredProviders) {
+          const cpName = (cp.name as string) || '';
+          const alreadyTested = results.some(
+            (r) => r.name.toLowerCase() === cpName.toLowerCase(),
+          );
+          if (alreadyTested || !cpName) continue;
+          const apiKey = resolveApiKey(cpName, configuredProviders);
+          if (!apiKey) {
+            results.push({ name: cpName, pass: false, reason: 'No API key found' });
+          } else {
+            // For custom providers we can only verify the key exists
+            results.push({ name: cpName, pass: true, reason: 'API key found (no test endpoint available)' });
+          }
         }
       }
 
       let anyPassed = false;
-      const results: Array<{ name: string; pass: boolean; reason: string }> = [];
-
-      for (const check of checksToRun) {
-        const result = await check.test();
-        results.push({ name: check.name, ...result });
-        if (result.pass) anyPassed = true;
-      }
-
       output.writeln();
       for (const r of results) {
         const icon = r.pass ? output.success('PASS') : output.error('FAIL');
         output.writeln(`  ${icon}  ${r.name}: ${r.reason}`);
+        if (r.pass) anyPassed = true;
       }
 
       output.writeln();
-      if (anyPassed) {
+      if (results.length === 0) {
+        output.writeln(output.warning('No providers to test. Use "providers configure" to add providers.'));
+      } else if (anyPassed) {
         output.writeln(output.success(`${results.filter((r) => r.pass).length}/${results.length} provider(s) passed.`));
       } else {
         output.writeln(output.warning('No providers passed connectivity checks.'));
@@ -296,7 +475,6 @@ const modelsCommand: Command = {
         { model: 'gpt-4-turbo', provider: 'OpenAI', capability: 'Chat', context: '128K', cost: '$0.01/$0.03' },
         { model: 'text-embedding-3-small', provider: 'OpenAI', capability: 'Embedding', context: '8K', cost: '$0.00002' },
         { model: 'text-embedding-3-large', provider: 'OpenAI', capability: 'Embedding', context: '8K', cost: '$0.00013' },
-        { model: 'nomic-ai/nomic-embed-text-v1.5', provider: 'Nomic AI', capability: 'Embedding', context: '8K', cost: output.success('Free') },
         { model: 'Xenova/all-MiniLM-L6-v2', provider: 'Transformers', capability: 'Embedding', context: '512', cost: output.success('Free') },
       ],
     });

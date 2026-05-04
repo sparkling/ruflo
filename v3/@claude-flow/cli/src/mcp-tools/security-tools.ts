@@ -27,6 +27,21 @@ let aidefenceInstance: AIDefenceInstance | null = null;
 // Track if we've attempted install this session
 let installAttempted = false;
 
+// ADR-093 follow-up: wrapper-level counters for the lightweight aidefence
+// tools (has_pii, is_safe, scan-quick) that bypass the package's own
+// stats tracking. The audit flagged that aidefence_stats stayed at zero
+// regardless of detections from these paths. Stats now combine the
+// underlying defender.getStats() with our wrapper counters so the user
+// sees a true reflection of how often each tool category fired.
+const wrapperStats = {
+  hasPiiCalls: 0,
+  hasPiiHits: 0,
+  isSafeCalls: 0,
+  isSafeUnsafeVerdicts: 0,
+  quickScanCalls: 0,
+  quickScanThreats: 0,
+};
+
 /**
  * Get or create AIDefence instance (throws if unavailable)
  */
@@ -144,13 +159,23 @@ const aidefenceScanTool: MCPTool = {
 
       if (quick) {
         const result = defender.quickScan(input);
+        // Audit-flagged: quickScan focuses on prompt-injection/jailbreak
+        // patterns and missed obvious PII (email + API key). Layer a fast
+        // PII check so quick mode catches both threat classes.
+        let piiPresent = false;
+        try { piiPresent = !!defender.hasPII(input); } catch { /* hasPII unavailable */ }
+        const threatDetected = result.threat || piiPresent;
+        wrapperStats.quickScanCalls++;
+        if (threatDetected) wrapperStats.quickScanThreats++;
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
-              safe: !result.threat,
-              threatDetected: result.threat,
+              safe: !threatDetected,
+              threatDetected,
               confidence: result.confidence,
+              piiDetected: piiPresent,
+              promptInjectionDetected: result.threat,
               mode: 'quick',
             }, null, 2),
           }],
@@ -291,11 +316,24 @@ const aidefenceStatsTool: MCPTool = {
         content: [{
           type: 'text',
           text: JSON.stringify({
+            // Underlying defender stats (from full detect() calls via aidefence_scan/aidefence_analyze)
             detectionCount: stats.detectionCount,
             avgDetectionTimeMs: stats.avgDetectionTimeMs,
             learnedPatterns: stats.learnedPatterns,
             mitigationStrategies: stats.mitigationStrategies,
             avgMitigationEffectiveness: stats.avgMitigationEffectiveness,
+            // ADR-093 follow-up: wrapper-level stats for the lightweight
+            // tools that bypass the defender's own counters. Audit found
+            // these stayed at 0 even after has_pii/is_safe/scan-quick
+            // calls — these counters surface real activity.
+            wrapper: {
+              hasPiiCalls: wrapperStats.hasPiiCalls,
+              hasPiiHits: wrapperStats.hasPiiHits,
+              isSafeCalls: wrapperStats.isSafeCalls,
+              isSafeUnsafeVerdicts: wrapperStats.isSafeUnsafeVerdicts,
+              quickScanCalls: wrapperStats.quickScanCalls,
+              quickScanThreats: wrapperStats.quickScanThreats,
+            },
           }, null, 2),
         }],
       };
@@ -427,13 +465,26 @@ const aidefenceIsSafeTool: MCPTool = {
     const input = args.input as string;
 
     try {
+      // Route through the singleton so wrapper stats track this call,
+      // and so a single defender controls both the prompt-injection model
+      // and the PII detector.
+      const defender = await getAIDefence();
       const { isSafe } = await import('@claude-flow/aidefence');
-      const safe = isSafe(input);
+      const promptSafe = isSafe(input);
+      let piiPresent = false;
+      try { piiPresent = !!defender.hasPII(input); } catch { /* hasPII unavailable */ }
+      const safe = promptSafe && !piiPresent;
+      wrapperStats.isSafeCalls++;
+      if (!safe) wrapperStats.isSafeUnsafeVerdicts++;
 
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ safe }, null, 2),
+          text: JSON.stringify({
+            safe,
+            promptSafe,
+            piiPresent,
+          }, null, 2),
         }],
       };
     } catch (error) {
@@ -471,6 +522,8 @@ const aidefenceHasPIITool: MCPTool = {
     try {
       const defender = await getAIDefence();
       const hasPII = defender.hasPII(input);
+      wrapperStats.hasPiiCalls++;
+      if (hasPII) wrapperStats.hasPiiHits++;
 
       return {
         content: [{

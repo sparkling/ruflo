@@ -32,3 +32,10 @@ npx @sparkleideas/cli@latest memory search --query "routing for TASK_TYPE" --nam
 
 - **ruflo-agentdb**: HNSW-indexed pattern storage backing the intelligence pipeline's RETRIEVE step
 - **ruflo-daa**: Dynamic Agentic Architecture — cognitive patterns that feed into intelligence routing
+
+### Neural Learning
+
+After completing tasks, feed the pattern-discovery learning loop so the next RETRIEVE benefits from this run:
+```bash
+npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+```

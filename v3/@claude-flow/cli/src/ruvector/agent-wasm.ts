@@ -135,7 +135,18 @@ export async function createWasmAgent(config: WasmAgentConfig = {}): Promise<Was
 }
 
 /**
- * Send a prompt to a WASM agent. Requires a model provider to be set.
+ * Send a prompt to a WASM agent.
+ *
+ * ADR-095 G4: the bundled @ruvector/rvagent-wasm doesn't actually run an
+ * LLM — its prompt() method echoes input back as `"echo: <input>"`. We
+ * detect that stub output and route the prompt through Anthropic's
+ * Messages API so users get a real response. The WASM agent's sandbox
+ * (virtual filesystem, tool execution) still works for non-LLM ops via
+ * executeWasmTool — we're just patching the "talk to a model" hole.
+ *
+ * If ANTHROPIC_API_KEY is not set, returns the stub output verbatim so
+ * the failure mode is obvious to the caller (matches the previous
+ * behaviour rather than throwing for users without keys configured).
  */
 export async function promptWasmAgent(agentId: string, input: string): Promise<string> {
   const entry = agents.get(agentId);
@@ -143,10 +154,38 @@ export async function promptWasmAgent(agentId: string, input: string): Promise<s
 
   entry.info.state = 'running';
   try {
-    const result = await entry.agent.prompt(input);
+    const wasmResult = await entry.agent.prompt(input);
     entry.info.state = 'idle';
     syncAgentInfo(entry);
-    return result;
+
+    // Detect the WASM echo stub.
+    const isEchoStub = typeof wasmResult === 'string' &&
+      (wasmResult === `echo: ${input}` || /^echo: /.test(wasmResult.slice(0, 12)));
+
+    if (!isEchoStub) {
+      return wasmResult;
+    }
+
+    // Echo stub detected — route through a real LLM call.
+    if (!process.env.ANTHROPIC_API_KEY) {
+      // No key configured; surface the stub honestly with a hint.
+      return `${wasmResult}\n[NOTE: bundled WASM agent has no LLM; set ANTHROPIC_API_KEY to enable real responses via Anthropic Messages API]`;
+    }
+
+    const { callAnthropicMessages, resolveAnthropicModel } = await import('../mcp-tools/agent-execute-core.js');
+    const model = resolveAnthropicModel(entry.info.config.model);
+    const systemPrompt = entry.info.config.instructions || 'You are a helpful coding assistant running in a Ruflo WASM agent sandbox.';
+    const result = await callAnthropicMessages({
+      prompt: input,
+      systemPrompt,
+      model,
+      maxTokens: 2048,
+    });
+    if (!result.success) {
+      return `${wasmResult}\n[NOTE: bundled WASM agent has no LLM; Anthropic fallback failed: ${result.error}]`;
+    }
+    // Return the real LLM output, not the echo stub.
+    return result.output ?? '';
   } catch (err) {
     entry.info.state = 'error';
     throw err;

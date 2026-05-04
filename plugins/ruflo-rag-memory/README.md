@@ -73,6 +73,17 @@ Claude Code Auto-Memory (~/.claude/projects/*/memory/*.md)
     Semantic Search (150x-12,500x faster)
 ```
 
+## Encryption at rest (ruflo 3.6.25+)
+
+The AgentDB SQLite blob written by this plugin (`.swarm/memory.db`) supports opt-in AES-256-GCM encryption at rest per [ADR-096](../../v3/docs/adr/ADR-096-encryption-at-rest.md). When `CLAUDE_FLOW_ENCRYPT_AT_REST=1` and `CLAUDE_FLOW_ENCRYPTION_KEY` is set:
+
+- Each write of `.swarm/memory.db` is encrypted with a fresh 12-byte IV (`writeFileRestricted({encrypt:true})`).
+- Reads use `readFileMaybeEncrypted(path, null)` — magic-byte sniff (`RFE1`) so legacy plaintext memory.db files keep working unchanged during the migration window.
+- Embeddings are encrypted along with the rest of the SQLite blob — no separate column-level encryption needed for Phase 1.
+- A flipped byte fails GCM auth and produces a decrypt error rather than silent corruption.
+
+Verify gate state with `ruflo doctor -c encryption`. Off by default; flipping it on doesn't require a migration step (legacy plaintext bytes are sniffed on read; first write after enable rewrites the DB encrypted).
+
 ## Memory Namespaces
 
 | Namespace | Purpose | Example Key |

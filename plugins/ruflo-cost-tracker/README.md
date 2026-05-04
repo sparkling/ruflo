@@ -62,10 +62,30 @@ cost history                             # Show cost tracking over time
 | Use Agent Booster (Tier 1) | 100% | Only for simple transforms |
 | Shorten system prompts | 10-20% | Requires careful pruning |
 
+## Federation budget circuit breaker pairing (ruflo 3.6.25+)
+
+This plugin pairs naturally with the federation budget envelope shipped in [ADR-097](../../v3/docs/adr/ADR-097-federation-budget-circuit-breaker.md). The `federation_send` MCP tool now accepts caller-supplied caps that this plugin's tracking should respect:
+
+| Field | Default | Effect |
+|---|---|---|
+| `maxHops` | `8` | Hard ceiling on recursive delegation across federated peers — defangs cost cascades from runaway sub-swarms. |
+| `maxTokens` | unbounded | Σ tokens across the whole hop chain. Returns `BUDGET_EXCEEDED` (constant string, no oracle leak) on overshoot. |
+| `maxUsd` | unbounded | Σ USD across hops. Same enforcement. |
+| `hopCount` | `0` | Pass-through for re-forwarded messages. |
+| `spent.{tokens,usd}` | `0` | Caller-reported usage from previous legs. Negatives clamped to 0. |
+
+Phase 1 of ADR-097 enforces at the **send** side. Two follow-up phases will tighten the integration:
+
+- **Phase 2 (deferred)** — peer state machine `ACTIVE` / `SUSPENDED` / `EVICTED` driven by trailing 24h cost (default suspension threshold $5) + 1h failure ratio (>50% over ≥10 sends). Auto-recovery after 30 min cooldown.
+- **Phase 3 (deferred)** — `federation_spend` event bus. Each `federation_send` completion publishes `{peerId, taskId, tokensUsed, usdSpent, ts}`. This plugin's cost-tracker should aggregate per-peer rolling windows (1h / 24h / 7d) and expose them via the existing `cost-report` skill. Breaker queries the aggregate to evaluate suspension thresholds.
+
+Until Phase 3 ships, federated spend is **not** counted in the host's cost-tracker — only local agent spend. Treat `cost-report` numbers as a lower bound when federation is in use.
+
 ## Related Plugins
 
 - `ruflo-observability` -- Token usage metrics collected via observability instrumentation
 - `ruflo-neural-trader` -- PnL tracking and cost-adjusted return calculation
+- `ruflo-federation` -- Budget circuit breaker on outbound federation_send (ADR-097)
 
 ## License
 

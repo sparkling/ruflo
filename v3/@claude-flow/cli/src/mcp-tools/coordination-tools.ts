@@ -755,15 +755,44 @@ export const coordinationTools: MCPTool[] = [
 
       const orchestrationId = `orch-${Date.now()}`;
 
+      // ADR-093 F7: this tool only schedules an orchestration record — it
+      // does not actually execute. Previously it returned a hardcoded
+      // `estimatedCompletion: "50ms"` which was misleading. Now we return
+      // an honest stub-status with a note pointing callers at agent_spawn
+      // / Task tool / hive-mind tools for real orchestration. Persist the
+      // record so callers can list/inspect what was scheduled.
+      const orchestration = {
+        id: orchestrationId,
+        task,
+        strategy,
+        agents,
+        status: 'scheduled' as const,
+        scheduledAt: new Date().toISOString(),
+        topology: store.topology.type,
+      };
+      // Best-effort persist — keep last 100 scheduled orchestrations.
+      type CoordStoreShape = ReturnType<typeof loadCoordStore> & {
+        orchestrations?: Array<typeof orchestration>;
+      };
+      const orchStore = store as CoordStoreShape;
+      if (!Array.isArray(orchStore.orchestrations)) orchStore.orchestrations = [];
+      orchStore.orchestrations.push(orchestration);
+      if (orchStore.orchestrations.length > 100) {
+        orchStore.orchestrations = orchStore.orchestrations.slice(-100);
+      }
+      saveCoordStore(orchStore);
+
       return {
         success: true,
         orchestrationId,
         task,
         strategy,
         agents,
-        status: 'initiated',
+        status: 'scheduled',
         topology: store.topology.type,
-        estimatedCompletion: `${agents.length * (strategy === 'sequential' ? 100 : 50)}ms`,
+        // Honest stub: no executor wired up yet. Don't lie about completion time.
+        executor: 'none',
+        _note: 'coordination_orchestrate currently records the orchestration request but does not execute it. For real multi-agent execution use agent_spawn + the Task tool, or hive-mind_spawn for queen-led coordination.',
       };
     },
   },

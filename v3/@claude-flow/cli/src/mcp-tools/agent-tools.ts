@@ -8,6 +8,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
+import { validateIdentifier, validateText, validateAgentSpawn } from './validate-input.js';
+import { executeAgentTask } from './agent-execute-core.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -256,6 +258,10 @@ export const agentTools: MCPTool[] = [
         modelRoutedBy: routingResult.routedBy,
         status: 'spawned',
         createdAt: agent.createdAt,
+        note: 'Agent registered for coordination. Three execution paths: ' +
+          '(1) call agent_execute(agentId, prompt) — direct LLM call via Anthropic Messages API (requires ANTHROPIC_API_KEY); ' +
+          '(2) Claude Code Task tool — spawns a real subagent; ' +
+          '(3) claude -p — headless background instance.',
       };
 
       // Add Agent Booster info if task can skip LLM
@@ -269,6 +275,46 @@ export const agentTools: MCPTool[] = [
       }
 
       return response;
+    },
+  },
+  {
+    // ADR-095 G1: real LLM execution via the agent registry. Previously
+    // agent_spawn registered metadata but nothing dispatched work to a
+    // provider — the wire between AnthropicProvider and the agent
+    // registry was missing, as the April audit (@roman-rr) called out.
+    // agent_execute closes that wire by reading the agent's configured
+    // model, calling the Anthropic Messages API directly via fetch, and
+    // updating the agent record with lastResult / taskCount / status.
+    // No mock — actual HTTP request to api.anthropic.com.
+    name: 'agent_execute',
+    description: 'Execute a task on a spawned agent — calls the Anthropic Messages API with the agent\'s configured model. Requires ANTHROPIC_API_KEY in env.',
+    category: 'agent',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'ID of the spawned agent' },
+        prompt: { type: 'string', description: 'Task / prompt for the agent to execute' },
+        systemPrompt: { type: 'string', description: 'Optional system prompt (overrides agent default)' },
+        maxTokens: { type: 'number', description: 'Max output tokens (default 1024)' },
+        temperature: { type: 'number', description: 'Sampling temperature 0..1 (default 0.7)' },
+      },
+      required: ['agentId', 'prompt'],
+    },
+    handler: async (input) => {
+      const vId = validateIdentifier(input.agentId, 'agentId');
+      if (!vId.valid) return { success: false, error: `Input validation failed: ${vId.error}` };
+      const vP = validateText(input.prompt as string, 'prompt');
+      if (!vP.valid) return { success: false, error: `Input validation failed: ${vP.error}` };
+
+      // Delegate to the shared core (also used by the workflow runtime).
+      return executeAgentTask({
+        agentId: input.agentId as string,
+        prompt: input.prompt as string,
+        systemPrompt: input.systemPrompt as string | undefined,
+        maxTokens: input.maxTokens as number | undefined,
+        temperature: input.temperature as number | undefined,
+        timeoutMs: input.timeoutMs as number | undefined,
+      });
     },
   },
   {

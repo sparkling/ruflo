@@ -1,7 +1,7 @@
 {
   "name": "ruflo-cost-tracker",
   "description": "Token usage tracking, model cost attribution per agent, budget alerts, and optimization recommendations",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "author": {
     "name": "ruvnet",
     "url": "https://github.com/ruvnet"

@@ -1,7 +1,7 @@
 {
   "name": "ruflo-ddd",
-  "description": "Domain-Driven Design scaffolding — bounded contexts, aggregate roots, domain events, and anti-corruption layers",
-  "version": "0.1.0",
+  "description": "Domain-Driven Design scaffolding \u2014 bounded contexts, aggregate roots, domain events, and anti-corruption layers",
+  "version": "0.1.1",
   "author": {
     "name": "ruvnet",
     "url": "https://github.com/ruvnet"

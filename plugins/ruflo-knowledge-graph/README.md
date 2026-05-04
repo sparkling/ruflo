@@ -54,8 +54,21 @@ kg search <query>            # Semantic search across the graph
 4. **Prune** -- remove paths below threshold (default 0.3)
 5. **Rank** -- return top-K paths by cumulative relevance
 
+## G7 controllers (activated in ruflo 3.6.23+ / 3.6.24)
+
+[ADR-095](../../v3/docs/adr/ADR-095-architectural-gaps-from-april-audit.md) closed five AgentDB controllers that this plugin's graph traversal can leverage:
+
+- **`gnnService`** — GNN embeddings + relational scoring over the AgentDB causal graph. Augments the pathfinder's `semantic_similarity(query, node)` term with structurally-aware scoring; nodes that are graph-neighbors of confirmed-relevant nodes get a boost.
+- **`rvfOptimizer`** — Quantizes + dedupes vector blocks before persistence. Knowledge-graph indexes commonly have many near-duplicate entity vectors (same class re-exported from multiple modules); rvfOptimizer collapses them transparently.
+- **`mutationGuard`** + **`attestationLog`** + **`GuardedVectorBackend`** — Proof-gated writes to the underlying vector store. Relevant when the graph spans trust boundaries (federated knowledge import) — the attestation chain at `.swarm/attestation.db` records every mutation for after-the-fact audit.
+
+The yet-pending **`graphAdapter`** controller will give this plugin a first-class graph-DB backend (instead of building the graph view on top of AgentDB's flat causal-edge table). Tracked in ADR-095.
+
+Inspect runtime status via the `agentdb_controllers` or `agentdb_health` MCP tools.
+
 ## Related Plugins
 
+- `ruflo-agentdb` -- The G7 controllers above ship via this plugin's runtime; install both for full graph + traversal coverage
 - `ruflo-ruvector` -- HNSW indexing for fast semantic search across graph nodes
 - `ruflo-adr` -- ADR dependency graphs share the same causal edge model
 
