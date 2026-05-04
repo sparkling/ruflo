@@ -2,7 +2,7 @@
 name: cost-optimize
 description: Analyze token usage patterns and recommend cost optimizations with estimated savings
 argument-hint: ""
-allowed-tools: mcp__claude-flow__memory_search mcp__claude-flow__memory_list mcp__claude-flow__memory_store mcp__claude-flow__agentdb_pattern-search mcp__claude-flow__agentdb_pattern-store mcp__claude-flow__agentdb_semantic-route mcp__claude-flow__hooks_model-outcome Bash
+allowed-tools: mcp__claude-flow__memory_search mcp__claude-flow__memory_list mcp__claude-flow__memory_store mcp__claude-flow__agentdb_pattern-search mcp__claude-flow__agentdb_pattern-store mcp__claude-flow__agentdb_semantic-route Bash
 ---
 
 # Cost Optimize
@@ -26,22 +26,11 @@ When costs are higher than expected or you want to proactively reduce spending. 
 7. **Store the optimization pattern** -- two paths:
    - **Pattern store (typed, recommended)**: `mcp__claude-flow__agentdb_pattern-store` with `type: 'cost-optimization'`. Don't pass a `namespace` arg — ReasoningBank routes it; on bridge unavailability the fallback writes to the reserved `pattern` namespace with `controller: 'memory-store-fallback'` (see ruflo-agentdb ADR-0001).
    - **Plain store (namespace-routable)**: `mcp__claude-flow__memory_store --namespace cost-patterns` — this DOES respect the `cost-patterns` namespace because `memory_*` is namespace-routed.
-8. **Close the routing feedback loop — auto-emit `hooks_model-outcome`** -- for each downgrade recommendation, format the outcome-emit command as part of the recommendation table so it can be run directly:
-
-   ```bash
-   # success path (downgrade worked)
-   node plugins/ruflo-cost-tracker/scripts/outcome.mjs "<task-description>" <model> success
-
-   # escalated path (had to upgrade after downgrade attempt)
-   node plugins/ruflo-cost-tracker/scripts/outcome.mjs "<task-description>" <model> escalated
-   ```
-
-   The script wraps `npx @claude-flow/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv `spawnSync` so quoting is safe. Without this signal the router does not learn from cost-tracker's recommendations and the booster bypass rate (see `cost-booster-route` skill) does not improve over time. This is the typed equivalent of the legacy `routing-outcomes` namespace (see ruflo-intelligence ADR-0001 §"Neutral").
-9. **Report** -- display: ranked recommendations with savings estimate, total potential savings, implementation priority (quick wins first), and any model-outcome events emitted in step 8
+8. **Report** -- display: ranked recommendations with savings estimate, total potential savings, implementation priority (quick wins first)
 
 ## CLI alternative
 
 ```bash
-npx @sparkleideas/cli@latest memory search --query "cost optimization strategies" --namespace cost-patterns
-npx @sparkleideas/cli@latest memory store --key "opt-2026-05-04" --value '{...}' --namespace cost-patterns
+npx @claude-flow/cli@latest memory search --query "cost optimization strategies" --namespace cost-patterns
+npx @claude-flow/cli@latest memory store --key "opt-2026-05-04" --value '{...}' --namespace cost-patterns
 ```
