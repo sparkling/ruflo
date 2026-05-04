@@ -38,6 +38,11 @@ Use this skill when your data has inherent hierarchy — dependency trees, modul
 - ruvector@0.2.25 has no first-class Poincare ball CLI flag. Treat hyperbolic projection as a post-processing step over a standard ONNX embedding.
 - If you need a hyperbolic search index, store projected coordinates in AgentDB and compute geodesic distance in your own retrieval code.
 
+## Caveats
+
+- ruvector@0.2.25 has no first-class Poincare ball CLI flag. Treat hyperbolic projection as a post-processing step over a standard ONNX embedding.
+- If you need a hyperbolic search index, store projected coordinates in AgentDB and compute geodesic distance in your own retrieval code.
+
 ## Poincare ball properties
 
 | Property | Meaning |
