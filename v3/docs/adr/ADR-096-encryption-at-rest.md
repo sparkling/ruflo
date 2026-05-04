@@ -1,10 +1,10 @@
 # ADR-096: Encryption at Rest for Session, Memory, and Terminal Stores
 
-**Status**: Proposed
-**Date**: 2026-05-03
-**Version**: target v3.6.x (post-batch publish)
+**Status**: Accepted (Phase 1–4 implemented; Phase 5+ deferred)
+**Date**: 2026-05-03 (proposed) / 2026-05-04 (accepted)
+**Version**: target v3.6.25 (next batch publish)
 **Supersedes**: nothing
-**Related**: ADR-093 (May 2026 audit remediation), ADR-095 (April architectural gaps), audit_1776853149979 finding "Plaintext session/memory storage", commits `de96b0e` (chmod 0600 mitigation), `fb256ac` (loader-hijack env denylist)
+**Related**: ADR-093 (May 2026 audit remediation), ADR-095 (April architectural gaps), audit_1776853149979 finding "Plaintext session/memory storage", commits `de96b0e` (chmod 0600 mitigation), `fb256ac` (loader-hijack env denylist), `cb9a9f3` (Phase 1), `98aa256` (Phase 2), `49c8019` (Phase 3), `841365f` (Phase 4)
 
 ## Context
 
@@ -135,10 +135,38 @@ This ADR proposes the design; the implementation iteration ships in a separate c
 
 The implementation iteration is done when:
 
-- `CLAUDE_FLOW_ENCRYPT_AT_REST=1` round-trips a session save → restore unchanged
-- A plaintext `.claude-flow/sessions/foo.json` from before the upgrade is still readable after the upgrade (magic-sniff backward compat)
-- A flipped byte in any encrypted file produces a decrypt error, not a panic
-- The 1865-test baseline stays green with `CLAUDE_FLOW_ENCRYPT_AT_REST` unset
-- A new test file `__tests__/encryption-vault.test.ts` exercises every path above
-- `ruflo doctor` reports encryption status
-- The witness manifest (`verification.md.json`) gains a fix entry covering the new vault module so `ruflo verify` confirms it after publish
+- [x] `CLAUDE_FLOW_ENCRYPT_AT_REST=1` round-trips a session save → restore unchanged — pinned by `__tests__/session-encryption.test.ts:run_save → run_restore` (commit `98aa256`).
+- [x] A plaintext `.claude-flow/sessions/foo.json` from before the upgrade is still readable after the upgrade (magic-sniff backward compat) — pinned by `__tests__/session-encryption.test.ts > migration` and the analogous case in `terminal-encryption.test.ts` + `memory-db-encryption.test.ts` (commits `98aa256`, `49c8019`, `841365f`).
+- [x] A flipped byte in any encrypted file produces a decrypt error, not a panic — pinned by `__tests__/encryption-vault.test.ts > tamper detection` (6 cases) and `memory-db-encryption.test.ts > tamper > flipped ciphertext byte` (commits `cb9a9f3`, `841365f`).
+- [x] The 1865-test baseline stays green with `CLAUDE_FLOW_ENCRYPT_AT_REST` unset — full vitest run is now **1933/1933 passing, 46 skipped, 0 failures** with the env var unset (started this loop at 1865 + 25 pre-existing failures; +68 new tests across the encryption track).
+- [x] A new test file `__tests__/encryption-vault.test.ts` exercises every path above — 45 cases (commit `cb9a9f3`). Plus `fs-secure.test.ts` (8 cases), `session-encryption.test.ts` (7), `terminal-encryption.test.ts` (7), `memory-db-encryption.test.ts` (9). Total **76 encryption-track tests across 5 files**.
+- [ ] `ruflo doctor` reports encryption status — **deferred to Phase 5**. The doctor surface needs a separate small change; not blocking the high-tier scope shipping.
+- [ ] The witness manifest (`verification.md.json`) gains a fix entry covering the new vault module so `ruflo verify` confirms it after publish — **deferred until the batch publish iteration** (per the loop directive of "do not publish on every iteration"). Will land alongside the 3.6.25 bump.
+
+## Implementation status
+
+| Phase | Scope | Lands in | Tests | Suite delta |
+|---|---|---|---|---|
+| 1 | Vault primitives: `MAGIC`, `validateBudget`, `getKey`, `encryptBuffer`, `decryptBuffer`, `isEncryptedBlob`, `decodeKey`, `isEncryptionEnabled` | `cb9a9f3` | 45 (`encryption-vault.test.ts`) | 1865 → 1910 |
+| 2 | Wire `fs-secure.writeFileRestricted({encrypt})` + `readFileMaybeEncrypted`; route session-tools `saveSession` / `loadSession` / `listSessions` | `98aa256` | +7 (`session-encryption.test.ts`) | 1910 → 1917 |
+| 3 | Wire terminal-tools `saveTerminalStore` + `loadTerminalStore` | `49c8019` | +7 (`terminal-encryption.test.ts`) | 1917 → 1924 |
+| 4 | Wire memory-initializer — 7 `dbPath` writes + 9 `dbPath` reads (Buffer-only sql.js SQLite blobs) | `841365f` | +9 (`memory-db-encryption.test.ts`) | 1924 → 1933 |
+
+**High-tier targets shipped end-to-end opt-in encrypted under `CLAUDE_FLOW_ENCRYPT_AT_REST=1`:**
+- `.claude-flow/sessions/*.json` (memory snapshots + agent prompts)
+- `.claude-flow/terminals/store.json` (pasted shell command history → frequent credentials)
+- `.swarm/memory.db` (sql.js SQLite + 384-dim ONNX embeddings)
+
+Backward-compat strategy is the magic-byte sniff (`"RFE1"`): legacy plaintext files keep working unchanged regardless of whether the gate is on or off, so users can opt in without a coordinated migration. On the *first write* after enable, the file is rewritten encrypted; reads always sniff first.
+
+## Phase 5+ scope (deferred)
+
+Each is a separate ADR or follow-up iteration:
+
+- **`ruflo doctor` encryption status report** — small surface change; lands as part of the next CLI bump.
+- **Witness manifest entry** for `src/encryption/vault.ts` + the four wired stores — gates on the next batch publish (per the per-iteration "no publish per iteration" directive).
+- **Key rotation + `ruflo encryption rotate`** — was Phase 2 in the original ADR; renamed Phase 5 now that opt-in shipping is done.
+- **Sealed-box backups** — was Phase 2; renamed Phase 6.
+- **Medium-tier stores** (`agents/`, `tasks/`, `github/`, `claims/`, `config/`, `workflow/`, `neural/`, `daa/`) — was Phase 3; renamed Phase 7. Lower information value per the tiering table; ship after Phase 5 proves the migration story in production.
+- **Keychain (`keytar`) + interactive passphrase resolvers** — extends `getKey()` precedence beyond the env-var-only Phase 1 source.
+- **AgentDB native column-level encryption** — if/when AgentDB exposes a transparent column-encryption API, switch the memory DB to it and drop the file-level wrapper.
