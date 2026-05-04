@@ -139,7 +139,7 @@ mcp__ruv-swarm__swarm_init {
 ### Track Worker Status
 ```javascript
 // Store coordination state
-mcp__claude-flow__memory_store {
+mcp__ruflo__memory_store {
   key: "coordination/parallel-task",
   value: JSON.stringify({
     workers: ["worker-1", "worker-2", "worker-3"],
@@ -153,7 +153,7 @@ mcp__claude-flow__memory_store {
 ### Aggregate Results
 ```javascript
 // Collect all worker results
-mcp__claude-flow__memory_list {
+mcp__ruflo__memory_list {
   namespace: "results"
 }
 ```

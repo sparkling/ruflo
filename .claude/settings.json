@@ -30,7 +30,7 @@
       "Bash(pwd)",
       "Bash(ls:*)",
       "Bash(npx:*)",
-      "mcp__claude-flow__*",
+      "mcp__ruflo__*",
       "mcp__ruv-swarm__*",
       "mcp__flow-nexus__*"
     ],

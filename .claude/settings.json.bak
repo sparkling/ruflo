@@ -75,7 +75,7 @@
       "Bash(ls:*)",
       "mcp__agentic-flow",
       "mcp__claude-flow",
-      "mcp__claude-flow__*",
+      "mcp__ruflo__*",
       "mcp__ruv-swarm",
       "mcp__ruv-swarm__*",
       "mcp__flow-nexus__*"
