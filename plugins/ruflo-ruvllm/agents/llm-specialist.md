@@ -35,3 +35,10 @@ After each routing or fine-tune cycle, feed the router outcome learning so futur
 ```bash
 npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```
+
+### Neural Learning
+
+After each routing or fine-tune cycle, feed the router outcome learning so future provider/model picks compound this run:
+```bash
+npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+```
