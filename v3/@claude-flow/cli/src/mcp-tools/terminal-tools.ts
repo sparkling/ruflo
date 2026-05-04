@@ -6,7 +6,11 @@
 
 import { type MCPTool, findProjectRoot, getDisplayCwd } from './types.js';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdirRestricted, writeFileRestricted } from '../fs-secure.js';
+import {
+  mkdirRestricted,
+  readFileMaybeEncrypted,
+  writeFileRestricted,
+} from '../fs-secure.js';
 import { validateEnv, validateIdentifier, validatePath, validateText } from './validate-input.js';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -51,7 +55,10 @@ function loadTerminalStore(): TerminalStore {
   try {
     const path = getTerminalPath();
     if (existsSync(path)) {
-      return JSON.parse(readFileSync(path, 'utf-8'));
+      // ADR-096 Phase 3: readFileMaybeEncrypted handles both legacy
+      // plaintext stores and post-migration encrypted ones via the RFE1
+      // magic-byte sniff.
+      return JSON.parse(readFileMaybeEncrypted(path, 'utf-8'));
     }
   } catch {
     // Return empty store
@@ -62,8 +69,15 @@ function loadTerminalStore(): TerminalStore {
 function saveTerminalStore(store: TerminalStore): void {
   ensureTerminalDir();
   // audit_1776853149979: terminal command history can contain credentials
-  // pasted into commands; restrict to owner read/write.
-  writeFileRestricted(getTerminalPath(), JSON.stringify(store, null, 2));
+  // pasted into commands; restrict to owner read/write (mode 0600).
+  // ADR-096 Phase 3: opt-in AES-256-GCM encrypt-at-rest. Honored only
+  // when CLAUDE_FLOW_ENCRYPT_AT_REST is set; otherwise legacy plaintext
+  // path runs unchanged.
+  writeFileRestricted(
+    getTerminalPath(),
+    JSON.stringify(store, null, 2),
+    { encrypt: true },
+  );
 }
 
 export const terminalTools: MCPTool[] = [
