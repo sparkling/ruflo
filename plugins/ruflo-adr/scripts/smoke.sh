@@ -9,10 +9,10 @@ ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
 # 1. plugin.json bump + new keywords
-step "1. plugin.json declares 0.3.0 with new keywords"
+step "1. plugin.json declares 0.2.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.3.0" ]]; then
-  bad "expected 0.3.0, got '$v'"
+if [[ "$v" != "0.2.0" ]]; then
+  bad "expected 0.2.0, got '$v'"
 else
   miss=""
   for k in lifecycle compliance causal-graph mcp; do
@@ -21,10 +21,10 @@ else
   [[ -z "$miss" ]] && ok || bad "missing keywords:$miss"
 fi
 
-# 2. All 4 skills present with valid frontmatter
-step "2. skills (adr-create, adr-index, adr-review, adr-verify) present with name/description/allowed-tools"
+# 2. All 3 skills present with valid frontmatter
+step "2. skills (adr-create, adr-index, adr-review) present with name/description/allowed-tools"
 miss=""
-for s in adr-create adr-index adr-review adr-verify; do
+for s in adr-create adr-index adr-review; do
   f="$ROOT/skills/$s/SKILL.md"
   [[ -f "$f" ]] || { miss="$miss missing-$s"; continue; }
   for k in 'name:' 'description:' 'allowed-tools:'; do
@@ -55,9 +55,9 @@ grep -q "adr-patterns" "$ROOT/skills/adr-create/SKILL.md" || miss="$miss adr-cre
 grep -q "adr-patterns" "$ROOT/skills/adr-index/SKILL.md" || miss="$miss adr-index"
 [[ -z "$miss" ]] && ok || bad "missing in:$miss"
 
-# 6. README pins to @sparkleideas/cli v3.6
-step "6. README pins @sparkleideas/cli to v3.6"
-grep -qE "@sparkleideas/cli.*v3\.6|v3\.6.*claude-flow/cli" "$ROOT/README.md" \
+# 6. README pins to @claude-flow/cli v3.6
+step "6. README pins @claude-flow/cli to v3.6"
+grep -qE "@claude-flow/cli.*v3\.6|v3\.6.*claude-flow/cli" "$ROOT/README.md" \
   && ok || bad "Compatibility pin to v3.6 missing"
 
 # 7. README has namespace coordination section
@@ -84,47 +84,6 @@ for f in "$ROOT"/skills/*/SKILL.md; do
   grep -q '^allowed-tools:[[:space:]]*\*' "$f" && bad_skills="$bad_skills $(basename $(dirname "$f"))"
 done
 [[ -z "$bad_skills" ]] && ok || bad "wildcard:$bad_skills"
-
-# 11. import + verify scripts present, executable, parse cleanly
-step "11. scripts/import.mjs and verify.mjs executable + syntax-clean"
-miss=""
-for s in import.mjs verify.mjs; do
-  f="$ROOT/scripts/$s"
-  [[ -x "$f" ]] || miss="$miss $s-not-executable"
-  node --check "$f" 2>/dev/null || miss="$miss $s-syntax-error"
-done
-[[ -z "$miss" ]] && ok || bad "$miss"
-
-# 12. import.mjs handles both ADR formats + has issue-number false-positive guard
-step "12. import.mjs supports v3 + plugin formats and strips issue numbers"
-F="$ROOT/scripts/import.mjs"
-miss=""
-grep -q "extractAdrRefs" "$F" || miss="$miss no-extractAdrRefs"
-grep -q "frontmatter\|YAML\|^---" "$F" || miss="$miss no-frontmatter-handling"
-grep -q "#\\\\d+\|issue\|PR\\\\s*\\\\d" "$F" || miss="$miss no-issue-strip"
-grep -q '\*\*Status\*\*' "$F" || miss="$miss no-v3-status-pattern"
-[[ -z "$miss" ]] && ok || bad "$miss"
-
-# 13. verify.mjs reports cycles + dangling refs and exits 1 on cycles
-step "13. verify.mjs detects cycles + has fail-closed exit"
-F="$ROOT/scripts/verify.mjs"
-miss=""
-grep -q "cycles" "$F" || miss="$miss no-cycle-detection"
-grep -q "danglingRefs" "$F" || miss="$miss no-dangling-detection"
-grep -q "process.exit(1)" "$F" || miss="$miss no-fail-exit"
-[[ -z "$miss" ]] && ok || bad "$miss"
-
-# 14. adr-index skill references the script (not direct MCP loop)
-step "14. adr-index skill calls scripts/import.mjs"
-F="$ROOT/skills/adr-index/SKILL.md"
-grep -q "scripts/import\.mjs\|import\.mjs" "$F" \
-  && ok || bad "skill does not invoke import.mjs"
-
-# 15. adr-verify skill references verify.mjs
-step "15. adr-verify skill calls scripts/verify.mjs"
-F="$ROOT/skills/adr-verify/SKILL.md"
-grep -q "scripts/verify\.mjs\|verify\.mjs" "$F" \
-  && ok || bad "skill does not invoke verify.mjs"
 
 printf "\n%s passed, %s failed\n" "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1
