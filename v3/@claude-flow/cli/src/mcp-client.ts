@@ -35,6 +35,7 @@ import { githubTools } from './mcp-tools/github-tools.js';
 import { daaTools } from './mcp-tools/daa-tools.js';
 import { coordinationTools } from './mcp-tools/coordination-tools.js';
 import { browserTools } from './mcp-tools/browser-tools.js';
+import { browserSessionTools } from './mcp-tools/browser-session-tools.js';
 import { execFileSync } from 'node:child_process';
 // Phase 6: AgentDB v3 controller tools
 import { agentdbTools } from './mcp-tools/agentdb-tools.js';
@@ -51,6 +52,16 @@ import { autopilotTools } from './mcp-tools/autopilot-tools.js';
 // fail loudly with the underlying ENOENT — preserving the failure signal.
 function getBrowserTools(): MCPTool[] {
   return browserTools;
+}
+
+/**
+ * Lifecycle MCP tools for ruflo-browser session-as-skill architecture
+ * (ADR-0001 ruflo-browser §7). Always registered: their handlers shell out
+ * to ruvector + agent-browser + claude-flow memory and degrade gracefully
+ * when those CLIs are missing.
+ */
+function getBrowserSessionTools(): MCPTool[] {
+  return browserSessionTools;
 }
 
 /**
@@ -92,6 +103,7 @@ registerTools([
   ...daaTools,
   ...coordinationTools,
   ...getBrowserTools(),
+  ...getBrowserSessionTools(),
   // Phase 6: AgentDB v3 controller tools
   ...agentdbTools,
   // RuVector WASM tools
