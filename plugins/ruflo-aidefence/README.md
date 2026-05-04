@@ -32,3 +32,36 @@ This plugin pairs with three runtime hardening features that ship in the host (A
 
 - `safety-scan` -- Scan inputs for prompt injection and unsafe content
 - `pii-detect` -- Detect PII in text, code, and configurations
+
+## Compatibility
+
+- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **MCP surface:** 6 `aidefence_*` tools (`scan`, `analyze`, `stats`, `learn`, `is_safe`, `has_pii`) plus `transfer_detect-pii` for categorized findings.
+- **Verification:** `bash plugins/ruflo-aidefence/scripts/smoke.sh` is the contract.
+
+## The 3-gate pattern (canonical)
+
+Every consumer plugin handling untrusted content should apply these three gates **in order**:
+
+| # | Gate | Tool | When |
+|---|------|------|------|
+| 1 | Pre-storage PII | `aidefence_has_pii` | Before any AgentDB / `memory_store` write — redact or quarantine before persistence. |
+| 2 | Sanitization | `aidefence_scan` | For cookies, tokens, high-entropy blobs — vault behind an opaque handle rather than embed raw values. |
+| 3 | Prompt-injection | `aidefence_is_safe` | Before any extracted text re-enters an LLM prompt — quarantine to `findings.md` if flagged. |
+
+This is the pattern `ruflo-browser` ADR-0001 §4 codified and `ruflo-aidefence` ADR-0001 canonicalizes. Reference these gates by name in any new plugin that handles user-supplied content.
+
+## Namespace coordination
+
+This plugin owns the `security-patterns` AgentDB namespace (kebab-case, follows the convention from [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md)). Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
+
+## Verification
+
+```bash
+bash plugins/ruflo-aidefence/scripts/smoke.sh
+# Expected: "10 passed, 0 failed"
+```
+
+## Architecture Decisions
+
+- [`ADR-0001` — ruflo-aidefence plugin contract (pinning, namespace coordination, 3-gate pattern, smoke as contract)](./docs/adrs/0001-aidefence-contract.md)
