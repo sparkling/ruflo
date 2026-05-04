@@ -5,7 +5,8 @@
  */
 
 import { type MCPTool, findProjectRoot, getDisplayCwd } from './types.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdirRestricted, writeFileRestricted } from '../fs-secure.js';
 import { validateEnv, validateIdentifier, validatePath, validateText } from './validate-input.js';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -42,7 +43,7 @@ function getTerminalPath(): string {
 function ensureTerminalDir(): void {
   const dir = getTerminalDir();
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirRestricted(dir);
   }
 }
 
@@ -60,7 +61,9 @@ function loadTerminalStore(): TerminalStore {
 
 function saveTerminalStore(store: TerminalStore): void {
   ensureTerminalDir();
-  writeFileSync(getTerminalPath(), JSON.stringify(store, null, 2), 'utf-8');
+  // audit_1776853149979: terminal command history can contain credentials
+  // pasted into commands; restrict to owner read/write.
+  writeFileRestricted(getTerminalPath(), JSON.stringify(store, null, 2));
 }
 
 export const terminalTools: MCPTool[] = [
