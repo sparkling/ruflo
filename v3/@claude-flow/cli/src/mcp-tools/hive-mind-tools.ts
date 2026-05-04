@@ -168,9 +168,39 @@ export interface HiveQueenRecord {
   queenType?: HiveQueenType;
 }
 
+// ADR-0140 Piece 3c: widen topology union to match the CLI's TOPOLOGIES list
+// (hive-mind.ts §61). The MCP `hive-mind_init` tool accepts these values from
+// the CLI but the previous narrow union meant `hierarchical-mesh` and
+// `adaptive` round-tripped through `as HiveState['topology']` casts; aligning
+// the union with the CLI closes the schema mismatch.
+export type HiveTopology =
+  | 'mesh'
+  | 'hierarchical'
+  | 'ring'
+  | 'star'
+  | 'hierarchical-mesh'
+  | 'adaptive';
+
+// ADR-0140 Piece 3c: substrate config persisted alongside topology so
+// downstream tools (`hive-mind_status`, sessions export/import) can recover
+// what the queen was initialised with. Mirrors the shape returned in
+// hive-mind_init's response under `.config`.
+export interface HiveConfig {
+  topology: HiveTopology;
+  consensus: string;
+  maxAgents: number;
+  persist: boolean;
+  memoryBackend: string;
+  queenType?: HiveQueenType;
+}
+
 export interface HiveState {
   initialized: boolean;
-  topology: 'mesh' | 'hierarchical' | 'ring' | 'star';
+  topology: HiveTopology;
+  // ADR-0140 Piece 3c: persist the full init config so CLI flags
+  // (-c/--consensus, -m/--max-agents, --memory-backend) survive across
+  // process boundaries instead of only being echoed in the init response.
+  config?: HiveConfig;
   queen?: HiveQueenRecord;
   workers: string[];
   // ADR-0131 (T12): per-worker failure metadata. Keyed by worker ID.
@@ -1443,12 +1473,33 @@ export const hiveMindTools: MCPTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        topology: { type: 'string', enum: ['mesh', 'hierarchical', 'ring', 'star'], description: 'Network topology' },
+        // ADR-0140 Piece 3c: enum widened to match the CLI's TOPOLOGIES list
+        // (`hive-mind.ts` §61). Previously `hierarchical-mesh` and `adaptive`
+        // were accepted by the CLI but rejected at the MCP boundary.
+        topology: {
+          type: 'string',
+          enum: ['mesh', 'hierarchical', 'ring', 'star', 'hierarchical-mesh', 'adaptive'],
+          description: 'Network topology',
+        },
         queenId: { type: 'string', description: 'Initial queen agent ID' },
         // ADR-0124 (T6) / H6 row 32 fold-in: persist queenType on the
         // queen record so hive-mind_status can surface it and the
         // session-archive shape can capture/restore it.
         queenType: { type: 'string', enum: ['strategic', 'tactical', 'adaptive'], description: 'Queen leadership style' },
+        // ADR-0140 Piece 3c: declare the substrate-config inputs the CLI
+        // already passes through `callMCPTool('hive-mind_init', ...)` so the
+        // schema matches reality and the values get persisted into
+        // `state.config` rather than only echoed in the response.
+        consensus: {
+          type: 'string',
+          description: 'Consensus algorithm (byzantine|raft|gossip|crdt|majority|weighted|quorum)',
+        },
+        maxAgents: { type: 'number', description: 'Maximum number of worker agents' },
+        persist: { type: 'boolean', description: 'Persist hive state across processes' },
+        memoryBackend: {
+          type: 'string',
+          description: 'Collective memory backend (hybrid|sqlite|rvf)',
+        },
       },
     },
     handler: async (input) => {
@@ -1465,7 +1516,7 @@ export const hiveMindTools: MCPTool[] = [
         const queenId = (input.queenId as string) || `queen-${Date.now()}`;
 
         state.initialized = true;
-        state.topology = (input.topology as HiveState['topology']) || 'mesh';
+        state.topology = (input.topology as HiveTopology) || 'mesh';
         state.createdAt = new Date().toISOString();
         // ADR-0124 (T6) / H6 row 32: validate queenType at the boundary; per
         // `feedback-no-fallbacks.md`, an unknown value throws rather than
@@ -1488,6 +1539,20 @@ export const hiveMindTools: MCPTool[] = [
           ...(queenType !== undefined ? { queenType } : {}),
         };
 
+        // ADR-0140 Piece 3c: persist substrate config to state.json so the
+        // CLI flags `-c/--consensus`, `-m/--max-agents`, `--memory-backend`,
+        // `--persist` survive across process boundaries and re-init calls.
+        // Mirrors the shape returned in the response below.
+        const persistedConfig: HiveConfig = {
+          topology: state.topology,
+          consensus: (input.consensus as string) || 'byzantine',
+          maxAgents: (input.maxAgents as number) || 15,
+          persist: input.persist !== false,
+          memoryBackend: (input.memoryBackend as string) || 'hybrid',
+          ...(queenType !== undefined ? { queenType } : {}),
+        };
+        state.config = persistedConfig;
+
         saveHiveState(state);
 
         // ADR-0122 (T4): register periodic sweep timer for TTL eviction. Idempotent —
@@ -1498,19 +1563,15 @@ export const hiveMindTools: MCPTool[] = [
           success: true,
           hiveId,
           topology: state.topology,
-          consensus: (input.consensus as string) || 'byzantine',
+          consensus: persistedConfig.consensus,
           queenId,
           // ADR-0124 (T6): echo back queenType so callers (CLI spawn, status
           // probes) can confirm the persisted value.
           ...(queenType !== undefined ? { queenType } : {}),
           status: 'initialized',
-          config: {
-            topology: state.topology,
-            consensus: input.consensus || 'byzantine',
-            maxAgents: input.maxAgents || 15,
-            persist: input.persist !== false,
-            memoryBackend: input.memoryBackend || 'hybrid',
-          },
+          // ADR-0140 Piece 3c: response config now mirrors what was persisted
+          // (single source of truth) instead of recomputing defaults.
+          config: persistedConfig,
           createdAt: state.createdAt,
         };
       });
