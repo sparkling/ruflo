@@ -75,9 +75,9 @@ capabilities:
   - network-configuration
 tools:
   allowed:
-    - mcp__claude-flow__swarm_init
-    - mcp__claude-flow__topology_optimize
-    - mcp__claude-flow__memory_usage
+    - mcp__ruflo__swarm_init
+    - mcp__ruflo__topology_optimize
+    - mcp__ruflo__memory_usage
     - TodoWrite
   restricted:
     - Bash
@@ -107,10 +107,10 @@ capabilities:
   - pattern-recognition
 tools:
   allowed:
-    - mcp__claude-flow__agent_spawn
-    - mcp__claude-flow__daa_agent_create
-    - mcp__claude-flow__agent_list
-    - mcp__claude-flow__memory_usage
+    - mcp__ruflo__agent_spawn
+    - mcp__ruflo__daa_agent_create
+    - mcp__ruflo__agent_list
+    - mcp__ruflo__memory_usage
   restricted:
     - Bash
     - Write
@@ -141,10 +141,10 @@ capabilities:
   - progress-tracking
 tools:
   allowed:
-    - mcp__claude-flow__task_orchestrate
-    - mcp__claude-flow__task_status
-    - mcp__claude-flow__task_results
-    - mcp__claude-flow__parallel_execute
+    - mcp__ruflo__task_orchestrate
+    - mcp__ruflo__task_status
+    - mcp__ruflo__task_results
+    - mcp__ruflo__parallel_execute
     - TodoWrite
     - TodoRead
   restricted:
@@ -180,10 +180,10 @@ capabilities:
 tools:
   allowed:
     - Bash  # For gh CLI commands
-    - mcp__claude-flow__swarm_init
-    - mcp__claude-flow__agent_spawn
-    - mcp__claude-flow__task_orchestrate
-    - mcp__claude-flow__memory_usage
+    - mcp__ruflo__swarm_init
+    - mcp__ruflo__agent_spawn
+    - mcp__ruflo__task_orchestrate
+    - mcp__ruflo__memory_usage
     - TodoWrite
     - Read
   restricted:
@@ -218,10 +218,10 @@ tools:
     - Bash  # For gh CLI
     - Read
     - Grep
-    - mcp__claude-flow__swarm_init
-    - mcp__claude-flow__agent_spawn
-    - mcp__claude-flow__github_code_review
-    - mcp__claude-flow__memory_usage
+    - mcp__ruflo__swarm_init
+    - mcp__ruflo__agent_spawn
+    - mcp__ruflo__github_code_review
+    - mcp__ruflo__memory_usage
   restricted:
     - Write
     - Edit
@@ -253,9 +253,9 @@ tools:
   allowed:
     - Bash
     - Read
-    - mcp__claude-flow__github_release_coord
-    - mcp__claude-flow__swarm_init
-    - mcp__claude-flow__task_orchestrate
+    - mcp__ruflo__github_release_coord
+    - mcp__ruflo__swarm_init
+    - mcp__ruflo__task_orchestrate
     - TodoWrite
   restricted:
     - Write  # Use version control for releases
@@ -288,13 +288,13 @@ capabilities:
   - result-synthesis
 tools:
   allowed:
-    - mcp__claude-flow__sparc_mode
-    - mcp__claude-flow__swarm_init
-    - mcp__claude-flow__agent_spawn
-    - mcp__claude-flow__task_orchestrate
+    - mcp__ruflo__sparc_mode
+    - mcp__ruflo__swarm_init
+    - mcp__ruflo__agent_spawn
+    - mcp__ruflo__task_orchestrate
     - TodoWrite
     - TodoRead
-    - mcp__claude-flow__memory_usage
+    - mcp__ruflo__memory_usage
   restricted:
     - Bash
     - Write
@@ -330,10 +330,10 @@ tools:
     - Edit
     - MultiEdit
     - Bash
-    - mcp__claude-flow__sparc_mode
+    - mcp__ruflo__sparc_mode
     - TodoWrite
   restricted:
-    - mcp__claude-flow__swarm_init  # Focus on implementation
+    - mcp__ruflo__swarm_init  # Focus on implementation
 triggers:
   - pattern: "implement|code|develop|build.*feature"
     priority: high
@@ -364,11 +364,11 @@ tools:
     - Write
     - Edit
     - Bash
-    - mcp__claude-flow__sparc_mode
+    - mcp__ruflo__sparc_mode
     - TodoWrite
-    - mcp__claude-flow__parallel_execute
+    - mcp__ruflo__parallel_execute
   restricted:
-    - mcp__claude-flow__swarm_init
+    - mcp__ruflo__swarm_init
 triggers:
   - pattern: "test|verify|validate|check.*quality"
     priority: high
@@ -397,10 +397,10 @@ capabilities:
   - optimization-planning
 tools:
   allowed:
-    - mcp__claude-flow__bottleneck_analyze
-    - mcp__claude-flow__performance_report
-    - mcp__claude-flow__metrics_collect
-    - mcp__claude-flow__trend_analysis
+    - mcp__ruflo__bottleneck_analyze
+    - mcp__ruflo__performance_report
+    - mcp__ruflo__metrics_collect
+    - mcp__ruflo__trend_analysis
     - Read
     - Grep
   restricted:
@@ -433,10 +433,10 @@ capabilities:
   - report-generation
 tools:
   allowed:
-    - mcp__claude-flow__token_usage
-    - mcp__claude-flow__cost_analysis
-    - mcp__claude-flow__usage_stats
-    - mcp__claude-flow__memory_analytics
+    - mcp__ruflo__token_usage
+    - mcp__ruflo__cost_analysis
+    - mcp__ruflo__usage_stats
+    - mcp__ruflo__memory_analytics
     - Read
   restricted:
     - Write
@@ -470,11 +470,11 @@ capabilities:
   - synchronization
 tools:
   allowed:
-    - mcp__claude-flow__memory_usage
-    - mcp__claude-flow__memory_search
-    - mcp__claude-flow__memory_namespace
-    - mcp__claude-flow__memory_compress
-    - mcp__claude-flow__memory_sync
+    - mcp__ruflo__memory_usage
+    - mcp__ruflo__memory_search
+    - mcp__ruflo__memory_namespace
+    - mcp__ruflo__memory_compress
+    - mcp__ruflo__memory_sync
   restricted:
     - Write
     - Edit
@@ -505,11 +505,11 @@ capabilities:
   - transfer-learning
 tools:
   allowed:
-    - mcp__claude-flow__neural_train
-    - mcp__claude-flow__neural_patterns
-    - mcp__claude-flow__neural_predict
-    - mcp__claude-flow__cognitive_analyze
-    - mcp__claude-flow__learning_adapt
+    - mcp__ruflo__neural_train
+    - mcp__ruflo__neural_patterns
+    - mcp__ruflo__neural_predict
+    - mcp__ruflo__cognitive_analyze
+    - mcp__ruflo__learning_adapt
   restricted:
     - Write
     - Edit
@@ -542,11 +542,11 @@ capabilities:
   - auto-scaling
 tools:
   allowed:
-    - mcp__claude-flow__daa_agent_create
-    - mcp__claude-flow__daa_capability_match
-    - mcp__claude-flow__daa_resource_alloc
-    - mcp__claude-flow__swarm_scale
-    - mcp__claude-flow__agent_metrics
+    - mcp__ruflo__daa_agent_create
+    - mcp__ruflo__daa_capability_match
+    - mcp__ruflo__daa_resource_alloc
+    - mcp__ruflo__swarm_scale
+    - mcp__ruflo__agent_metrics
   restricted:
     - Write
     - Edit
@@ -577,10 +577,10 @@ capabilities:
   - error-analysis
 tools:
   allowed:
-    - mcp__claude-flow__daa_fault_tolerance
-    - mcp__claude-flow__health_check
-    - mcp__claude-flow__error_analysis
-    - mcp__claude-flow__diagnostic_run
+    - mcp__ruflo__daa_fault_tolerance
+    - mcp__ruflo__health_check
+    - mcp__ruflo__error_analysis
+    - mcp__ruflo__diagnostic_run
     - Bash  # For system commands
   restricted:
     - Write  # Prevent accidental file modifications during recovery
@@ -613,10 +613,10 @@ capabilities:
   - bottleneck-removal
 tools:
   allowed:
-    - mcp__claude-flow__parallel_execute
-    - mcp__claude-flow__load_balance
-    - mcp__claude-flow__batch_process
-    - mcp__claude-flow__performance_report
+    - mcp__ruflo__parallel_execute
+    - mcp__ruflo__load_balance
+    - mcp__ruflo__batch_process
+    - mcp__ruflo__performance_report
     - TodoWrite
   restricted:
     - Write
@@ -647,11 +647,11 @@ capabilities:
   - adaptive-configuration
 tools:
   allowed:
-    - mcp__claude-flow__topology_optimize
-    - mcp__claude-flow__swarm_monitor
-    - mcp__claude-flow__coordination_sync
-    - mcp__claude-flow__swarm_status
-    - mcp__claude-flow__metrics_collect
+    - mcp__ruflo__topology_optimize
+    - mcp__ruflo__swarm_monitor
+    - mcp__ruflo__coordination_sync
+    - mcp__ruflo__swarm_status
+    - mcp__ruflo__metrics_collect
   restricted:
     - Write
     - Edit
@@ -684,11 +684,11 @@ capabilities:
   - alert-generation
 tools:
   allowed:
-    - mcp__claude-flow__swarm_status
-    - mcp__claude-flow__swarm_monitor
-    - mcp__claude-flow__agent_metrics
-    - mcp__claude-flow__health_check
-    - mcp__claude-flow__performance_report
+    - mcp__ruflo__swarm_status
+    - mcp__ruflo__swarm_monitor
+    - mcp__ruflo__agent_metrics
+    - mcp__ruflo__health_check
+    - mcp__ruflo__performance_report
   restricted:
     - Write
     - Edit

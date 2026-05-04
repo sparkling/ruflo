@@ -29,7 +29,7 @@
       "Bash(which:*)",
       "Bash(pwd)",
       "Bash(ls:*)",
-      "mcp__claude-flow__*",
+      "mcp__ruflo__*",
       "mcp__ruv-swarm__*",
       "mcp__flow-nexus__*"
     ],

@@ -117,22 +117,22 @@ npx claude-flow rollback [checkpoint-id]       # Rollback to checkpoint
 ### Enhanced MCP Tools (Backward Compatible)
 ```javascript
 // Existing tools work as before
-mcp__claude-flow__swarm_init { topology: "mesh" }
+mcp__ruflo__swarm_init { topology: "mesh" }
 
 // Add verification (optional)
-mcp__claude-flow__swarm_init { 
+mcp__ruflo__swarm_init { 
   topology: "mesh",
   verification: { enabled: true, mode: "strict" }
 }
 
 // New verification-specific tools
-mcp__claude-flow__truth_score {
+mcp__ruflo__truth_score {
   agent_id: "coder-1",
   claim: "All tests pass",
   evidence: { test_results: {...} }
 }
 
-mcp__claude-flow__verify_handoff {
+mcp__ruflo__verify_handoff {
   from_agent: "coder-1",
   to_agent: "tester-1",
   require_acceptance: true
@@ -152,7 +152,7 @@ mcp__claude-flow__verify_handoff {
 ### Memory Integration
 ```javascript
 // Truth scores automatically stored via memory_usage
-mcp__claude-flow__memory_usage {
+mcp__ruflo__memory_usage {
   action: "store",
   namespace: "truth_scores",
   key: "agent_task_score",

@@ -89,16 +89,16 @@ tester: Read, Write, Bash, Glob
 
 ### Swarm Tools
 ```
-hierarchical-coordinator: mcp__claude-flow__swarm_*, mcp__claude-flow__agent_*
-mesh-coordinator: mcp__claude-flow__swarm_*, mcp__claude-flow__coordination_*
-adaptive-coordinator: mcp__claude-flow__topology_*, mcp__claude-flow__swarm_*
+hierarchical-coordinator: mcp__ruflo__swarm_*, mcp__ruflo__agent_*
+mesh-coordinator: mcp__ruflo__swarm_*, mcp__ruflo__coordination_*
+adaptive-coordinator: mcp__ruflo__topology_*, mcp__ruflo__swarm_*
 ```
 
 ### GitHub Tools
 ```
 pr-manager: mcp__github__*, Bash (gh CLI)
-code-review-swarm: mcp__github__*, mcp__claude-flow__swarm_*
-release-manager: mcp__github__*, mcp__claude-flow__workflow_*
+code-review-swarm: mcp__github__*, mcp__ruflo__swarm_*
+release-manager: mcp__github__*, mcp__ruflo__workflow_*
 ```
 
 ## Querying Capabilities
