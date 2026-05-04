@@ -105,15 +105,25 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
   if (cacheKey !== null) {
     const cached = backendCache.get(cacheKey);
     if (cached !== undefined) {
-      // Invalidate if the backing file was deleted out from under us.
-      // Without this, a subsequent caller would get a backend pointing at a
-      // vanished file and fail on the first operation.
-      if (!existsSync(cacheKey)) {
-        backendCache.delete(cacheKey);
-      } else if ((cached as any).initialized === false) {
+      if ((cached as any).initialized === false) {
         // Previous owner called shutdown(). The RvfBackend drops all state
         // and flips `initialized` back to false. Do NOT hand out a closed
         // instance — re-create.
+        backendCache.delete(cacheKey);
+      } else if (!existsSync(cacheKey) && (cached as any).dirty === true) {
+        // Backing file was deleted out-of-band AND the cached instance had
+        // pending writes that should have produced it. This is a real
+        // data-loss situation; drop the cache and recreate so the next
+        // caller fails loud at write time rather than silently re-using a
+        // stale handle.
+        //
+        // ADR-0140 dedupe-test bug fix (2026-05-04): the previous unconditional
+        // `existsSync` check evicted any never-written backend (empty hive,
+        // autoPersistInterval=0, nothing flushed yet) on the second
+        // createStorage call — breaking dedupe for fresh instances. The
+        // `dirty===true` qualifier confines the eviction to the rare
+        // genuine "file deleted out from under us" case while letting
+        // empty-but-cached backends survive across createStorage calls.
         backendCache.delete(cacheKey);
       } else {
         if (verbose) {
