@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugins",
-  "version": "3.0.0-alpha.7-patch.467",
+  "version": "3.0.0-alpha.7-patch.468",
   "description": "Unified Plugin SDK for Claude Flow V3 - Worker, Hook, and Provider Integration",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -46,10 +46,10 @@
     "events": "^3.3.0"
   },
   "peerDependencies": {
-    "@claude-flow/hooks": "3.0.0-alpha.7-patch.467",
-    "@claude-flow/memory": "3.0.0-alpha.13-patch.341",
-    "@ruvector/learning-wasm": "0.1.29-patch.43",
-    "@ruvector/wasm": "0.1.1-patch.43"
+    "@claude-flow/hooks": "3.0.0-alpha.7-patch.468",
+    "@claude-flow/memory": "3.0.0-alpha.13-patch.342",
+    "@ruvector/learning-wasm": "0.1.29-patch.44",
+    "@ruvector/wasm": "0.1.1-patch.44"
   },
   "peerDependenciesMeta": {
     "@claude-flow/hooks": {
