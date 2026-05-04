@@ -6,7 +6,7 @@
 
 import { type MCPTool, findProjectRoot, getDisplayCwd } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { validateIdentifier, validatePath, validateText } from './validate-input.js';
+import { validateEnv, validateIdentifier, validatePath, validateText } from './validate-input.js';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
@@ -77,7 +77,7 @@ export const terminalTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      // Validate user-provided input (#1425)
+      // Validate user-provided input (#1425, audit_1776853149979)
       if (input.name) {
         const v = validateText(input.name, 'name', 256);
         if (!v.valid) return { success: false, error: v.error };
@@ -86,6 +86,11 @@ export const terminalTools: MCPTool[] = [
         const v = validatePath(input.workingDir, 'workingDir');
         if (!v.valid) return { success: false, error: v.error };
       }
+      // env is merged into execSync's process env on every command; reject
+      // loader/runtime hijack vars (LD_PRELOAD, NODE_OPTIONS, …) and enforce
+      // POSIX-shaped names + null-byte-free values.
+      const vEnv = validateEnv(input.env, 'env');
+      if (!vEnv.valid) return { success: false, error: vEnv.error };
 
       const store = loadTerminalStore();
       const id = `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -98,7 +103,7 @@ export const terminalTools: MCPTool[] = [
         lastActivity: new Date().toISOString(),
         workingDir: (input.workingDir as string) || getDisplayCwd(),
         history: [],
-        env: (input.env as Record<string, string>) || {},
+        env: vEnv.sanitized,
       };
 
       store.sessions[id] = session;

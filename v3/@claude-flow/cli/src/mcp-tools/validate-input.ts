@@ -187,6 +187,70 @@ export function validateText(value: unknown, label: string, maxLen = 10_000): Va
 }
 
 /**
+ * Names that let an attacker pivot a child process before any user code runs:
+ * shared-library injection on Linux/macOS, Node hooks, and command resolution.
+ *
+ * audit_1776853149979: terminal_create previously merged caller-supplied env
+ * straight into execSync's environment for every subsequent command in the
+ * session. Setting LD_PRELOAD or NODE_OPTIONS via that path is functionally
+ * equivalent to remote code execution, so the env input needs an allowlist
+ * shape and a denylist on these specific names.
+ */
+const DENYLISTED_ENV_NAMES = new Set([
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'LD_AUDIT',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FALLBACK_LIBRARY_PATH',
+  'DYLD_FORCE_FLAT_NAMESPACE',
+  'NODE_OPTIONS',
+  'NODE_PATH',
+]);
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+export interface EnvValidationResult {
+  valid: boolean;
+  sanitized: Record<string, string>;
+  error?: string;
+}
+
+/**
+ * Validate a Record<string,string> of environment variables: enforce POSIX
+ * names, reject hijack-prone names (LD_PRELOAD, NODE_OPTIONS, …), forbid null
+ * bytes in values, and cap value length so a malicious caller can't bloat the
+ * stored session past reasonable bounds.
+ */
+export function validateEnv(value: unknown, label = 'env'): EnvValidationResult {
+  if (value === undefined || value === null) {
+    return { valid: true, sanitized: {} };
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return { valid: false, sanitized: {}, error: `${label} must be an object of string→string` };
+  }
+  const out: Record<string, string> = {};
+  for (const [name, rawVal] of Object.entries(value as Record<string, unknown>)) {
+    if (!ENV_NAME_RE.test(name)) {
+      return { valid: false, sanitized: {}, error: `${label} key "${name}" is not a valid POSIX env name` };
+    }
+    if (DENYLISTED_ENV_NAMES.has(name)) {
+      return { valid: false, sanitized: {}, error: `${label} key "${name}" is denylisted (loader/runtime hijack)` };
+    }
+    if (typeof rawVal !== 'string') {
+      return { valid: false, sanitized: {}, error: `${label}["${name}"] must be a string` };
+    }
+    if (rawVal.length > 32_768) {
+      return { valid: false, sanitized: {}, error: `${label}["${name}"] exceeds 32768 characters` };
+    }
+    if (rawVal.includes('\0')) {
+      return { valid: false, sanitized: {}, error: `${label}["${name}"] contains a null byte` };
+    }
+    out[name] = rawVal;
+  }
+  return { valid: true, sanitized: out };
+}
+
+/**
  * Assert validation or throw with a structured error.
  */
 export function assertValid(result: ValidationResult): string {
