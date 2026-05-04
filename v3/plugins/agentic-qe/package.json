@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-agentic-qe",
-  "version": "3.5.59-patch.30",
+  "version": "3.5.59-patch.31",
   "description": "Quality Engineering plugin for Ruflo V3 with 51 specialized agents across 12 DDD bounded contexts",
   "type": "module",
   "main": "./dist/index.js",
@@ -54,10 +54,10 @@
     "zod": "^3.23.0"
   },
   "peerDependencies": {
-    "@claude-flow/plugins": "3.0.0-alpha.7-patch.466",
-    "@claude-flow/memory": "3.0.0-alpha.13-patch.340",
-    "@claude-flow/security": "3.0.0-alpha.6-patch.439",
-    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.468"
+    "@claude-flow/plugins": "3.0.0-alpha.7-patch.467",
+    "@claude-flow/memory": "3.0.0-alpha.13-patch.341",
+    "@claude-flow/security": "3.0.0-alpha.6-patch.440",
+    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.469"
   },
   "peerDependenciesMeta": {
     "@claude-flow/plugins": {
