@@ -55,6 +55,11 @@ Cost tracking commands:
 3. The script wraps `npx @claude-flow/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv spawnSync so quoting is safe
 4. Without this, the router doesn't learn from cost-optimize recommendations and the Tier 1 bypass rate doesn't tighten over time
 
+**`cost trend`** -- Read all docs/benchmarks/runs/*.json and surface drift in the gate metrics — win rate, avg latency, p99, escalation rate, speedup vs LLM. Flags regressions the binary smoke gate misses.
+1. Run `node plugins/ruflo-cost-tracker/scripts/trend.mjs`
+2. Optional `TREND_FORMAT=json` for machine-readable output, `TREND_LIMIT=N` to truncate
+3. Reports: first→last deltas + per-run series + regression flags (win rate drop or ≥1.5× latency rise)
+
 **`cost benchmark [--llm] [--anthropic]`** -- Run the corpus benchmark to verify booster claims with measured numbers.
 1. Without flags: booster-only (free, ~85 ms wall-time, no API keys needed)
 2. `--llm`: also run Gemini 2.0 Flash baseline (uses GCP `GOOGLE_AI_API_KEY` secret)

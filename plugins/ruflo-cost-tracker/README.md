@@ -29,6 +29,7 @@ claude --plugin-dir plugins/ruflo-cost-tracker
 | `cost-booster-route` | `/cost-booster-route <task>` | Route tasks via `hooks_route` and report Agent Booster (Tier 1) bypass utilization |
 | `cost-booster-edit` | `/cost-booster-edit <intent> <file>` | **Apply** a Tier 1 transform via `agent-booster.apply()` (sub-millisecond, $0, deterministic) |
 | `cost-benchmark` | `/cost-benchmark [--llm] [--anthropic]` | Run the corpus benchmark and persist measured-vs-claimed table to `docs/benchmarks/runs/` |
+| `cost-trend` | `/cost-trend` | Read all bench runs and surface drift (win rate, latency, speedup) — flags regressions the smoke gate misses |
 | `cost-compact-context` | `/cost-compact-context <query>` | Wrap `getTokenOptimizer().getCompactContext()` for retrieval-compacted analysis (graceful fallback when agentic-flow not installed) |
 
 ## Commands (8 subcommands)
@@ -44,6 +45,7 @@ cost budget set <amount>                  # Set budget limit in USD
 cost optimize                             # Analyze usage and suggest savings (+ auto-emits hooks_model-outcome via outcome.mjs)
 cost outcome <task> <model> <outcome>     # Emit hooks_model-outcome (success|escalated|failure) so the router learns
 cost benchmark [--llm] [--anthropic]      # Run measured benchmark — booster + optional Gemini/Sonnet/Opus baselines
+cost trend                                # Drift across bench runs (win rate, latency, regressions)
 cost workers                              # Inspect optimize + benchmark loop-workers consumed
 cost history                              # Show cost tracking over time
 ```
@@ -131,7 +133,7 @@ Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadow
 
 ```bash
 bash plugins/ruflo-cost-tracker/scripts/smoke.sh
-# Expected: "37 passed, 0 failed"
+# Expected: "39 passed, 0 failed"
 ```
 
 ## Architecture Decisions
