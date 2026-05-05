@@ -55,6 +55,18 @@ Cost tracking commands:
 3. The script wraps `npx @claude-flow/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv spawnSync so quoting is safe
 4. Without this, the router doesn't learn from cost-optimize recommendations and the Tier 1 bypass rate doesn't tighten over time
 
+**`cost summary [--format json|markdown]`** -- Single-shot programmatic dump of all cost data. Other plugins/scripts can shell out and parse the JSON.
+1. Run `node plugins/ruflo-cost-tracker/scripts/summary.mjs --format json`
+2. Output: total_cost_usd, sessionCount, byTier, byModel, topSession, budget, federation aggregate
+3. Default `--format markdown`; JSON contract is stable for programmatic consumers
+4. ADR-0002 considered an MCP-tool form but deferred (requires v3 source change); this is the plugin-local equivalent
+
+**`cost federation`** -- Consumer-side wiring for ADR-097 Phase 3 federation_spend events. Aggregates per-peer 1h/24h/7d rolling windows and flags peers exceeding the suspension threshold (default $5/24h).
+1. Run `node plugins/ruflo-cost-tracker/scripts/federation.mjs`
+2. Optional: `FED_FORMAT=json`, `FED_NAMESPACE=federation-spend`, `FED_SUSPEND_THRESHOLD_USD=5.0`
+3. Reports gracefully when no events present (Phase 3 not yet landed upstream)
+4. Activates automatically when upstream publishes `{peerId, taskId, tokensUsed, usdSpent, ts}` to the `federation-spend` namespace
+
 **`cost export [--prometheus <path>] [--webhook <url>]`** -- Export cost-tracking telemetry to external observability systems.
 1. `--prometheus <path>` writes the node_exporter textfile-collector format (gauges + counters with session labels)
 2. `--webhook <url>` POSTs JSON; auth via `EXPORT_WEBHOOK_HEADER='K: V'`

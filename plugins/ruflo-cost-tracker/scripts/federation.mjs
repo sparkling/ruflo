@@ -19,17 +19,11 @@
 
 import { spawnSync } from 'node:child_process';
 
-// ADR-100 / #1748 Issue 3 — CLI_CORE=1 routes to lite cli-core (~2s cold-cache).
-// Federation aggregation is list+retrieve only on the federation-spend namespace.
-const CLI_PKG = process.env.CLI_CORE === '1'
-  ? '@sparkleideas/cli-core@alpha'
-  : '@sparkleideas/cli@latest';
-
 const NS = process.env.FED_NAMESPACE || 'federation-spend';
 
 function memoryList() {
   const r = spawnSync('npx', [
-    CLI_PKG, 'memory', 'list',
+    '@sparkleideas/cli@latest', 'memory', 'list',
     '--namespace', NS, '--format', 'json',
   ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
   if (r.status !== 0) return [];
@@ -39,7 +33,7 @@ function memoryList() {
 }
 function memoryRetrieve(key) {
   const r = spawnSync('npx', [
-    CLI_PKG, 'memory', 'retrieve',
+    '@sparkleideas/cli@latest', 'memory', 'retrieve',
     '--namespace', NS, '--key', key,
   ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
   if (r.status !== 0) return null;

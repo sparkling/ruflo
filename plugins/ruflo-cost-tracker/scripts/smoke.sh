@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.13.0 with new keywords"
+step "1. plugin.json declares 0.14.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.13.0" ]]; then
-  bad "expected 0.13.0, got '$v'"
+if [[ "$v" != "0.14.0" ]]; then
+  bad "expected 0.14.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -20,9 +20,9 @@ else
   [[ -z "$miss" ]] && ok || bad "missing keywords:$miss"
 fi
 
-step "2. all eleven skills present with valid frontmatter"
+step "2. all twelve skills present with valid frontmatter"
 miss=""
-for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track cost-budget-check cost-trend cost-conversation cost-export; do
+for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track cost-budget-check cost-trend cost-conversation cost-export cost-federation; do
   f="$ROOT/skills/$s/SKILL.md"
   [[ -f "$f" ]] || { miss="$miss missing-$s"; continue; }
   for k in 'name:' 'description:' 'allowed-tools:'; do
@@ -320,6 +320,19 @@ grep -q '^allowed-tools:[[:space:]]*\*' "$F2" && miss="$miss wildcard"
 step "39. ruflo-cost.md documents 'cost trend' subcommand"
 grep -q "cost trend" "$ROOT/commands/ruflo-cost.md" \
   && ok || bad "missing"
+
+step "39b. cost-federation skill + federation.mjs (ADR-097 Phase 3 consumer)"
+F1="$ROOT/scripts/federation.mjs"
+F2="$ROOT/skills/cost-federation/SKILL.md"
+miss=""
+[[ -x "$F1" ]] || miss="$miss fed-not-executable"
+node --check "$F1" 2>/dev/null || miss="$miss syntax-error"
+grep -q "federation_spend" "$F1" || miss="$miss no-event-type"
+grep -q "1h\|24h\|7d" "$F1" || miss="$miss no-rolling-windows"
+grep -qE "ADR-097|Phase 3" "$F2" || miss="$miss no-adr-ref"
+grep -q "fed-spend-" "$F2" || miss="$miss no-key-prefix"
+grep -q '^allowed-tools:[[:space:]]*\*' "$F2" && miss="$miss wildcard"
+[[ -z "$miss" ]] && ok || bad "$miss"
 
 step "39a. cost-export skill + export.mjs (Prometheus + webhook)"
 F1="$ROOT/scripts/export.mjs"
