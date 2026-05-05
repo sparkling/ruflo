@@ -100,6 +100,9 @@ importers:
 
   '@claude-flow/cli':
     dependencies:
+      '@claude-flow/cli-core':
+        specifier: ^3.7.0-alpha.5
+        version: link:../cli-core
       '@claude-flow/mcp':
         specifier: ^3.0.0-alpha.8
         version: link:../mcp
@@ -168,6 +171,8 @@ importers:
       vitest:
         specifier: ^4.0.16
         version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+
+  '@claude-flow/cli-core': {}
 
   '@claude-flow/codex':
     dependencies:
