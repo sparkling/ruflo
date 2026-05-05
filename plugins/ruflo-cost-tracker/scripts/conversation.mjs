@@ -11,17 +11,11 @@
 
 import { spawnSync } from 'node:child_process';
 
-// ADR-100 / #1748 Issue 3 — CLI_CORE=1 routes to lite cli-core (~2s cold-cache).
-// Conversation listing is list+retrieve only; no search. JSON backend is fine.
-const CLI_PKG = process.env.CLI_CORE === '1'
-  ? '@sparkleideas/cli-core@alpha'
-  : '@sparkleideas/cli@latest';
-
 const NS = process.env.CONV_NAMESPACE || 'cost-tracking';
 
 function memoryListSessionKeys() {
   const r = spawnSync('npx', [
-    CLI_PKG, 'memory', 'list',
+    '@sparkleideas/cli@latest', 'memory', 'list',
     '--namespace', NS, '--format', 'json',
   ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
   if (r.status !== 0) return [];
@@ -36,7 +30,7 @@ function memoryListSessionKeys() {
 
 function memoryRetrieve(key) {
   const r = spawnSync('npx', [
-    CLI_PKG, 'memory', 'retrieve',
+    '@sparkleideas/cli@latest', 'memory', 'retrieve',
     '--namespace', NS, '--key', key,
   ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
   if (r.status !== 0) return null;

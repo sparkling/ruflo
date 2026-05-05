@@ -55,6 +55,11 @@ Cost tracking commands:
 3. The script wraps `npx @claude-flow/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv spawnSync so quoting is safe
 4. Without this, the router doesn't learn from cost-optimize recommendations and the Tier 1 bypass rate doesn't tighten over time
 
+**`cost conversation`** -- Per-conversation cost view: list every session in `cost-tracking` with started-at, message count, top model, total cost. Different lens from `cost report` (which is per-agent/per-model).
+1. Run `node plugins/ruflo-cost-tracker/scripts/conversation.mjs`
+2. Optional `CONV_FORMAT=json`, `CONV_LIMIT=N`, `CONV_NAMESPACE=...`
+3. Reports: total across conversations, per-tier rollup, per-session table
+
 **`cost trend`** -- Read all docs/benchmarks/runs/*.json and surface drift in the gate metrics — win rate, avg latency, p99, escalation rate, speedup vs LLM. Flags regressions the binary smoke gate misses.
 1. Run `node plugins/ruflo-cost-tracker/scripts/trend.mjs`
 2. Optional `TREND_FORMAT=json` for machine-readable output, `TREND_LIMIT=N` to truncate

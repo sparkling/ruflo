@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.11.0 with new keywords"
+step "1. plugin.json declares 0.12.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.11.0" ]]; then
-  bad "expected 0.11.0, got '$v'"
+if [[ "$v" != "0.12.0" ]]; then
+  bad "expected 0.12.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -20,9 +20,9 @@ else
   [[ -z "$miss" ]] && ok || bad "missing keywords:$miss"
 fi
 
-step "2. all nine skills present with valid frontmatter"
+step "2. all ten skills present with valid frontmatter"
 miss=""
-for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track cost-budget-check cost-trend; do
+for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track cost-budget-check cost-trend cost-conversation; do
   f="$ROOT/skills/$s/SKILL.md"
   [[ -f "$f" ]] || { miss="$miss missing-$s"; continue; }
   for k in 'name:' 'description:' 'allowed-tools:'; do
@@ -320,6 +320,19 @@ grep -q '^allowed-tools:[[:space:]]*\*' "$F2" && miss="$miss wildcard"
 step "39. ruflo-cost.md documents 'cost trend' subcommand"
 grep -q "cost trend" "$ROOT/commands/ruflo-cost.md" \
   && ok || bad "missing"
+
+step "40a. cost-conversation skill + conversation.mjs"
+F1="$ROOT/scripts/conversation.mjs"
+F2="$ROOT/skills/cost-conversation/SKILL.md"
+miss=""
+[[ -x "$F1" ]] || miss="$miss conv-not-executable"
+node --check "$F1" 2>/dev/null || miss="$miss syntax-error"
+grep -q "memoryListSessionKeys" "$F1" || miss="$miss no-list-fn"
+grep -q "byTier" "$F1" || miss="$miss no-tier-aggr"
+[[ -f "$F2" ]] || miss="$miss skill-missing"
+grep -q "conversation\.mjs" "$F2" || miss="$miss skill-no-script-ref"
+grep -q '^allowed-tools:[[:space:]]*\*' "$F2" && miss="$miss wildcard"
+[[ -z "$miss" ]] && ok || bad "$miss"
 
 step "40. CI workflow (smoke + booster bench on PR) present"
 WF="$ROOT/../../.github/workflows/cost-tracker-smoke.yml"
