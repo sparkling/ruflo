@@ -24,16 +24,6 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-// ADR-100 / #1748 Issue 3 — CLI_CORE=1 routes to lite cli-core (~2s cold-cache).
-// Note: cli-core's JsonMemoryBackend overwrites by default, so the
-// "exists" / UNIQUE-constraint detection below collapses to "ok" under CLI_CORE.
-// Re-running import in CLI_CORE mode is therefore idempotent (records refreshed)
-// rather than incremental (records skipped). For incremental imports across
-// many runs, leave CLI_CORE unset.
-const CLI_PKG = process.env.CLI_CORE === '1'
-  ? '@sparkleideas/cli-core@alpha'
-  : '@sparkleideas/cli@latest';
-
 const ROOT = process.env.ADR_ROOT || process.cwd();
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'v2', '.next', '.turbo', 'build']);
 
@@ -183,7 +173,7 @@ function extractAdrRefs(s) {
 
 function memoryStore(namespace, key, value) {
   const r = spawnSync('npx', [
-    CLI_PKG, 'memory', 'store',
+    '@sparkleideas/cli@latest', 'memory', 'store',
     '--namespace', namespace,
     '--key', key,
     '--value', typeof value === 'string' ? value : JSON.stringify(value),
