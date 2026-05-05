@@ -1,7 +1,7 @@
 {
   "name": "ruflo-workflows",
-  "description": "Visual workflow automation with templates, orchestration, and lifecycle management",
-  "version": "0.1.0",
+  "description": "Workflow automation with templates, orchestration, and lifecycle management — wraps 10 workflow_* MCP tools (create/run/execute/status/list/pause/resume/cancel/delete/template) with full state-machine lifecycle (created → running ↔ paused → completed/cancelled)",
+  "version": "0.2.0",
   "author": {
     "name": "ruvnet",
     "url": "https://github.com/ruvnet"
@@ -13,6 +13,10 @@
     "workflows",
     "automation",
     "orchestration",
-    "templates"
+    "templates",
+    "mcp",
+    "workflow-templates",
+    "pause-resume",
+    "lifecycle"
   ]
 }
