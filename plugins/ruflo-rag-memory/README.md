@@ -159,9 +159,40 @@ When `ruflo-ruvector` is also loaded, rag-memory delegates to ruvector's backend
 - Hybrid search (sparse + dense) with RRF fusion
 - DiskANN for large-scale persistent indexes
 
+## Compatibility
+
+- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **Verification:** `bash plugins/ruflo-rag-memory/scripts/smoke.sh` is the contract.
+
+## Namespace coordination — claude-memories consumer
+
+This plugin is the **canonical user-facing consumer** of the `claude-memories` reserved namespace defined in [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md). The auto-import flow:
+
+```
+Claude Code SessionStart hook
+  → memory_import_claude (MCP)
+  → claude-memories namespace (reserved, ruflo-agentdb owned)
+  → exposed by this plugin's memory-bridge skill + memory_search_unified
+```
+
+This plugin does **not** own `claude-memories` — it consumes it. Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
+
+Other namespaces (`patterns`, `tasks`, `solutions`, `feedback`, `security`) are accessed via `memory_*` (namespace-routed). The plugin uses correct routing throughout — no `agentdb_hierarchical-*` or `agentdb_pattern-store` with namespace arguments.
+
+## Verification
+
+```bash
+bash plugins/ruflo-rag-memory/scripts/smoke.sh
+# Expected: "10 passed, 0 failed"
+```
+
+## Architecture Decisions
+
+- [`ADR-0001` — ruflo-rag-memory plugin contract (claude-memories reserved-namespace consumer, smoke as contract)](./docs/adrs/0001-rag-memory-contract.md)
+
 ## Related Plugins
 
-- `ruflo-agentdb` — Full AgentDB with 19 controllers and HNSW search
+- `ruflo-agentdb` — Full AgentDB controller bridge (15 `agentdb_*` MCP tools); namespace convention owner; owns the `claude-memories` reserved namespace
 - `ruflo-ruvector` — Advanced vector operations (FlashAttention-3, Graph RAG, hybrid search)
 - `ruflo-rvf` — Portable RVF memory format for cross-machine export/import
 - `ruflo-knowledge-graph` — Entity extraction and graph traversal over memory
