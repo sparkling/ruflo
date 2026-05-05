@@ -98,7 +98,7 @@ Reserve `Bash("npx ... hive-mind ...")` for two cases only:
 
 ### Queen types (3)
 
-The active queen mode shapes the prompt the queen reads at launch. All three carry verbatim prose blocks at `forks/ruflo/v3/@claude-flow/cli/src/commands/hive-mind.ts:617-744`. Sentinels (the "before declaring done verify" anchor):
+The active queen mode shapes the prompt the queen reads at launch. All three carry verbatim prose blocks at `forks/ruflo/v3/@sparkleideas/cli/src/commands/hive-mind.ts:617-744`. Sentinels (the "before declaring done verify" anchor):
 
 | Queen type | Disposition | Sentinel | When to use |
 |---|---|---|---|
@@ -645,7 +645,7 @@ Format: gzipped JSON at `.claude-flow/hive-mind/sessions/<sessionId>-<sanitised-
 
 ## Real-world examples
 
-- Pre-regression source — `forks/ruflo/v3/@claude-flow/cli/src/commands/hive-mind.ts` at commit `0590bf29c` (the substrate-only queen prompt that produced 250+ working council sessions before the late-March 2026 regression).
+- Pre-regression source — `forks/ruflo/v3/@sparkleideas/cli/src/commands/hive-mind.ts` at commit `0590bf29c` (the substrate-only queen prompt that produced 250+ working council sessions before the late-March 2026 regression).
 - File-based crosstalk validation 2026-05-04 — memory `reference-hive-runtime-crosstalk-pattern.md` (iter2/iter3 with Karpathy/Norman/Kambhampati personas; all 3 reactions cross-referenced peers by name with specific claims).
 - Live `_consensus` strategy verification — `adr0119-weighted-consensus.test.mjs`, `adr0120-gossip-consensus.test.mjs`, `adr0121-crdt-consensus.test.mjs`.
 
