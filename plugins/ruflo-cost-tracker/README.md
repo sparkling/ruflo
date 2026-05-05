@@ -30,22 +30,29 @@ claude --plugin-dir plugins/ruflo-cost-tracker
 | `cost-booster-edit` | `/cost-booster-edit <intent> <file>` | **Apply** a Tier 1 transform via `agent-booster.apply()` (sub-millisecond, $0, deterministic) |
 | `cost-benchmark` | `/cost-benchmark [--llm] [--anthropic]` | Run the corpus benchmark and persist measured-vs-claimed table to `docs/benchmarks/runs/` |
 | `cost-trend` | `/cost-trend` | Read all bench runs and surface drift (win rate, latency, speedup) — flags regressions the smoke gate misses |
+| `cost-conversation` | `/cost-conversation` | Per-conversation cost view (different lens from cost-report's per-agent / per-model) |
+| `cost-export` | `/cost-export [--prometheus <path>] [--webhook <url>]` | Emit cost data as Prometheus textfile or POST to a webhook |
+| `cost-federation` | `/cost-federation` | ADR-097 Phase 3 consumer — per-peer 1h/24h/7d federation_spend rolling windows |
+| `cost-summary` | `/cost-summary [--format json\|markdown]` | Single-shot programmatic dump of all cost data (stable JSON contract for inter-plugin consumption) |
 | `cost-compact-context` | `/cost-compact-context <query>` | Wrap `getTokenOptimizer().getCompactContext()` for retrieval-compacted analysis (graceful fallback when agentic-flow not installed) |
 
-## Commands (8 subcommands)
+## Commands (15 subcommands)
 
 ```bash
 cost track                                # Auto-capture this session's token usage (producer)
+cost report [--period today|week|month]   # Cost report (with By-tier block, reads measured booster data)
+cost breakdown [--by agent|model|task]    # Detailed breakdown by dimension
+cost optimize                             # Analyze usage and suggest savings (+ auto-emits hooks_model-outcome via outcome.mjs)
+cost outcome <task> <model> <outcome>     # Emit hooks_model-outcome (success|escalated|failure) so the router learns
 cost budget set <amount>                  # Set USD budget (real impl, persists to cost-tracking)
 cost budget get                           # Show current budget config
 cost budget check [--period ...]          # Compute utilization + alert; exit 1 on HARD_STOP
-cost report [--period today|week|month]   # Cost report (with By-tier block, reads measured booster data)
-cost breakdown [--by agent|model|task]    # Detailed breakdown by dimension
-cost budget set <amount>                  # Set budget limit in USD
-cost optimize                             # Analyze usage and suggest savings (+ auto-emits hooks_model-outcome via outcome.mjs)
-cost outcome <task> <model> <outcome>     # Emit hooks_model-outcome (success|escalated|failure) so the router learns
 cost benchmark [--llm] [--anthropic]      # Run measured benchmark — booster + optional Gemini/Sonnet/Opus baselines
 cost trend                                # Drift across bench runs (win rate, latency, regressions)
+cost conversation                         # Per-conversation cost view
+cost summary [--format json|markdown]     # Programmatic JSON contract for inter-plugin consumption
+cost export [--prometheus] [--webhook]    # External observability — Prometheus textfile + webhook POST
+cost federation                           # ADR-097 Phase 3 federation_spend consumer
 cost workers                              # Inspect optimize + benchmark loop-workers consumed
 cost history                              # Show cost tracking over time
 ```

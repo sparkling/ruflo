@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.16.0 with new keywords"
+step "1. plugin.json declares 0.16.1 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.16.0" ]]; then
-  bad "expected 0.16.0, got '$v'"
+if [[ "$v" != "0.16.1" ]]; then
+  bad "expected 0.16.1, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -390,6 +390,37 @@ grep -q "bench\.mjs" "$WF" || miss="$miss bench-not-invoked"
 grep -q "winRate" "$WF" || miss="$miss no-regression-gate"
 grep -q "BENCH_ANTHROPIC\|BENCH_LLM_BASELINE" "$WF" && miss="$miss llm-cost-in-CI"
 [[ -z "$miss" ]] && ok || bad "$miss"
+
+# ─── Consistency invariants (prevent README/agent drift) ─────────────────────
+
+step "41. cost-analyst.md mentions every skill in skills/"
+F="$ROOT/agents/cost-analyst.md"
+miss=""
+for d in "$ROOT"/skills/*/; do
+  name=$(basename "$d")
+  grep -q "$name" "$F" 2>/dev/null || miss="$miss $name"
+done
+[[ -z "$miss" ]] && ok || bad "agent does not mention:$miss"
+
+step "42. README.md skills table has a row for every skill in skills/"
+F="$ROOT/README.md"
+miss=""
+for d in "$ROOT"/skills/*/; do
+  name=$(basename "$d")
+  grep -qE "\\| \`$name\`" "$F" 2>/dev/null || miss="$miss $name"
+done
+[[ -z "$miss" ]] && ok || bad "README skills table missing:$miss"
+
+step "43. every script in scripts/*.mjs parses cleanly"
+miss=""
+for f in "$ROOT"/scripts/*.mjs; do
+  node --check "$f" 2>/dev/null || miss="$miss $(basename "$f")"
+done
+[[ -z "$miss" ]] && ok || bad "syntax errors:$miss"
+
+step "44. plugin.json parses + version sentinel matches step 1"
+node -e "JSON.parse(require('fs').readFileSync('$ROOT/.claude-plugin/plugin.json'))" 2>/dev/null \
+  && ok || bad "plugin.json invalid JSON"
 
 printf "\n%s passed, %s failed\n" "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1
