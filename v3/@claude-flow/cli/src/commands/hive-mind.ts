@@ -23,6 +23,7 @@ import {
 import { MEMORY_TYPES } from '../mcp-tools/hive-mind-tools.js';
 import { spawn as childSpawn, execSync } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join } from 'path';
 // ADR-0124 (T6): session lifecycle subcommands — checkpoint / resume /
 // export / import. Wired into the hive-mind subcommand tree below.
@@ -919,6 +920,36 @@ async function spawnClaudeCodeInstance(
       // Build arguments - flags first, then prompt
       const claudeArgs: string[] = [];
 
+      // #1748 Issue 2 — pass --mcp-config so the spawned worker actually has
+      // mcp__ruflo__* tools registered. Before this, the coordination prompt
+      // referenced tools the worker didn't know about and exited silently.
+      // Resolution order:
+      //   1. explicit --mcp-config <path> flag passed by the caller
+      //   2. ./.mcp.json in cwd (project-local Ruflo MCP config)
+      //   3. ~/.claude.json or ~/.claude/mcp.json (user-global)
+      // If none found, we still spawn but warn — that's the pre-fix behavior
+      // and the user's debug log will surface the missing tools.
+      const explicitMcpConfig = flags['mcp-config'] as string | undefined;
+      let mcpConfigPath: string | undefined = explicitMcpConfig;
+      if (!mcpConfigPath) {
+        const candidates = [
+          join(process.cwd(), '.mcp.json'),
+          join(process.env.HOME || process.env.USERPROFILE || '', '.claude.json'),
+          join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'mcp.json'),
+        ];
+        for (const c of candidates) {
+          try {
+            if (c && existsSync(c)) { mcpConfigPath = c; break; }
+          } catch { /* continue */ }
+        }
+      }
+      if (mcpConfigPath) {
+        claudeArgs.push('--mcp-config', mcpConfigPath);
+        output.printInfo(`Spawned worker MCP config: ${mcpConfigPath}`);
+      } else {
+        output.printWarning('No .mcp.json or ~/.claude.json found — spawned worker will not have mcp__ruflo__* tools (#1748 Issue 2). Pass --mcp-config <path> or run "ruflo init" to generate one.');
+      }
+
       // Check for non-interactive mode
       const isNonInteractive = flags['non-interactive'] || flags.nonInteractive;
       if (isNonInteractive) {
@@ -1304,6 +1335,11 @@ const spawnCommand: Command = {
       type: 'string',
       choices: [...QUEEN_TYPES],
       default: 'strategic'
+    },
+    {
+      name: 'mcp-config',
+      description: 'Path to .mcp.json for the spawned worker (auto-detects ./.mcp.json or ~/.claude.json if omitted) — fixes #1748 Issue 2',
+      type: 'string'
     }
   ],
   examples: [
