@@ -133,7 +133,12 @@ Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadow
 
 ```bash
 bash plugins/ruflo-cost-tracker/scripts/smoke.sh
-# Expected: "39 passed, 0 failed"
+# Expected: "40 passed, 0 failed"
+
+CI: see [`.github/workflows/cost-tracker-smoke.yml`](../../.github/workflows/cost-tracker-smoke.yml).
+On every PR touching this plugin, GitHub Actions runs smoke + booster-only bench
++ regression gate (Tier 1 winRate ≥ 0.80). LLM/Anthropic baselines are NOT run in CI
+— they cost real money per invocation and belong in a manual / scheduled workflow.
 ```
 
 ## Architecture Decisions

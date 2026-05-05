@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.10.0 with new keywords"
+step "1. plugin.json declares 0.11.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.10.0" ]]; then
-  bad "expected 0.10.0, got '$v'"
+if [[ "$v" != "0.11.0" ]]; then
+  bad "expected 0.11.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -320,6 +320,16 @@ grep -q '^allowed-tools:[[:space:]]*\*' "$F2" && miss="$miss wildcard"
 step "39. ruflo-cost.md documents 'cost trend' subcommand"
 grep -q "cost trend" "$ROOT/commands/ruflo-cost.md" \
   && ok || bad "missing"
+
+step "40. CI workflow (smoke + booster bench on PR) present"
+WF="$ROOT/../../.github/workflows/cost-tracker-smoke.yml"
+miss=""
+[[ -f "$WF" ]] || miss="$miss missing-file"
+grep -q "smoke\.sh" "$WF" || miss="$miss smoke-not-invoked"
+grep -q "bench\.mjs" "$WF" || miss="$miss bench-not-invoked"
+grep -q "winRate" "$WF" || miss="$miss no-regression-gate"
+grep -q "BENCH_ANTHROPIC\|BENCH_LLM_BASELINE" "$WF" && miss="$miss llm-cost-in-CI"
+[[ -z "$miss" ]] && ok || bad "$miss"
 
 printf "\n%s passed, %s failed\n" "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1
