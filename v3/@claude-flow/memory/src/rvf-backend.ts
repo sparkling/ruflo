@@ -341,8 +341,15 @@ export class RvfBackend implements IMemoryBackend {
     }
 
     // JS-side WAL/meta race window — kept under .jslock.
+    // Bug-4 (2026-05-05) parallel-wave thread-safety: init-time uses a 180s
+    // budget instead of the 60s default. Subprocess CLI inits in a shared
+    // data dir (acceptance harness E2E_DIR or any other multi-writer
+    // setup) can see ~10 concurrent .jslock contenders; the default 60s
+    // budget hits 100-attempt timeout under that load. Init is one-time
+    // per process and tolerating a 1-3 minute wait beats failing the
+    // memory_store call entirely.
     this._diag('initialize.preLoadFromDisk acquiring jslock');
-    await this.acquireLock();
+    await this.acquireLock(180_000);
     this._diag(`initialize.loadFromDisk.start entriesBefore=${this.entries.size} seenIdsBefore=${this.seenIds.size}`);
     try {
       await this.loadFromDisk();
@@ -1617,7 +1624,14 @@ export class RvfBackend implements IMemoryBackend {
    *  writer workflows (hook dispatch fan-out, swarm init, multi-pane
    *  CLI) without being so large that genuinely stuck processes hang.
    */
-  private async acquireLock(): Promise<void> {
+  // Bug-4 (2026-05-05) parallel-wave thread-safety: init-time callers can pass
+  // a larger timeout (default 60s is fine for hot-path store/persist; init is
+  // one-time per process and benefits from a longer budget when many parallel
+  // processes share the same data dir — e.g. acceptance harness E2E_DIR
+  // shared across all e2e tests). 100 attempts at 20ms→500ms backoff covers
+  // ~60s; bumping to 180s under init covers ~250 attempts and handles the
+  // observed parallel-wave tail without changing the hot-path budget.
+  private async acquireLock(maxWaitMs: number = 60_000): Promise<void> {
     if (!this.lockPath) return; // :memory: mode
     // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant.
     // If THIS process+instance already holds the lock, just bump depth
@@ -1656,10 +1670,14 @@ export class RvfBackend implements IMemoryBackend {
     //   - no blind unlink on parse failure (the only way parse fails
     //     with .jslock is the wf-not-yet-completed window — the holder
     //     IS alive and writing; back off, retry)
-    //   - 60s budget. Subprocess CLI inits under heavy contention take
-    //     1-3s each; 6 serialized = up to ~18s; 60s gives headroom for
-    //     OS scheduling jitter, native flock contention, and tail latency.
-    const maxWaitMs = 60000;
+    //   - 60s default budget (hot path: store/persist/delete). Subprocess
+    //     CLI inits under heavy contention take 1-3s each; 6 serialized =
+    //     up to ~18s; 60s gives headroom for OS scheduling jitter, native
+    //     flock contention, and tail latency.
+    //   - Init-time callers may override with a longer budget (Bug-4 fix:
+    //     acceptance harness E2E_DIR shared across all e2e tests sees ~10
+    //     contenders simultaneously; 180s budget at init lifts the
+    //     parallel-wave tail past the observed 30-60s saturation point).
     const baseDelayMs = 20;
     const maxDelayMs = 500;
     const startTime = Date.now();
@@ -1703,9 +1721,15 @@ export class RvfBackend implements IMemoryBackend {
         attempt++;
       }
     }
-    throw new Error(
-      `Failed to acquire advisory lock after ${attempt} attempts over ${Date.now() - startTime}ms (budget=${maxWaitMs}ms)`,
+    // Bug-4: tag with code='ELOCKACQUIRE' so StorageFactory's err.code wrap
+    // surfaces the real cause instead of '(unknown)'. Also include the .jslock
+    // path so concurrent-process diagnostics can correlate by file.
+    const lockErr: Error & { code?: string } = new Error(
+      `Failed to acquire advisory lock after ${attempt} attempts over ${Date.now() - startTime}ms ` +
+      `(budget=${maxWaitMs}ms, lockPath=${this.lockPath})`,
     );
+    lockErr.code = 'ELOCKACQUIRE';
+    throw lockErr;
   }
 
   /** Release advisory lock — only if WE still own it. */

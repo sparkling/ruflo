@@ -136,9 +136,15 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
     }
   }
 
-  try {
+  // Bug-4 (2026-05-05) parallel-wave thread-safety: at most ONE retry on
+  // lock-acquisition timeout. RvfBackend.initialize() now runs with a 180s
+  // budget; if even that times out, the contender likely finished mid-flight
+  // and a fresh attempt has a clean path. Retrying once with a small jitter
+  // covers the rare wave-saturation case without papering over real failures.
+  // Non-lock errors (ENOENT, EACCES, RvfCorruptError, etc.) are NOT retried.
+  let retryAttempt = 0;
+  const tryInit = async (): Promise<IStorage> => {
     const { RvfBackend } = await import('./rvf-backend.js');
-
     const backend = new RvfBackend({
       databasePath: rvfPath,
       dimensions,
@@ -150,8 +156,25 @@ export async function createStorage(config: StorageConfig): Promise<IStorage> {
       autoPersistInterval,
       verbose,
     });
-
     await backend.initialize();
+    return backend;
+  };
+  try {
+    let backend: IStorage;
+    try {
+      backend = await tryInit();
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code !== 'ELOCKACQUIRE' || retryAttempt >= 1) throw err;
+      retryAttempt++;
+      if (verbose) {
+        console.warn(
+          `[StorageFactory] Lock-timeout on init (attempt 1); retrying once after 500ms jitter (path=${rvfPath})`,
+        );
+      }
+      await new Promise(r => setTimeout(r, 250 + Math.floor(Math.random() * 500)));
+      backend = await tryInit();
+    }
 
     if (verbose) {
       console.log(
