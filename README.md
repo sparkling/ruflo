@@ -156,8 +156,11 @@ This adds slash commands and agent definitions only. The Ruflo MCP server is NOT
 # One-line install
 curl -fsSL https://cdn.jsdelivr.net/gh/ruvnet/ruflo@main/scripts/install.sh | bash
 
-# Or via npx
-npx ruflo@latest init --wizard
+# Or via npx (interactive setup)
+npx ruflo@latest init wizard
+
+# Quick non-interactive init
+# npx ruflo@latest init
 
 # Or install globally
 npm install -g ruflo@latest
@@ -166,8 +169,8 @@ npm install -g ruflo@latest
 ### MCP Server
 
 ```bash
-# Add Ruflo as an MCP server in Claude Code
-claude mcp add ruflo -- npx -y @claude-flow/cli@latest
+# Add Ruflo as an MCP server in Claude Code (canonical form, matches USERGUIDE.md)
+claude mcp add ruflo -- npx ruflo@latest mcp start
 ```
 
 ---

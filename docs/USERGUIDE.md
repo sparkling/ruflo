@@ -153,7 +153,7 @@ curl -fsSL https://cdn.jsdelivr.net/gh/ruvnet/ruflo@main/scripts/install.sh | ba
 curl -fsSL https://cdn.jsdelivr.net/gh/ruvnet/ruflo@main/scripts/install.sh | bash -s -- --full
 
 # Or via npx
-npx ruflo@latest init --wizard
+npx ruflo@latest init wizard
 ```
 
 > **New to Ruflo?** You don't need to learn 310+ MCP tools or 26 CLI commands. After running `init`, just use Claude Code normally — the hooks system automatically routes tasks to the right agents, learns from successful patterns, and coordinates multi-agent work in the background. The advanced tools exist for fine-grained control when you need it.
@@ -2727,7 +2727,7 @@ Complete command-line interface for all Ruflo operations.
 
 ```bash
 # Initialize project with wizard
-npx ruflo@latest init --wizard
+npx ruflo@latest init wizard
 
 # Start daemon with background workers
 npx ruflo@latest daemon start
@@ -7281,7 +7281,7 @@ npx ruflo@latest config import --file my-config.json
 npx ruflo@latest config reset --key swarm
 
 # Initialize with wizard
-npx ruflo@latest init --wizard
+npx ruflo@latest init wizard
 ```
 
 </details>
@@ -7410,7 +7410,7 @@ npx ruflo@latest doctor --fix
 | V2 Command | V3 Command | Notes |
 |------------|------------|-------|
 | `ruflo start` | `ruflo mcp start` | MCP is explicit |
-| `ruflo init` | `ruflo init --wizard` | Interactive mode |
+| `ruflo init` | `ruflo init wizard` | Interactive setup (subcommand, not a flag) |
 | `ruflo spawn <type>` | `ruflo agent spawn -t <type>` | Nested under `agent` |
 | `ruflo swarm create` | `ruflo swarm init --topology mesh` | Explicit topology |
 | `--pattern-store path` | `--memory-backend agentdb` | Backend selection |
