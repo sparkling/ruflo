@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.6.0 with new keywords"
+step "1. plugin.json declares 0.7.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.6.0" ]]; then
-  bad "expected 0.6.0, got '$v'"
+if [[ "$v" != "0.7.0" ]]; then
+  bad "expected 0.7.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -270,6 +270,25 @@ grep -q "cost budget get" "$F" || miss="$miss get"
 grep -q "cost budget check" "$F" || miss="$miss check"
 grep -qE "50/75/90/100|alert ladder|HARD_STOP" "$F" || miss="$miss alert-ladder"
 [[ -z "$miss" ]] && ok || bad "$miss"
+
+step "34. cost-optimize step 8 wires auto-emit via outcome.mjs"
+F="$ROOT/skills/cost-optimize/SKILL.md"
+grep -q "outcome\.mjs" "$F" && grep -qE "success|escalated|failure" "$F" \
+  && ok || bad "step 8 not wired to outcome.mjs"
+
+step "35. outcome.mjs harness present + parses + validates outcomes"
+F="$ROOT/scripts/outcome.mjs"
+miss=""
+[[ -x "$F" ]] || miss="$miss not-executable"
+node --check "$F" 2>/dev/null || miss="$miss syntax-error"
+grep -q "spawnSync" "$F" || miss="$miss no-spawnSync"
+grep -q "hooks.*model-outcome" "$F" || miss="$miss no-hooks-call"
+grep -qE "success.*escalated.*failure|ALLOWED" "$F" || miss="$miss no-validation"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
+step "36. ruflo-cost.md documents 'cost outcome' subcommand"
+grep -q "cost outcome" "$ROOT/commands/ruflo-cost.md" \
+  && ok || bad "missing"
 
 printf "\n%s passed, %s failed\n" "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

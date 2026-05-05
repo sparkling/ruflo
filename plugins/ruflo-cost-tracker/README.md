@@ -41,7 +41,8 @@ cost budget check [--period ...]          # Compute utilization + alert; exit 1 
 cost report [--period today|week|month]   # Cost report (with By-tier block, reads measured booster data)
 cost breakdown [--by agent|model|task]    # Detailed breakdown by dimension
 cost budget set <amount>                  # Set budget limit in USD
-cost optimize                             # Analyze usage and suggest savings (+ hooks_model-outcome feedback)
+cost optimize                             # Analyze usage and suggest savings (+ auto-emits hooks_model-outcome via outcome.mjs)
+cost outcome <task> <model> <outcome>     # Emit hooks_model-outcome (success|escalated|failure) so the router learns
 cost benchmark [--llm] [--anthropic]      # Run measured benchmark — booster + optional Gemini/Sonnet/Opus baselines
 cost workers                              # Inspect optimize + benchmark loop-workers consumed
 cost history                              # Show cost tracking over time
@@ -130,7 +131,7 @@ Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadow
 
 ```bash
 bash plugins/ruflo-cost-tracker/scripts/smoke.sh
-# Expected: "33 passed, 0 failed"
+# Expected: "36 passed, 0 failed"
 ```
 
 ## Architecture Decisions

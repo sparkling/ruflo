@@ -49,6 +49,12 @@ Cost tracking commands:
 2. Print: total cost, per-model and per-tier breakdown, persisted memory key
 3. Sets the `cost-tracking` namespace record at key `session-<sessionId>` (consumed by `cost-report` step 1)
 
+**`cost outcome <task> <model> <outcome>`** -- Emit a `hooks_model-outcome` event so the router learns from applied recommendations. Auto-wired into `cost-optimize` step 8.
+1. Validates `outcome ∈ {success, escalated, failure}`
+2. Runs `node plugins/ruflo-cost-tracker/scripts/outcome.mjs "<task>" <model> <outcome>`
+3. The script wraps `npx @claude-flow/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv spawnSync so quoting is safe
+4. Without this, the router doesn't learn from cost-optimize recommendations and the Tier 1 bypass rate doesn't tighten over time
+
 **`cost benchmark [--llm] [--anthropic]`** -- Run the corpus benchmark to verify booster claims with measured numbers.
 1. Without flags: booster-only (free, ~85 ms wall-time, no API keys needed)
 2. `--llm`: also run Gemini 2.0 Flash baseline (uses GCP `GOOGLE_AI_API_KEY` secret)
