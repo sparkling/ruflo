@@ -36,3 +36,43 @@ Confirm the gate state with `ruflo doctor -c encryption`.
 
 - `rvf-manage` -- Manage RVF files for portable memory
 - `session-persist` -- Persist and restore agent sessions
+
+## Compatibility
+
+- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **Verification:** `bash plugins/ruflo-rvf/scripts/smoke.sh` is the contract.
+
+## Cross-plugin RVF ownership
+
+RVF (RuVector Format) cognitive containers appear in three plugins. Each owns a different slice:
+
+| Slice | Owner | What it does |
+|-------|-------|-------------|
+| **Portable memory + session persistence** | `ruflo-rvf` (this plugin) | High-level skills for save/restore, cross-machine transfer |
+| **Browser sessions as RVF** | [ruflo-browser ADR-0001](../ruflo-browser/docs/adrs/0001-browser-skills-architecture.md) | Each browser session is allocated as an RVF container at session-start (manifest, trajectory, screenshots, snapshots, cookies, findings) |
+| **RVF tooling (10 subcommands)** | [ruflo-ruvector ADR-0001](../ruflo-ruvector/docs/adrs/0001-pin-ruvector-0.2.25.md) | `ruvector rvf create|ingest|query|status|segments|derive|compact|export|examples|download` |
+
+This plugin sits on top of ruvector's tooling and feeds browser's session-as-RVF model.
+
+## Namespace coordination
+
+This plugin owns the `rvf-sessions` AgentDB namespace (kebab-case, follows the convention from [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md)). Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
+
+`rvf-sessions` indexes saved session manifests + their RVF container paths. Accessed via `memory_*` (namespace-routed).
+
+## Verification
+
+```bash
+bash plugins/ruflo-rvf/scripts/smoke.sh
+# Expected: "10 passed, 0 failed"
+```
+
+## Architecture Decisions
+
+- [`ADR-0001` — ruflo-rvf plugin contract (cross-plugin RVF ownership table, namespace coordination, smoke as contract)](./docs/adrs/0001-rvf-contract.md)
+
+## Related Plugins
+
+- `ruflo-ruvector` — exposes the `ruvector rvf *` tooling this plugin sits on top of
+- `ruflo-browser` — uses RVF containers for session-as-skill artifacts (ADR-0001 there)
+- `ruflo-agentdb` — namespace convention owner
