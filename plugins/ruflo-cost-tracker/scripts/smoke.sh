@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.15.0 with new keywords"
+step "1. plugin.json declares 0.16.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.15.0" ]]; then
-  bad "expected 0.15.0, got '$v'"
+if [[ "$v" != "0.16.0" ]]; then
+  bad "expected 0.16.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -66,10 +66,16 @@ grep -qE "maxHops|maxTokens|maxUsd" "$F" || miss="$miss budget-fields"
 grep -q "BUDGET_EXCEEDED" "$F" || miss="$miss enforcement-string"
 [[ -z "$miss" ]] && ok || bad "federation block missing:$miss"
 
-step "8. ADR-0001 exists with status Proposed"
-ADR="$ROOT/docs/adrs/0001-cost-tracker-contract.md"
-[[ -f "$ADR" ]] && grep -qE "^status:[[:space:]]*Proposed" "$ADR" \
-  && ok || bad "ADR missing or status != Proposed"
+step "8. ADR-0001 exists with status Proposed; ADR-0002 + ADR-0003 Accepted"
+miss=""
+for n in 0001:Proposed 0002:Accepted 0003:Accepted; do
+  num=${n%:*}
+  want=${n#*:}
+  f=$(ls "$ROOT/docs/adrs/${num}"-*.md 2>/dev/null | head -1)
+  [[ -f "$f" ]] || { miss="$miss missing-adr-$num"; continue; }
+  grep -qE "^status:[[:space:]]*$want" "$f" || miss="$miss $num-not-$want"
+done
+[[ -z "$miss" ]] && ok || bad "$miss"
 
 step "9. REFERENCE.md exists and is non-empty"
 [[ -s "$ROOT/REFERENCE.md" ]] && ok || bad "REFERENCE.md missing or empty"

@@ -145,6 +145,7 @@ On every PR touching this plugin, GitHub Actions runs smoke + booster-only bench
 
 - [`ADR-0001` — ruflo-cost-tracker plugin contract (namespace-routing fix, federation budget pairing, smoke as contract)](./docs/adrs/0001-cost-tracker-contract.md)
 - [`ADR-0002` — agentic-flow + Agent Booster integration, model-outcome feedback loop, optimize-worker consumption, tier-aware reporting](./docs/adrs/0002-agentic-flow-and-agent-booster-integration.md)
+- [`ADR-0003` — Implementation arc v0.5 → v0.15 (auto-capture, budget enforcement, model-outcome feedback, observability, federation consumer)](./docs/adrs/0003-implementation-arc-v0.5-to-v0.15.md)
 
 ## Related Plugins
 
