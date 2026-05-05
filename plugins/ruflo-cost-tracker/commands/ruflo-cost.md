@@ -55,6 +55,12 @@ Cost tracking commands:
 3. The script wraps `npx @claude-flow/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv spawnSync so quoting is safe
 4. Without this, the router doesn't learn from cost-optimize recommendations and the Tier 1 bypass rate doesn't tighten over time
 
+**`cost export [--prometheus <path>] [--webhook <url>]`** -- Export cost-tracking telemetry to external observability systems.
+1. `--prometheus <path>` writes the node_exporter textfile-collector format (gauges + counters with session labels)
+2. `--webhook <url>` POSTs JSON; auth via `EXPORT_WEBHOOK_HEADER='K: V'`
+3. No flag → stdout JSON
+4. Metrics emitted: `cost_tracker_total_usd`, `cost_tracker_tier_total_usd{tier=...}`, `cost_tracker_session_total_usd{session=...}`, `cost_tracker_session_messages{session=...}`, `cost_tracker_budget_usd`, `cost_tracker_budget_utilization`
+
 **`cost conversation`** -- Per-conversation cost view: list every session in `cost-tracking` with started-at, message count, top model, total cost. Different lens from `cost report` (which is per-agent/per-model).
 1. Run `node plugins/ruflo-cost-tracker/scripts/conversation.mjs`
 2. Optional `CONV_FORMAT=json`, `CONV_LIMIT=N`, `CONV_NAMESPACE=...`
