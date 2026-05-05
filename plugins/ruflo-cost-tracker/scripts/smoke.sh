@@ -8,21 +8,21 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.5.0 with new keywords"
+step "1. plugin.json declares 0.6.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.5.0" ]]; then
-  bad "expected 0.5.0, got '$v'"
+if [[ "$v" != "0.6.0" ]]; then
+  bad "expected 0.6.0, got '$v'"
 else
   miss=""
-  for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry; do
+  for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
     grep -q "\"$k\"" "$ROOT/.claude-plugin/plugin.json" || miss="$miss $k"
   done
   [[ -z "$miss" ]] && ok || bad "missing keywords:$miss"
 fi
 
-step "2. all seven skills present with valid frontmatter"
+step "2. all eight skills present with valid frontmatter"
 miss=""
-for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track; do
+for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track cost-budget-check; do
   f="$ROOT/skills/$s/SKILL.md"
   [[ -f "$f" ]] || { miss="$miss missing-$s"; continue; }
   for k in 'name:' 'description:' 'allowed-tools:'; do
@@ -242,6 +242,34 @@ step "30. ruflo-cost.md documents 'cost track' subcommand"
 F="$ROOT/commands/ruflo-cost.md"
 grep -qE "cost track" "$F" && grep -qE "session.*jsonl|track\.mjs" "$F" \
   && ok || bad "missing cost-track subcommand or session-source ref"
+
+step "31. cost-budget-check skill exists, references alert ladder + budget.mjs"
+F="$ROOT/skills/cost-budget-check/SKILL.md"
+miss=""
+[[ -f "$F" ]] || miss="$miss missing-file"
+grep -qE "50/75/90/100|HARD_STOP|alert ladder" "$F" || miss="$miss alert-ladder"
+grep -qE "budget\.mjs|cost-tracking:budget-config" "$F" || miss="$miss budget-script"
+grep -q '^allowed-tools:[[:space:]]*\*' "$F" && miss="$miss wildcard"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
+step "32. budget.mjs harness present + parses + uses spawnSync"
+F="$ROOT/scripts/budget.mjs"
+miss=""
+[[ -x "$F" ]] || miss="$miss not-executable"
+node --check "$F" 2>/dev/null || miss="$miss syntax-error"
+grep -q "spawnSync" "$F" || miss="$miss no-spawnSync"
+grep -qE "HARD_STOP|alertLevel" "$F" || miss="$miss no-alert-impl"
+grep -q "process.exit(1)" "$F" || miss="$miss no-fail-closed"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
+step "33. ruflo-cost.md documents 'cost budget set/get/check' subcommands"
+F="$ROOT/commands/ruflo-cost.md"
+miss=""
+grep -q "cost budget set" "$F" || miss="$miss set"
+grep -q "cost budget get" "$F" || miss="$miss get"
+grep -q "cost budget check" "$F" || miss="$miss check"
+grep -qE "50/75/90/100|alert ladder|HARD_STOP" "$F" || miss="$miss alert-ladder"
+[[ -z "$miss" ]] && ok || bad "$miss"
 
 printf "\n%s passed, %s failed\n" "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

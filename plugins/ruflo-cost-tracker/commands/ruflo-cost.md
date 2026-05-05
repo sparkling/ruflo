@@ -1,4 +1,5 @@
 ---
+name: ruflo-cost
 description: Cost tracking operations — generate reports, view breakdowns, set budgets, and get optimization recommendations
 ---
 
@@ -18,10 +19,21 @@ Cost tracking commands:
 4. Sort by cost descending
 5. Display: dimension value, input tokens, output tokens, cache tokens, total cost, share %
 
-**`cost budget set <amount>`** -- Set a budget limit in USD.
-1. Store the budget configuration via `mcp__ruflo__agentdb_hierarchical-store`
-2. Configure alert thresholds: info at 50%, warning at 75%, critical at 90%, hard stop at 100%
-3. Report: budget set, current spend, remaining budget, alert thresholds
+**`cost budget set <amount>`** -- Set a budget limit in USD (real implementation, persisted to `cost-tracking:budget-config`).
+1. Run `node plugins/ruflo-cost-tracker/scripts/budget.mjs set <amount>` to write the config to the cost-tracking namespace
+2. Thresholds default to: info 50% · warning 75% · critical 90% · hard_stop 100%
+3. Report: confirmed amount + namespace key
+
+**`cost budget get`** -- Show the current budget config.
+1. Run `node plugins/ruflo-cost-tracker/scripts/budget.mjs get`
+2. Report: amount, when set, threshold ladder
+
+**`cost budget check [--period today|week|month|all]`** -- Compute utilization + alert level (50/75/90/100% ladder).
+1. Run `node plugins/ruflo-cost-tracker/scripts/budget.mjs check`
+2. Filter by `BUDGET_PERIOD=today|week|month|all` (default `all`)
+3. Sum `total_cost_usd` across all `session-*` records in cost-tracking
+4. Compute utilization vs. budget; emit 🟢 OK / 🟡 INFO / 🟠 WARNING / 🔴 CRITICAL / 🛑 HARD_STOP
+5. Exit code 1 on HARD_STOP — wrap agent spawns in `budget check && spawn ...` to fail closed
 
 **`cost optimize`** -- Analyze usage and suggest cost optimizations.
 1. Recall recent usage data from `cost-tracking` namespace
