@@ -18,6 +18,9 @@
     "distributed",
     "circuit-breaker",
     "budget",
-    "token-quota"
+    "token-quota",
+    "mcp",
+    "pii-pipeline",
+    "audit-log"
   ]
 }

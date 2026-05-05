@@ -59,4 +59,39 @@ Phase 1 enforces at the **send** side. Phase 2 (peer state machine: ACTIVE / SUS
 ## Requires
 
 - `ruflo-core` plugin (provides MCP server)
-- `@sparkleideas/security` (cryptographic primitives)
+- `@claude-flow/security` (cryptographic primitives)
+
+## Compatibility
+
+- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **Federation runtime:** `@claude-flow/plugin-agent-federation` (resolved via `npx -y -p`).
+- **Verification:** `bash plugins/ruflo-federation/scripts/smoke.sh` is the contract.
+
+## Alignment with the canonical 3-gate pattern
+
+Federation's "PII Pipeline" feature is a richer specialization of the canonical 3-gate pattern owned by [ruflo-aidefence ADR-0001](../ruflo-aidefence/docs/adrs/0001-aidefence-contract.md). The mapping:
+
+| Canonical gate | Federation specialization |
+|----------------|--------------------------|
+| Pre-storage PII (`aidefence_has_pii`) | 14-type PII detection with per-trust-level policies (`BLOCK` / `REDACT` / `HASH` / `PASS`) |
+| Sanitization (`aidefence_scan`) | Outbound HMAC-signed envelope + dual AI Defence gates |
+| Prompt-injection (`aidefence_is_safe`) | Inbound message verification before delivery to local agents |
+
+Federation extends the canonical gates with adaptive confidence calibration and trust-level-aware policies, but the gate ordering and intent are identical. New federated content paths should reference the canonical 3-gate pattern by name.
+
+## Namespace coordination
+
+This plugin owns the `federation` AgentDB namespace. This is the documented exception to the kebab-case `<plugin-stem>-<intent>` rule: when a plugin's name *is* the intent, the namespace can match the plugin stem. See [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md). Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
+
+`federation` is accessed via `memory_*` tools (namespace-routed). Used for: peer registry, trust score history, audit log indices, message envelope receipts.
+
+## Verification
+
+```bash
+bash plugins/ruflo-federation/scripts/smoke.sh
+# Expected: "10 passed, 0 failed"
+```
+
+## Architecture Decisions
+
+- [`ADR-0001` — ruflo-federation plugin contract (3-gate alignment, ADR-097 budget integration, namespace coordination, smoke as contract)](./docs/adrs/0001-federation-contract.md)
