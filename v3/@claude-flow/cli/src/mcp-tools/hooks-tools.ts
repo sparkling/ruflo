@@ -946,7 +946,7 @@ async function getCausalRecallInstance() {
 
 export const hooksRoute: MCPTool = {
   name: 'hooks_route',
-  description: 'Route task to optimal agent using semantic similarity (native HNSW or pure JS)',
+  description: 'Get a 3-tier routing recommendation for a task: Tier 1 (Agent Booster, 0ms / $0 — for var-to-const, add-types, etc.), Tier 2 (Haiku — simple), Tier 3 (Sonnet/Opus — complex). Use this BEFORE spawning an agent to avoid sending simple transforms to Sonnet. Native tools have no equivalent — Claude Code does not introspect its own model-selection cost. Returns the recommended model + a `[AGENT_BOOSTER_AVAILABLE]` literal when the WASM bypass applies.',
   inputSchema: {
     type: 'object',
     properties: {

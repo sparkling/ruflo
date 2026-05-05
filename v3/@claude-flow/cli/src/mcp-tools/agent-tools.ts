@@ -178,7 +178,7 @@ async function determineAgentModel(
 export const agentTools: MCPTool[] = [
   {
     name: 'agent_spawn',
-    description: 'Spawn a new agent with intelligent model selection',
+    description: 'Spawn a Ruflo-tracked agent with cost attribution + memory persistence + swarm coordination. Use when native Task tool is wrong because you need (a) cost tracking per agent in the cost-tracking namespace, (b) cross-session learning via the patterns namespace, or (c) coordination with other agents in a swarm topology (hierarchical / mesh / consensus). For one-shot subtasks with no learning loop, native Task is fine. Pair with hooks_route to pick the right model first.',
     category: 'agent',
     inputSchema: {
       type: 'object',
