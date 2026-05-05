@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.14.0 with new keywords"
+step "1. plugin.json declares 0.15.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.14.0" ]]; then
-  bad "expected 0.14.0, got '$v'"
+if [[ "$v" != "0.15.0" ]]; then
+  bad "expected 0.15.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -20,9 +20,9 @@ else
   [[ -z "$miss" ]] && ok || bad "missing keywords:$miss"
 fi
 
-step "2. all twelve skills present with valid frontmatter"
+step "2. all thirteen skills present with valid frontmatter"
 miss=""
-for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track cost-budget-check cost-trend cost-conversation cost-export cost-federation; do
+for s in cost-report cost-optimize cost-booster-route cost-booster-edit cost-compact-context cost-benchmark cost-track cost-budget-check cost-trend cost-conversation cost-export cost-federation cost-summary; do
   f="$ROOT/skills/$s/SKILL.md"
   [[ -f "$f" ]] || { miss="$miss missing-$s"; continue; }
   for k in 'name:' 'description:' 'allowed-tools:'; do
@@ -320,6 +320,21 @@ grep -q '^allowed-tools:[[:space:]]*\*' "$F2" && miss="$miss wildcard"
 step "39. ruflo-cost.md documents 'cost trend' subcommand"
 grep -q "cost trend" "$ROOT/commands/ruflo-cost.md" \
   && ok || bad "missing"
+
+step "39c. cost-summary skill + summary.mjs (programmatic dump)"
+F1="$ROOT/scripts/summary.mjs"
+F2="$ROOT/skills/cost-summary/SKILL.md"
+miss=""
+[[ -x "$F1" ]] || miss="$miss summary-not-executable"
+node --check "$F1" 2>/dev/null || miss="$miss syntax-error"
+grep -q "total_cost_usd" "$F1" || miss="$miss no-headline-metric"
+grep -qE "byTier|byModel" "$F1" || miss="$miss no-aggregation"
+grep -q "alertLevel" "$F1" || miss="$miss no-alert-level"
+[[ -f "$F2" ]] || miss="$miss skill-missing"
+grep -q "summary\.mjs" "$F2" || miss="$miss skill-no-script-ref"
+grep -qE "stable|contract|JSON" "$F2" || miss="$miss no-contract-doc"
+grep -q '^allowed-tools:[[:space:]]*\*' "$F2" && miss="$miss wildcard"
+[[ -z "$miss" ]] && ok || bad "$miss"
 
 step "39b. cost-federation skill + federation.mjs (ADR-097 Phase 3 consumer)"
 F1="$ROOT/scripts/federation.mjs"

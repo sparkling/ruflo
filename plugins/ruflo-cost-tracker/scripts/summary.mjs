@@ -22,19 +22,12 @@
 
 import { spawnSync } from 'node:child_process';
 
-// ADR-100 / #1748 Issue 3 — CLI_CORE=1 routes to lite cli-core (~2s cold-cache).
-// summary only does list/retrieve across cost-tracking + federation-spend
-// namespaces; substring search is unused so the JSON backend is sufficient.
-const CLI_PKG = process.env.CLI_CORE === '1'
-  ? '@sparkleideas/cli-core@alpha'
-  : '@sparkleideas/cli@latest';
-
 const NS = process.env.SUMMARY_NAMESPACE || 'cost-tracking';
 const FED_NS = process.env.SUMMARY_FED_NAMESPACE || 'federation-spend';
 
 function memoryListKeys(ns) {
   const r = spawnSync('npx', [
-    CLI_PKG, 'memory', 'list',
+    '@sparkleideas/cli@latest', 'memory', 'list',
     '--namespace', ns, '--format', 'json',
   ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
   if (r.status !== 0) return [];
@@ -44,7 +37,7 @@ function memoryListKeys(ns) {
 }
 function memoryRetrieve(ns, key) {
   const r = spawnSync('npx', [
-    CLI_PKG, 'memory', 'retrieve',
+    '@sparkleideas/cli@latest', 'memory', 'retrieve',
     '--namespace', ns, '--key', key,
   ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
   if (r.status !== 0) return null;
