@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.9.0 with new keywords"
+step "1. plugin.json declares 0.10.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.9.0" ]]; then
-  bad "expected 0.9.0, got '$v'"
+if [[ "$v" != "0.10.0" ]]; then
+  bad "expected 0.10.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -182,20 +182,22 @@ else
   if [[ "$pass" == "yes" ]]; then ok; else bad "Tier 1 win rate $rate < 0.80"; fi
 fi
 
-step "24. corpus has both Tier 1 and adversarial cases"
+step "24. corpus v3 has 18+ Tier 1 cases AND 6+ adversarial cases"
 F="$ROOT/bench/booster-corpus.json"
 miss=""
 node -e "
   const d = JSON.parse(require('fs').readFileSync('$F'));
   const t1 = d.cases.filter(c => c.expectedTier1 !== false).length;
   const adv = d.cases.filter(c => c.expectedTier1 === false).length;
-  if (t1 < 5) process.exit(1);
-  if (adv < 2) process.exit(2);
+  if (t1 < 18) process.exit(1);
+  if (adv < 6) process.exit(2);
+  if (d.cases.length < 25) process.exit(3);
 " 2>/dev/null
 case $? in
   0) ok ;;
-  1) bad "fewer than 5 Tier 1 cases" ;;
-  2) bad "fewer than 2 adversarial cases" ;;
+  1) bad "fewer than 18 Tier 1 cases" ;;
+  2) bad "fewer than 6 adversarial cases" ;;
+  3) bad "fewer than 25 total cases" ;;
   *) bad "corpus check failed" ;;
 esac
 

@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "description": "Golden corpus for cost-tracker's Agent Booster verification. Two case classes — `expectedTier1: true` cases SHOULD apply via booster; `expectedTier1: false` cases SHOULD escalate (low confidence or output != expected) so the router/skill can route them to Tier 2/3.",
   "normalize": "trim, collapse whitespace runs to single space",
   "metrics": {
@@ -155,6 +155,90 @@
       "code": "function factorial(n) { return n <= 1 ? 1 : n * factorial(n - 1); }",
       "edit": "Rewrite as an iterative loop with no recursion.",
       "expected": "function factorial(n) { let result = 1; for (let i = 2; i <= n; i++) { result *= i; } return result; }"
+    },
+    {
+      "id": "var-to-let-1",
+      "intent": "var-to-let",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "var i = 0; for (i = 0; i < 10; i++) { sink(i); }",
+      "edit": "let i = 0; for (i = 0; i < 10; i++) { sink(i); }",
+      "expected": "let i = 0; for (i = 0; i < 10; i++) { sink(i); }"
+    },
+    {
+      "id": "double-quote-to-single",
+      "intent": "string-quote-style",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function greet(name) { return \"hello \" + name; }",
+      "edit": "function greet(name) { return 'hello ' + name; }",
+      "expected": "function greet(name) { return 'hello ' + name; }"
+    },
+    {
+      "id": "add-readonly-prop",
+      "intent": "add-readonly",
+      "language": "typescript",
+      "expectedTier1": true,
+      "code": "class Box { value: number = 0; }",
+      "edit": "class Box { readonly value: number = 0; }",
+      "expected": "class Box { readonly value: number = 0; }"
+    },
+    {
+      "id": "remove-debugger",
+      "intent": "remove-debug",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function go() { debugger; doWork(); }",
+      "edit": "function go() { doWork(); }",
+      "expected": "function go() { doWork(); }"
+    },
+    {
+      "id": "import-add-named",
+      "intent": "import-add",
+      "language": "typescript",
+      "expectedTier1": true,
+      "code": "import { foo } from './x'; foo();",
+      "edit": "import { foo, bar } from './x'; foo();",
+      "expected": "import { foo, bar } from './x'; foo();"
+    },
+    {
+      "id": "remove-trailing-semis",
+      "intent": "format-tweak",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "const a = 1;; const b = 2;;",
+      "edit": "const a = 1; const b = 2;",
+      "expected": "const a = 1; const b = 2;"
+    },
+    {
+      "id": "adversarial-extract-class",
+      "intent": "extract-class",
+      "language": "typescript",
+      "expectedTier1": false,
+      "comment": "Splitting one class into two with delegation requires reasoning about responsibility boundaries.",
+      "code": "class UserService { saveUser(u: any) { db.put(u); audit.log('save', u.id); } private db = realDb; private audit = { log: (k: string, v: any) => console.log(k, v) }; }",
+      "edit": "Extract the `audit` concern into its own AuditService class and have UserService delegate to it.",
+      "expected": "class AuditService { log(k: string, v: any) { console.log(k, v); } } class UserService { saveUser(u: any) { db.put(u); this.audit.log('save', u.id); } private db = realDb; private audit = new AuditService(); }"
+    },
+    {
+      "id": "adversarial-callback-to-promise",
+      "intent": "callback-to-promise",
+      "language": "javascript",
+      "expectedTier1": false,
+      "comment": "Restructuring control flow from callbacks to async/await requires understanding execution semantics, not pattern matching.",
+      "code": "function loadConfig(cb) { fs.readFile('./c.json', (err, data) => { if (err) cb(err); else cb(null, JSON.parse(data)); }); }",
+      "edit": "Rewrite as an async function that returns a Promise<Config> using fs.promises and try/catch.",
+      "expected": "async function loadConfig() { try { const data = await fs.promises.readFile('./c.json'); return JSON.parse(data); } catch (err) { throw err; } }"
+    },
+    {
+      "id": "adversarial-deeply-nested-conditional",
+      "intent": "early-return-flatten",
+      "language": "javascript",
+      "expectedTier1": false,
+      "comment": "Flattening nested conditionals into guard clauses requires reasoning about boolean logic + control flow.",
+      "code": "function process(x) { if (x) { if (x.valid) { if (x.size > 0) { return doWork(x); } else { return null; } } else { return null; } } else { return null; } }",
+      "edit": "Flatten using early returns / guard clauses — return null at each failed precondition.",
+      "expected": "function process(x) { if (!x) return null; if (!x.valid) return null; if (x.size <= 0) return null; return doWork(x); }"
     }
   ]
 }
