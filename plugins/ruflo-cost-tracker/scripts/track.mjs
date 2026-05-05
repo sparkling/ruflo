@@ -114,17 +114,9 @@ function summarizeSession(jsonlPath) {
 function persistToMemory(summary) {
   const ns = process.env.TRACK_NAMESPACE || 'cost-tracking';
   const key = `session-${summary.sessionId || 'unknown'}`;
-  // ADR-100 / #1748 Issue 3 — opt into cli-core's lite path with CLI_CORE=1.
-  // Cold-cache wall-time drops from ~25s to ~2s. JSON backend instead of
-  // SQLite/HNSW; semantic search degrades to substring (fine for cost-track
-  // which never invokes search — only store/list/retrieve). See
-  // v3/@sparkleideas/cli-core/MIGRATION.md.
-  const cliPkg = process.env.CLI_CORE === '1'
-    ? '@sparkleideas/cli-core@alpha'
-    : '@sparkleideas/cli@latest';
   // spawnSync with explicit args avoids shell-escape pitfalls for the JSON value.
   const r = spawnSync('npx', [
-    cliPkg, 'memory', 'store',
+    '@sparkleideas/cli@latest', 'memory', 'store',
     '--namespace', ns,
     '--key', key,
     '--value', JSON.stringify(summary),

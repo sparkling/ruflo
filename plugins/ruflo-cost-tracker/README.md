@@ -24,14 +24,16 @@ claude --plugin-dir plugins/ruflo-cost-tracker
 |-------|-------|-------------|
 | `cost-report` | `/cost-report [--period today]` | Generate a cost report with token usage and USD costs by tier, model, and agent |
 | `cost-optimize` | `/cost-optimize` | Analyze usage patterns, recommend cost optimizations, and emit `hooks_model-outcome` events |
+| `cost-track` | `/cost-track` | **Auto-capture** per-session token usage from the Claude Code jsonl into `cost-tracking` namespace (producer side) |
 | `cost-booster-route` | `/cost-booster-route <task>` | Route tasks via `hooks_route` and report Agent Booster (Tier 1) bypass utilization |
 | `cost-booster-edit` | `/cost-booster-edit <intent> <file>` | **Apply** a Tier 1 transform via `agent-booster.apply()` (sub-millisecond, $0, deterministic) |
 | `cost-benchmark` | `/cost-benchmark [--llm] [--anthropic]` | Run the corpus benchmark and persist measured-vs-claimed table to `docs/benchmarks/runs/` |
 | `cost-compact-context` | `/cost-compact-context <query>` | Wrap `getTokenOptimizer().getCompactContext()` for retrieval-compacted analysis (graceful fallback when agentic-flow not installed) |
 
-## Commands (7 subcommands)
+## Commands (8 subcommands)
 
 ```bash
+cost track                                # Auto-capture this session's token usage (producer)
 cost report [--period today|week|month]   # Cost report (with By-tier block, reads measured booster data)
 cost breakdown [--by agent|model|task]    # Detailed breakdown by dimension
 cost budget set <amount>                  # Set budget limit in USD
@@ -124,7 +126,7 @@ Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadow
 
 ```bash
 bash plugins/ruflo-cost-tracker/scripts/smoke.sh
-# Expected: "27 passed, 0 failed"
+# Expected: "30 passed, 0 failed"
 ```
 
 ## Architecture Decisions

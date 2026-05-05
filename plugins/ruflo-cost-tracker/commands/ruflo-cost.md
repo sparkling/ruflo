@@ -32,6 +32,11 @@ Cost tracking commands:
 6. Calculate estimated savings for each recommendation
 7. Display: recommendation, current cost, projected cost, savings, impact assessment
 
+**`cost track`** -- Auto-capture token usage for the active Claude Code session and persist to the `cost-tracking` namespace. Run after significant work or at session end so `cost report` has real data.
+1. Invoke `node plugins/ruflo-cost-tracker/scripts/track.mjs` (no flags = current cwd's most-recent session)
+2. Print: total cost, per-model and per-tier breakdown, persisted memory key
+3. Sets the `cost-tracking` namespace record at key `session-<sessionId>` (consumed by `cost-report` step 1)
+
 **`cost benchmark [--llm] [--anthropic]`** -- Run the corpus benchmark to verify booster claims with measured numbers.
 1. Without flags: booster-only (free, ~85 ms wall-time, no API keys needed)
 2. `--llm`: also run Gemini 2.0 Flash baseline (uses GCP `GOOGLE_AI_API_KEY` secret)
