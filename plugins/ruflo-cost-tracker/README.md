@@ -131,7 +131,7 @@ Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadow
 
 ```bash
 bash plugins/ruflo-cost-tracker/scripts/smoke.sh
-# Expected: "36 passed, 0 failed"
+# Expected: "37 passed, 0 failed"
 ```
 
 ## Architecture Decisions

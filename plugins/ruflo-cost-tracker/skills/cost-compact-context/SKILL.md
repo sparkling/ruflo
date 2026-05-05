@@ -15,29 +15,12 @@ Wraps `getTokenOptimizer().getCompactContext()` from `@claude-flow/integration` 
 2. **Invoke** — run from anywhere under `v3/` so `@claude-flow/integration` resolves:
 
    ```bash
-   node --input-type=module -e '
-     import("@claude-flow/integration/token-optimizer")
-       .then(async ({ getTokenOptimizer }) => {
-         const opt = await getTokenOptimizer();
-         const out = await opt.getCompactContext(process.argv[1] || "");
-         const stats = opt.getStats();
-         console.log(JSON.stringify({
-           memoriesRetrieved: out.memories?.length ?? 0,
-           tokensSaved: out.tokensSaved ?? 0,
-           agenticFlowAvailable: !!stats?.agenticFlowAvailable,
-           cacheHitRate: stats?.cacheHitRate,
-         }));
-       })
-       .catch((err) => console.log(JSON.stringify({
-         memoriesRetrieved: 0, tokensSaved: 0, agenticFlowAvailable: false,
-         bridgeUnavailable: true, reason: String(err?.message ?? err),
-       })));
-   ' -- "<QUERY>"
+   ( cd v3 && node ../plugins/ruflo-cost-tracker/scripts/compact.mjs "<QUERY>" )
    ```
 
-   Use the canonical export `@claude-flow/integration/token-optimizer`. **Not** `dist/token-optimizer.js` — Node's `./*` exports rule will double the `.js` extension and the import will fail.
+   The script imports `@claude-flow/integration/token-optimizer` (canonical export — **not** `dist/token-optimizer.js`, which would double the `.js` extension via Node's `./*` exports rule), calls `getCompactContext(query)`, and prints a markdown summary plus a JSON line via `COMPACT_QUIET=1`.
 
-3. **Report** — `Context compacted: <N> memories, <K> tokens saved (bridge-reported, not measured against a no-RAG baseline). agentic-flow available: <bool>. Cache hit rate: <X%>`. On bridge-unavailable: `agentic-flow not available, no compact-context savings`.
+3. **Report** — markdown table with: memories retrieved, tokens saved (bridge-reported), agentic-flow availability, cache hit rate. The script also emits a "bridge-reported, not measured against a no-RAG baseline" disclaimer. On bridge-unavailable: prints "agentic-flow not installed — bridge returns inert results." and exits cleanly.
 
 ## Caveats — claimed upstream, not yet verified
 

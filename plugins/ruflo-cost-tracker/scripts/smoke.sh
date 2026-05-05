@@ -8,10 +8,10 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares 0.7.0 with new keywords"
+step "1. plugin.json declares 0.8.0 with new keywords"
 v=$(grep -E '"version"' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [[ "$v" != "0.7.0" ]]; then
-  bad "expected 0.7.0, got '$v'"
+if [[ "$v" != "0.8.0" ]]; then
+  bad "expected 0.8.0, got '$v'"
 else
   miss=""
   for k in namespace-routing mcp agentic-flow agent-booster tier1-routing model-routing benchmarking verified telemetry budget; do
@@ -289,6 +289,18 @@ grep -qE "success.*escalated.*failure|ALLOWED" "$F" || miss="$miss no-validation
 step "36. ruflo-cost.md documents 'cost outcome' subcommand"
 grep -q "cost outcome" "$ROOT/commands/ruflo-cost.md" \
   && ok || bad "missing"
+
+step "37. compact.mjs replaces inline Node block in cost-compact-context"
+F1="$ROOT/scripts/compact.mjs"
+F2="$ROOT/skills/cost-compact-context/SKILL.md"
+miss=""
+[[ -x "$F1" ]] || miss="$miss compact-not-executable"
+node --check "$F1" 2>/dev/null || miss="$miss syntax-error"
+grep -q "createRequire" "$F1" || miss="$miss no-cwd-resolve"
+grep -q "compact\.mjs" "$F2" || miss="$miss skill-not-updated"
+# ensure the inlined Node one-liner is dropped (no `node --input-type=module -e` left)
+grep -q 'node --input-type=module -e' "$F2" && miss="$miss inline-node-still-present"
+[[ -z "$miss" ]] && ok || bad "$miss"
 
 printf "\n%s passed, %s failed\n" "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1
