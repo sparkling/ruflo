@@ -822,7 +822,7 @@
 									aria-label="Toggle autopilot mode"
 								>
 									<IconZap class="size-3.5" />
-									<span>{$settings.autopilotEnabled ? 'AUTO' : 'AUTO'}</span>
+									<span>{$settings.autopilotEnabled ? 'AUTO' : 'MANUAL'}</span>
 								</button>
 							{/if}
 							{#if transcriptionEnabled}
