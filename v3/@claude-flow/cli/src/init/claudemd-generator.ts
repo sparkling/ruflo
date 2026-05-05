@@ -63,12 +63,13 @@ function concurrencyRules(): string {
 }
 
 function agentOrchestration(): string {
-  // ADR-0136 Q1 (resolved 2026-05-05): compressed from 22-line prose to 5-row
-  // table. Per "One decision, one section, one shape" — the orchestration
-  // decision lives here as a table; toolSelectionRules() carries the
-  // tool-selection comparison; whenToUseWhat() was deleted (rows redundant).
-  // ADR-0098 anti-sprawl applies to swarm_init only; ADR-0115 carves out
-  // hive-mind_spawn from the prohibition (kept as a row).
+  // ADR-0136 Q1 (resolved 2026-05-05): compressed from 22-line prose to a
+  // table + supplementary imperatives. Per "One decision, one section, one
+  // shape" — the orchestration decision lives here as a table; toolSelectionRules()
+  // carries the tool-selection comparison; whenToUseWhat() was deleted.
+  // ADR-0098 anti-sprawl: "DO NOT call swarm_init ... reflexively" preserved
+  // as a bullet (acceptance gate). ADR-0115 carve-out: "Use hive-mind_spawn ...
+  // when convening a council" preserved as a bullet (acceptance gate).
   return `## Agent Orchestration
 
 | Situation | Use | Never |
@@ -78,7 +79,9 @@ function agentOrchestration(): string {
 | Reflexive coordination at task start | (skip) | \`swarm_init\` unless user asked or persistent state needed |
 | User explicitly asked for a claude-flow swarm | \`swarm_init\` (CLI auto-reuses matching) | \`--new\` flag unless parallel swarm genuinely needed |
 
-After spawning agents: STOP and wait for results. Do not poll.`;
+- Use \`hive-mind_spawn\` (or \`ruflo hive-mind spawn --claude\`) when convening a council: named experts, per-question voting, Byzantine consensus, queen synthesis. (ADR-0115 carve-out — NOT bundled into swarm-sprawl prohibition.)
+- DO NOT call \`swarm_init\` reflexively at task start (ADR-0098 — applies to flat-coordination swarms only).
+- After spawning agents: STOP and wait for results. Do not poll.`;
 }
 
 function antiDriftConfig(): string {
