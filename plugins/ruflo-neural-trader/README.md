@@ -151,9 +151,42 @@ neural-trader uses Rust/NAPI bindings for zero-overhead performance:
 - **WASM/SIMD** acceleration available
 - **52,000+ inserts/sec** for market data
 
+## Compatibility
+
+- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **Runtime:** `npx neural-trader` (Rust/NAPI bindings — 112+ MCP tools).
+- **Verification:** `bash plugins/ruflo-neural-trader/scripts/smoke.sh` is the contract.
+
+## Namespace coordination
+
+This plugin owns four AgentDB namespaces (kebab-case, follows the convention from [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md)):
+
+| Namespace | Purpose |
+|-----------|---------|
+| `trading-strategies` | Strategy definitions (loaded by `trader-backtest`, `trader-signal`) |
+| `trading-backtests` | Backtest results indexed by strategy + timestamp |
+| `trading-risk` | Risk metrics per portfolio |
+| `trading-analysis` | Regime detection + market analysis history |
+
+Note: the namespace prefix is `trading-` (the actual intent) rather than `neural-trader-` (the plugin stem). This is a deliberate ergonomic choice — `trading` is the load-bearing concern downstream consumers reason about. Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
+
+All access via `memory_*` (namespace-routed). No `agentdb_hierarchical-*` or `agentdb_pattern-store` with namespace arguments — the plugin uses the correct routing throughout.
+
+## Verification
+
+```bash
+bash plugins/ruflo-neural-trader/scripts/smoke.sh
+# Expected: "11 passed, 0 failed"
+```
+
+## Architecture Decisions
+
+- [`ADR-0001` — ruflo-neural-trader plugin contract (already-compliant namespaces, 4-namespace claim, smoke as contract)](./docs/adrs/0001-neural-trader-contract.md)
+
 ## Related Plugins
 
-- `ruflo-market-data` — OHLCV data ingestion and candlestick pattern detection
+- `ruflo-agentdb` — namespace convention owner; backing store
+- `ruflo-market-data` — OHLCV data ingestion and candlestick pattern detection (feeds `trading-strategies`)
 - `ruflo-ruvector` — HNSW indexing for strategy pattern similarity search
 - `ruflo-cost-tracker` — PnL tracking and cost attribution
 - `ruflo-observability` — Strategy performance dashboards
