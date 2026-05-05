@@ -146,7 +146,9 @@ export interface ReflexionOp {
   k?: number;
 }
 
-export type CausalOpType = 'edge' | 'recall';
+// Bug-2 (2026-05-05): added 'query' arm so causal_query reads share the
+// same router-fallback ladder as causal_edge writes (write/read symmetry).
+export type CausalOpType = 'edge' | 'recall' | 'query';
 
 export interface CausalOp {
   type: CausalOpType;
@@ -158,6 +160,9 @@ export interface CausalOp {
   k?: number;
   includeEvidence?: boolean;
   dbPath?: string;
+  // Bug-2: causal_query also accepts cause/effect endpoints for direct lookup.
+  cause?: string;
+  effect?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1813,19 +1818,77 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
         } catch { /* fall through to fallback */ }
       }
 
-      // Fallback: store edge as memory entry via router
+      // Fallback: store edge as memory entry via router.
+      // Bug-3 (2026-05-05): set upsert:true so re-recording shared (src,dst)
+      // edges with different relation/weight succeeds via overwrite instead
+      // of tripping the ADR-0094 RC-2 idempotency guard. Mid-batch failures
+      // were caused by this guard rejecting later same-pair edges with a
+      // different payload, then orchestration laundering the rejection into
+      // the misleading "AgentDB not available" sentinel two layers up.
       try {
         const result = await routeMemoryOp({
           type: 'store',
           key: `${op.sourceId}\u2192${op.targetId}`,
           value: JSON.stringify({ sourceId: op.sourceId, targetId: op.targetId, relation: op.relation, weight: op.weight }),
           namespace: 'causal-edges',
+          upsert: true,
         });
         return result.success
           ? { success: true, controller: 'router-fallback' }
-          : { success: false, error: 'Causal edge recording unavailable' };
-      } catch {
-        return { success: false, error: 'Causal edge recording unavailable' };
+          : { success: false, error: result.error || 'Causal edge recording unavailable' };
+      } catch (e: unknown) {
+        return { success: false, error: e instanceof Error ? e.message : 'Causal edge recording unavailable' };
+      }
+    }
+    case 'query': {
+      // Bug-2 (2026-05-05): symmetric read path. Try causalGraph controller
+      // first; fall back to reading the 'causal-edges' namespace where the
+      // edge fallback writes land. This restores write/read symmetry \u2014 both
+      // sides now share controller-resolution + fallback namespace + the
+      // 'router-fallback' controller marker.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const causalGraph = await getController<any>('causalGraph');
+      const k = op.k ?? 10;
+      if (causalGraph) {
+        try {
+          const getEffectsFn = typeof causalGraph.queryCausalEffects === 'function' ? causalGraph.queryCausalEffects.bind(causalGraph)
+            : typeof causalGraph.getEffects === 'function' ? causalGraph.getEffects.bind(causalGraph) : null;
+          const getCausesFn = typeof causalGraph.getCausalChain === 'function' ? causalGraph.getCausalChain.bind(causalGraph)
+            : typeof causalGraph.getCauses === 'function' ? causalGraph.getCauses.bind(causalGraph) : null;
+          let results: unknown[] = [];
+          if (op.cause && getEffectsFn) {
+            results = await getEffectsFn(op.cause, k) as unknown[];
+          } else if (op.effect && getCausesFn) {
+            results = await getCausesFn(op.effect, k) as unknown[];
+          }
+          if (Array.isArray(results) && results.length > 0) {
+            return { success: true, results, controller: 'causalGraph' };
+          }
+          // empty from controller \u2014 fall through to namespace read
+        } catch { /* fall through to fallback */ }
+      }
+      // Fallback: read edges previously written via router-fallback path.
+      try {
+        const fallback = await routeMemoryOp({
+          type: 'list',
+          namespace: 'causal-edges',
+          limit: Math.max(k * 4, 100),
+        });
+        const entries = ((fallback as { entries?: Array<{ value?: string; key?: string }> }).entries
+          ?? (fallback as { results?: Array<{ value?: string; key?: string }> }).results
+          ?? []) as Array<{ value?: string; key?: string }>;
+        const parsed = entries.map((e) => {
+          try { return typeof e.value === 'string' ? JSON.parse(e.value) : e; }
+          catch { return e; }
+        }).filter((edge: unknown) => {
+          const ed = edge as { sourceId?: string; targetId?: string };
+          if (op.cause && ed?.sourceId !== op.cause) return false;
+          if (op.effect && ed?.targetId !== op.effect) return false;
+          return true;
+        });
+        return { success: true, results: parsed.slice(0, k), controller: 'router-fallback' };
+      } catch (e: unknown) {
+        return { success: false, results: [], error: e instanceof Error ? e.message : 'causal query unavailable' };
       }
     }
     case 'recall': {

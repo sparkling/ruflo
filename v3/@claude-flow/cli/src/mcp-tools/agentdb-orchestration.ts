@@ -41,11 +41,16 @@ export async function storePattern(options: {
 }
 
 // Delegates to: memory-router.ts routePatternOp
+// Bug-3 (2026-05-05): return shape changed from `T | null` to `T & { error? }`
+// so real upstream errors survive instead of being laundered to the misleading
+// "AgentDB not available. Use memory_store/memory_search instead." sentinel
+// at the tool layer. The 5 tool-layer `result ?? sentinel` coalescers stay as
+// defensive type-narrowing but no longer fire on real router failures.
 export async function searchPatterns(options: {
   query: string;
   topK?: number;
   minConfidence?: number;
-}): Promise<{ results: Array<{ id: string; content: string; score: number }>; controller: string } | null> {
+}): Promise<{ results: Array<{ id: string; content: string; score: number }>; controller: string; error?: string }> {
   try {
     const { routePatternOp } = await import('../memory/memory-router.js');
     const result = await routePatternOp({
@@ -54,7 +59,13 @@ export async function searchPatterns(options: {
       topK: options.topK,
       minConfidence: options.minConfidence,
     });
-    if (!result.success) return null;
+    if (!result.success) {
+      return {
+        results: [],
+        controller: (result.controller as string) || 'unavailable',
+        error: (result.error as string) || 'pattern search failed',
+      };
+    }
     const rawResults = (result.results as any[]) || [];
     return {
       results: rawResults.map((r: any) => ({
@@ -64,8 +75,9 @@ export async function searchPatterns(options: {
       })),
       controller: (result.controller as string) || '',
     };
-  } catch {
-    return null;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { results: [], controller: 'error', error: `pattern search failed: ${msg}` };
   }
 }
 
@@ -100,12 +112,16 @@ export async function recordFeedback(options: {
 }
 
 // Delegates to: memory-router.ts routeCausalOp
+// Bug-3 (2026-05-05): see searchPatterns rationale. Real upstream errors now
+// survive — the misleading "AgentDB not available" sentinel is no longer the
+// default for legitimate per-edge failures (e.g. ADR-0094 RC-2 idempotency
+// rejection on shared (src,dst) edges).
 export async function recordCausalEdge(options: {
   sourceId: string;
   targetId: string;
   relation: string;
   weight?: number;
-}): Promise<{ success: boolean; controller: string } | null> {
+}): Promise<{ success: boolean; controller: string; error?: string }> {
   try {
     const { routeCausalOp } = await import('../memory/memory-router.js');
     const result = await routeCausalOp({
@@ -115,21 +131,23 @@ export async function recordCausalEdge(options: {
       relation: options.relation,
       weight: options.weight,
     });
-    if (!result.success) return null;
     return {
-      success: true,
-      controller: (result.controller as string) || '',
+      success: result.success === true,
+      controller: (result.controller as string) || (result.success ? '' : 'unavailable'),
+      error: result.success ? undefined : ((result.error as string) || 'causal edge recording failed'),
     };
-  } catch {
-    return null;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { success: false, controller: 'error', error: `causal edge recording failed: ${msg}` };
   }
 }
 
 // Delegates to: memory-router.ts routeSessionOp
+// Bug-3 (2026-05-05): see searchPatterns rationale.
 export async function sessionStart(options: {
   sessionId: string;
   context?: string;
-}): Promise<{ success: boolean; controller: string; restoredPatterns: number; sessionId: string } | null> {
+}): Promise<{ success: boolean; controller: string; restoredPatterns: number; sessionId: string; error?: string }> {
   try {
     const { routeSessionOp } = await import('../memory/memory-router.js');
     const result = await routeSessionOp({
@@ -142,9 +160,11 @@ export async function sessionStart(options: {
       controller: (result.controller as string) || 'none',
       restoredPatterns: (result.restoredPatterns as number) || 0,
       sessionId: options.sessionId,
+      error: result.success ? undefined : ((result.error as string) || 'session start failed'),
     };
-  } catch {
-    return null;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { success: false, controller: 'error', restoredPatterns: 0, sessionId: options.sessionId, error: `session start failed: ${msg}` };
   }
 }
 

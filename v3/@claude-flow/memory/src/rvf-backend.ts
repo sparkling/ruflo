@@ -695,6 +695,8 @@ export class RvfBackend implements IMemoryBackend {
       this.ensureNativeSemanticReady();
       // Native NAPI vector search — fast ANN lookup, then filter metadata
       try {
+        let mappedHits = 0;
+        let orphanHits = 0;
         const raw: Array<{ id: number; distance: number }> = this.nativeDb.query(
           new Float32Array(embedding), options.k * 2,
           { efSearch: this.config.hnswEfSearch },
@@ -702,7 +704,8 @@ export class RvfBackend implements IMemoryBackend {
         results = [];
         for (const r of raw) {
           const stringId = this.nativeReverseMap.get(r.id);
-          if (!stringId) continue;
+          if (!stringId) { orphanHits++; continue; }
+          mappedHits++;
           const entry = this.entries.get(stringId);
           if (!entry) continue;
           if (options.filters?.namespace && entry.namespace !== options.filters.namespace) continue;
@@ -716,6 +719,34 @@ export class RvfBackend implements IMemoryBackend {
           results.push({ entry, score, distance: r.distance });
         }
         results = results.slice(0, options.k);
+
+        // ADR-0094 d8 follow-up (Bug 1, 2026-05-05): orphan-segment self-heal.
+        // When a process opens an existing .rvf file, the SFVR file already
+        // contains vector segments persisted by prior processes with their
+        // own runtime-assigned numIds. The current process's nativeReverseMap
+        // is empty at open and ensureNativeSemanticReady() only re-ingests
+        // entries from _pendingNativeIngest — it does NOT reconcile orphan
+        // numIds. So this.nativeDb.query() returns ANN hits whose r.id is an
+        // orphan numId, line `if (!stringId) continue` silently drops every
+        // hit, and the result list is []. memory_retrieve still works because
+        // it uses keyIndex → entries Map directly.
+        //
+        // Detection: native query returned hits but ZERO mapped to known
+        // string IDs in this process. The entries Map IS authoritative
+        // (populated by loadFromDisk + replayWal). Re-run via pureTsSearch.
+        // NOT a silent fallback (ADR-0082): we loud-warn the orphan count.
+        // Long-term fix is to persist nativeIdMap in .meta — flagged at
+        // line ~1543 as future work.
+        if (raw.length > 0 && mappedHits === 0 && this.entries.size > 0) {
+          if (this.config.verbose) {
+            console.warn(
+              `[RvfBackend] Native search returned ${orphanHits} orphan numIds ` +
+              `(no current-process mapping). Falling back to pure-TS over ${this.entries.size} entries. ` +
+              `Run \`ruflo memory rebuild\` to compact the SFVR file.`,
+            );
+          }
+          results = this.pureTsSearch(embedding, options);
+        }
       } catch (err) {
         // ADR-0095 d5: the pre-d5 code silently fell through to pure-TS on
         // *any* native error — ADR-0082 violation. Now we discriminate:

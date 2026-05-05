@@ -51,6 +51,7 @@ import {
   healthCheck,
   listControllerInfo,
   getCallableMethod,
+  routeCausalOp,
 } from '../memory/memory-router.js';
 
 import {
@@ -906,62 +907,33 @@ export const agentdbCausalQuery: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    // Bug-2 (2026-05-05): delegate to routeCausalOp({type:'query'}) so the
+    // read path uses the same router-fallback ladder as the edge writes.
+    // Previously this handler bypassed the router entirely, so edges
+    // written to the 'causal-edges' namespace via fallback were unreachable.
     try {
-      const causal = await getController<any>('causalGraph');
-
-      if (!causal) {
-        return { success: false, results: [], error: 'CausalMemoryGraph not available' };
-      }
-
-      // Cold-start guard: skip if graph has <5 edges (returns noise)
-      const stats = typeof causal.getStats === 'function' ? await causal.getStats() : null;
-      if (stats && (stats.edgeCount || stats.edges || 0) < 5) {
-        return {
-          success: true,
-          results: [],
-          warning: 'Cold start: fewer than 5 causal edges recorded. Results would be noise.',
-        };
-      }
-
-      const cause = validateString(params.cause, 'cause', 1000);
-      const effect = validateString(params.effect, 'effect', 1000);
+      const cause = validateString(params.cause, 'cause', 1000) ?? undefined;
+      const effect = validateString(params.effect, 'effect', 1000) ?? undefined;
       const k = validatePositiveInt(params.k, 10, MAX_TOP_K);
-      let results: unknown[] = [];
 
-      let timerId: ReturnType<typeof setTimeout> | undefined;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timerId = setTimeout(() => reject(new Error('causal_query timeout (2s)')), 2000);
-      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('causal_query timeout (2s)')), 2000),
+      );
+      const routed = await Promise.race([
+        routeCausalOp({ type: 'query', cause, effect, k }),
+        timeoutPromise,
+      ]) as { success: boolean; results?: unknown[]; controller?: string; error?: string };
 
-      try {
-        // ADR-0090 B5 fix: v3 CausalMemoryGraph renamed getEffects/
-        // getCauses/query to queryCausalEffects/getCausalChain/
-        // findSimilarCausalPatterns. Probe old + new names so legacy
-        // and current builds both work.
-        const getEffectsFn = getCallableMethod(causal, 'queryCausalEffects', 'getEffects');
-        const getCausesFn = getCallableMethod(causal, 'getCausalChain', 'getCauses');
-        const queryFn = getCallableMethod(causal, 'findSimilarCausalPatterns', 'query');
-        if (cause && getEffectsFn) {
-          results = await Promise.race([getEffectsFn(cause, k), timeoutPromise]) as unknown[];
-        } else if (effect && getCausesFn) {
-          results = await Promise.race([getCausesFn(effect, k), timeoutPromise]) as unknown[];
-        } else if (queryFn) {
-          results = await Promise.race([queryFn(params), timeoutPromise]) as unknown[];
-        }
-      } finally {
-        clearTimeout(timerId);
-      }
-
-      // Filter by min_uplift
-      if (typeof params.min_uplift === 'number' && Array.isArray(results)) {
+      let results: unknown[] = Array.isArray(routed.results) ? routed.results : [];
+      if (typeof params.min_uplift === 'number') {
         const minUplift = params.min_uplift;
         results = results.filter((r: any) => (r.uplift || r.weight || 0) >= minUplift);
       }
-
       return {
-        success: true,
-        results: Array.isArray(results) ? results : [],
-        count: Array.isArray(results) ? results.length : 0,
+        success: routed.success !== false,
+        results,
+        count: results.length,
+        controller: routed.controller,
       };
     } catch (error) {
       return { success: false, results: [], error: sanitizeError(error) };
