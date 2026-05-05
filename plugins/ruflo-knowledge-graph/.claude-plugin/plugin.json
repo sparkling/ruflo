@@ -13,6 +13,9 @@
     "knowledge-graph",
     "entities",
     "relations",
-    "pathfinder"
+    "pathfinder",
+    "mcp",
+    "pathfinder-traversal",
+    "entity-extraction"
   ]
 }
