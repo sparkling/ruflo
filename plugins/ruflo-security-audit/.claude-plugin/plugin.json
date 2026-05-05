@@ -13,6 +13,10 @@
     "security",
     "audit",
     "cve",
-    "scanning"
+    "scanning",
+    "mcp",
+    "cve-monitoring",
+    "policy-gates",
+    "shell-injection"
   ]
 }

@@ -34,3 +34,36 @@ A `ruflo verify` round-trip confirms 55 witnesses (27 regression-fix + 28 per-so
 ## Requires
 
 - `ruflo-core` plugin (provides MCP server)
+
+## Compatibility
+
+- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **Verification:** `bash plugins/ruflo-security-audit/scripts/smoke.sh` is the contract.
+
+## AIDefence integration
+
+This plugin's **static** scanning (CVE / dependency / shell-injection patterns) complements the **runtime** gates owned by [ruflo-aidefence ADR-0001](../ruflo-aidefence/docs/adrs/0001-aidefence-contract.md):
+
+| Layer | Owner | What it catches |
+|-------|-------|----------------|
+| **Static analysis** (this plugin) | `ruflo-security-audit` | Shell-injection patterns, dependency CVEs, plaintext secrets at rest, loader-hijack env vars |
+| **Runtime gates** (3-gate pattern) | `ruflo-aidefence` ADR-0001 | PII pre-storage gate, sanitization gate, prompt-injection gate |
+
+The two layers are complementary: static analysis finds the patterns; the 3-gate runtime catches what slipped through.
+
+## Namespace coordination
+
+This plugin owns the `security-findings` AgentDB namespace (kebab-case, follows the convention from [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md)). Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
+
+`security-findings` indexes scan results by file + commit + severity. Accessed via `memory_*` (namespace-routed).
+
+## Verification
+
+```bash
+bash plugins/ruflo-security-audit/scripts/smoke.sh
+# Expected: "10 passed, 0 failed"
+```
+
+## Architecture Decisions
+
+- [`ADR-0001` — ruflo-security-audit plugin contract (AIDefence integration, audit_1776853149979 pattern catalog as regression-prevention contract)](./docs/adrs/0001-security-audit-contract.md)
