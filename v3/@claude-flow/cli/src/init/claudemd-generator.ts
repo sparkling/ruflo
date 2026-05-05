@@ -112,18 +112,17 @@ multi-agent work, use the built-in \`Agent\` tool instead — see §"Agent Orche
 function mcpToolDiscovery(): string {
   return `## MCP Tools (Deferred)
 
-This project has a \`claude-flow\` MCP server with 200+ tools for memory,
-swarms, agents, hooks, and coordination. Tools are deferred — you MUST call
-ToolSearch to load a tool's schema before calling it.
+The \`ruflo\` MCP server is registered. Tools are deferred — call ToolSearch
+to load a tool's schema before invoking it.
 
 Quick discovery:
-- \`ToolSearch("claude-flow memory")\` — store, search, retrieve patterns
-- \`ToolSearch("claude-flow agent")\` — spawn, list, manage agents
-- \`ToolSearch("claude-flow swarm")\` — multi-agent coordination
-- \`ToolSearch("claude-flow hooks")\` — lifecycle hooks and learning
+- \`ToolSearch("ruflo memory")\` — store, search, retrieve patterns
+- \`ToolSearch("ruflo agent")\` — spawn, list, manage agents
+- \`ToolSearch("ruflo swarm")\` — multi-agent coordination
+- \`ToolSearch("ruflo hooks")\` — lifecycle hooks and learning
 
-Do NOT call \`mcp__claude-flow__agentdb_session-start\` or
-\`mcp__claude-flow__agentdb_session-end\` — hooks manage session lifecycle
+Do NOT call \`mcp__ruflo__agentdb_session-start\` or
+\`mcp__ruflo__agentdb_session-end\` — hooks manage session lifecycle
 automatically.`;
 }
 
@@ -147,47 +146,60 @@ function whenToUseWhat(): string {
 | Need | Use |
 |------|-----|
 | Multi-agent work on one task | \`Agent\` tool (built-in, \`run_in_background: true\`) — NOT a claude-flow swarm |
-| Search or store memory | \`mcp__claude-flow__memory_*\` (load via ToolSearch first) |
+| Search or store memory | \`mcp__ruflo__memory_*\` (load via ToolSearch first) |
 | Persistent swarm coordination (rare, explicit) | \`ruflo swarm init\` via Bash — reuses matching running swarms (ADR-0098) |
 | Run CLI diagnostics | \`ruflo doctor --fix\` via Bash |
 | Invoke a registered skill | Skill tool with the skill name (e.g., \`/commit\`) |`;
 }
 
-function agentTypes(): string {
-  return `## Available Agents (60+ Types)
+// ADR-0136: agentTypes() and memoryCommands() removed as dead code.
+// Replaced by referencePointers() (catalogs behind discovery commands)
+// and toolSelectionRules() (decision tree).
 
-### Core Development
-\`coder\`, \`reviewer\`, \`tester\`, \`planner\`, \`researcher\`
+function toolSelectionRules(): string {
+  return `## Tool Selection Rules
 
-### Specialized
-\`security-architect\`, \`security-auditor\`, \`memory-specialist\`, \`performance-engineer\`
+When you need a capability, choose in this order. Stop at the first match.
 
-### Swarm Coordination
-\`hierarchical-coordinator\`, \`mesh-coordinator\`, \`adaptive-coordinator\`
+| You need to... | Use | Prefer over |
+|---|---|---|
+| Coordinate parallel sub-tasks | \`Agent\` tool with \`run_in_background: true\` | \`swarm_init\` for one-shot work |
+| Convene a council on a high-stakes decision | \`hive-mind_spawn\` (or invoke the \`hive-mind-advanced\` skill) | \`Agent\` fan-out (no synthesis) |
+| Persist patterns/decisions across sessions | \`mcp__ruflo__memory_store\` | Writing to MEMORY.md from in-session work |
+| Recall past decisions/patterns | \`mcp__ruflo__memory_search\` | Asking the user to re-explain |
 
-### GitHub & Repository
-\`pr-manager\`, \`code-review-swarm\`, \`issue-tracker\`, \`release-manager\`
+When the active toolset doesn't cover a capability:
+1. Run \`ruflo skill list\` — a skill may already provide it
+2. Run \`ruflo plugins list\` — an installable plugin may provide it
+3. Only after both come up empty, build the capability inline or ask the user
 
-### SPARC Methodology
-\`sparc-coord\`, \`sparc-coder\`, \`specification\`, \`pseudocode\`, \`architecture\``;
+Sub-agents spawned via \`Agent\` typically inherit the parent's \`mcp__ruflo__*\` toolset. For long-running sub-tasks where MCP visibility is uncertain, run a discovery probe before spawning rather than pre-fetching results.`;
 }
 
-function memoryCommands(): string {
-  return `## Memory Commands Reference
+function pluginInstallRule(): string {
+  return `## Plugin Installation Rule
 
-\`\`\`bash
-# Store (REQUIRED: --key, --value; OPTIONAL: --namespace, --ttl, --tags)
-ruflo memory store --key "pattern-auth" --value "JWT with refresh" --namespace patterns
+NEVER install plugins without explicit user confirmation. Plugins persist past the session.
 
-# Search (REQUIRED: --query; OPTIONAL: --namespace, --limit, --threshold)
-ruflo memory search --query "authentication patterns"
+Install only when ALL hold:
+- User asked for a capability not covered by \`ruflo skill list\` or active MCP tools
+- User confirmed the install
 
-# List (OPTIONAL: --namespace, --limit)
-ruflo memory list --namespace patterns --limit 10
+Discovery: \`ruflo plugins --help\`.
+Install: \`/plugin install ruflo-<name>@ruflo\` (after \`/plugin marketplace add ruvnet/ruflo\`).
+Tell user to run \`/reload-plugins\` if commands don't appear post-install.`;
+}
 
-# Retrieve (REQUIRED: --key; OPTIONAL: --namespace)
-ruflo memory retrieve --key "pattern-auth" --namespace patterns
-\`\`\``;
+function referencePointers(): string {
+  return `## Reference Pointers (when you need more than this file says)
+
+- Tool catalog: \`ToolSearch\` with a relevant query
+- Skill catalog: \`ruflo skill list\`
+- Plugin catalog: \`ruflo plugins list\`
+- Agent type catalog: \`ruflo agent list\`
+- Architecture decisions for this project: \`docs/adr/\`
+- Cross-session memory: \`~/.claude/projects/<project>/memory/MEMORY.md\`
+- Full feature reference: https://github.com/ruvnet/ruflo/blob/main/docs/USERGUIDE.md`;
 }
 
 function securityRulesLight(): string {
@@ -275,18 +287,16 @@ ruflo performance metrics --format table
 }
 
 function setupAndBoundary(): string {
-  return `## Quick Setup
+  // ADR-0136: setup commands run before CLAUDE.md is read; the AI inherits
+  // the running env, never bootstraps it. Keep only Support links here.
+  // Bootstrap command preserved on a single line for the rebrand-ruflo-claudemd
+  // test which gates on `claude mcp add` presence (one-time bootstrap marker).
+  return `## Support
 
-\`\`\`bash
-claude mcp add claude-flow -- npx -y @sparkleideas/cli@latest
-ruflo daemon start
-ruflo doctor --fix
-\`\`\`
+One-time bootstrap (user runs once, AI never): \`claude mcp add claude-flow -- npx -y @sparkleideas/cli@latest\`
 
-## Support
-
-- Documentation: https://github.com/ruvnet/claude-flow
-- Issues: https://github.com/ruvnet/claude-flow/issues`;
+- Documentation: https://github.com/ruvnet/ruflo
+- Issues: https://github.com/ruvnet/ruflo/issues`;
 }
 
 // --- Template Composers ---
@@ -314,9 +324,12 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => securityRulesLight(),
     concurrencyRules,
     (_opts) => agentOrchestration(),
+    (_opts) => toolSelectionRules(),
+    (_opts) => pluginInstallRule(),
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
+    (_opts) => referencePointers(),
     (_opts) => setupAndBoundary(),
   ],
   full: [
@@ -328,9 +341,12 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     concurrencyRules,
     (_opts) => agentOrchestration(),
     (_opts) => antiDriftConfig(),
+    (_opts) => toolSelectionRules(),
+    (_opts) => pluginInstallRule(),
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
     (_opts) => whenToUseWhat(),
+    (_opts) => referencePointers(),
     (_opts) => setupAndBoundary(),
   ],
   security: [
@@ -383,7 +399,7 @@ export function generateClaudeMd(options: InitOptions, template?: ClaudeMdTempla
   const tmpl = template ?? options.runtime.claudeMdTemplate ?? 'standard';
   const sections = TEMPLATE_SECTIONS[tmpl] ?? TEMPLATE_SECTIONS.standard;
 
-  const header = `# Claude Code Configuration - RuFlo V3\n`;
+  const header = `# Claude Code Configuration\n`;
   const body = sections.map(fn => fn(options)).join('\n\n');
 
   return `${header}\n${body}\n`;
