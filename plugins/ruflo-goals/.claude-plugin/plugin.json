@@ -18,6 +18,9 @@
     "long-horizon",
     "dossier",
     "investigation",
-    "osint"
+    "osint",
+    "mcp",
+    "evidence-grading",
+    "legacy-namespaces"
   ]
 }
