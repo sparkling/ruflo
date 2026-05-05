@@ -1,5 +1,4 @@
 ---
-name: autopilot
 description: Enable, configure, or disable autonomous task completion
 ---
 $ARGUMENTS

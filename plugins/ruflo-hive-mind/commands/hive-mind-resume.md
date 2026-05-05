@@ -1,5 +1,4 @@
 ---
-name: hive-mind-resume
 description: Resume a checkpointed hive-mind session
 ---
 

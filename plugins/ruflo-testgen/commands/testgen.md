@@ -1,5 +1,4 @@
 ---
-name: testgen
 description: Generate tests for a file or module using coverage analysis and TDD patterns
 ---
 $ARGUMENTS

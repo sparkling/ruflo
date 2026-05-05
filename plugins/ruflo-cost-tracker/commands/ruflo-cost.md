@@ -1,5 +1,4 @@
 ---
-name: ruflo-cost
 description: Cost tracking operations — generate reports, view breakdowns, set budgets, and get optimization recommendations
 ---
 

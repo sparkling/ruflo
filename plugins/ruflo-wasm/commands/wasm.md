@@ -1,5 +1,4 @@
 ---
-name: wasm
 description: WASM agent management -- list running agents, check status, browse gallery
 ---
 

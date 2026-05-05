@@ -1,5 +1,4 @@
 ---
-name: ruvllm
 description: RuVLLM status -- model configuration, MicroLoRA adapters, and provider availability
 ---
 

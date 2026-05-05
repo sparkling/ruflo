@@ -1,5 +1,4 @@
 ---
-name: swarm
 description: Initialize, monitor, and manage multi-agent swarms
 ---
 $ARGUMENTS

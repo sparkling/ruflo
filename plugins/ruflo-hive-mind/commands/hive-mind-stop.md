@@ -1,5 +1,4 @@
 ---
-name: hive-mind-stop
 description: Stop a running hive-mind swarm
 ---
 

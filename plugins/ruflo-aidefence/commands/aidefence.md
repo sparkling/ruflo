@@ -1,5 +1,4 @@
 ---
-name: aidefence
 description: AIDefence status, detection stats, and threat analysis dashboard
 ---
 

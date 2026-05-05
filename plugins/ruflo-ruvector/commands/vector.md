@@ -1,5 +1,4 @@
 ---
-name: vector
 description: RuVector operations via npx ruvector — embedding, search, clustering, indexing, hyperbolic, hooks, brain AGI
 ---
 

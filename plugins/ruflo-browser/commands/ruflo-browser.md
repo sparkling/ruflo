@@ -1,5 +1,4 @@
 ---
-name: ruflo-browser
 description: Browser session management -- list active sessions, take screenshots, close sessions
 ---
 

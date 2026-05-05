@@ -1,5 +1,4 @@
 ---
-name: ddd
 description: Domain-Driven Design scaffolding and boundary enforcement
 ---
 $ARGUMENTS

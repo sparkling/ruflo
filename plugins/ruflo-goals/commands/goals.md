@@ -1,5 +1,4 @@
 ---
-name: goals
 description: List active horizons, check goal progress, and view research findings
 ---
 $ARGUMENTS

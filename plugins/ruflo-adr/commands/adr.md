@@ -1,5 +1,4 @@
 ---
-name: adr
 description: Architecture Decision Record lifecycle management
 ---
 $ARGUMENTS

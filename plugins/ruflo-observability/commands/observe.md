@@ -1,5 +1,4 @@
 ---
-name: observe
 description: Observability operations — trace agent execution, view metrics, filter logs, and correlate telemetry
 ---
 

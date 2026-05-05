@@ -1,5 +1,4 @@
 ---
-name: kg
 description: Knowledge graph operations — extract entities, traverse relations, and search the graph
 ---
 

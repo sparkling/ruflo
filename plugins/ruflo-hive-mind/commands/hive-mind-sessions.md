@@ -1,5 +1,4 @@
 ---
-name: hive-mind-sessions
 description: Manage hive-mind sessions: list, checkpoint, export, import
 ---
 

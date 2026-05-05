@@ -1,5 +1,4 @@
 ---
-name: hive-mind-init
 description: Initialize a hive-mind swarm with queen-led coordination
 ---
 

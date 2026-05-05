@@ -1,5 +1,4 @@
 ---
-name: trader
 description: Neural trading via npx neural-trader — strategies, backtesting, signals, risk, portfolio optimization
 ---
 $ARGUMENTS

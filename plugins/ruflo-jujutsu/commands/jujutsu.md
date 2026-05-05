@@ -1,5 +1,4 @@
 ---
-name: jujutsu
 description: Git diff analysis with risk scoring and change classification
 ---
 

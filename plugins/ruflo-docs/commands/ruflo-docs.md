@@ -1,5 +1,4 @@
 ---
-name: ruflo-docs
 description: Generate or update documentation for a file, module, or the entire project
 ---
 $ARGUMENTS

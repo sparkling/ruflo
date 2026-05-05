@@ -1,5 +1,4 @@
 ---
-name: hive-mind-spawn
 description: Spawn a Hive Mind swarm — supports --queen-type (Strategic|Tactical|Adaptive) and --consensus (majority|weighted|byzantine|raft|gossip|crdt|quorum)
 ---
 

@@ -1,5 +1,4 @@
 ---
-name: workflow
 description: Workflow management -- list workflows, check status, view templates
 ---
 

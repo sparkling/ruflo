@@ -1,5 +1,4 @@
 ---
-name: iot
 description: Manage Cognitum Seed IoT devices, fleets, firmware, and telemetry
 ---
 $ARGUMENTS

@@ -1,5 +1,4 @@
 ---
-name: market
 description: Market data operations — ingest feeds, detect patterns, and search historical data
 ---
 

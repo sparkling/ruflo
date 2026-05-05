@@ -1,5 +1,4 @@
 ---
-name: hive-mind-metrics
 description: Show hive-mind performance and consensus metrics
 ---
 

@@ -1,5 +1,4 @@
 ---
-name: migrate
 description: Database migration operations — create, apply, rollback, validate, and inspect migration history
 ---
 

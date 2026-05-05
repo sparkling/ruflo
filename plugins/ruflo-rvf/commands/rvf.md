@@ -1,5 +1,4 @@
 ---
-name: rvf
 description: RVF memory management -- list entries, show stats, manage sessions
 ---
 

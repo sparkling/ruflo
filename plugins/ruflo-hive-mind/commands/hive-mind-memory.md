@@ -1,5 +1,4 @@
 ---
-name: hive-mind-memory
 description: Query and manage collective hive memory across 8 memory types with TTL
 ---
 

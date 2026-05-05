@@ -1,5 +1,4 @@
 ---
-name: create-plugin
 description: Scaffold a new Claude Code plugin interactively
 ---
 

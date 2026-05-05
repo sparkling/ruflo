@@ -1,5 +1,4 @@
 ---
-name: intelligence
 description: View intelligence system status, learned patterns, and routing stats
 ---
 

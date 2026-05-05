@@ -1,5 +1,4 @@
 ---
-name: hive-mind-wizard
 description: Interactive wizard for hive-mind setup and tuning
 ---
 

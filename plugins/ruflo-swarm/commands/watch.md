@@ -1,5 +1,4 @@
 ---
-name: watch
 description: Live-stream swarm events and agent activity in real time
 ---
 $ARGUMENTS

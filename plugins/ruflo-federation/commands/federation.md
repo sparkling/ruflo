@@ -1,5 +1,4 @@
 ---
-name: federation
 description: Manage cross-installation agent federation
 ---
 $ARGUMENTS

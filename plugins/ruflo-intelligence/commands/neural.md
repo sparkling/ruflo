@@ -1,5 +1,4 @@
 ---
-name: neural
 description: Neural pattern training and prediction commands
 ---
 

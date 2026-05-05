@@ -1,5 +1,4 @@
 ---
-name: autopilot-status
 description: Quick autopilot progress summary with task completion stats
 ---
 $ARGUMENTS

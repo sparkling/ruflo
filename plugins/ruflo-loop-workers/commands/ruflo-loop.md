@@ -1,5 +1,4 @@
 ---
-name: ruflo-loop
 description: Start a Ruflo background worker (audit, optimize, testgaps, etc.) on a recurring schedule
 ---
 $ARGUMENTS

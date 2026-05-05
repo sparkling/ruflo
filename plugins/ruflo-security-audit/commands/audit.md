@@ -1,5 +1,4 @@
 ---
-name: audit
 description: Run a security audit on the project
 ---
 $ARGUMENTS

@@ -1,5 +1,4 @@
 ---
-name: hive-mind-consensus
 description: Run a consensus vote across hive workers (Majority|Weighted|Byzantine|Raft|Gossip|CRDT|Quorum)
 ---
 

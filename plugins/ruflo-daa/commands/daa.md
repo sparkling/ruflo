@@ -1,5 +1,4 @@
 ---
-name: daa
 description: Dynamic Agentic Architecture status -- learning metrics, active agents, cognitive patterns
 ---
 

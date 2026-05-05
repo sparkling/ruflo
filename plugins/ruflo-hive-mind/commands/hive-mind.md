@@ -1,5 +1,4 @@
 ---
-name: hive-mind
 description: Hive Mind overview and dispatch entry point
 ---
 

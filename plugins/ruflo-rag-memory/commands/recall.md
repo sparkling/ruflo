@@ -1,5 +1,4 @@
 ---
-name: recall
 description: Quick semantic recall — searches all memory namespaces with MMR diversity and recency weighting
 ---
 $ARGUMENTS

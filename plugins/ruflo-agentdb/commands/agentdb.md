@@ -1,5 +1,4 @@
 ---
-name: agentdb
 description: AgentDB health, controller status, and session management
 ---
 

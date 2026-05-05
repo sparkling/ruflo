@@ -1,5 +1,4 @@
 ---
-name: embeddings
 description: RuVector embedding engine status and operations
 ---
 

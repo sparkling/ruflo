@@ -1,5 +1,4 @@
 ---
-name: hive-mind-status
 description: Show hive-mind swarm status and worker health
 ---
 

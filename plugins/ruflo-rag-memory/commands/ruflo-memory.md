@@ -1,5 +1,4 @@
 ---
-name: ruflo-memory
 description: SOTA memory CRUD — store, search (hybrid/graph-rag/dense), retrieve, list, consolidate
 ---
 $ARGUMENTS
