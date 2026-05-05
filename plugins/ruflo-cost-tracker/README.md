@@ -22,18 +22,39 @@ claude --plugin-dir plugins/ruflo-cost-tracker
 
 | Skill | Usage | Description |
 |-------|-------|-------------|
-| `cost-report` | `/cost-report [--period today]` | Generate a cost report with token usage and USD costs by agent and model |
-| `cost-optimize` | `/cost-optimize` | Analyze usage patterns and recommend cost optimizations with estimated savings |
+| `cost-report` | `/cost-report [--period today]` | Generate a cost report with token usage and USD costs by tier, model, and agent |
+| `cost-optimize` | `/cost-optimize` | Analyze usage patterns, recommend cost optimizations, and emit `hooks_model-outcome` events |
+| `cost-booster-route` | `/cost-booster-route <task>` | Route tasks via `hooks_route` and report Agent Booster (Tier 1) bypass utilization |
+| `cost-booster-edit` | `/cost-booster-edit <intent> <file>` | **Apply** a Tier 1 transform via `agent-booster.apply()` (sub-millisecond, $0, deterministic) |
+| `cost-benchmark` | `/cost-benchmark [--llm] [--anthropic]` | Run the corpus benchmark and persist measured-vs-claimed table to `docs/benchmarks/runs/` |
+| `cost-compact-context` | `/cost-compact-context <query>` | Wrap `getTokenOptimizer().getCompactContext()` for retrieval-compacted analysis (graceful fallback when agentic-flow not installed) |
 
-## Commands (5 subcommands)
+## Commands (7 subcommands)
 
 ```bash
-cost report [--period today|week|month]  # Generate cost report for a period
-cost breakdown [--by agent|model|task]   # Detailed breakdown by dimension
-cost budget set <amount>                 # Set budget limit in USD
-cost optimize                            # Analyze usage and suggest savings
-cost history                             # Show cost tracking over time
+cost report [--period today|week|month]   # Cost report (with By-tier block, reads measured booster data)
+cost breakdown [--by agent|model|task]    # Detailed breakdown by dimension
+cost budget set <amount>                  # Set budget limit in USD
+cost optimize                             # Analyze usage and suggest savings (+ hooks_model-outcome feedback)
+cost benchmark [--llm] [--anthropic]      # Run measured benchmark — booster + optional Gemini/Sonnet/Opus baselines
+cost workers                              # Inspect optimize + benchmark loop-workers consumed
+cost history                              # Show cost tracking over time
 ```
+
+## Optimization integration (ADR-0002)
+
+Four upstream capabilities are now wired to the cost-tracker surface — every optimization recommendation maps to a real tool, not a heuristic:
+
+| Capability | Where | Surfaced by |
+|---|---|---|
+| **Agent Booster bypass** (Tier 1, $0, WASM) | `hooks_route` emits `[AGENT_BOOSTER_AVAILABLE]` (CLI: `npx @sparkleideas/cli@latest hooks route --task ...`) | `cost-booster-route` skill |
+| **Token optimizer / compact context** | `getTokenOptimizer().getCompactContext()` from `@sparkleideas/integration` (uses `agentic-flow` when present) | `cost-compact-context` skill |
+| **Model-outcome feedback loop** | `hooks_model-outcome` (typed equivalent of legacy `routing-outcomes`) | `cost-optimize` skill step 8 |
+| **Optimize + benchmark loop workers** | `hooks_worker-status --worker optimize / --worker benchmark` (declared by ruflo-loop-workers) | `cost workers` command + `cost-analyst` agent |
+
+CLAUDE.md root percentage claims (`-32%` retrieval, `-15%` booster edits, `352x` speedup, `95%` cache hit) are **claimed upstream, not yet verified** in this repo. The skills above tag every figure with that disclaimer; only the structural `$0` cost of Tier 1 bypasses is reported as a measured saving.
+
+See [ADR-0002](./docs/adrs/0002-agentic-flow-and-agent-booster-integration.md) for the full rationale, including the riskiest assumption (no MCP wrapper for `getTokenOptimizer` — `cost-compact-context` shells a Node one-liner).
 
 ## Model Pricing (per 1M tokens)
 
@@ -81,8 +102,39 @@ Phase 1 of ADR-097 enforces at the **send** side. Two follow-up phases will tigh
 
 Until Phase 3 ships, federated spend is **not** counted in the host's cost-tracker — only local agent spend. Treat `cost-report` numbers as a lower bound when federation is in use.
 
+## Compatibility
+
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
+- **Verification:** `bash plugins/ruflo-cost-tracker/scripts/smoke.sh` is the contract.
+
+## Namespace coordination
+
+This plugin owns two AgentDB namespaces:
+
+- `cost-tracking` — usage records (consumed by `cost-report`)
+- `cost-patterns` — optimization recommendations (consumed by `cost-optimize`)
+
+Both follow the kebab-case `<plugin-stem>-<intent>` convention from [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md). Both are accessed via the `memory_*` tool family which routes by namespace.
+
+> **Routing note:** The `agentdb_hierarchical-*` and `agentdb_pattern-*` tools route by tier / ReasoningBank, not by namespace string. Earlier versions of `cost-report` and `cost-optimize` passed namespace arguments to those tools and got silently-ignored behavior. ADR-0001 fixes this by switching the load path to `memory_*` and documenting the dual write path for optimization patterns.
+
+Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
+
+## Verification
+
+```bash
+bash plugins/ruflo-cost-tracker/scripts/smoke.sh
+# Expected: "27 passed, 0 failed"
+```
+
+## Architecture Decisions
+
+- [`ADR-0001` — ruflo-cost-tracker plugin contract (namespace-routing fix, federation budget pairing, smoke as contract)](./docs/adrs/0001-cost-tracker-contract.md)
+- [`ADR-0002` — agentic-flow + Agent Booster integration, model-outcome feedback loop, optimize-worker consumption, tier-aware reporting](./docs/adrs/0002-agentic-flow-and-agent-booster-integration.md)
+
 ## Related Plugins
 
+- `ruflo-agentdb` — namespace convention owner; defines the routing rules ADR-0001 fixes a violation of
 - `ruflo-observability` -- Token usage metrics collected via observability instrumentation
 - `ruflo-neural-trader` -- PnL tracking and cost-adjusted return calculation
 - `ruflo-federation` -- Budget circuit breaker on outbound federation_send (ADR-097)

@@ -2,7 +2,7 @@
 name: cost-optimize
 description: Analyze token usage patterns and recommend cost optimizations with estimated savings
 argument-hint: ""
-allowed-tools: mcp__ruflo__agentdb_hierarchical-recall mcp__ruflo__agentdb_pattern-search mcp__ruflo__agentdb_pattern-store mcp__ruflo__agentdb_semantic-route Bash
+allowed-tools: mcp__claude-flow__memory_search mcp__claude-flow__memory_list mcp__claude-flow__memory_store mcp__claude-flow__agentdb_pattern-search mcp__claude-flow__agentdb_pattern-store mcp__claude-flow__agentdb_semantic-route mcp__claude-flow__hooks_model-outcome Bash
 ---
 
 # Cost Optimize
@@ -15,19 +15,23 @@ When costs are higher than expected or you want to proactively reduce spending. 
 
 ## Steps
 
-1. **Load usage data** -- call `mcp__ruflo__agentdb_hierarchical-recall` to fetch recent token usage records from `cost-tracking` namespace (last 7 days)
+1. **Load usage data** -- call `mcp__claude-flow__memory_search` on the `cost-tracking` namespace (last 7 days). The `memory_*` tools route by namespace; use them — not `agentdb_hierarchical-*` (which routes by tier).
 2. **Analyze model fit** -- for each agent, assess whether the model tier matches task complexity:
-   - Agents doing simple tasks (formatting, linting) on Sonnet/Opus -> suggest Haiku or Agent Booster
-   - Agents doing complex tasks (architecture, security) on Haiku -> flag quality risk
+   - Agents doing simple tasks (formatting, linting) on Sonnet/Opus → suggest Haiku or Agent Booster
+   - Agents doing complex tasks (architecture, security) on Haiku → flag quality risk
 3. **Check cache rates** -- compute cache hit rate per agent; if below 60%, recommend enabling or improving prompt caching (90% cost reduction on cache reads)
 4. **Detect redundancy** -- look for multiple agents performing overlapping tasks, or agents being spawned for work that could be batched
 5. **Estimate savings** -- for each recommendation, calculate: current cost, projected cost after optimization, dollar savings, percentage reduction
-6. **Search patterns** -- call `mcp__ruflo__agentdb_pattern-search` for previously successful optimizations
-7. **Store recommendations** -- call `mcp__ruflo__agentdb_pattern-store` to record optimization recommendations in `cost-patterns` namespace
-8. **Report** -- display: ranked recommendations with savings estimate, total potential savings, implementation priority (quick wins first)
+6. **Search prior optimization patterns** -- call `mcp__claude-flow__agentdb_pattern-search` (ReasoningBank-routed; **don't** pass a `namespace` argument — pattern-* tools ignore it).
+7. **Store the optimization pattern** -- two paths:
+   - **Pattern store (typed, recommended)**: `mcp__claude-flow__agentdb_pattern-store` with `type: 'cost-optimization'`. Don't pass a `namespace` arg — ReasoningBank routes it; on bridge unavailability the fallback writes to the reserved `pattern` namespace with `controller: 'memory-store-fallback'` (see ruflo-agentdb ADR-0001).
+   - **Plain store (namespace-routable)**: `mcp__claude-flow__memory_store --namespace cost-patterns` — this DOES respect the `cost-patterns` namespace because `memory_*` is namespace-routed.
+8. **Close the routing feedback loop** -- when a downgrade recommendation is *applied* (or its application is logged elsewhere in this session), call `mcp__claude-flow__hooks_model-outcome` with `{task, fromModel, toModel, outcome: 'success'|'escalated'|'failure'}`. This is the typed equivalent of the legacy `routing-outcomes` namespace (see ruflo-intelligence ADR-0001 §"Neutral"). Without this signal the router does not learn from cost-tracker's recommendations and the booster bypass rate (see `cost-booster-route` skill) does not improve over time.
+9. **Report** -- display: ranked recommendations with savings estimate, total potential savings, implementation priority (quick wins first), and any model-outcome events emitted in step 8
 
 ## CLI alternative
 
 ```bash
 npx @sparkleideas/cli@latest memory search --query "cost optimization strategies" --namespace cost-patterns
+npx @sparkleideas/cli@latest memory store --key "opt-2026-05-04" --value '{...}' --namespace cost-patterns
 ```

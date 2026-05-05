@@ -54,6 +54,11 @@ Strategy ordering: Agent Booster first when the task fits, prompt caching always
 
 Total: $12.45 / $50.00 budget (24.9%)
 
+By tier:
+  Tier 1 (booster):     $0.00 (0.0%)   — 18 bypasses, $0 cost (no LLM call)
+  Tier 2 (haiku):       $0.45 (3.6%)   — 1,200K input, 400K output
+  Tier 3 (sonnet+opus): $12.00 (96.4%) — 1,980K input, 348K output
+
 By model:
   Haiku:  $0.45 (3.6%)  — 1,200K input, 400K output
   Sonnet: $8.20 (65.9%) — 1,800K input, 320K output
@@ -70,7 +75,17 @@ Optimization opportunities:
   - reviewer already on haiku — no change needed
   - researcher tasks avg complexity 22% — consider haiku (-$1.60 savings)
   - architect cache hit rate 40% — enable caching (-$1.14 savings)
+  - Tier 3 spend is 96.4% of total — see cost-booster-route skill to audit Tier 1 eligibility
 ```
+
+### Tier classification rules
+
+Tier classification at report-time uses two signals, in priority order:
+
+1. **`[AGENT_BOOSTER_AVAILABLE]` flag** stored by the `cost-booster-route` skill in the `cost-tracking` namespace — authoritative when present.
+2. **Model name fallback** — `haiku` → Tier 2; `sonnet`/`opus` → Tier 3; missing/unknown → Tier 3 (conservative).
+
+The tier breakdown is the report's most actionable line: it tells the user *what fraction of Sonnet/Opus spend was Tier 1-eligible*. Without it, the report can't surface "you spent $X on Sonnet for tasks that should have routed to Tier 1" — see [ADR-0002 §"Decision 5"](docs/adrs/0002-agentic-flow-and-agent-booster-integration.md) for the rationale.
 
 ## Federation cost integration (ADR-097 pairing)
 

@@ -1,0 +1,160 @@
+{
+  "version": 2,
+  "description": "Golden corpus for cost-tracker's Agent Booster verification. Two case classes — `expectedTier1: true` cases SHOULD apply via booster; `expectedTier1: false` cases SHOULD escalate (low confidence or output != expected) so the router/skill can route them to Tier 2/3.",
+  "normalize": "trim, collapse whitespace runs to single space",
+  "metrics": {
+    "winRateTier1": "correct / count(expectedTier1==true)",
+    "escalationRate": "(low-confidence OR incorrect) / count(expectedTier1==false)  -- a high escalation rate is the desired signal on adversarial cases",
+    "overallCorrect": "correct / total  -- diagnostic; not the gate"
+  },
+  "cases": [
+    {
+      "id": "var-to-const-1",
+      "intent": "var-to-const",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "var x = 1; var y = 2;",
+      "edit": "const x = 1; const y = 2;",
+      "expected": "const x = 1; const y = 2;"
+    },
+    {
+      "id": "var-to-const-2",
+      "intent": "var-to-const",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function go() { var n = compute(); return n + 1; }",
+      "edit": "function go() { const n = compute(); return n + 1; }",
+      "expected": "function go() { const n = compute(); return n + 1; }"
+    },
+    {
+      "id": "add-types-1",
+      "intent": "add-types",
+      "language": "typescript",
+      "expectedTier1": true,
+      "code": "function add(a, b) { return a + b; }",
+      "edit": "function add(a: number, b: number): number { return a + b; }",
+      "expected": "function add(a: number, b: number): number { return a + b; }"
+    },
+    {
+      "id": "add-types-2",
+      "intent": "add-types",
+      "language": "typescript",
+      "expectedTier1": true,
+      "code": "function name(p) { return p.first + ' ' + p.last; }",
+      "edit": "function name(p: { first: string; last: string }): string { return p.first + ' ' + p.last; }",
+      "expected": "function name(p: { first: string; last: string }): string { return p.first + ' ' + p.last; }"
+    },
+    {
+      "id": "remove-console-1",
+      "intent": "remove-console",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function go() { console.log(\"x\"); doWork(); }",
+      "edit": "function go() { doWork(); }",
+      "expected": "function go() { doWork(); }"
+    },
+    {
+      "id": "remove-console-2",
+      "intent": "remove-console",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function init() { console.log('start'); console.error('e'); run(); }",
+      "edit": "function init() { run(); }",
+      "expected": "function init() { run(); }"
+    },
+    {
+      "id": "add-error-handling-1",
+      "intent": "add-error-handling",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function fetch() { return api.get(); }",
+      "edit": "function fetch() { try { return api.get(); } catch (e) { return null; } }",
+      "expected": "function fetch() { try { return api.get(); } catch (e) { return null; } }"
+    },
+    {
+      "id": "add-error-handling-2",
+      "intent": "add-error-handling",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function load(p) { return parse(read(p)); }",
+      "edit": "function load(p) { try { return parse(read(p)); } catch (e) { return null; } }",
+      "expected": "function load(p) { try { return parse(read(p)); } catch (e) { return null; } }"
+    },
+    {
+      "id": "async-await-1",
+      "intent": "async-await",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function fetch() { return api.get().then(r => r.data); }",
+      "edit": "async function fetch() { const r = await api.get(); return r.data; }",
+      "expected": "async function fetch() { const r = await api.get(); return r.data; }"
+    },
+    {
+      "id": "async-await-2",
+      "intent": "async-await",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function load() { return read().then(parse); }",
+      "edit": "async function load() { const r = await read(); return parse(r); }",
+      "expected": "async function load() { const r = await read(); return parse(r); }"
+    },
+    {
+      "id": "add-logging-1",
+      "intent": "add-logging",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function go() { return work(); }",
+      "edit": "function go() { console.log('go'); return work(); }",
+      "expected": "function go() { console.log('go'); return work(); }"
+    },
+    {
+      "id": "add-logging-2",
+      "intent": "add-logging",
+      "language": "javascript",
+      "expectedTier1": true,
+      "code": "function save(x) { db.put(x); }",
+      "edit": "function save(x) { console.log('save', x); db.put(x); }",
+      "expected": "function save(x) { console.log('save', x); db.put(x); }"
+    },
+    {
+      "id": "adversarial-extract-function",
+      "intent": "extract-function",
+      "language": "javascript",
+      "expectedTier1": false,
+      "comment": "Multi-statement extraction — booster's pattern-replace can't reason about control-flow boundaries. LLM should escalate.",
+      "code": "function process(items) { let total = 0; for (const i of items) { if (i.active) { total += i.value; } } if (total > 100) { console.log('big'); } else { console.log('small'); } return total; }",
+      "edit": "Extract the per-item summation into a helper called `sum_active(items)`, and the threshold-log into `log_threshold(total)`. Update process() to call them.",
+      "expected": "function sum_active(items) { let total = 0; for (const i of items) { if (i.active) { total += i.value; } } return total; } function log_threshold(total) { if (total > 100) { console.log('big'); } else { console.log('small'); } } function process(items) { const total = sum_active(items); log_threshold(total); return total; }"
+    },
+    {
+      "id": "adversarial-type-narrowing",
+      "intent": "type-narrowing",
+      "language": "typescript",
+      "expectedTier1": false,
+      "comment": "Requires understanding union types + control flow. Booster pattern-replace will likely fail or produce a low-confidence merge.",
+      "code": "type Result = { kind: 'ok'; value: number } | { kind: 'err'; message: string }; function describe(r: Result) { return r.value; }",
+      "edit": "Narrow `r` before accessing `value` — only return `r.value` when `r.kind === 'ok'`, otherwise return -1.",
+      "expected": "type Result = { kind: 'ok'; value: number } | { kind: 'err'; message: string }; function describe(r: Result) { if (r.kind === 'ok') { return r.value; } return -1; }"
+    },
+    {
+      "id": "adversarial-cross-method-rename",
+      "intent": "rename-symbol",
+      "language": "typescript",
+      "expectedTier1": false,
+      "comment": "Renaming requires reasoning about ALL call sites; booster sees only the snippet boundary.",
+      "code": "class Cache { get(k: string) { return this.store[k]; } set(k: string, v: any) { this.store[k] = v; } private store: Record<string, any> = {}; } const c = new Cache(); c.set('a', 1); console.log(c.get('a'));",
+      "edit": "Rename Cache.get to Cache.lookup and update all call sites.",
+      "expected": "class Cache { lookup(k: string) { return this.store[k]; } set(k: string, v: any) { this.store[k] = v; } private store: Record<string, any> = {}; } const c = new Cache(); c.set('a', 1); console.log(c.lookup('a'));"
+    },
+    {
+      "id": "adversarial-recursive-rewrite",
+      "intent": "recursive-to-iterative",
+      "language": "javascript",
+      "expectedTier1": false,
+      "comment": "Algorithmic transformation — requires reasoning, not pattern replacement.",
+      "code": "function factorial(n) { return n <= 1 ? 1 : n * factorial(n - 1); }",
+      "edit": "Rewrite as an iterative loop with no recursion.",
+      "expected": "function factorial(n) { let result = 1; for (let i = 2; i <= n; i++) { result *= i; } return result; }"
+    }
+  ]
+}
