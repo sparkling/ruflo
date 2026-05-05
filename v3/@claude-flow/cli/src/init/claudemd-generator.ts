@@ -63,34 +63,22 @@ function concurrencyRules(): string {
 }
 
 function agentOrchestration(): string {
-  // ADR-0098 anti-sprawl applies to swarm_init only.
-  // ADR-0115: hive-mind_spawn is the council-protocol entry point —
-  // do NOT bundle it into the swarm-sprawl prohibition. Council
-  // sessions (queen + named experts + voting + Byzantine consensus +
-  // collective memory) are the intended use case for hive-mind_spawn
-  // and shouldn't be discouraged by anti-sprawl phrasing.
+  // ADR-0136 Q1 (resolved 2026-05-05): compressed from 22-line prose to 5-row
+  // table. Per "One decision, one section, one shape" — the orchestration
+  // decision lives here as a table; toolSelectionRules() carries the
+  // tool-selection comparison; whenToUseWhat() was deleted (rows redundant).
+  // ADR-0098 anti-sprawl applies to swarm_init only; ADR-0115 carves out
+  // hive-mind_spawn from the prohibition (kept as a row).
   return `## Agent Orchestration
 
-- DEFAULT: use Claude Code's built-in \`Agent\` tool for parallel work delegation
-  (multi-file tasks, fan-out research, independent subagent jobs). It spawns
-  subagents with ZERO coordination state, ZERO setup, ZERO cleanup.
-- ALWAYS set \`run_in_background: true\` when spawning agents
-- Put ALL agent spawns in a single message for parallel execution
-- After spawning agents, STOP and wait for results — do not poll or check status
-- Use \`hive-mind_spawn\` (or \`ruflo hive-mind spawn --claude\`) when convening
-  a COUNCIL — named experts with consistent perspectives, per-question voting,
-  Devil's Advocate role, Byzantine consensus, Queen synthesis with named
-  conditions, persistent collective memory. Hive-mind is the right primitive
-  for high-stakes decisions, ADR ratification, multi-perspective review.
-- DO NOT call \`swarm_init\` or \`ruflo swarm init\` reflexively at the start
-  of tasks (ADR-0098 anti-sprawl — applies to flat-coordination swarms only,
-  NOT to hive-mind councils). Use \`swarm_init\` only when (a) the user explicitly
-  asks for a claude-flow swarm, or (b) persistent cross-session coordination
-  state is actually required.
-- If you DO need a claude-flow swarm: the CLI now reuses matching running swarms
-  automatically (ADR-0098 config-fingerprint dedupe). Pass \`--new\` only when
-  you genuinely need a parallel swarm with the same config.
-- NEVER use CLI tools as a substitute for Agent tool subagents`;
+| Situation | Use | Never |
+|---|---|---|
+| Multi-file / fan-out work | \`Agent\` tool, \`run_in_background:true\`, all spawns in ONE message | Poll status; use CLI as substitute |
+| High-stakes decision, ADR ratification, multi-perspective review | \`hive-mind_spawn\` (or \`ruflo hive-mind spawn --claude\`) | Treat as anti-sprawl violation |
+| Reflexive coordination at task start | (skip) | \`swarm_init\` unless user asked or persistent state needed |
+| User explicitly asked for a claude-flow swarm | \`swarm_init\` (CLI auto-reuses matching) | \`--new\` flag unless parallel swarm genuinely needed |
+
+After spawning agents: STOP and wait for results. Do not poll.`;
 }
 
 function antiDriftConfig(): string {
@@ -138,19 +126,10 @@ Hooks inject signals into the conversation at three points:
 If \`[INFO] Router not available\` appears, proceed normally without routing.`;
 }
 
-function whenToUseWhat(): string {
-  // ADR-0098: the default "multi-agent work" path is the built-in Agent tool,
-  // not claude-flow swarms. Swarm init stays in the table but gated on explicit need.
-  return `## When to Use What
-
-| Need | Use |
-|------|-----|
-| Multi-agent work on one task | \`Agent\` tool (built-in, \`run_in_background: true\`) — NOT a claude-flow swarm |
-| Search or store memory | \`mcp__ruflo__memory_*\` (load via ToolSearch first) |
-| Persistent swarm coordination (rare, explicit) | \`ruflo swarm init\` via Bash — reuses matching running swarms (ADR-0098) |
-| Run CLI diagnostics | \`ruflo doctor --fix\` via Bash |
-| Invoke a registered skill | Skill tool with the skill name (e.g., \`/commit\`) |`;
-}
+// ADR-0136 Q1 (resolved 2026-05-05): whenToUseWhat() deleted. All 5 rows
+// were redundant with agentOrchestration() table + toolSelectionRules() table
+// + Skill tool description. The unique "ruflo doctor --fix" diagnostic row
+// migrated to referencePointers().
 
 // ADR-0136: agentTypes() and memoryCommands() removed as dead code.
 // Replaced by referencePointers() (catalogs behind discovery commands)
@@ -164,7 +143,7 @@ When you need a capability, choose in this order. Stop at the first match.
 | You need to... | Use | Prefer over |
 |---|---|---|
 | Coordinate parallel sub-tasks | \`Agent\` tool with \`run_in_background: true\` | \`swarm_init\` for one-shot work |
-| Convene a council on a high-stakes decision | \`hive-mind_spawn\` (or invoke the \`hive-mind-advanced\` skill) | \`Agent\` fan-out (no synthesis) |
+| Convene a council on a high-stakes decision | \`mcp__ruflo__hive-mind_spawn\` (or invoke the \`hive-mind-advanced\` skill) | \`Agent\` fan-out (no synthesis) |
 | Persist patterns/decisions across sessions | \`mcp__ruflo__memory_store\` | Writing to MEMORY.md from in-session work |
 | Recall past decisions/patterns | \`mcp__ruflo__memory_search\` | Asking the user to re-explain |
 
@@ -197,6 +176,7 @@ function referencePointers(): string {
 - Skill catalog: \`ruflo skill list\`
 - Plugin catalog: \`ruflo plugins list\`
 - Agent type catalog: \`ruflo agent list\`
+- CLI diagnostics: \`ruflo doctor --fix\`
 - Architecture decisions for this project: \`docs/adr/\`
 - Cross-session memory: \`~/.claude/projects/<project>/memory/MEMORY.md\`
 - Full feature reference: https://github.com/ruvnet/ruflo/blob/main/docs/USERGUIDE.md`;
@@ -242,6 +222,9 @@ npm run lint
 }
 
 function securitySection(): string {
+  // ADR-0136 Q3 (resolved 2026-05-05): flag-syntax bash blocks replaced by
+  // --help pointer per Principle 7 (reference, don't duplicate). Agent list +
+  // routing-code line kept — they are decision data, not catalogs.
   return `## Security Protocol
 
 - NEVER hardcode API keys, secrets, or credentials in source files
@@ -251,12 +234,7 @@ function securitySection(): string {
 - Always use parameterized queries — never concatenate SQL strings
 - Run security audit after any authentication or authorization changes
 
-### Security Scanning
-\`\`\`bash
-ruflo security scan --depth full
-ruflo security audit --report
-ruflo security cve --check
-\`\`\`
+Security CLI: \`ruflo security --help\`.
 
 ### Security Agents
 - \`security-architect\` — threat modeling, architecture review
@@ -265,6 +243,8 @@ ruflo security cve --check
 }
 
 function performanceSection(): string {
+  // ADR-0136 Q3 (resolved 2026-05-05): flag-syntax bash block replaced by
+  // --help pointer. Agent list + routing-code kept (decision data).
   return `## Performance Optimization Protocol
 
 - Always run benchmarks before and after performance changes
@@ -273,12 +253,7 @@ function performanceSection(): string {
 - Keep HNSW search within 150x-12,500x faster target
 - Keep memory reduction within 50-75% target with quantization
 
-### Performance Tooling
-\`\`\`bash
-ruflo performance benchmark --suite all
-ruflo performance profile --target "[component]"
-ruflo performance metrics --format table
-\`\`\`
+Performance CLI: \`ruflo performance --help\`.
 
 ### Performance Agents
 - \`performance-engineer\` — profiling, benchmarking, optimization
@@ -328,7 +303,6 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => pluginInstallRule(),
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
-    (_opts) => whenToUseWhat(),
     (_opts) => referencePointers(),
     (_opts) => setupAndBoundary(),
   ],
@@ -345,7 +319,6 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => pluginInstallRule(),
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
-    (_opts) => whenToUseWhat(),
     (_opts) => referencePointers(),
     (_opts) => setupAndBoundary(),
   ],
@@ -359,7 +332,6 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => securitySection(),
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
-    (_opts) => whenToUseWhat(),
     (_opts) => setupAndBoundary(),
   ],
   performance: [
@@ -373,7 +345,6 @@ const TEMPLATE_SECTIONS: Record<ClaudeMdTemplate, Array<(opts: InitOptions) => s
     (_opts) => performanceSection(),
     (_opts) => mcpToolDiscovery(),
     (_opts) => hookSignals(),
-    (_opts) => whenToUseWhat(),
     (_opts) => setupAndBoundary(),
   ],
   solo: [
