@@ -606,7 +606,7 @@ const optimizeCommand: Command = {
       data: [
         { priority: output.error('P0'), area: 'Memory', recommendation: 'Enable HNSW index quantization', impact: '+50% reduction' },
         { priority: output.warning('P1'), area: 'CPU', recommendation: 'Enable WASM SIMD acceleration', impact: '+4x speedup' },
-        { priority: output.warning('P1'), area: 'Latency', recommendation: 'Enable Flash Attention', impact: '+2.49x speedup' },
+        { priority: output.warning('P1'), area: 'Latency', recommendation: 'Flash Attention WASM (in progress, currently JS reference)', impact: '+2.49x target' },
         { priority: output.info('P2'), area: 'Cache', recommendation: 'Increase pattern cache size', impact: '+15% hit rate' },
         { priority: output.info('P2'), area: 'Network', recommendation: 'Enable request batching', impact: '-30% latency' },
       ],
@@ -648,7 +648,7 @@ const bottleneckCommand: Command = {
       ],
       data: [
         { component: 'Vector Search', bottleneck: 'Linear scan O(n)', severity: output.error('High'), solution: 'Enable HNSW indexing' },
-        { component: 'Neural Inference', bottleneck: 'Sequential attention', severity: output.warning('Medium'), solution: 'Enable Flash Attention' },
+        { component: 'Neural Inference', bottleneck: 'Sequential attention', severity: output.warning('Medium'), solution: 'Flash Attention WASM (in progress)' },
         { component: 'Memory Store', bottleneck: 'Lock contention', severity: output.info('Low'), solution: 'Use sharded storage' },
       ],
     });
@@ -685,7 +685,7 @@ export const performanceCommand: Command = {
     output.writeln('Performance Targets:');
     output.printList([
       'HNSW Search: 150x-12,500x faster than brute force',
-      'Flash Attention: 2.49x-7.47x speedup',
+      'Flash Attention: 2.49x-7.47x target (in progress; ships JS reference impl)',
       'Memory: 50-75% reduction with quantization',
     ]);
     output.writeln();

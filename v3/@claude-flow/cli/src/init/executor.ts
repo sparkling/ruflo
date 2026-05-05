@@ -2064,9 +2064,11 @@ async function writeClaudeMd(
     result.created.files.push('CLAUDE.md');
   }
 
-  // Also write/append global ~/.claude/CLAUDE.md so ruflo tools are used automatically (#1497)
+  // Also write/append global ~/.claude/CLAUDE.md so ruflo tools are used automatically (#1497).
+  // Opt-out via --no-global / options.skipGlobalClaudeMd (#1744 — keeps global rules file pristine
+  // for users who don't want a per-machine pointer block).
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-  if (homeDir) {
+  if (homeDir && !options.skipGlobalClaudeMd) {
     const globalClaudeDir = path.join(homeDir, '.claude');
     const globalClaudeMd = path.join(globalClaudeDir, 'CLAUDE.md');
     const rufloBlock = [
@@ -2095,6 +2097,8 @@ async function writeClaudeMd(
     } catch {
       // Non-critical — global CLAUDE.md is best-effort
     }
+  } else if (options.skipGlobalClaudeMd) {
+    result.skipped.push('~/.claude/CLAUDE.md (--no-global)');
   }
 }
 

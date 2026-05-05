@@ -13,8 +13,6 @@
  */
 
 import { EventEmitter } from 'events';
-import { readFileSync } from 'node:fs';
-import * as path from 'node:path';
 import type {
   EmbeddingProvider,
   EmbeddingConfig,
@@ -36,18 +34,6 @@ import type {
 import { normalize } from './normalization.js';
 import { PersistentEmbeddingCache } from './persistent-cache.js';
 import { RvfEmbeddingService } from './rvf-embedding-service.js';
-
-// ============================================================================
-// Config-Chain Default — ADR-0069: wire embeddingCacheSize consumer
-// ============================================================================
-
-const DEFAULT_CACHE_SIZE = (() => {
-  try {
-    const cfg = JSON.parse(readFileSync(
-      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-    return cfg?.memory?.embeddingCacheSize ?? 1000;
-  } catch { return 1000; }
-})();
 
 // ============================================================================
 // LRU Cache Implementation
@@ -125,19 +111,15 @@ abstract class BaseEmbeddingService extends EventEmitter implements IEmbeddingSe
 
   constructor(protected readonly config: EmbeddingConfig) {
     super();
-    // ADR-0069 A9: consistent default cache size across embedding services
-    // ADR-0069: wire embeddingCacheSize consumer
-    const cacheSize = config.cacheSize ?? DEFAULT_CACHE_SIZE;
-    this.cache = new LRUCache(cacheSize);
+    this.cache = new LRUCache(config.cacheSize ?? 1000);
     this.normalizationType = config.normalization ?? 'none';
 
     // Initialize persistent cache if configured
-    // ADR-0069 A9: persistent cache inherits cacheSize unless explicitly overridden
     if (config.persistentCache?.enabled) {
       const pcConfig: PersistentCacheConfig = config.persistentCache;
       this.persistentCache = new PersistentEmbeddingCache({
         dbPath: pcConfig.dbPath ?? '.cache/embeddings.db',
-        maxSize: pcConfig.maxSize ?? cacheSize,
+        maxSize: pcConfig.maxSize ?? 10000,
         ttlMs: pcConfig.ttlMs,
       });
     }
@@ -395,7 +377,7 @@ export class TransformersEmbeddingService extends BaseEmbeddingService {
 
   constructor(config: TransformersEmbeddingConfig) {
     super(config);
-    this.modelName = config.model ?? 'Xenova/all-mpnet-base-v2';
+    this.modelName = config.model ?? 'Xenova/all-MiniLM-L6-v2';
   }
 
   private async initialize(): Promise<void> {
@@ -509,7 +491,7 @@ export class MockEmbeddingService extends BaseEmbeddingService {
     const fullConfig: MockEmbeddingConfig = {
       provider: 'mock',
       dimensions: config.dimensions ?? 384,
-      cacheSize: config.cacheSize ?? DEFAULT_CACHE_SIZE, // ADR-0069: wire embeddingCacheSize consumer
+      cacheSize: config.cacheSize ?? 1000,
       simulatedLatency: config.simulatedLatency ?? 0,
       enableCache: config.enableCache ?? true,
     };
@@ -639,8 +621,8 @@ export class AgenticFlowEmbeddingService extends BaseEmbeddingService {
 
   constructor(config: AgenticFlowEmbeddingConfig) {
     super(config);
-    this.modelId = config.modelId ?? 'all-mpnet-base-v2';
-    this.dimensions = config.dimensions ?? 768;
+    this.modelId = config.modelId ?? 'all-MiniLM-L6-v2';
+    this.dimensions = config.dimensions ?? 384;
     this.embedderCacheSize = config.embedderCacheSize ?? 256;
     this.modelDir = config.modelDir;
     this.autoDownload = config.autoDownload ?? false;
@@ -907,8 +889,10 @@ export function createEmbeddingService(config: EmbeddingConfig): IEmbeddingServi
     case 'rvf':
       return new RvfEmbeddingService(config as RvfEmbeddingConfig);
     default:
-      console.warn(`Unknown provider, using mock`);
-      return new MockEmbeddingService({ provider: 'mock', dimensions: 384 });
+      throw new Error(
+        `Unknown embedding provider: '${(config as EmbeddingConfig).provider}'. ` +
+        `Use 'agentic-flow' (recommended), 'transformers', 'openai', 'rvf', or 'mock' (tests only).`
+      );
   }
 }
 
@@ -982,8 +966,8 @@ export async function createEmbeddingServiceAsync(
       try {
         const service = new AgenticFlowEmbeddingService({
           provider: 'agentic-flow',
-          modelId: rest.modelId ?? 'all-mpnet-base-v2',
-          dimensions: rest.dimensions ?? 768,
+          modelId: rest.modelId ?? 'all-MiniLM-L6-v2',
+          dimensions: rest.dimensions ?? 384,
           cacheSize: rest.cacheSize,
         });
         // Validate it can initialize
@@ -998,7 +982,7 @@ export async function createEmbeddingServiceAsync(
     try {
       const service = new TransformersEmbeddingService({
         provider: 'transformers',
-        model: rest.model ?? 'Xenova/all-mpnet-base-v2',
+        model: rest.model ?? 'Xenova/all-MiniLM-L6-v2',
         cacheSize: rest.cacheSize,
       });
       // Validate it can initialize
@@ -1008,12 +992,12 @@ export async function createEmbeddingServiceAsync(
       // Fall through to mock
     }
 
-    // Fallback to mock (always works)
-    console.warn('[embeddings] Using mock provider - install agentic-flow or @xenova/transformers for real embeddings');
-    return new MockEmbeddingService({
-      dimensions: rest.dimensions ?? 768,
-      cacheSize: rest.cacheSize,
-    });
+    // No real provider available — refuse to silently fall back to mock embeddings.
+    throw new Error(
+      "[embeddings] No real embedding provider available for 'auto'. " +
+      'Install agentic-flow OR @xenova/transformers, OR pass provider:"openai" with apiKey, ' +
+      'OR explicitly request provider:"mock" if mock embeddings are intentional (tests only).'
+    );
   }
 
   // Specific provider with optional fallback
@@ -1022,14 +1006,14 @@ export async function createEmbeddingServiceAsync(
       case 'agentic-flow':
         return new AgenticFlowEmbeddingService({
           provider: 'agentic-flow',
-          modelId: rest.modelId ?? 'all-mpnet-base-v2',
-          dimensions: rest.dimensions ?? 768,
+          modelId: rest.modelId ?? 'all-MiniLM-L6-v2',
+          dimensions: rest.dimensions ?? 384,
           cacheSize: rest.cacheSize,
         });
       case 'transformers':
         return new TransformersEmbeddingService({
           provider: 'transformers',
-          model: rest.model ?? 'Xenova/all-mpnet-base-v2',
+          model: rest.model ?? 'Xenova/all-MiniLM-L6-v2',
           cacheSize: rest.cacheSize,
         });
       case 'openai':

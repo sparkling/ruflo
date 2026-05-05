@@ -43,9 +43,17 @@ User --> Ruflo (CLI/MCP) --> Router --> Swarm --> Agents --> Memory --> LLM Prov
 
 ## Quick Start
 
-### Claude Code Plugin (Recommended)
+There are **two different install paths** with very different surface areas. Pick based on what you need (#1744):
 
-Install Ruflo as a native Claude Code plugin -- adds skills, commands, agents, and MCP tools directly:
+| | **Claude Code Plugin** | **CLI install (`npx ruflo init`)** |
+|---|---|---|
+| What it gives you | Slash commands + a few skills + agent definitions per-plugin | Full Ruflo loop — 98 agents, 60+ commands, 30 skills, MCP server, hooks, daemon |
+| Files in your workspace | **Zero** | `.claude/`, `.claude-flow/`, `CLAUDE.md`, helpers, settings |
+| MCP server registered | **No** (`memory_store`, `swarm_init`, etc. unavailable to Claude) | Yes |
+| Hooks installed | No | Yes |
+| Best for | Try a single plugin's commands without committing to the full install | Production use — everything works as documented |
+
+### Path A — Claude Code Plugins (lite, slash commands only)
 
 ```bash
 # Add the marketplace
@@ -57,6 +65,8 @@ Install Ruflo as a native Claude Code plugin -- adds skills, commands, agents, a
 /plugin install ruflo-autopilot@ruflo
 /plugin install ruflo-federation@ruflo
 ```
+
+This adds slash commands and agent definitions only. The Ruflo MCP server is NOT registered, so `memory_store`, `swarm_init`, `agent_spawn`, etc. won't be callable from Claude. For the full loop, use Path B below.
 
 <details>
 <summary><strong>All 32 plugins</strong></summary>

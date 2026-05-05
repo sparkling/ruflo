@@ -180,6 +180,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
   const full = ctx.flags.full as boolean;
   const skipClaude = ctx.flags['skip-claude'] as boolean;
   const onlyClaude = ctx.flags['only-claude'] as boolean;
+  const noGlobal = ctx.flags['no-global'] as boolean;
   const codexMode = ctx.flags.codex as boolean;
   const dualMode = ctx.flags.dual as boolean;
   const cwd = ctx.cwd;
@@ -295,6 +296,13 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
   }
   if (maxAgents !== undefined) {
     options.runtime.maxAgents = maxAgents;
+  }
+
+  // #1744 — opt-out of the user-global ~/.claude/CLAUDE.md "Ruflo Integration"
+  // pointer block. Default behavior (off) preserves current install for users
+  // who rely on it; opting in via --no-global keeps the global file pristine.
+  if (noGlobal) {
+    options.skipGlobalClaudeMd = true;
   }
 
   // Create spinner
@@ -1203,6 +1211,12 @@ export const initCommand: Command = {
     {
       name: 'only-claude',
       description: 'Only create .claude/ directory (skip runtime)',
+      type: 'boolean',
+      default: false,
+    },
+    {
+      name: 'no-global',
+      description: 'Skip the ~/.claude/CLAUDE.md "Ruflo Integration" pointer block (#1744)',
       type: 'boolean',
       default: false,
     },

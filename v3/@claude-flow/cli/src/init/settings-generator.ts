@@ -12,8 +12,13 @@ import { detectPlatform } from './types.js';
 export function generateSettings(options: InitOptions): object {
   const settings: Record<string, unknown> = {};
 
-  // Add hooks if enabled
-  if (options.components.settings) {
+  // Add hooks if enabled. CRITICAL (#1744 #3): only emit the hooks block when
+  // the helpers directory will also be bundled. The hook commands point at
+  // .claude/helpers/hook-handler.cjs; if that file isn't created (as in
+  // --minimal where components.helpers=false), every hook fires and silently
+  // fails to find its handler. Either bundle the helpers OR drop the hooks —
+  // the option this fix takes is the latter (minimal stays minimal).
+  if (options.components.settings && options.components.helpers) {
     settings.hooks = generateHooksConfig(options.hooks);
   }
 

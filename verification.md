@@ -75,15 +75,15 @@ The `integrity.manifestHash` is a single fingerprint for the whole release's ver
     "gitCommit": "dba6b54d615dc8e81c18fa52f1dc40c1d4c77d2e",
     "branch": "fix/issues-may-1-3",
     "releases": {
-      "@claude-flow/cli": "3.6.24",
-      "claude-flow": "3.6.24",
-      "ruflo": "3.6.24",
+      "@claude-flow/cli": "3.6.28",
+      "claude-flow": "3.6.28",
+      "ruflo": "3.6.28",
       "@claude-flow/embeddings": "3.0.0-alpha.15",
       "@claude-flow/plugin-agent-federation": "1.0.0-alpha.4"
     },
     "summary": {
-      "totalFixes": 27,
-      "verified": 27,
+      "totalFixes": 55,
+      "verified": 55,
       "failed": 0
     },
     "fixes": [
@@ -353,9 +353,11 @@ The deterministic seed derivation means the signing key is reproducible from the
 
 ## Coverage so far
 
-The current witness covers **27 fixes** spanning ADR-093 F1–F12, four GitHub-issue fixes (#1697, #1698, #1691, #1721), one ADR (#094 transformers loader), and the ADR-095 architectural gap closures (G1 agent_execute wire, G2 federation Ed25519, G3 workflow runtime, G4 WASM agent runtime, G6 auto-memory dedup, plus G7 controllers att/gnn/mut/rvf/gvb).
+The current witness covers **55 fixes** spanning ADR-093 F1–F12, ADR-095 G1–G7 architectural gap closures, multiple GitHub-issue fixes (#1697, #1698, #1691, #1721, #1744, #1749), one ADR (#094 transformers loader), the ADR-096 encryption-at-rest phase markers, the ADR-097 federation budget envelope, and 28 CAP-MCP capability inventory entries (300 tools across 28 source files).
 
-Released as **ruflo@3.6.25 / @claude-flow/cli@3.6.25** on 2026-05-04. Regenerate manually with `node scripts/regenerate-witness.mjs` after a release bump.
+Released as **ruflo@3.6.28 / @claude-flow/cli@3.6.28 / claude-flow@3.6.28** on 2026-05-05. The 3.6.28 release closes 3 of 5 papercuts in #1744 (the install-study issue): adds `--no-global` flag to opt out of the user-global ~/.claude/CLAUDE.md append (#1744 #2), gates the `--minimal` settings.json hooks block on `components.helpers` so minimal stays minimal AND functional (#1744 #3), and clarifies plugin install vs `npx ruflo init` labeling in the README (#1744 #1). Also bundles three runtime honesty fixes: drop the unverified Flash Attention speedup claim from `performance` recommendations, drop the silent Tier-4 mock-embedding fallback in `neural-tools`, and throw on missing real embedding provider in `embedding-service` (mock is tests-only).
+
+Regenerate manually with `node scripts/regenerate-witness.mjs` after a release bump.
 
 Remaining work tracked separately:
 - ADR-095 G7 graphAdapter — pending an external graph DB connection.
