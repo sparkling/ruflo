@@ -744,15 +744,32 @@ export class RvfBackend implements IMemoryBackend {
         // NOT a silent fallback (ADR-0082): we loud-warn the orphan count.
         // Long-term fix is to persist nativeIdMap in .meta — flagged at
         // line ~1543 as future work.
-        if (raw.length > 0 && mappedHits === 0 && this.entries.size > 0) {
+        // ADR-0147 (Bug 1 refinement, 2026-05-06): supplement instead of replace.
+        // Original 71b2ad33e fix only triggered pureTsSearch when 100% of native
+        // hits were orphans (`mappedHits === 0`). Real-world cross-process state
+        // mixes mapped (this-process) and orphan (prior-process) entries — the
+        // strict trigger missed cases where SOME entries map but the orphan-only
+        // entries were silently dropped. New trigger: if more than half of native
+        // hits were dropped as orphans, supplement with pureTsSearch over all
+        // entries, dedupe by entry.id, sort by score-DESC, then slice to k.
+        if (raw.length > 0 && (orphanHits / Math.max(raw.length, 1)) > 0.5 && this.entries.size > 0) {
           if (this.config.verbose) {
             console.warn(
               `[RvfBackend] Native search returned ${orphanHits} orphan numIds ` +
-              `(no current-process mapping). Falling back to pure-TS over ${this.entries.size} entries. ` +
-              `Run \`ruflo memory rebuild\` to compact the SFVR file.`,
+              `(${orphanHits}/${raw.length} of native hits). Supplementing with pure-TS over ` +
+              `${this.entries.size} entries. Run \`ruflo memory rebuild\` to compact the SFVR file.`,
             );
           }
-          results = this.pureTsSearch(embedding, options);
+          const supplemental = this.pureTsSearch(embedding, options);
+          const seen = new Set(results.map(r => r.entry.id));
+          for (const s of supplemental) {
+            if (seen.has(s.entry.id)) continue;
+            results.push(s);
+            seen.add(s.entry.id);
+          }
+          // Re-sort by score-DESC so highest-quality matches survive the slice.
+          results.sort((a, b) => b.score - a.score);
+          results = results.slice(0, options.k);
         }
       } catch (err) {
         // ADR-0095 d5: the pre-d5 code silently fell through to pure-TS on

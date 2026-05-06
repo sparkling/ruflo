@@ -1874,16 +1874,37 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
           namespace: 'causal-edges',
           limit: Math.max(k * 4, 100),
         });
-        const entries = ((fallback as { entries?: Array<{ value?: string; key?: string }> }).entries
-          ?? (fallback as { results?: Array<{ value?: string; key?: string }> }).results
-          ?? []) as Array<{ value?: string; key?: string }>;
-        const parsed = entries.map((e) => {
-          try { return typeof e.value === 'string' ? JSON.parse(e.value) : e; }
-          catch { return e; }
-        }).filter((edge: unknown) => {
-          const ed = edge as { sourceId?: string; targetId?: string };
-          if (op.cause && ed?.sourceId !== op.cause) return false;
-          if (op.effect && ed?.targetId !== op.effect) return false;
+        // Bug-2 follow-up (ADR-0147, 2026-05-06): MemoryEntry storage shape uses
+        // `content`, not `value` — the previous fix at 71b2ad33e read `e.value`
+        // (undefined), hit the catch, and rejected every entry because the raw
+        // entry has no `sourceId`/`targetId`. P0-2 in ADR-0147 verified the field
+        // name via @sparkleideas/memory dist/types.d.ts. Defense-in-depth: if
+        // value-parse yields no source/target fields, fall back to parsing the
+        // arrow-encoded key (`${sourceId}→${targetId}`).
+        const entries = ((fallback as { entries?: Array<{ content?: string; key?: string }> }).entries
+          ?? (fallback as { results?: Array<{ content?: string; key?: string }> }).results
+          ?? []) as Array<{ content?: string; key?: string }>;
+        type ParsedEdge = { sourceId?: string; targetId?: string; relation?: string; weight?: number };
+        const parsed: ParsedEdge[] = entries.map((e) => {
+          let edge: ParsedEdge | null = null;
+          try { edge = typeof e.content === 'string' ? JSON.parse(e.content) : null; }
+          catch { edge = null; }
+          if (!edge || (!edge.sourceId && !edge.targetId)) {
+            const k = e.key ?? '';
+            const arrowIdx = k.indexOf('→');
+            if (arrowIdx > 0) {
+              edge = {
+                sourceId: k.slice(0, arrowIdx),
+                targetId: k.slice(arrowIdx + 1),
+                ...(edge ?? {}),
+              };
+            }
+          }
+          return edge ?? {};
+        }).filter((edge: ParsedEdge) => {
+          if (!edge.sourceId && !edge.targetId) return false;
+          if (op.cause && edge.sourceId !== op.cause) return false;
+          if (op.effect && edge.targetId !== op.effect) return false;
           return true;
         });
         return { success: true, results: parsed.slice(0, k), controller: 'router-fallback' };
