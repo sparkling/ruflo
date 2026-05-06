@@ -533,7 +533,17 @@ function getTestStats() {
           countTestFiles(path.join(dir, entry.name), depth + 1);
         } else if (entry.isFile()) {
           const n = entry.name;
-          if (n.includes('.test.') || n.includes('.spec.') || n.includes('_test.') || n.includes('_spec.')) {
+          // #1463 — also detect Python pytest's `test_*.py` convention
+          // (and the rarer `*_test.py` / `*_test.py` already covered by
+          // _test. above; spec_*.py mirrors test_*.py for unittest naming).
+          if (
+            n.includes('.test.') ||
+            n.includes('.spec.') ||
+            n.includes('_test.') ||
+            n.includes('_spec.') ||
+            n.startsWith('test_') ||
+            n.startsWith('spec_')
+          ) {
             testFiles++;
           }
         }
