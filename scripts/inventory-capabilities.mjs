@@ -144,8 +144,8 @@ function extractAgents() {
     for (const f of readdirSync(agentDir).filter(x => x.endsWith('.md'))) {
       const path = join(agentDir, f);
       const src = readFileSync(path, 'utf-8');
-      // Frontmatter parse — name + description
-      const fm = src.match(/^---\n([\s\S]*?)\n---/);
+      // Frontmatter parse — name + description (CRLF-tolerant for Windows checkouts)
+      const fm = src.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       if (!fm) continue;
       const yaml = fm[1];
       const name = (yaml.match(/^name:\s*(.+)$/m) || [, basename(f, '.md')])[1].trim();
