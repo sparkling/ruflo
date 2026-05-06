@@ -100,36 +100,60 @@ async function checkNpmVersion(): Promise<HealthCheck> {
 
 // Check config file
 async function checkConfigFile(): Promise<HealthCheck> {
-  // JSON configs (parse-validated)
+  // JSON configs (parse-validated). The first three are LEGACY shapes from
+  // pre-v3 init flows; v3 init writes only `.claude-flow/config.yaml`.
   const jsonPaths = [
     '.claude-flow/config.json',
     'claude-flow.config.json',
     '.claude-flow.json'
   ];
-
-  for (const configPath of jsonPaths) {
-    if (existsSync(configPath)) {
-      try {
-        const content = readFileSync(configPath, 'utf8');
-        JSON.parse(content);
-        return { name: 'Config File', status: 'pass', message: `Found: ${configPath}` };
-      } catch (e) {
-        return { name: 'Config File', status: 'fail', message: `Invalid JSON: ${configPath}`, fix: 'Fix JSON syntax in config file' };
-      }
-    }
-  }
-
-  // YAML configs (existence-checked only — no heavy yaml parser dependency)
+  // YAML configs (existence-checked only — no heavy yaml parser dependency).
   const yamlPaths = [
     '.claude-flow/config.yaml',
     '.claude-flow/config.yml',
     'claude-flow.config.yaml'
   ];
 
-  for (const configPath of yamlPaths) {
-    if (existsSync(configPath)) {
-      return { name: 'Config File', status: 'pass', message: `Found: ${configPath}` };
+  // #1798 — collect ALL configs that exist instead of returning at the first
+  // hit. The previous early-return masked silent collisions: if both a v2
+  // JSON and a v3 YAML existed, doctor reported only the JSON while the
+  // daemon was actually reading from the YAML. Surfacing both lets the user
+  // see and resolve the disagreement.
+  const foundJson: string[] = [];
+  const invalidJson: string[] = [];
+  for (const configPath of jsonPaths) {
+    if (!existsSync(configPath)) continue;
+    try {
+      JSON.parse(readFileSync(configPath, 'utf8'));
+      foundJson.push(configPath);
+    } catch {
+      invalidJson.push(configPath);
     }
+  }
+  const foundYaml = yamlPaths.filter(p => existsSync(p));
+
+  // Hard failures first: malformed JSON wins.
+  if (invalidJson.length > 0) {
+    return { name: 'Config File', status: 'fail', message: `Invalid JSON: ${invalidJson.join(', ')}`, fix: 'Fix JSON syntax in config file' };
+  }
+
+  // #1798 — collision: legacy JSON + new YAML both present. Subsystems can
+  // disagree on which to read; surface this as a warn with the recommended
+  // resolution (keep the YAML, archive the JSON).
+  if (foundJson.length > 0 && foundYaml.length > 0) {
+    return {
+      name: 'Config File',
+      status: 'warn',
+      message: `Config collision: legacy ${foundJson.join(', ')} + ${foundYaml.join(', ')} — subsystems may disagree silently`,
+      fix: `Archive the legacy JSON (mv ${foundJson[0]} ${foundJson[0]}.bak) and keep ${foundYaml[0]} as the canonical config`,
+    };
+  }
+
+  if (foundYaml.length > 0) {
+    return { name: 'Config File', status: 'pass', message: `Found: ${foundYaml[0]}` };
+  }
+  if (foundJson.length > 0) {
+    return { name: 'Config File', status: 'pass', message: `Found: ${foundJson[0]}` };
   }
 
   return { name: 'Config File', status: 'warn', message: 'No config file (using defaults)', fix: 'claude-flow config init' };
