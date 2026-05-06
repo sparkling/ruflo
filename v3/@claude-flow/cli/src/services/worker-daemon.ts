@@ -109,7 +109,19 @@ const DEFAULT_WORKERS: WorkerConfigInternal[] = [
   { type: 'deepdive', intervalMs: 4 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Deep code analysis', enabled: false },
   { type: 'refactor', intervalMs: 4 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Refactoring suggestions', enabled: false },
   { type: 'benchmark', intervalMs: 2 * 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Performance benchmarking', enabled: false },
-  { type: 'preload', intervalMs: 10 * 60 * 1000, offsetMs: 0, priority: 'high', description: 'Embedding model + HNSW preload', enabled: true },
+  // Bug-5 (2026-05-06): preload worker was firing immediately on every
+  // daemon spawn (offsetMs:0), loading the full ONNX Xenova/all-mpnet-base-v2
+  // model into the daemon process. With the MCP server (separate process)
+  // ALSO loading the same model on its own startup via memory_search-on-
+  // demand, two parallel cold-loads of @xenova/transformers' WASM heap
+  // allocate ~5GB combined within ~2s post-session-attach (observed in HM
+  // hejlsberg worktree, fresh daemon, 24 plugins installed). The model
+  // gets loaded lazily by the MCP server when memory_search is actually
+  // invoked — preload-on-startup is redundant duplication.
+  // Fix: stagger preload to 90s post-startup so the MCP server can warm
+  // its own copy first, AND drop priority from 'high' to 'normal' so it
+  // doesn't preempt other startup work.
+  { type: 'preload', intervalMs: 10 * 60 * 1000, offsetMs: 90 * 1000, priority: 'normal', description: 'Embedding model + HNSW preload (deferred to avoid MCP cold-load contention)', enabled: true },
 ];
 
 // Worker timeout — must exceed the longest per-worker headless timeout (15 min for audit/refactor).
