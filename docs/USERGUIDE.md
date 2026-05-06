@@ -1,6 +1,8 @@
 # Ruflo User Guide
 
-> Complete reference documentation for Ruflo v3.5. For a quick overview, see the [README](../README.md).
+> Complete reference documentation for Ruflo v3.7. For a quick overview, see the [README](../README.md).
+>
+> **Latest:** `npx ruflo@latest --version` → **3.7.0-alpha.8**. See [What's new in 3.7](#whats-new-in-37) below.
 
 ---
 
@@ -19,6 +21,61 @@
 - [Architecture & Modules](#%EF%B8%8F-architecture--modules)
 - [Configuration & Reference](#%EF%B8%8F-configuration--reference)
 - [Help & Resources](#-help--resources)
+- [What's new in 3.7](#whats-new-in-37)
+
+---
+
+## What's new in 3.7
+
+Recent releases (3.7.0-alpha.1 through alpha.8) shipped four substantial pieces. End-user CLI surface is unchanged — these are substrate improvements that compound on every existing feature.
+
+### `@claude-flow/cli-core` (alpha.5+) — fast lite path for plugin scripts
+
+A new sibling package that handles **memory commands only** (no SQLite, no HNSW, no ONNX). Cold-cache `npx` wall-time drops from ~35s to ~1.5s — a measured **22.9× speedup** for plugin authors.
+
+```bash
+# Plugin scripts can opt in via env flag:
+const cliPkg = process.env.CLI_CORE === '1'
+  ? '@claude-flow/cli-core@alpha'  # ~1.5s cold-cache
+  : '@claude-flow/cli@latest';     # ~35s cold-cache (full features)
+```
+
+The full `@claude-flow/cli` is unchanged for end users. Reference: [`v3/@claude-flow/cli-core/MIGRATION.md`](../v3/@claude-flow/cli-core/MIGRATION.md). 8 plugin scripts in this repo are already CLI_CORE-aware.
+
+### Thompson sampling model router (alpha.5)
+
+The 3-tier model selector (Haiku / Sonnet / Opus) is now a **cost-adjusted multi-armed bandit** instead of static thresholds. `hooks_model-outcome` calls update Beta(α, β) priors per tier; `hooks_model-route` samples θ ~ Beta(α, β) and picks argmax. After ~50 outcomes the routing distribution self-corrects against tier overuse — no manual threshold tuning. Cost: 45 µs per route call.
+
+### `@claude-flow/neural@3.0.0-alpha.8` — substrate upgrades
+
+Six concrete additions to the neural package:
+
+1. **Persistence** — `serialize()` / `deserialize()` on `SONAManager`, `ReasoningBank`, `PatternLearner`. Process restarts no longer wipe state.
+2. **Seedable PRNG** — `Mulberry32` + `setGlobalRng` for reproducible training runs and deterministic tests.
+3. **Self-consistency orchestrator** — `selfConsistency(N, op, aggregator)` (Wang et al. 2022). 5–15pp accuracy on reasoning tasks at Nx compute.
+4. **Flash Attention + MoE routing** migrated from cli into the package (1,679 LOC moved). Single source of truth.
+5. **Retrieval-path observability** — `hnswRetrievalCount` vs `bruteForceRetrievalCount` in stats so you can tell which path your queries actually hit.
+6. **80+ npm SEO keywords** — package now discoverable for `ai-agents`, `multi-agent`, `RL`, `LoRA`, `EWC`, etc.
+
+### `agentdb_*-delete` MCP tools (alpha.8)
+
+Three new MCP tools wired through agentdb@3.0.0-alpha.13's native Cypher-routed delete API:
+
+- `agentdb_hierarchical-delete` — calls `ReflexionMemory.deleteEpisode` (graph + vector + SQL all-in-one)
+- `agentdb_causal-edge-delete` — calls `GraphDatabaseAdapter.deleteEdgesByEndpoints(from, to, relation?)` (Cypher-injection-safe)
+- `agentdb_causal-node-delete` — calls `GraphDatabaseAdapter.deleteNode(id, {cascade: true})` returns native `{deletedNode, deletedEdges}` audit
+
+All wrapped in MutationGuard (fail-closed) + AttestationLog (audit). Unblocks `/adr-index` re-index when ADR files are deleted from disk — stale nodes + dangling `supersedes` / `amends` / `related` / `depends-on` edges are now scrubbable. Closed [#1784](https://github.com/ruvnet/ruflo/issues/1784).
+
+### What didn't change
+
+- Public CLI surface (26 commands, 140+ subcommands)
+- Agent registry (60+ agent types)
+- Plugin marketplace
+- Hooks system (27 hooks + 12 background workers)
+- Configuration files (`claude-flow.config.json`, `.env`, etc.)
+
+If you're running `npx ruflo@latest`, everything you used in 3.6 still works. The above improvements compound underneath.
 
 ---
 
@@ -1040,7 +1097,7 @@ flowchart LR
 <details>
 <summary>🧠 <strong>AgentDB v3 Controllers</strong> — 20+ intelligent memory controllers</summary>
 
-Ruflo V3 integrates AgentDB v3 (3.0.0-alpha.10) providing 20+ memory controllers accessible via MCP tools and the CLI.
+Ruflo V3 integrates AgentDB v3 (3.0.0-alpha.13) providing 20+ memory controllers accessible via MCP tools and the CLI. As of `@claude-flow/cli@3.7.0-alpha.8`, the integration includes the new Cypher-routed delete API (`deleteNode`, `deleteEdge`, `deleteEdgesByEndpoints`, `deleteHyperedge`, plus `ReflexionMemory.deleteEpisode`) for full re-index support.
 
 **Core Memory:**
 
