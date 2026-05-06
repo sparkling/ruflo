@@ -1852,19 +1852,33 @@ const taskCommand: Command = {
     output.printInfo('Submitting task to hive...');
 
     try {
+      // #1791.1 — `hive-mind_task` was never registered in the bundled MCP
+      // server (the `mcp__ruflo__hive-mind_*` surface only exposes init,
+      // spawn, status, broadcast, consensus, memory, shutdown, leave). The
+      // CLI was dispatching to a tool that doesn't exist, producing
+      // `MCP tool not found: hive-mind_task` and aborting.
+      //
+      // Re-route to the existing `task_create` tool. Hive-specific options
+      // (consensus requirement, timeout) are preserved as tags so a future
+      // hive-mind worker / consensus tool can pick them up — the data is
+      // not lost just because the dedicated hive-mind tool isn't there yet.
+      const consensusTag = `consensus:${requireConsensus ? 'required' : 'none'}`;
+      const timeoutTag = `timeout:${timeout}s`;
+
       const result = await callMCPTool<{
         taskId: string;
+        type: string;
         description: string;
+        priority: string;
         status: string;
         assignedTo: string[];
-        priority: string;
-        requiresConsensus: boolean;
-        estimatedTime: string;
-      }>('hive-mind_task', {
+        tags: string[];
+        createdAt: string;
+      }>('task_create', {
+        type: 'hive-mind',
         description,
         priority,
-        requireConsensus,
-        timeout,
+        tags: ['hive-mind', consensusTag, timeoutTag],
       });
 
       if (ctx.flags.format === 'json') {
@@ -1878,9 +1892,10 @@ const taskCommand: Command = {
           `Task ID: ${result.taskId}`,
           `Status: ${formatAgentStatus(result.status)}`,
           `Priority: ${formatPriority(priority)}`,
-          `Assigned: ${result.assignedTo.join(', ')}`,
-          `Consensus: ${result.requiresConsensus ? 'Yes' : 'No'}`,
-          `Est. Time: ${result.estimatedTime}`
+          `Assigned: ${result.assignedTo.length > 0 ? result.assignedTo.join(', ') : 'pending dispatch'}`,
+          `Consensus: ${requireConsensus ? 'Yes' : 'No'}`,
+          `Timeout: ${timeout}s`,
+          `Tags: ${result.tags.join(', ')}`
         ].join('\n'),
         'Task Submitted'
       );
