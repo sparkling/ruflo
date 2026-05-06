@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/cli",
-  "version": "3.7.0-alpha.1",
+  "version": "3.7.0-alpha.11",
   "type": "module",
   "description": "Ruflo CLI - Enterprise AI agent orchestration with 60+ specialized agents, swarm coordination, MCP server, self-learning hooks, and vector memory for Claude Code",
   "main": "dist/src/index.js",
@@ -97,6 +97,7 @@
   "dependencies": {
     "@claude-flow/cli-core": "^3.7.0-alpha.5",
     "@claude-flow/mcp": "^3.0.0-alpha.8",
+    "@claude-flow/neural": "^3.0.0-alpha.8",
     "@claude-flow/shared": "^3.0.0-alpha.7",
     "@noble/ed25519": "^2.1.0",
     "@ruvector/rabitq-wasm": "^0.1.0",
@@ -107,7 +108,7 @@
     "@claude-flow/codex": "^3.0.0-alpha.8",
     "@claude-flow/embeddings": "^3.0.0-alpha.12",
     "@claude-flow/guidance": "^3.0.0-alpha.1",
-    "@claude-flow/memory": "^3.0.0-alpha.12",
+    "@claude-flow/memory": "^3.0.0-alpha.14",
     "@claude-flow/plugin-gastown-bridge": "^0.1.3",
     "@claude-flow/security": "^3.0.0-alpha.1",
     "@ruvector/attention": "^0.1.32",
@@ -117,8 +118,8 @@
     "@ruvector/router": "^0.1.30",
     "@ruvector/ruvllm-wasm": "^2.0.2",
     "@ruvector/rvagent-wasm": "^0.1.0",
-    "@ruvector/sona": "^0.1.5",
-    "agentdb": "^3.0.0-alpha.11",
+    "@ruvector/sona": "^0.1.6",
+    "agentdb": "^3.0.0-alpha.13",
     "agentic-flow": "^3.0.0-alpha.1"
   },
   "publishConfig": {
