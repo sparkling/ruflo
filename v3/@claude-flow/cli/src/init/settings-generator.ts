@@ -42,11 +42,17 @@ export function generateSettings(options: InitOptions): object {
     ],
   };
 
-  // Add RuFlo attribution for git commits and PRs
-  settings.attribution = {
-    commit: 'Co-Authored-By: RuFlo <ruv@ruv.net>',
-    pr: '🤖 Generated with [RuFlo](https://github.com/ruvnet/ruflo)',
-  };
+  // #1670 — RuFlo attribution (Co-Authored-By trailer + PR footer) is now
+  // OPT-IN. Default behavior no longer injects a third-party Co-Authored-By
+  // line into the user's commits — that pattern silently inflated GitHub
+  // contributor graphs and was hard to undo without rewriting history. Pass
+  // `--attribution` (or `attribution: true` in InitOptions) to enable.
+  if (options.attribution === true) {
+    settings.attribution = {
+      commit: 'Co-Authored-By: RuFlo <ruv@ruv.net>',
+      pr: '🤖 Generated with [RuFlo](https://github.com/ruvnet/ruflo)',
+    };
+  }
 
   // Note: Claude Code expects 'model' to be a string, not an object
   // Model preferences are stored in claudeFlow settings instead

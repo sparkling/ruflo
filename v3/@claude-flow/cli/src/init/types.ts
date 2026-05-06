@@ -409,6 +409,13 @@ export interface InitOptions {
    * Set true via --no-global to keep the global Claude rules file pristine (#1744).
    */
   skipGlobalClaudeMd?: boolean;
+  /**
+   * #1670 — opt in to writing the `attribution` block in `.claude/settings.json`
+   * (Co-Authored-By trailer + PR footer). Defaults to false: most users do not
+   * want a third-party Co-Authored-By line silently added to their commits and
+   * GitHub contributor graph. Pass `--attribution` to opt in.
+   */
+  attribution?: boolean;
 }
 
 /**
