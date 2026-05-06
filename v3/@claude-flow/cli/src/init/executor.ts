@@ -837,6 +837,49 @@ async function writeSettings(
 }
 
 /**
+ * #1779 — Walk parents of `targetDir` plus the user-global Claude Code
+ * config locations, looking for any `.mcp.json` (or `~/.claude.json`)
+ * that already declares a `ruflo`-keyed MCP server. We use this to skip
+ * writing our own `claude-flow`-keyed entry when the user has already
+ * registered the same binary under the new name — that's exactly the
+ * "same MCP server twice under two different prefixes" duplication the
+ * issue describes.
+ *
+ * Returns the path of the file that already declares `ruflo` (so we can
+ * surface it in the skipped-message), or null if none found.
+ */
+function detectExistingRufloMCP(targetDir: string): string | null {
+  const home = (process.env.HOME ?? process.env.USERPROFILE) ?? '';
+  const candidates = new Set<string>();
+  // User-global Claude Code config locations
+  if (home) {
+    candidates.add(path.join(home, '.claude.json'));
+    candidates.add(path.join(home, '.claude', 'mcp.json'));
+  }
+  // Walk parents of targetDir up to root, checking for .mcp.json at each
+  let dir = path.resolve(targetDir);
+  while (true) {
+    candidates.add(path.join(dir, '.mcp.json'));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Skip the targetDir itself — that's the one we're about to write
+  candidates.delete(path.join(path.resolve(targetDir), '.mcp.json'));
+
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
+      if (parsed && typeof parsed === 'object' && parsed.mcpServers && typeof parsed.mcpServers === 'object') {
+        if ('ruflo' in parsed.mcpServers) return candidate;
+      }
+    } catch { /* malformed JSON — ignore */ }
+  }
+  return null;
+}
+
+/**
  * Write .mcp.json
  */
 async function writeMCPConfig(
@@ -849,6 +892,20 @@ async function writeMCPConfig(
   if (fs.existsSync(mcpPath) && !options.force) {
     result.skipped.push('.mcp.json');
     return;
+  }
+
+  // #1779 — Skip writing if the user already has a `ruflo`-keyed MCP
+  // server registered elsewhere (parent .mcp.json, ~/.claude.json, etc).
+  // Writing our `claude-flow`-keyed entry on top of that produces the
+  // duplicate-registration the issue describes (~250 duplicate tools).
+  // Force-mode (`--force`) bypasses this guard for users who actually
+  // want both registrations.
+  if (!options.force) {
+    const existingRufloPath = detectExistingRufloMCP(targetDir);
+    if (existingRufloPath) {
+      result.skipped.push(`.mcp.json (existing 'ruflo' MCP registration found at ${existingRufloPath} — would create duplicate; pass --force to write anyway)`);
+      return;
+    }
   }
 
   const content = generateMCPJson(options);
