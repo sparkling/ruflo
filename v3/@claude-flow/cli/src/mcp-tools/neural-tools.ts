@@ -705,7 +705,8 @@ export const neuralTools: MCPTool[] = [
           // The two surfaces now agree on a single source of truth.
           flashAttention: await (async () => {
             try {
-              const { getFlashAttention } = await import('../ruvector/flash-attention.js');
+              // #1773 item 4 — flash-attention now lives in @claude-flow/neural
+              const { getFlashAttention } = await import('@claude-flow/neural');
               return getFlashAttention() !== null;
             } catch {
               return false;

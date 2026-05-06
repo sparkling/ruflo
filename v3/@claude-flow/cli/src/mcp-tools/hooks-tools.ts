@@ -115,11 +115,12 @@ async function getEWCConsolidator() {
 }
 
 // MoE Router - lazy loaded
-let moeRouter: Awaited<ReturnType<typeof import('../ruvector/moe-router.js').getMoERouter>> | null = null;
+// #1773 item 4 — moe-router migrated to @claude-flow/neural
+let moeRouter: Awaited<ReturnType<typeof import('@claude-flow/neural').getMoERouter>> | null = null;
 async function getMoERouter() {
   if (!moeRouter) {
     try {
-      const { getMoERouter: getMoE } = await import('../ruvector/moe-router.js');
+      const { getMoERouter: getMoE } = await import('@claude-flow/neural');
       moeRouter = await getMoE();
     } catch {
       moeRouter = null;
@@ -447,11 +448,12 @@ function getRouterBackendInfo(): { backend: string; speed: string } {
 }
 
 // Flash Attention - lazy loaded
-let flashAttention: Awaited<ReturnType<typeof import('../ruvector/flash-attention.js').getFlashAttention>> | null = null;
+// #1773 item 4 — flash-attention migrated to @claude-flow/neural
+let flashAttention: Awaited<ReturnType<typeof import('@claude-flow/neural').getFlashAttention>> | null = null;
 async function getFlashAttention() {
   if (!flashAttention) {
     try {
-      const { getFlashAttention: getFlash } = await import('../ruvector/flash-attention.js');
+      const { getFlashAttention: getFlash } = await import('@claude-flow/neural');
       flashAttention = await getFlash();
     } catch {
       flashAttention = null;

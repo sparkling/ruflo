@@ -25,7 +25,7 @@ import type {
   NeuralEvent,
   NeuralEventListener,
 } from './types.js';
-import { EMBEDDING_DIM } from './embedding-constants.js';
+import { deepEncode, deepDecode } from './utils/serialize.js';
 
 // ============================================================================
 // AgentDB Integration
@@ -94,24 +94,16 @@ export interface ReasoningBankConfig {
 /**
  * Default ReasoningBank configuration
  */
-// ADR-0069 A11: config-chain dedup threshold
-let _configChainDedupThreshold = 0.95;
-try {
-  const _cfg = JSON.parse(require('fs').readFileSync(
-    require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-  _configChainDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
-} catch { /* use default */ }
-
 const DEFAULT_CONFIG: ReasoningBankConfig = {
   maxTrajectories: 5000,
   distillationThreshold: 0.6,
   retrievalK: 3,
   mmrLambda: 0.7,
   maxPatternAgeDays: 30,
-  dedupThreshold: _configChainDedupThreshold, // ADR-0069 A11: config-chain-aware
+  dedupThreshold: 0.95,
   enableContradictionDetection: true,
   dbPath: undefined,
-  vectorDimension: EMBEDDING_DIM, // ADR-0052: matches embedding config default
+  vectorDimension: 768,
   namespace: 'reasoning-bank',
   enableAgentDB: true,
 };
@@ -194,6 +186,11 @@ export class ReasoningBank {
   private totalJudgeTime = 0;
   private consolidationCount = 0;
   private totalConsolidationTime = 0;
+  // #1773 item 2 — observable retrieval-path counters so the dashboard can
+  // tell users whether HNSW is actually firing or they're silently getting
+  // brute-force performance.
+  private hnswRetrievalCount = 0;
+  private bruteForceRetrievalCount = 0;
 
   constructor(config: Partial<ReasoningBankConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -266,6 +263,7 @@ export class ReasoningBank {
     }
 
     let candidates: Array<{ entry: MemoryEntry; relevance: number }> = [];
+    let usedHnsw = false;
 
     // Try AgentDB HNSW search first
     if (this.agentdb && this.agentdbAvailable) {
@@ -277,6 +275,7 @@ export class ReasoningBank {
             return entry ? { entry, relevance: r.similarity } : null;
           })
           .filter((c): c is { entry: MemoryEntry; relevance: number } => c !== null);
+        if (candidates.length > 0) usedHnsw = true;
       } catch {
         // Fall through to brute-force
       }
@@ -290,6 +289,11 @@ export class ReasoningBank {
       }
       candidates.sort((a, b) => b.relevance - a.relevance);
     }
+
+    // #1773 item 2 — record which retrieval path actually fired so the
+    // dashboard can surface "you got HNSW" vs "you got O(n) brute-force"
+    if (usedHnsw) this.hnswRetrievalCount++;
+    else this.bruteForceRetrievalCount++;
 
     // Apply MMR for diversity
     const results: RetrievalResult[] = [];
@@ -742,6 +746,10 @@ export class ReasoningBank {
       failedTrajectories: this.getFailedTrajectories().length,
       agentdbEnabled: this.agentdbAvailable ? 1 : 0,
       retrievalCount: this.retrievalCount,
+      // #1773 item 2 — observable retrieval-path split so callers can tell
+      // whether they actually got HNSW or were silently downgraded.
+      hnswRetrievalCount: this.hnswRetrievalCount,
+      bruteForceRetrievalCount: this.bruteForceRetrievalCount,
       distillationCount: this.distillationCount,
       judgeCount: this.judgeCount,
       consolidationCount: this.consolidationCount,
@@ -807,6 +815,72 @@ export class ReasoningBank {
         commonCommands: patternStrategies.slice(0, 4),
       },
     };
+  }
+
+  // ==========================================================================
+  // Persistence (#1773 Phase 1.6)
+  // ==========================================================================
+
+  /**
+   * Serialize bank state to a JSON-safe object. Float32Array embeddings,
+   * Maps, and nested structures encode losslessly. Excludes the AgentDB
+   * connection (it's a runtime resource that must be re-acquired) and the
+   * event listener Set (callers re-register on restore).
+   */
+  serialize(): unknown {
+    return deepEncode({
+      schemaVersion: 1,
+      config: this.config,
+      trajectories: this.trajectories,
+      memories: this.memories,
+      patterns: this.patterns,
+      counters: {
+        retrievalCount: this.retrievalCount,
+        totalRetrievalTime: this.totalRetrievalTime,
+        distillationCount: this.distillationCount,
+        totalDistillationTime: this.totalDistillationTime,
+        judgeCount: this.judgeCount,
+        totalJudgeTime: this.totalJudgeTime,
+        consolidationCount: this.consolidationCount,
+        totalConsolidationTime: this.totalConsolidationTime,
+      },
+    });
+  }
+
+  /**
+   * Restore bank state from a previously-serialized snapshot. AgentDB
+   * connection is NOT restored — call initialize() again afterward to
+   * re-acquire it. Event listeners are NOT restored — re-register manually.
+   */
+  deserialize(state: unknown): void {
+    const decoded = deepDecode(state) as {
+      schemaVersion: number;
+      config: ReasoningBankConfig;
+      trajectories: Map<string, Trajectory>;
+      memories: Map<string, MemoryEntry>;
+      patterns: Map<string, Pattern>;
+      counters: {
+        retrievalCount: number; totalRetrievalTime: number;
+        distillationCount: number; totalDistillationTime: number;
+        judgeCount: number; totalJudgeTime: number;
+        consolidationCount: number; totalConsolidationTime: number;
+      };
+    };
+    if (decoded.schemaVersion !== 1) {
+      throw new Error(`ReasoningBank: unsupported schemaVersion ${decoded.schemaVersion} (expected 1)`);
+    }
+    this.config = { ...this.config, ...decoded.config };
+    this.trajectories = decoded.trajectories;
+    this.memories = decoded.memories;
+    this.patterns = decoded.patterns;
+    this.retrievalCount = decoded.counters.retrievalCount;
+    this.totalRetrievalTime = decoded.counters.totalRetrievalTime;
+    this.distillationCount = decoded.counters.distillationCount;
+    this.totalDistillationTime = decoded.counters.totalDistillationTime;
+    this.judgeCount = decoded.counters.judgeCount;
+    this.totalJudgeTime = decoded.counters.totalJudgeTime;
+    this.consolidationCount = decoded.counters.consolidationCount;
+    this.totalConsolidationTime = decoded.counters.totalConsolidationTime;
   }
 
   // ==========================================================================
