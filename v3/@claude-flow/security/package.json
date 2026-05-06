@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/security",
-  "version": "3.0.0-alpha.6-patch.447",
+  "version": "3.0.0-alpha.7",
   "type": "module",
   "description": "Security module - CVE fixes, input validation, path security",
   "main": "dist/index.js",
@@ -14,11 +14,10 @@
     "build": "tsc"
   },
   "dependencies": {
-    "bcrypt": "^5.1.1",
+    "bcryptjs": "^3.0.3",
     "zod": "^3.22.0"
   },
   "devDependencies": {
-    "@types/bcrypt": "^5.0.2",
     "vitest": "^4.0.16"
   },
   "publishConfig": {
