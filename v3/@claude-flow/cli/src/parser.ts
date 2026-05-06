@@ -131,6 +131,18 @@ export class CommandParser {
     this.lazyCommandNames.add(name);
   }
 
+  /**
+   * #1791.2 — true when `name` is a lazy command that hasn't been promoted
+   * to a fully registered Command yet. The CLI uses this to eagerly load
+   * the module before parsing so its subcommand flags (e.g. `-d` for
+   * `hive-mind task --description`) are scoped into the alias map. Without
+   * this, lazy commands' short flags silently fall through to global
+   * resolution and the action handler sees an empty `flags.description`.
+   */
+  isLazyOnly(name: string): boolean {
+    return this.lazyCommandNames.has(name) && !this.commands.has(name);
+  }
+
   private isKnownCommandName(name: string): boolean {
     return this.commands.has(name) || this.lazyCommandNames.has(name);
   }

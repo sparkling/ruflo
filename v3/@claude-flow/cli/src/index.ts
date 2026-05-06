@@ -94,6 +94,22 @@ export class CLI {
    */
   async run(args: string[] = process.argv.slice(2)): Promise<void> {
     try {
+      // #1791.2 — If the user invoked a lazy command (e.g. `hive-mind task`),
+      // pre-load it BEFORE parsing so the parser can build scoped flag
+      // aliases for its subcommands. Without this, short flags defined on
+      // the lazy command's subcommand options (`-d` for description, etc.)
+      // never get into the alias map and silently fall through to global
+      // resolution — the user sees `[ERROR] Task description is required`
+      // even though they passed `-d "smoke"`.
+      for (const arg of args) {
+        if (arg.startsWith('-')) continue;
+        if (this.parser.isLazyOnly(arg)) {
+          const cmd = await getCommandAsync(arg);
+          if (cmd) this.parser.registerCommand(cmd);
+        }
+        break; // only the first non-flag positional is the command name
+      }
+
       // Parse arguments
       const parseResult = this.parser.parse(args);
       const { command: commandPath, flags, positional } = parseResult;
