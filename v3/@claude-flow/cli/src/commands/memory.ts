@@ -664,6 +664,69 @@ const statsCommand: Command = {
         ]
       });
 
+      // #1622 — Surface the active embedding provider in `memory stats` so
+      // users can tell which backend resolved at runtime (the 6-level
+      // fallback chain in loadEmbeddingModel ranges from full ONNX to a
+      // 128-dim hash that has no semantic understanding). Calling
+      // loadEmbeddingModel() is cheap when the model is already cached;
+      // a fresh call still resolves quickly because we only need the
+      // metadata, not a real embedding.
+      try {
+        const { loadEmbeddingModel, getHNSWStatus } = await import('../memory/memory-initializer.js');
+        const embedding = await loadEmbeddingModel({ verbose: false });
+        const hnsw = getHNSWStatus();
+        // Map model name → semantic capability so users can spot the
+        // hash-fallback case without reading docs.
+        const semanticProviders = new Set([
+          'Xenova/all-MiniLM-L6-v2',
+          'Xenova/all-mpnet-base-v2',
+          'Xenova/bge-small-en-v1.5',
+          'agentic-flow',
+          'agentic-flow/reasoningbank',
+          'ruvector/onnx',
+          'cached',
+        ]);
+        const isSemantic = embedding.success && semanticProviders.has(embedding.modelName);
+
+        output.writeln();
+        output.writeln(output.bold('Embedding'));
+        output.printTable({
+          columns: [
+            { key: 'metric', header: 'Metric', width: 20 },
+            { key: 'value', header: 'Value', width: 30, align: 'right' }
+          ],
+          data: [
+            {
+              metric: 'Provider',
+              value: embedding.success
+                ? embedding.modelName
+                : output.warning(`unavailable: ${embedding.error || 'unknown'}`),
+            },
+            { metric: 'Dimensions', value: String(embedding.dimensions) },
+            {
+              metric: 'Semantic Search',
+              value: isSemantic
+                ? output.success('yes')
+                : output.warning('no — using hash fallback'),
+            },
+            {
+              metric: 'HNSW Index',
+              value: hnsw.available && hnsw.initialized
+                ? output.success(`active (${hnsw.entryCount.toLocaleString()} entries)`)
+                : hnsw.available
+                  ? output.warning('available but not initialized')
+                  : output.dim('not active'),
+            },
+          ]
+        });
+      } catch (e) {
+        // Don't fail the whole stats command if introspection breaks —
+        // the rest of the dashboard is still useful.
+        output.writeln();
+        output.writeln(output.bold('Embedding'));
+        output.printInfo(`Provider info unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
       output.writeln();
       output.printInfo('V3 Performance: 150x-12,500x faster search with HNSW indexing');
 
