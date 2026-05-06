@@ -238,7 +238,7 @@ export const wasmAgentTools: MCPTool[] = [
       type: 'object' as const,
       properties: {
         template: { type: 'string', description: 'Gallery template name (coder, researcher, tester, reviewer, security, swarm)' },
-        model: { type: 'string', description: 'Model identifier (default: anthropic:claude-sonnet-4-20250514)' },
+        model: { type: 'string', description: 'Model identifier (default: anthropic:claude-sonnet-4-6)' },
         instructions: { type: 'string', description: 'System instructions for the agent' },
         maxTurns: { type: 'number', description: 'Max conversation turns (default: 50)' },
       },

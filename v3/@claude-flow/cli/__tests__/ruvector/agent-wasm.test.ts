@@ -154,7 +154,7 @@ describe('agent-wasm integration', () => {
       agentId = info.id;
       expect(info.id).toMatch(/^wasm-agent-/);
       expect(info.state).toBe('idle');
-      expect(info.model).toBe('anthropic:claude-sonnet-4-20250514');
+      expect(info.model).toBe('anthropic:claude-sonnet-4-6');
       expect(info.fileCount).toBe(0);
       expect(info.isStopped).toBe(false);
     });
@@ -325,6 +325,11 @@ describe('agent-wasm integration', () => {
     it('creates agent from template', async () => {
       const info = await createAgentFromTemplate('coder');
       expect(info.id).toMatch(/^wasm-agent-/);
+      // #1810 — gallery templates pass `model: undefined` and must
+      // inherit the current default. Pin the assertion here so a
+      // future regression of the default surfaces in the gallery path
+      // too, not just in the bare `createWasmAgent` path.
+      expect(info.model).toBe('anthropic:claude-sonnet-4-6');
       terminateWasmAgent(info.id);
     });
 

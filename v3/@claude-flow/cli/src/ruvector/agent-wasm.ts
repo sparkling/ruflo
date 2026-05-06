@@ -110,8 +110,11 @@ export async function createWasmAgent(config: WasmAgentConfig = {}): Promise<Was
   await initAgentWasm();
   const mod = await import('@ruvector/rvagent-wasm');
 
+  // #1810 — was hardcoded `anthropic:claude-sonnet-4-20250514`. Updated to
+  // current Sonnet (4.6) so new gallery agents don't silently inherit a
+  // year-old model. Callers can still override via `config.model`.
   const configJson = JSON.stringify({
-    model: config.model ?? 'anthropic:claude-sonnet-4-20250514',
+    model: config.model ?? 'anthropic:claude-sonnet-4-6',
     instructions: config.instructions ?? 'You are a helpful coding assistant.',
     max_turns: config.maxTurns ?? 50,
   });
