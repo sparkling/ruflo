@@ -90,6 +90,14 @@ export interface SkillsConfig {
   v3: boolean;
   /** Include dual-mode skills (Claude Code + Codex hybrid) */
   dualMode: boolean;
+  /** ADR-0148 C: Include AI-native VCS skill (npx agentic-jujutsu) */
+  jujutsu?: boolean;
+  /** ADR-0148 C: Include hive-mind-advanced (queen-led collective intelligence per ADR-0140) */
+  hiveMind?: boolean;
+  /** ADR-0148 C: Include performance-analysis bottleneck workflow */
+  performance?: boolean;
+  /** ADR-0148 C: Include worker-benchmarks + worker-integration (loop-worker test harnesses) */
+  workers?: boolean;
   /** Include all available skills */
   all: boolean;
 }

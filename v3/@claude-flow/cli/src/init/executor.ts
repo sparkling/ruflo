@@ -79,6 +79,16 @@ const SKILLS_MAP: Record<string, string[]> = {
     'v3-security-overhaul',
     'v3-swarm-coordination',
   ],
+  // ADR-0148 Category C: 5 skills that existed in fork source but weren't
+  // copied to user projects because they had no SKILLS_MAP category. Now
+  // categorised so `--full` (and category-specific flags) ship them.
+  jujutsu: ['agentic-jujutsu'],          // npx agentic-jujutsu — AI-native VCS
+  hiveMind: ['hive-mind-advanced'],      // Queen-led collective intelligence (ADR-0140)
+  performance: ['performance-analysis'], // Performance bottleneck + optimization workflow
+  workers: [
+    'worker-benchmarks',                 // Background worker benchmark suite
+    'worker-integration',                // Worker contract integration tests
+  ],
 };
 
 /**
@@ -848,6 +858,11 @@ async function copySkills(
     if (skillsConfig.browser) skillsToCopy.push(...SKILLS_MAP.browser);
     if (skillsConfig.v3) skillsToCopy.push(...SKILLS_MAP.v3);
     if (skillsConfig.dualMode) skillsToCopy.push(...SKILLS_MAP.dualMode);
+    // ADR-0148 Category C — opt-in flags for previously-fork-only skills
+    if (skillsConfig.jujutsu) skillsToCopy.push(...SKILLS_MAP.jujutsu);
+    if (skillsConfig.hiveMind) skillsToCopy.push(...SKILLS_MAP.hiveMind);
+    if (skillsConfig.performance) skillsToCopy.push(...SKILLS_MAP.performance);
+    if (skillsConfig.workers) skillsToCopy.push(...SKILLS_MAP.workers);
   }
 
   // Find source skills directory
