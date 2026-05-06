@@ -51,6 +51,11 @@ export interface MemoryOp {
   threshold?: number;
   generateEmbedding?: boolean;
   ids?: string[];  // for bulkDelete
+  // ADR-0147 R6 (2026-05-06): keyPrefix lets list-arm callers push prefix
+  // filtering down into storage.query() (RVF/SQLite backends both honor it).
+  // Without this, callers had to fetch a fixed-size page and filter
+  // client-side — invisible past the page boundary as the namespace grows.
+  keyPrefix?: string;
 }
 
 export interface MemoryResult {
@@ -1062,6 +1067,11 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         const entries = await storage.query({
           type: 'prefix',
           namespace,
+          // ADR-0147 R6 (2026-05-06): forward keyPrefix to storage so it
+          // pre-filters during the scan instead of returning the first
+          // `limit` entries by insertion order. RVF rvf-backend.ts:637
+          // and SQLite sqlite-backend.ts:309 both honor q.keyPrefix.
+          keyPrefix: op.keyPrefix,
           limit: op.limit || 50,
           offset: op.offset || 0,
         });
@@ -1807,6 +1817,23 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
     case 'edge': {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const causalGraph = await getController<any>('causalGraph');
+      // TODO ADR-0147 R7: deferred — controller exposes addCausalEdge(edge:
+      // CausalEdge) where CausalEdge requires NUMERIC fromMemoryId/toMemoryId
+      // and a fixed memoryType enum ('episode'|'skill'|'note'|'fact'). The
+      // router receives STRING ADR keys (e.g. "ADR-0147→ADR-0167") and has
+      // no machinery to allocate, persist, or look up numeric IDs for them.
+      // Wiring this requires:
+      //   1. an ADR-key→numeric-id allocator with a durable mapping table,
+      //   2. extending the memoryType enum (or registering ADRs as a new
+      //      memory class) — agentic-flow side change, not just router,
+      //   3. registering the mapping with NodeIdMapper at write time AND
+      //      restoring it at read time (NodeIdMapper is in-process, not
+      //      persisted).
+      // That's substantial new infrastructure across two packages. Until
+      // that lands, the addEdge() check below is intentionally false (the
+      // controller has no addEdge method, only addCausalEdge with the
+      // wrong-shape contract), and writes go through the namespace
+      // fallback, which IS correct end-to-end with R6's read-arm fix.
       if (causalGraph && typeof causalGraph.addEdge === 'function') {
         try {
           causalGraph.addEdge(op.sourceId || '', op.targetId || '', {
@@ -1881,13 +1908,42 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
       // returning empty in Bug-2; ADR-0147 §"Bug 4" Refinement 3 makes this
       // unconditional so the controller can't short-circuit and hide outbound
       // edges that only the namespace path knows about.
+      //
+      // ADR-0147 R6 (2026-05-06): the previous fixed `Math.max(k * 4, 100)`
+      // limit was invisible past the first 100 entries because rvf-backend's
+      // query() iterates Map insertion order (not k-relative) and there was
+      // no keyPrefix filter pushed into storage. Two-shape fix:
+      //   - cause= queries: keys are `${sourceId}→${targetId}`, so source
+      //     IS the key prefix. Push it down → O(matches), not O(namespace).
+      //   - effect= queries: target is the key SUFFIX, so prefix-filtering
+      //     can't help. Size the limit to the full namespace count so the
+      //     scan covers every edge before client-side filtering.
       let fallbackResults: ParsedEdge[] = [];
       try {
-        const fallback = await routeMemoryOp({
+        const listOp: MemoryOp = {
           type: 'list',
           namespace: 'causal-edges',
           limit: Math.max(k * 4, 100),
-        });
+        };
+        if (op.cause) {
+          listOp.keyPrefix = `${op.cause}→`;
+        } else if (op.effect) {
+          // Suffix-encoded — must scan full namespace. count() returns the
+          // exact size; cap modestly so a runaway namespace doesn't materialize
+          // millions of entries in memory. The router's count op is O(N) on
+          // the entries map but doesn't materialize them.
+          const countResult = await routeMemoryOp({
+            type: 'count',
+            namespace: 'causal-edges',
+          });
+          const countShape = countResult as unknown as { count?: number };
+          const nsSize = typeof countShape.count === 'number' ? countShape.count : 0;
+          // Hard ceiling at 100k entries. Past that, the suffix-scan strategy
+          // is itself the wrong shape — it's a separate, larger problem
+          // (would need a reverse-key index in the storage layer).
+          listOp.limit = Math.max(Math.min(nsSize, 100_000), Math.max(k * 4, 100));
+        }
+        const fallback = await routeMemoryOp(listOp);
         // Bug-2 follow-up: MemoryEntry storage shape uses `content`, not
         // `value`. Defense-in-depth: if value-parse yields no source/target
         // fields, fall back to parsing the arrow-encoded key
