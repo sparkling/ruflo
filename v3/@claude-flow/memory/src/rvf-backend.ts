@@ -2199,15 +2199,29 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
-  /** Path for the custom-format metadata file. When native is active OR we
-   *  fell back from a corrupt native file (d5), metadata goes to the `.meta`
-   *  sidecar so we never overwrite the native binary file. In pure-cold
-   *  pure-TS mode (no native file ever existed), metadata goes to the main
-   *  path as before. */
+  /** Path for the custom-format metadata file. Always returns the `.meta`
+   *  sidecar regardless of mode. This unifies the write target with
+   *  `loadFromDisk`'s read preference (which picks `.meta` first whenever
+   *  it exists — see lines 2264 native-branch and 2280 pure-TS branch).
+   *
+   *  Prior behavior split the write target: native + native-fallback wrote
+   *  to `.meta`; cold pure-TS wrote to the main path. The loader's read
+   *  preference was unconditionally `.meta`, creating a writer/reader
+   *  divergence in cold pure-TS whenever a `.meta` lingered (e.g. left
+   *  over from a prior native session, or from any session that ran on
+   *  the symmetric branch above). Every cold-pure-TS write became
+   *  invisible on next startup. The fix is symmetric: write to `.meta`
+   *  always; read from `.meta` always.
+   *
+   *  Native binary file at `databasePath` is still untouched — native
+   *  owns it (magic `SFVR`). Cold pure-TS legacy data living at
+   *  `databasePath` (magic `RVF\0`, written by the old asymmetric branch)
+   *  remains readable via `loadFromDisk`'s pure-TS-mode fall-through at
+   *  line 2281, but only when no `.meta` exists. Once any write happens
+   *  in the new symmetric branch, the resulting `.meta` becomes
+   *  canonical and the legacy main-path RVF\0 file is orphaned. */
   private get metadataPath(): string {
-    return (this.nativeDb || this.nativeFallbackMode)
-      ? this.config.databasePath + '.meta'
-      : this.config.databasePath;
+    return this.config.databasePath + '.meta';
   }
 
   /** Compact WAL: rewrite main .rvf with all entries, then delete WAL */
