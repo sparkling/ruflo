@@ -151,6 +151,30 @@ export interface ComplexityAnalysis {
 }
 
 /**
+ * Beta(α, β) prior for Thompson sampling. Each model carries one of these;
+ * outcomes update α (successes) and β (failures) so the router auto-balances
+ * cost/quality without manual threshold tuning. See ADR-101.
+ */
+export interface BetaPrior {
+  alpha: number;
+  beta: number;
+}
+
+/**
+ * Cost-adjusted Bernoulli rewards for Thompson sampling updates. Higher
+ * reward when the right tier is chosen — Haiku-success > Sonnet-success >
+ * Opus-success because Opus-success on a simple task is wasteful even when
+ * the answer is correct. Escalations get partial credit at best (Sonnet) or
+ * zero (Haiku/Opus) since they signal the initial choice was wrong.
+ */
+const BANDIT_REWARDS: Record<ClaudeModel, Record<'success' | 'failure' | 'escalated', number>> = {
+  haiku:   { success: 1.0, failure: 0.0, escalated: 0.0 },
+  sonnet:  { success: 0.7, failure: 0.0, escalated: 0.1 },
+  opus:    { success: 0.4, failure: 0.0, escalated: 0.0 },
+  inherit: { success: 0.5, failure: 0.0, escalated: 0.0 },
+};
+
+/**
  * Router state for persistence
  */
 interface RouterState {
@@ -167,6 +191,79 @@ interface RouterState {
     outcome: 'success' | 'failure' | 'escalated';
     timestamp: string;
   }>;
+  /**
+   * Beta(α, β) priors per model — populated by recordOutcome via Thompson
+   * sampling. Defaults to {alpha:1,beta:1} (uniform). After ~50 outcomes
+   * these converge so the router auto-corrects against tier overuse.
+   */
+  priors?: Record<ClaudeModel, BetaPrior>;
+}
+
+// ============================================================================
+// Beta Sampling for Thompson Sampling Bandit
+// ============================================================================
+
+/**
+ * Standard normal sample via Box-Muller. Used by Marsaglia-Tsang Gamma.
+ * Module-local so the bandit doesn't pull in a heavy stats dep.
+ */
+function sampleStandardNormal(): number {
+  const u1 = Math.random() || 1e-12; // avoid log(0)
+  const u2 = Math.random();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+/**
+ * Sample from Gamma(shape α, scale=1). Marsaglia & Tsang (2000), with the
+ * standard "boost α<1 by α+1 then scale by U^(1/α)" trick for shape parameters
+ * smaller than 1. O(1) expected, no rejection-loop pathology in practice.
+ */
+function sampleGamma(alpha: number): number {
+  if (alpha < 1) {
+    const u = Math.random() || 1e-12;
+    return sampleGamma(alpha + 1) * Math.pow(u, 1 / alpha);
+  }
+  const d = alpha - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    let x: number;
+    let v: number;
+    do {
+      x = sampleStandardNormal();
+      v = 1 + c * x;
+    } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    const xx = x * x;
+    if (u < 1 - 0.0331 * xx * xx) return d * v;
+    if (Math.log(u) < 0.5 * xx + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+
+/**
+ * Sample θ ~ Beta(α, β) via the identity Beta(α,β) = X / (X+Y) where
+ * X ~ Gamma(α), Y ~ Gamma(β). Returns the mean for degenerate α+β=0
+ * (shouldn't happen in practice but defensive).
+ */
+function sampleBeta(alpha: number, beta: number): number {
+  if (alpha <= 0 || beta <= 0) return 0.5;
+  const x = sampleGamma(alpha);
+  const y = sampleGamma(beta);
+  const denom = x + y;
+  return denom > 0 ? x / denom : 0.5;
+}
+
+/**
+ * Default uniform priors (no prior knowledge). Beta(1,1) is the standard
+ * Bayesian-Bernoulli starting point — uniform over [0,1].
+ */
+function defaultBanditPriors(): Record<ClaudeModel, BetaPrior> {
+  return {
+    haiku:   { alpha: 1, beta: 1 },
+    sonnet:  { alpha: 1, beta: 1 },
+    opus:    { alpha: 1, beta: 1 },
+    inherit: { alpha: 1, beta: 1 },
+  };
 }
 
 // ============================================================================
@@ -405,19 +502,34 @@ export class ModelRouter {
   }
 
   /**
-   * Select the best model from scores
+   * Select the best model from scores. Uses Thompson sampling (#1772):
+   * each model's deterministic complexity score is multiplied by a draw
+   * θ_m ~ Beta(α_m, β_m) from its bandit prior. Models with strong empirical
+   * track records get sampled higher; models with poor outcomes get sampled
+   * lower; the system auto-corrects against tier overuse without manual
+   * threshold tuning. Beta(1,1) = uniform on cold start so behavior matches
+   * the prior deterministic router until outcomes accumulate.
    */
   private selectModel(
     scores: Record<ClaudeModel, number>,
     complexityScore: number
   ): { model: ClaudeModel; confidence: number; uncertainty: number } {
-    // Get sorted models by score
-    const sorted = (Object.entries(scores) as [ClaudeModel, number][])
+    // Thompson sampling: combine deterministic score with bandit posterior
+    const priors = this.state.priors ?? defaultBanditPriors();
+    const sampledScores: Record<ClaudeModel, number> = {
+      haiku:   scores.haiku   * sampleBeta(priors.haiku.alpha,   priors.haiku.beta),
+      sonnet:  scores.sonnet  * sampleBeta(priors.sonnet.alpha,  priors.sonnet.beta),
+      opus:    scores.opus    * sampleBeta(priors.opus.alpha,    priors.opus.beta),
+      inherit: scores.inherit, // not bandit-controlled
+    };
+
+    // Get sorted models by sampled score (drops 'inherit' from selection)
+    const sorted = (Object.entries(sampledScores) as [ClaudeModel, number][])
       .filter(([m]) => m !== 'inherit')
       .sort((a, b) => b[1] - a[1]);
 
     const [bestModel, bestScore] = sorted[0];
-    const [secondModel, secondScore] = sorted[1] || ['sonnet', 0];
+    const [, secondScore] = sorted[1] || ['sonnet' as ClaudeModel, 0];
 
     // Confidence is how much better the best is vs second
     const confidence = bestScore > 0 ? Math.min(1, bestScore / (bestScore + secondScore + 0.01)) : 0.5;
@@ -517,6 +629,14 @@ export class ModelRouter {
       this.state.circuitBreakerTrips++;
     }
 
+    // Thompson sampling update (#1772): cost-adjusted Bernoulli reward.
+    // Haiku-success > Sonnet-success > Opus-success (Opus on simple tasks
+    // is wasteful even when correct). Failure/escalation always β++.
+    if (!this.state.priors) this.state.priors = defaultBanditPriors();
+    const reward = BANDIT_REWARDS[model]?.[outcome] ?? 0.5;
+    this.state.priors[model].alpha += reward;
+    this.state.priors[model].beta += 1 - reward;
+
     this.saveState();
   }
 
@@ -553,13 +673,17 @@ export class ModelRouter {
       circuitBreakerTrips: 0,
       lastUpdated: new Date().toISOString(),
       learningHistory: [],
+      priors: defaultBanditPriors(),
     };
 
     try {
       const fullPath = join(process.cwd(), this.config.statePath);
       if (existsSync(fullPath)) {
         const data = readFileSync(fullPath, 'utf-8');
-        return { ...defaultState, ...JSON.parse(data) };
+        const loaded = JSON.parse(data) as Partial<RouterState>;
+        // Backfill priors for state files written by pre-bandit cli versions.
+        if (!loaded.priors) loaded.priors = defaultBanditPriors();
+        return { ...defaultState, ...loaded };
       }
     } catch {
       // Ignore load errors
@@ -597,10 +721,26 @@ export class ModelRouter {
       circuitBreakerTrips: 0,
       lastUpdated: new Date().toISOString(),
       learningHistory: [],
+      priors: defaultBanditPriors(),
     };
     this.consecutiveFailures = { haiku: 0, sonnet: 0, opus: 0, inherit: 0 };
     this.decisionCount = 0;
     this.saveState();
+  }
+
+  /**
+   * Public read-only accessor for the bandit priors. Useful for tests,
+   * dashboards, and the pending hooks_intelligence_stats integration that
+   * surfaces convergence in the dashboard. Returns a copy.
+   */
+  getBanditPriors(): Record<ClaudeModel, BetaPrior> {
+    const p = this.state.priors ?? defaultBanditPriors();
+    return {
+      haiku:   { ...p.haiku },
+      sonnet:  { ...p.sonnet },
+      opus:    { ...p.opus },
+      inherit: { ...p.inherit },
+    };
   }
 }
 
