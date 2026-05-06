@@ -699,7 +699,18 @@ export const neuralTools: MCPTool[] = [
         features: {
           hnsw: true,
           quantization: true,
-          flashAttention: false,
+          // #1770: probe the real loader instead of returning a literal false.
+          // Was hardcoded false, which contradicted hooks_intelligence_stats's
+          // simultaneous claim of `implementation: real-flash-attention`.
+          // The two surfaces now agree on a single source of truth.
+          flashAttention: await (async () => {
+            try {
+              const { getFlashAttention } = await import('../ruvector/flash-attention.js');
+              return getFlashAttention() !== null;
+            } catch {
+              return false;
+            }
+          })(),
           reasoningBank: true,
         },
       };

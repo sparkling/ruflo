@@ -13,6 +13,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
 // ADR-0076 Phase 2: lazily cache canonical cosineSimilarity at module load
@@ -751,18 +752,35 @@ class LocalReasoningBank {
 let ruvllmCoordinator: any = null;
 let ruvllmLoaded = false;
 
-async function loadRuvllmCoordinator(): Promise<any> {
+/**
+ * Synchronously load the @ruvector/ruvllm SonaCoordinator. Used both by the
+ * async init path (initializeIntelligence) and by sync stat readers like
+ * getIntelligenceStats — the dashboard would otherwise report "unavailable"
+ * when stats are queried before any async init has fired (#1770).
+ */
+function loadRuvllmCoordinatorSync(): any {
   if (ruvllmLoaded) return ruvllmCoordinator;
   ruvllmLoaded = true;
   try {
-    const { createRequire } = await import('module');
     const requireCjs = createRequire(import.meta.url);
     const ruvllm = requireCjs('@ruvector/ruvllm');
     ruvllmCoordinator = new ruvllm.SonaCoordinator(ruvllm.DEFAULT_SONA_CONFIG);
     return ruvllmCoordinator;
-  } catch {
+  } catch (err) {
+    // Surface the reason on debug builds so future regressions of #1770 don't
+    // disappear silently. Stays quiet by default to avoid noise on the cli's
+    // hot path (e.g., npx invocations).
+    if (process.env.CLAUDE_FLOW_DEBUG) {
+      // eslint-disable-next-line no-console
+      console.error('[ruvllm] SonaCoordinator load failed, falling back to JS:', (err as Error).message);
+    }
+    ruvllmCoordinator = null;
     return null;
   }
+}
+
+async function loadRuvllmCoordinator(): Promise<any> {
+  return loadRuvllmCoordinatorSync();
 }
 
 // ============================================================================
@@ -1092,6 +1110,14 @@ export function getIntelligenceStats(): IntelligenceStats & {
   const sonaStats = sonaCoordinator?.stats();
   const bankStats = reasoningBank?.stats();
 
+  // Lazy-init the ruvllm coordinator if it hasn't been loaded yet. The MCP
+  // dashboard (`hooks_intelligence_stats`) hits this path before any
+  // initializeIntelligence() call has fired, so the coordinator field would
+  // otherwise stay null and the dashboard would report "unavailable" even
+  // when @ruvector/ruvllm is fully resolvable. Sync require — cheap, idempotent.
+  if (!ruvllmLoaded) {
+    loadRuvllmCoordinatorSync();
+  }
   const ruvllmStats = ruvllmCoordinator?.stats?.() || null;
 
   // Fetch cross-module stats for unified reporting
