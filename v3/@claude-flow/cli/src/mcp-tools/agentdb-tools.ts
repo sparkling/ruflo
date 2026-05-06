@@ -54,6 +54,91 @@ import {
   routeCausalOp,
 } from '../memory/memory-router.js';
 
+import { validateIdentifier } from './validate-input.js';
+
+/**
+ * ADR-0162 Batch C+D hand-port (commit d031c3d13):
+ * In upstream, the delete tools call into `memory-bridge.ts`'s `getBridge()`
+ * helper which exposes `bridgeDeleteHierarchical / bridgeDeleteCausalEdge /
+ * bridgeDeleteCausalNode`. memory-bridge.ts has been deleted in our fork
+ * (ADR-0086 / ADR-0161 relocated the seam to memory-router.ts), so the
+ * cleanest port is to provide a minimal getBridge() locally that probes
+ * the same hierarchicalMemory / causalGraph controllers via getController()
+ * and falls back to a "bridge not available" result when the registry is
+ * uninitialized (the test scenario). Per ADR-0082 / feedback-no-fallbacks,
+ * any unexpected error re-throws via sanitizeError() at the handler level.
+ */
+type BridgeDeleteResult = {
+  success: boolean;
+  deleted: boolean;
+  controller: string;
+  guarded?: boolean;
+  error?: string;
+} & Record<string, unknown>;
+
+type AgentDbBridge = {
+  bridgeDeleteHierarchical: (opts: { key: string; tier?: string }) => Promise<BridgeDeleteResult | null>;
+  bridgeDeleteCausalEdge: (opts: { sourceId: string; targetId: string; relation?: string }) => Promise<BridgeDeleteResult | null>;
+  bridgeDeleteCausalNode: (opts: { nodeId: string }) => Promise<(BridgeDeleteResult & { deletedNode: boolean; deletedEdges: number; nodeId?: string }) | null>;
+};
+
+async function getBridge(): Promise<AgentDbBridge> {
+  return {
+    async bridgeDeleteHierarchical({ key, tier }) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const hm = await getController<any>('hierarchicalMemory');
+      if (!hm) return null;
+      const fn = getCallableMethod(hm, 'delete', 'remove', 'deleteEpisode');
+      if (!fn) {
+        return { success: true, deleted: false, key, tier, controller: 'native-unsupported' };
+      }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await (fn as any).call(hm, key, tier ? { tier } : undefined);
+        const deleted = typeof result === 'boolean' ? result : Boolean(result);
+        return { success: true, deleted, key, tier, controller: 'bridge-fallback' };
+      } catch (err) {
+        return { success: false, deleted: false, key, tier, controller: 'sql-error', error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async bridgeDeleteCausalEdge({ sourceId, targetId, relation }) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cg = await getController<any>('causalGraph');
+      if (!cg) return null;
+      const fn = getCallableMethod(cg, 'deleteEdgesByEndpoints', 'removeEdge', 'deleteEdge');
+      if (!fn) {
+        return { success: true, deleted: false, sourceId, targetId, controller: 'native-unsupported' };
+      }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await (fn as any).call(cg, sourceId, targetId, relation);
+        const deleted = typeof result === 'boolean' ? result : Boolean(result);
+        return { success: true, deleted, sourceId, targetId, controller: 'bridge-fallback' };
+      } catch (err) {
+        return { success: false, deleted: false, sourceId, targetId, controller: 'sql-error', error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async bridgeDeleteCausalNode({ nodeId }) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cg = await getController<any>('causalGraph');
+      if (!cg) return null;
+      const fn = getCallableMethod(cg, 'deleteNode', 'removeNode');
+      if (!fn) {
+        return { success: true, deletedNode: false, deletedEdges: 0, deleted: false, nodeId, controller: 'native-unsupported' };
+      }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result: any = await (fn as any).call(cg, nodeId, { cascade: true });
+        const deletedNode = typeof result?.deletedNode === 'boolean' ? result.deletedNode : Boolean(result);
+        const deletedEdges = typeof result?.deletedEdges === 'number' ? result.deletedEdges : 0;
+        return { success: true, deleted: deletedNode, deletedNode, deletedEdges, nodeId, controller: 'bridge-fallback' };
+      } catch (err) {
+        return { success: false, deleted: false, deletedNode: false, deletedEdges: 0, nodeId, controller: 'sql-error', error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  };
+}
+
 import {
   storePattern,
   searchPatterns,
@@ -1964,6 +2049,100 @@ export const agentdbSonaTrajectoryStore: MCPTool = {
   },
 };
 
+// ===== #1784: Delete tools — symmetry for hierarchical-store + causal-edge =====
+
+export const agentdbHierarchicalDelete: MCPTool = {
+  name: 'agentdb_hierarchical-delete',
+  description: 'Delete a hierarchical-memory entry by key. Returns controller="native-unsupported" when the entry is in a backend without a public delete API.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: 'Memory entry key to delete' },
+      tier: {
+        type: 'string',
+        description: 'Optional tier filter (working, episodic, semantic)',
+        enum: ['working', 'episodic', 'semantic'],
+      },
+    },
+    required: ['key'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const vKey = validateIdentifier(params.key, 'key');
+      if (!vKey.valid) return { success: false, deleted: false, error: vKey.error };
+      if (params.tier) { const vTier = validateIdentifier(params.tier, 'tier'); if (!vTier.valid) return { success: false, deleted: false, error: vTier.error }; }
+      const key = validateString(params.key, 'key', 1000);
+      if (!key) return { success: false, deleted: false, error: 'key is required (non-empty string, max 1KB)' };
+      const tier = validateString(params.tier, 'tier', 20);
+      if (tier && !['working', 'episodic', 'semantic'].includes(tier)) {
+        return { success: false, deleted: false, error: `Invalid tier: ${tier}. Must be working, episodic, or semantic` };
+      }
+      const bridge = await getBridge();
+      const result = await bridge.bridgeDeleteHierarchical({ key, tier: tier ?? undefined });
+      return result ?? { success: false, deleted: false, error: 'AgentDB bridge not available' };
+    } catch (error) {
+      return { success: false, deleted: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+export const agentdbCausalEdgeDelete: MCPTool = {
+  name: 'agentdb_causal-edge-delete',
+  description: 'Delete a causal edge between two memory entries. Returns controller="native-unsupported" when the edge lives in graph-node native storage (no public delete API).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      sourceId: { type: 'string', description: 'Source entry ID' },
+      targetId: { type: 'string', description: 'Target entry ID' },
+      relation: { type: 'string', description: 'Optional relationship type filter' },
+    },
+    required: ['sourceId', 'targetId'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const vSourceId = validateIdentifier(params.sourceId, 'sourceId');
+      if (!vSourceId.valid) return { success: false, deleted: false, error: vSourceId.error };
+      const vTargetId = validateIdentifier(params.targetId, 'targetId');
+      if (!vTargetId.valid) return { success: false, deleted: false, error: vTargetId.error };
+      const sourceId = validateString(params.sourceId, 'sourceId', 500);
+      const targetId = validateString(params.targetId, 'targetId', 500);
+      if (!sourceId) return { success: false, deleted: false, error: 'sourceId is required (non-empty string)' };
+      if (!targetId) return { success: false, deleted: false, error: 'targetId is required (non-empty string)' };
+      const relation = validateString(params.relation, 'relation', 200) ?? undefined;
+      const bridge = await getBridge();
+      const result = await bridge.bridgeDeleteCausalEdge({ sourceId, targetId, relation });
+      return result ?? { success: false, deleted: false, error: 'AgentDB bridge not available' };
+    } catch (error) {
+      return { success: false, deleted: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+export const agentdbCausalNodeDelete: MCPTool = {
+  name: 'agentdb_causal-node-delete',
+  description: 'Cascade-delete a causal node and all its incident edges from the SQL fallback. Native graph-node entries are unaffected (no delete API in the binding).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      nodeId: { type: 'string', description: 'Node ID to delete (cascades to all incident edges)' },
+    },
+    required: ['nodeId'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const vNodeId = validateIdentifier(params.nodeId, 'nodeId');
+      if (!vNodeId.valid) return { success: false, deletedNode: false, deletedEdges: 0, error: vNodeId.error };
+      const nodeId = validateString(params.nodeId, 'nodeId', 500);
+      if (!nodeId) return { success: false, deletedNode: false, deletedEdges: 0, error: 'nodeId is required (non-empty string)' };
+      const bridge = await getBridge();
+      const result = await bridge.bridgeDeleteCausalNode({ nodeId });
+      return result ?? { success: false, deletedNode: false, deletedEdges: 0, error: 'AgentDB bridge not available' };
+    } catch (error) {
+      return { success: false, deletedNode: false, deletedEdges: 0, error: sanitizeError(error) };
+    }
+  },
+};
+
 // ===== Export all tools =====
 
 export const agentdbTools: MCPTool[] = [
@@ -1973,11 +2152,14 @@ export const agentdbTools: MCPTool[] = [
   agentdbPatternSearch,
   agentdbFeedback,
   agentdbCausalEdge,
+  agentdbCausalEdgeDelete,
+  agentdbCausalNodeDelete,
   agentdbRoute,
   agentdbSessionStart,
   agentdbSessionEnd,
   agentdbHierarchicalStore,
   agentdbHierarchicalRecall,
+  agentdbHierarchicalDelete,
   agentdbConsolidate,
   agentdbBatch,
   agentdbContextSynthesize,
