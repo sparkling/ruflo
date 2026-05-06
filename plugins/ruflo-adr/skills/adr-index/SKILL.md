@@ -38,7 +38,25 @@ After importing ADRs from another project, when the AgentDB graph is out of sync
 5. **Store in memory** -- For each ADR, call `mcp__ruflo__memory_store` with:
    - namespace: `adr-patterns`
    - key: `<adr-id>`
-   - value: `<title> — <first paragraph of Context section>`
+   - value: `<title> — <body excerpt>`
+
+   **Body excerpt rules** (in priority order, ADR-0147 Refinement 4):
+   1. If the file has a `## Context` heading, use the first paragraph of that
+      section.
+   2. Else if the file has any other H2-section heading (e.g. `## Generator
+      Status`, `## Matrix-Gap Findings`, `## Decision`, `## Status`), extract
+      the first prose paragraph after the H1 title — skip frontmatter, the H1
+      itself, blank lines, tables (lines starting with `|`), and lists (lines
+      starting with `-` or `*`). Take the first 2-3 sentences (~500 chars max).
+   3. Else, take the first 2-3 prose sentences from anywhere in the file body,
+      capped at ~500 characters.
+
+   This rule covers companion / wave / cat / amendment files (e.g.
+   `0159-wave35-cat6-generator-diff.md`) which use category-specific section
+   structures and don't have a `## Context` heading. Without the fallback,
+   those entries store title-only and rank below canonical ADRs in semantic
+   search even when the query matches their body content.
+
    This enables semantic search across ADRs.
 
 6. **Verify graph** -- Call `mcp__ruflo__agentdb_causal-query` to retrieve all edges and verify:

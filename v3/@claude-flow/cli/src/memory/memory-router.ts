@@ -1841,76 +1841,98 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
       }
     }
     case 'query': {
-      // Bug-2 (2026-05-05): symmetric read path. Try causalGraph controller
-      // first; fall back to reading the 'causal-edges' namespace where the
-      // edge fallback writes land. This restores write/read symmetry \u2014 both
-      // sides now share controller-resolution + fallback namespace + the
-      // 'router-fallback' controller marker.
+      // Bug-4 (ADR-0147 Refinement 3, 2026-05-06): always-merge controller +
+      // namespace fallback. The earlier Bug-2 fix at 71b2ad33e returned
+      // controller results immediately when controller.length > 0, falling
+      // through only on empty. Probe in ADR-0147 §"Bug 4" found that the
+      // agentic-flow CausalMemoryGraph controller is called with WRONG
+      // argument shapes (string ADR keys instead of numeric memory IDs +
+      // CausalQuery struct). queryCausalEffects("ADR-X", k) happens to match
+      // 1 stale row by accident; getCausalChain("ADR-Y", k) returns [] and
+      // falls through correctly. Asymmetry → cause= queries under-report.
+      // Fix: always merge controller + fallback, dedupe by (src,dst,relation)
+      // triple. Defense-in-depth: even if the controller is later corrected,
+      // supplementing with the fallback protects against future asymmetric
+      // breakage. Mirrors the supplement-instead-of-replace pattern from
+      // Refinement 1 (rvf-backend orphan-numId).
+      type ParsedEdge = { sourceId?: string; targetId?: string; relation?: string; weight?: number };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const causalGraph = await getController<any>('causalGraph');
       const k = op.k ?? 10;
+      let controllerResults: ParsedEdge[] = [];
       if (causalGraph) {
         try {
           const getEffectsFn = typeof causalGraph.queryCausalEffects === 'function' ? causalGraph.queryCausalEffects.bind(causalGraph)
             : typeof causalGraph.getEffects === 'function' ? causalGraph.getEffects.bind(causalGraph) : null;
           const getCausesFn = typeof causalGraph.getCausalChain === 'function' ? causalGraph.getCausalChain.bind(causalGraph)
             : typeof causalGraph.getCauses === 'function' ? causalGraph.getCauses.bind(causalGraph) : null;
-          let results: unknown[] = [];
+          let raw: unknown[] = [];
           if (op.cause && getEffectsFn) {
-            results = await getEffectsFn(op.cause, k) as unknown[];
+            raw = await getEffectsFn(op.cause, k) as unknown[];
           } else if (op.effect && getCausesFn) {
-            results = await getCausesFn(op.effect, k) as unknown[];
+            raw = await getCausesFn(op.effect, k) as unknown[];
           }
-          if (Array.isArray(results) && results.length > 0) {
-            return { success: true, results, controller: 'causalGraph' };
+          if (Array.isArray(raw)) {
+            controllerResults = raw as ParsedEdge[];
           }
-          // empty from controller \u2014 fall through to namespace read
-        } catch { /* fall through to fallback */ }
+        } catch { /* fall through to namespace read */ }
       }
-      // Fallback: read edges previously written via router-fallback path.
+      // Always also run namespace-list fallback. Was conditional on controller
+      // returning empty in Bug-2; ADR-0147 §"Bug 4" Refinement 3 makes this
+      // unconditional so the controller can't short-circuit and hide outbound
+      // edges that only the namespace path knows about.
+      let fallbackResults: ParsedEdge[] = [];
       try {
         const fallback = await routeMemoryOp({
           type: 'list',
           namespace: 'causal-edges',
           limit: Math.max(k * 4, 100),
         });
-        // Bug-2 follow-up (ADR-0147, 2026-05-06): MemoryEntry storage shape uses
-        // `content`, not `value` — the previous fix at 71b2ad33e read `e.value`
-        // (undefined), hit the catch, and rejected every entry because the raw
-        // entry has no `sourceId`/`targetId`. P0-2 in ADR-0147 verified the field
-        // name via @sparkleideas/memory dist/types.d.ts. Defense-in-depth: if
-        // value-parse yields no source/target fields, fall back to parsing the
-        // arrow-encoded key (`${sourceId}→${targetId}`).
+        // Bug-2 follow-up: MemoryEntry storage shape uses `content`, not
+        // `value`. Defense-in-depth: if value-parse yields no source/target
+        // fields, fall back to parsing the arrow-encoded key
+        // (`${sourceId}→${targetId}`).
         const entries = ((fallback as { entries?: Array<{ content?: string; key?: string }> }).entries
           ?? (fallback as { results?: Array<{ content?: string; key?: string }> }).results
           ?? []) as Array<{ content?: string; key?: string }>;
-        type ParsedEdge = { sourceId?: string; targetId?: string; relation?: string; weight?: number };
-        const parsed: ParsedEdge[] = entries.map((e) => {
+        fallbackResults = entries.map((e): ParsedEdge => {
           let edge: ParsedEdge | null = null;
           try { edge = typeof e.content === 'string' ? JSON.parse(e.content) : null; }
           catch { edge = null; }
           if (!edge || (!edge.sourceId && !edge.targetId)) {
-            const k = e.key ?? '';
-            const arrowIdx = k.indexOf('→');
+            const ek = e.key ?? '';
+            const arrowIdx = ek.indexOf('→');
             if (arrowIdx > 0) {
               edge = {
-                sourceId: k.slice(0, arrowIdx),
-                targetId: k.slice(arrowIdx + 1),
+                sourceId: ek.slice(0, arrowIdx),
+                targetId: ek.slice(arrowIdx + 1),
                 ...(edge ?? {}),
               };
             }
           }
           return edge ?? {};
-        }).filter((edge: ParsedEdge) => {
-          if (!edge.sourceId && !edge.targetId) return false;
-          if (op.cause && edge.sourceId !== op.cause) return false;
-          if (op.effect && edge.targetId !== op.effect) return false;
-          return true;
         });
-        return { success: true, results: parsed.slice(0, k), controller: 'router-fallback' };
-      } catch (e: unknown) {
-        return { success: false, results: [], error: e instanceof Error ? e.message : 'causal query unavailable' };
+      } catch { /* leave fallbackResults empty; both empty → return [] below */ }
+      // Merge controller + fallback, then filter and dedupe by
+      // (sourceId, targetId, relation) triple. Triple-keyed dedupe means two
+      // edges with same endpoints but different relation labels both survive
+      // (e.g. a "supersedes" and a "depends-on" between the same pair).
+      const seen = new Set<string>();
+      const merged: ParsedEdge[] = [];
+      const tripleKey = (e: ParsedEdge): string => `${e.sourceId ?? ''}|${e.targetId ?? ''}|${e.relation ?? ''}`;
+      for (const e of [...controllerResults, ...fallbackResults]) {
+        if (!e.sourceId && !e.targetId) continue;
+        if (op.cause && e.sourceId !== op.cause) continue;
+        if (op.effect && e.targetId !== op.effect) continue;
+        const tk = tripleKey(e);
+        if (seen.has(tk)) continue;
+        seen.add(tk);
+        merged.push(e);
       }
+      const controllerName = controllerResults.length > 0
+        ? (fallbackResults.length > 0 ? 'causalGraph+fallback' : 'causalGraph')
+        : 'router-fallback';
+      return { success: true, results: merged.slice(0, k), controller: controllerName };
     }
     case 'recall': {
       try {
