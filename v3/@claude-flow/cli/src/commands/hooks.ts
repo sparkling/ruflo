@@ -11,6 +11,17 @@ import { storeCommand } from './transfer-store.js';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+/**
+ * #1686 — `?? 0` only defaults null/undefined; NaN slips through and
+ * surfaces as `"NaN"` (or earlier crashed `.toFixed`) in the metrics
+ * dashboard and pretrain output. Coerce to a finite number, fall back
+ * to `fallback` when the input is null/undefined/non-numeric/NaN/Infinity.
+ */
+function safeNum(value: unknown, fallback = 0): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 // ============================================================================
 // Coverage Data Reader - reads Jest/Istanbul coverage files from disk
 // ============================================================================
@@ -1115,8 +1126,10 @@ const pretrainCommand: Command = {
       spinner.succeed('Pretraining completed');
 
       // Normalize shape: prefer `statistics`, fall back to `stats` for older tools.
+      // #1686 — coerce duration through safeNum so a NaN from the underlying
+      // pretrain pipeline surfaces as `0.0s` rather than `NaNs`.
       const stats = (rawResult.statistics ?? rawResult.stats ?? {}) as Record<string, number | undefined>;
-      const durationMs = rawResult.duration ?? (rawResult.statistics?.executionTime as number | undefined) ?? 0;
+      const durationMs = safeNum(rawResult.duration ?? rawResult.statistics?.executionTime);
       const result = { ...rawResult, stats, duration: durationMs };
 
       if (ctx.flags.format === 'json') {
@@ -1377,20 +1390,21 @@ const metricsCommand: Command = {
       });
 
       // Normalize across both shapes; default every numeric to 0 so toFixed
-      // never sees null/undefined.
-      const totalPatterns = rawMetrics.patterns?.total ?? rawMetrics.summary?.patternsLearned ?? 0;
-      const successfulPatterns = rawMetrics.patterns?.successful ?? Math.round((rawMetrics.summary?.successRate ?? 0) * totalPatterns);
-      const failedPatterns = rawMetrics.patterns?.failed ?? Math.max(0, totalPatterns - successfulPatterns);
-      const avgConfidence = rawMetrics.patterns?.avgConfidence ?? rawMetrics.summary?.avgQuality ?? 0;
+      // never sees null/undefined. #1686 — also coerce NaN through `safeNum`
+      // because `?? 0` only catches null/undefined; an upstream NaN would
+      // still land in `.toFixed(...)` and surface as `"NaN"`.
+      const totalPatterns = safeNum(rawMetrics.patterns?.total ?? rawMetrics.summary?.patternsLearned);
+      const successfulPatterns = safeNum(rawMetrics.patterns?.successful ?? Math.round(safeNum(rawMetrics.summary?.successRate) * totalPatterns));
+      const failedPatterns = Math.max(0, safeNum(rawMetrics.patterns?.failed ?? totalPatterns - successfulPatterns));
+      const avgConfidence = safeNum(rawMetrics.patterns?.avgConfidence ?? rawMetrics.summary?.avgQuality);
 
-      const routingAccuracy = rawMetrics.agents?.routingAccuracy
-        ?? (rawMetrics.routing?.avgConfidence ?? 0);
-      const totalRoutes = rawMetrics.agents?.totalRoutes ?? rawMetrics.routing?.totalRoutes ?? 0;
+      const routingAccuracy = safeNum(rawMetrics.agents?.routingAccuracy ?? rawMetrics.routing?.avgConfidence);
+      const totalRoutes = safeNum(rawMetrics.agents?.totalRoutes ?? rawMetrics.routing?.totalRoutes);
       const topAgent = rawMetrics.agents?.topAgent ?? rawMetrics.routing?.topAgents?.[0]?.agent ?? 'n/a';
 
-      const totalCommands = rawMetrics.commands?.totalExecuted ?? rawMetrics.commands?.totalCommands ?? 0;
-      const commandSuccessRate = rawMetrics.commands?.successRate ?? 0;
-      const avgRiskScore = rawMetrics.commands?.avgRiskScore ?? rawMetrics.commands?.avgExecutionTime ?? 0;
+      const totalCommands = safeNum(rawMetrics.commands?.totalExecuted ?? rawMetrics.commands?.totalCommands);
+      const commandSuccessRate = safeNum(rawMetrics.commands?.successRate);
+      const avgRiskScore = safeNum(rawMetrics.commands?.avgRiskScore ?? rawMetrics.commands?.avgExecutionTime);
 
       const result = {
         ...rawMetrics,
