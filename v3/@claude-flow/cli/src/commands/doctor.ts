@@ -262,6 +262,36 @@ async function checkGitRepo(): Promise<HealthCheck> {
   }
 }
 
+// Check AIDefence package availability (#1807)
+//
+// `aidefence_*` MCP tools (scan, analyze, has_pii, stats, learn) require
+// `@claude-flow/aidefence` to be installed and loadable. The package is an
+// optional dependency — present in some installs (project-local) but
+// missing in others (npm-global of `claude-flow`). Without it, every
+// aidefence MCP call fails at runtime with "Cannot find module".
+//
+// Surface that state in `doctor` so operators know BEFORE they rely on
+// AI-defence scanning. The probe is the same dynamic `import()` the MCP
+// tool's handler uses, so a `pass` here means the actual tools will work.
+async function checkAIDefence(): Promise<HealthCheck> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    await import('@claude-flow/aidefence');
+    return {
+      name: 'AIDefence',
+      status: 'pass',
+      message: '@claude-flow/aidefence loadable — aidefence_* MCP tools functional',
+    };
+  } catch {
+    return {
+      name: 'AIDefence',
+      status: 'warn',
+      message: '@claude-flow/aidefence not loadable — aidefence_* MCP tools will fail (optional package)',
+      fix: 'npm install --save @claude-flow/aidefence  (in your project), or run `claude-flow mcp start` from a directory that has it installed',
+    };
+  }
+}
+
 // Check MCP servers
 async function checkMcpServers(): Promise<HealthCheck> {
   const mcpConfigPaths = [
@@ -589,6 +619,7 @@ export const doctorCommand: Command = {
       checkMemoryBackend,
       checkApiKeys,
       checkMcpServers,
+      checkAIDefence, // #1807
       checkDiskSpace,
       checkBuildTools,
       checkAgenticFlow
@@ -607,6 +638,7 @@ export const doctorCommand: Command = {
       'api': checkApiKeys,
       'git': checkGit,
       'mcp': checkMcpServers,
+      'aidefence': checkAIDefence, // #1807
       'disk': checkDiskSpace,
       'typescript': checkBuildTools,
       'agentic-flow': checkAgenticFlow

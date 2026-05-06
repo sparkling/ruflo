@@ -69,7 +69,27 @@ async function getAIDefence(): Promise<AIDefenceInstance> {
     throw new Error('AIDefence package not available. Install with: npm install @claude-flow/aidefence');
   }
 
-  // Retry with ESM cache busting via file:// URL + timestamp
+  // #1807 — auto-install lands the package somewhere Node's standard
+  // resolver couldn't find on the FIRST attempt (npm-global installs are
+  // a common offender). Try Node's resolver again first (it may have
+  // picked up the new node_modules directory), then fall back to the
+  // file:// + cache-bust import dance, then surface a clearly actionable
+  // error if everything still fails.
+  // Plain re-import (covers project-local installs that landed where Node
+  // looks). This often succeeds where the first attempt failed because
+  // the module cache is stable across the await boundary.
+  try {
+    const aidefence = await import(packageName);
+    const instance = aidefence.createAIDefence({ enableLearning: true });
+    if (instance) {
+      aidefenceInstance = instance;
+      console.error(`[claude-flow] ${packageName} loaded after install (resolver path)`);
+      return instance;
+    }
+  } catch { /* fall through to file:// attempt */ }
+
+  // file:// + cache-bust attempt (covers globally-installed packages whose
+  // path the standard resolver missed but require.resolve can locate).
   try {
     const modulePath = require.resolve(packageName);
     const cacheBust = `?t=${Date.now()}`;
@@ -79,10 +99,17 @@ async function getAIDefence(): Promise<AIDefenceInstance> {
       throw new Error('createAIDefence returned null after install');
     }
     aidefenceInstance = instance;
-    console.error(`[claude-flow] ${packageName} loaded successfully after install`);
+    console.error(`[claude-flow] ${packageName} loaded after install (file:// path)`);
     return instance;
   } catch (retryError) {
-    throw new Error(`AIDefence installed but failed to load: ${retryError}. Try restarting the MCP server.`);
+    throw new Error(
+      `AIDefence installed but failed to load: ${retryError}.\n` +
+      `This usually means npm installed the package somewhere Node's module resolver doesn't search ` +
+      `(common with global installs of \`claude-flow\`). Recovery options:\n` +
+      `  1. Run \`npm install --save @claude-flow/aidefence\` in your project's working directory.\n` +
+      `  2. Or run \`npx ruflo@latest mcp start\` from a directory whose node_modules contains the package.\n` +
+      `  3. Or restart the MCP server after the install completes.`
+    );
   }
 }
 
