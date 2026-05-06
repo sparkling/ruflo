@@ -25,7 +25,7 @@
     "@claude-flow/shared": "workspace:*",
     "@claude-flow/security": "workspace:*",
     "typescript": "^5.4.0",
-    "vitest": "^1.6.0"
+    "vitest": "^4.0.16"
   },
   "keywords": [
     "federation",
