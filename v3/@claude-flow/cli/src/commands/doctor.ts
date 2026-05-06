@@ -646,7 +646,10 @@ export const doctorCommand: Command = {
     {
       name: 'fix',
       short: 'f',
-      description: 'Show fix commands for issues',
+      // #1791.5 — flag name was misleading: it does NOT auto-apply fixes,
+      // it only prints the suggested commands so the user can run them
+      // themselves. Make that explicit in the help output.
+      description: 'Print suggested fix commands (does not auto-apply — copy/paste them yourself)',
       type: 'boolean',
       default: false
     },
@@ -673,7 +676,7 @@ export const doctorCommand: Command = {
   ],
   examples: [
     { command: 'claude-flow doctor', description: 'Run full health check' },
-    { command: 'claude-flow doctor --fix', description: 'Show fixes for issues' },
+    { command: 'claude-flow doctor --fix', description: 'Print suggested fix commands (does not auto-apply)' },
     { command: 'claude-flow doctor --install', description: 'Auto-install missing dependencies' },
     { command: 'claude-flow doctor -c version', description: 'Check for stale npx cache' },
     { command: 'claude-flow doctor -c claude', description: 'Check Claude Code CLI only' }
@@ -822,17 +825,18 @@ export const doctorCommand: Command = {
 
     output.writeln(`Summary: ${summaryParts.join(', ')}`);
 
-    // Show fixes
+    // Show fixes — #1791.5: header makes it explicit these are commands you
+    // run yourself, not actions doctor took.
     if (showFix && fixes.length > 0) {
       output.writeln();
-      output.writeln(output.bold('Suggested Fixes:'));
+      output.writeln(output.bold('Suggested commands (run them yourself):'));
       output.writeln();
       for (const fix of fixes) {
         output.writeln(output.dim(`  ${fix}`));
       }
     } else if (fixes.length > 0 && !showFix) {
       output.writeln();
-      output.writeln(output.dim(`Run with --fix to see ${fixes.length} suggested fix${fixes.length > 1 ? 'es' : ''}`));
+      output.writeln(output.dim(`Run with --fix to see ${fixes.length} suggested command${fixes.length > 1 ? 's' : ''} (does not auto-apply)`));
     }
 
     // Overall result
