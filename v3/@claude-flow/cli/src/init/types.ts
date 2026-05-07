@@ -122,6 +122,25 @@ export interface CommandsConfig {
   optimization: boolean;
   /** Include SPARC commands */
   sparc: boolean;
+  /**
+   * Categories restored 2026-05-07 (ADR-0148 C pattern, command surface).
+   * 87 .md files across 12 subdirs + agentic-jujutsu top-level were
+   * dead-code-on-disk before this — present in fork source, missing
+   * from COMMANDS_MAP, never copied to user projects on init.
+   */
+  agents?: boolean;
+  coordination?: boolean;
+  flowNexus?: boolean;
+  hiveMind?: boolean;
+  memory?: boolean;
+  pair?: boolean;
+  streamChain?: boolean;
+  swarm?: boolean;
+  training?: boolean;
+  truth?: boolean;
+  verify?: boolean;
+  workflows?: boolean;
+  jujutsu?: boolean;
   /** Include all commands */
   all: boolean;
 }
@@ -436,6 +455,21 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     monitoring: true,
     optimization: true,
     sparc: true,
+    // ADR-0148 C pattern (2026-05-07 wave 2): default-enable every
+    // category so the 87 previously-dead command files actually ship.
+    agents: true,
+    coordination: true,
+    flowNexus: true,
+    hiveMind: true,
+    memory: true,
+    pair: true,
+    streamChain: true,
+    swarm: true,
+    training: true,
+    truth: true,
+    verify: true,
+    workflows: true,
+    jujutsu: true,
     all: false,
   },
   agents: {
