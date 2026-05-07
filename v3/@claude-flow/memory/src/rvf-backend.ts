@@ -2336,7 +2336,9 @@ export class RvfBackend implements IMemoryBackend {
         let vec: Float32Array | null = null;
         try {
           vec = (native.getVector?.(numId) as Float32Array | null | undefined) ?? null;
-        } catch {}
+        } catch {
+          // silent-fallthrough-OK: getVector is best-effort in the legacy per-id fallback path; if the older @latest binary doesn't expose it OR it throws on a deleted vector, fall through with an empty vector. The entry's metadata is still persisted; only its embedding is missing for this load. Throwing here would force every reopen on an older @latest into a hard error.
+        }
         snapshots.push({ id: numId, vector: vec ?? new Float32Array(0), metadata });
       }
     }
