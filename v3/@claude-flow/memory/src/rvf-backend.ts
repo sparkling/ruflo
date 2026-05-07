@@ -2294,8 +2294,10 @@ export class RvfBackend implements IMemoryBackend {
    * legacy load path in that case.
    */
   private async loadFromNativeSegments(): Promise<boolean> {
+    // silent-fallthrough-OK: nativeDb-null is a legitimate signal the caller acts on (falls back to legacy .meta path). Method is documented to handle either branch; throwing here would force every non-native deployment to crash on init.
     if (!this.nativeDb) return false;
     const ids = (this.nativeDb as any).listMetadataIds?.() as number[] | undefined;
+    // silent-fallthrough-OK: empty segment list is the expected fresh-store / legacy-pre-Phase-1 case; caller falls back to the legacy .meta path. Throwing would break every project on the day this version ships.
     if (!ids || ids.length === 0) return false;
 
     let loaded = 0;
