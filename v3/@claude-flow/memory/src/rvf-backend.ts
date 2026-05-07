@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile, writeFile, mkdir, rename, appendFile, unlink, open } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import type {
   IMemoryBackend,
   MemoryEntry,
@@ -19,62 +19,28 @@ import {
   decodeMemoryEntryMetadata,
   type RvfMetadataEntryWire,
 } from './rvf-segment-fields.js';
+import {
+  validatePath,
+  DEFAULT_WAL_COMPACTION_THRESHOLD,
+  type RvfBackendConfig,
+  type RvfHeader,
+  MAGIC,
+  NATIVE_MAGIC,
+  VERSION,
+  DEFAULT_DIMENSIONS,
+  DEFAULT_M,
+  DEFAULT_EF_CONSTRUCTION,
+  DEFAULT_MAX_ELEMENTS,
+  DEFAULT_PERSIST_INTERVAL,
+} from './rvf-backend-types.js';
+import { RvfCorruptError, RvfNotInitializedError } from './rvf-backend-errors.js';
 
-/** Validate a file path is safe (no null bytes, no traversal above root) */
-function validatePath(p: string): void {
-  if (p === ':memory:') return;
-  if (p.includes('\0')) throw new Error('Path contains null bytes');
-  const resolved = resolve(p);
-  if (resolved.includes('\0')) throw new Error('Resolved path contains null bytes');
-}
-
-const DEFAULT_WAL_COMPACTION_THRESHOLD = 100;
-
-export interface RvfBackendConfig {
-  databasePath: string;
-  dimensions?: number;
-  metric?: 'cosine' | 'euclidean' | 'dot';
-  quantization?: 'fp32' | 'fp16' | 'int8';
-  hnswM?: number;
-  hnswEfConstruction?: number;
-  hnswEfSearch?: number;
-  maxElements?: number;
-  verbose?: boolean;
-  defaultNamespace?: string;
-  autoPersistInterval?: number;
-  walCompactionThreshold?: number;
-}
-
-interface RvfHeader {
-  magic: string;
-  version: number;
-  dimensions: number;
-  metric: string;
-  quantization: string;
-  entryCount: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-const MAGIC = 'RVF\0';
-// Native @ruvector/rvf-node file format (written by RvfDatabase.create()).
-// When the pure-TS backend initializes on a project that previously used the
-// native backend, the main `.rvf` path holds `SFVR` bytes and pure-TS metadata
-// was written to the `.meta` sidecar. Treat this as a valid native-owned file,
-// NOT corruption.
-const NATIVE_MAGIC = 'SFVR';
-const VERSION = 1;
-const DEFAULT_DIMENSIONS = 768;
-const DEFAULT_M = 16;
-const DEFAULT_EF_CONSTRUCTION = 200;
-const DEFAULT_MAX_ELEMENTS = 100000;
-const DEFAULT_PERSIST_INTERVAL = 30000;
-
-// Forward declaration: RvfCorruptError is defined at the end of this file
-// (moved below the RvfBackend class so that adr0086-rvf-integration.test.mjs's
-// `extractMethod(rvfSrc, 'constructor')` regex finds the RvfBackend
-// constructor body rather than this error class's constructor. The class is
-// still exported normally from index.ts.)
+// Re-export so existing `import { RvfBackendConfig, RvfCorruptError } from
+// './rvf-backend.js'` callers keep working. ADR-0154 G7 split the type +
+// error surfaces into sibling modules but the public import path stays
+// at './rvf-backend.js'.
+export type { RvfBackendConfig };
+export { RvfCorruptError, RvfNotInitializedError };
 
 // ADR-0086 Debt 1: IStorageContract is now a type alias for IMemoryBackend,
 // so the redundant implements clause has been removed.
@@ -2941,70 +2907,5 @@ export class RvfBackend implements IMemoryBackend {
     } finally {
       this.persisting = false;
     }
-  }
-}
-
-/**
- * ADR-0090 Tier B2: fail-loud corruption signal for RvfBackend.initialize().
- *
- * Thrown when on-disk RVF/SFVR storage is detectably corrupt AND no WAL
- * recovery data survives. The class is named so callers can
- * `catch { if (err.name === 'RvfCorruptError') { ... } }` and distinguish
- * this from generic init errors (ENOENT parent, permission denied, etc.).
- *
- * The message always contains the literal substring "is corrupt" so CLI
- * log scrapers and the unit-test regex `/is corrupt/` can identify the
- * shape. Constructor takes (path, reason) to preserve the diagnostic
- * wording that predates the class (pre-fix loadFromDisk stamped
- * `err.name = 'RvfCorruptError'` on a plain Error with the same message
- * structure — this class is the typed replacement).
- *
- * Placed AFTER the RvfBackend class so that the source-structural test
- * at tests/unit/adr0086-rvf-integration.test.mjs:87 — which extracts
- * "the constructor" from rvf-backend.ts — resolves to the RvfBackend
- * constructor (earlier in the file) and not this error class.
- */
-export class RvfCorruptError extends Error {
-  constructor(path: string, reason: string) {
-    super(
-      `RVF storage at ${path} is corrupt: ${reason}. ` +
-      `No WAL recovery data available. Refusing to start with empty state ` +
-      `to prevent silent overwrite of the corrupt file on next persist. ` +
-      `Move or delete the file to start fresh, or restore from a backup.`,
-    );
-    this.name = 'RvfCorruptError';
-  }
-}
-
-/**
- * ADR-0112 Phase 2 (RVF track): fail-loud signal for data-path methods
- * called before `initialize()` has completed.
- *
- * Pre-fix behavior: data-path methods (store / get / query / search /
- * etc.) had no init guard and would operate against the constructor-
- * initialized empty Map + null nativeDb. Writes appeared to succeed
- * (entry landed in the Map) but persistence failed silently and the
- * native HNSW index was never updated. Reads returned empty without
- * indicating the backend had never loaded its on-disk state. This is
- * the exact ADR-0082 silent-fallback antipattern at the method-level
- * (W1.5/W1.6 fixed init-time, W1.8 closes method-time per ADR-0112
- * §Required follow-up #1 "Both contracts apply at the method level").
- *
- * The class is named so memory-router._isFatalInitError() picks it up
- * and propagates it through registry/init catches without masking.
- *
- * Callers receive the method name in the error message so the failure
- * is precisely diagnosable ("RvfBackend.store called before
- * initialize() — backend is not initialized" vs. a generic guard).
- */
-export class RvfNotInitializedError extends Error {
-  constructor(method: string) {
-    super(
-      `RvfBackend.${method} called before initialize() — backend is not ` +
-      `initialized. Per ADR-0112, public methods must fail loud rather than ` +
-      `silently operate against a constructor-only state (which would lose ` +
-      `data on persist + skip native HNSW indexing). Call initialize() first.`,
-    );
-    this.name = 'RvfNotInitializedError';
   }
 }
