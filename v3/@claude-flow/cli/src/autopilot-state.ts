@@ -162,7 +162,13 @@ export function saveState(state: AutopilotState): void {
   if (state.history.length > MAX_HISTORY_ENTRIES) {
     state.history = state.history.slice(-MAX_HISTORY_ENTRIES);
   }
-  const tmpFile = path.resolve(STATE_FILE) + '.tmp';
+  // Use a UNIQUE tmp filename per call so concurrent writers can't race on
+  // the rename target. Pre-fix: shared `.tmp` suffix was overwritten by
+  // sibling writes; if A renamed first, B's rename hit ENOENT (observed
+  // in acceptance phase post-cap=9 + bg wrapper-solo install — autopilot
+  // saves are now triggered concurrently across multiple checks). Each
+  // process+random suffix is exclusive.
+  const tmpFile = path.resolve(STATE_FILE) + `.tmp.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
   fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2));
   fs.renameSync(tmpFile, path.resolve(STATE_FILE));
 }
@@ -182,7 +188,8 @@ export function appendLog(entry: AutopilotLogEntry): void {
   }
   log.push(entry);
   if (log.length > MAX_LOG_ENTRIES) log = log.slice(-MAX_LOG_ENTRIES);
-  const tmpFile = filePath + '.tmp';
+  // Same race fix as saveState — unique tmp suffix per call.
+  const tmpFile = filePath + `.tmp.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
   fs.writeFileSync(tmpFile, JSON.stringify(log, null, 2));
   fs.renameSync(tmpFile, filePath);
 }
