@@ -2296,15 +2296,57 @@ export class RvfBackend implements IMemoryBackend {
   private async loadFromNativeSegments(): Promise<boolean> {
     // silent-fallthrough-OK: nativeDb-null is a legitimate signal the caller acts on (falls back to legacy .meta path). Method is documented to handle either branch; throwing here would force every non-native deployment to crash on init.
     if (!this.nativeDb) return false;
-    const ids = (this.nativeDb as any).listMetadataIds?.() as number[] | undefined;
-    // silent-fallthrough-OK: empty segment list is the expected fresh-store / legacy-pre-Phase-1 case; caller falls back to the legacy .meta path. Throwing would break every project on the day this version ships.
-    if (!ids || ids.length === 0) return false;
+
+    // ADR-0154 G5 (2026-05-07): batch reader. The earlier per-id pattern
+    // (`listMetadataIds()` + N × `getMetadataEntries(id)` + N × `getVector(id)`)
+    // crossed the napi boundary 2N+1 times and acquired the store mutex
+    // 2N+1 times — at 10K entries that's ~20K serialised crossings on every
+    // backend init. `iterAllWithVectors()` returns every (id, vector,
+    // metadata) tuple in one pass + one mutex acquisition.
+    //
+    // Defensive: older @latest binaries don't expose `iterAllWithVectors`.
+    // Fall back to the per-id pattern when it's not available.
+    const native = this.nativeDb as any;
+    type Snapshot = { id: number; vector: Float32Array; metadata: RvfMetadataEntryWire[] };
+    let snapshots: Snapshot[] | null = null;
+    if (typeof native.iterAllWithVectors === 'function') {
+      try {
+        snapshots = native.iterAllWithVectors() as Snapshot[];
+      } catch (err) {
+        if (this.config.verbose) {
+          console.warn(
+            `[RvfBackend] iterAllWithVectors() failed; falling back to per-id reader:`,
+            (err as Error).message,
+          );
+        }
+      }
+    }
+
+    if (!snapshots) {
+      // Legacy per-id path. Same logic as before; preserved for compat with
+      // older @latest binaries that don't ship iterAllWithVectors.
+      const ids = native.listMetadataIds?.() as number[] | undefined;
+      // silent-fallthrough-OK: empty segment list is the expected fresh-store / legacy-pre-Phase-1 case; caller falls back to the legacy .meta path. Throwing would break every project on the day this version ships.
+      if (!ids || ids.length === 0) return false;
+      snapshots = [];
+      for (const numId of ids) {
+        const metadata = (native.getMetadataEntries?.(numId) as RvfMetadataEntryWire[] | undefined)
+          ?? [];
+        if (metadata.length === 0) continue;
+        let vec: Float32Array | null = null;
+        try {
+          vec = (native.getVector?.(numId) as Float32Array | null | undefined) ?? null;
+        } catch {}
+        snapshots.push({ id: numId, vector: vec ?? new Float32Array(0), metadata });
+      }
+    }
+
+    if (snapshots.length === 0) return false;
 
     let loaded = 0;
-    for (const numId of ids) {
-      const wireEntries = (this.nativeDb as any).getMetadataEntries?.(numId) as
-        | RvfMetadataEntryWire[]
-        | undefined;
+    for (const snap of snapshots) {
+      const numId = snap.id;
+      const wireEntries = snap.metadata;
       if (!wireEntries || wireEntries.length === 0) continue;
       try {
         const decoded = decodeMemoryEntryMetadata(wireEntries);
@@ -2321,27 +2363,11 @@ export class RvfBackend implements IMemoryBackend {
               : composite);
         const entry: any = { ...decoded, id: stringId };
 
-        // ADR-0154 follow-up: pull the embedding back from the runtime via
-        // `getVector(numId)`. The embedding was written to VEC_SEG by
-        // `ingestBatch` and is no longer duplicated in the entry-blob. Be
-        // defensive: if the runtime doesn't expose `getVector` (older
-        // @latest), or the lookup fails, leave `embedding` undefined —
-        // callers that don't need the embedding still work.
-        try {
-          const vec = (this.nativeDb as any).getVector?.(numId) as
-            | Float32Array
-            | null
-            | undefined;
-          if (vec && vec.length > 0) {
-            entry.embedding = vec;
-          }
-        } catch (vecErr) {
-          if (this.config.verbose) {
-            console.warn(
-              `[RvfBackend] getVector(${numId}) failed:`,
-              (vecErr as Error).message,
-            );
-          }
+        // ADR-0154 G5: vector comes from the batch snapshot (no per-id
+        // napi crossing). Empty vector means the entry was metadata-only
+        // (no embedding) — keep `embedding` undefined in that case.
+        if (snap.vector && snap.vector.length > 0) {
+          entry.embedding = snap.vector;
         }
 
         this.entries.set(stringId, entry);
@@ -2810,20 +2836,33 @@ export class RvfBackend implements IMemoryBackend {
     // which is the correct ordering for entries appended after our init.
     await this.mergePeerStateBeforePersist();
 
-    // ADR-0154 Phase 5c (deferred): the original plan was to skip the .meta
-    // write entirely when native is active, since META_SEG persistence in
-    // ingestBatch (Phase 3) already covers entries with embeddings. But
-    // entries WITHOUT embeddings (e.g. test fixtures, non-vectorized data)
-    // never reach ingestBatch — their only durable store is .meta. Skipping
-    // .meta unconditionally caused those entries to evaporate on restart.
+    // ADR-0154 Phase 5c (G4 follow-up 2026-05-07): conditional skip-meta-write.
     //
-    // Pragmatic choice: keep writing .meta as a supplementary durable store.
-    // The HM-class data loss bug class is closed by Phase 4 (loadFromDisk
-    // prefers native segments when available), not by removing the .meta
-    // file. A hard removal of .meta is gated on either (a) the runtime
-    // accepting vector-less metadata segments, or (b) the embedding
-    // pipeline guaranteeing every entry has an embedding before persistence.
-    // Both deferred to a follow-up ADR; documented in ADR-0154 amendment.
+    // The previous gated revert kept writing `.meta` unconditionally, which
+    // produced the half-measure the validation swarm's DA flagged: even when
+    // every entry was persisted via META_SEG by ingestBatch, `.meta` still
+    // appeared on disk, leaving the HM-class attractor surface alive.
+    //
+    // Refined gate: skip the .meta write iff (a) native is active, AND
+    // (b) every in-memory entry has an embedding (so it round-trips via
+    // META_SEG), AND (c) no pre-existing .meta is on disk to maintain
+    // (avoids stranding peer-written non-embedding entries).
+    //
+    // Production paths (embedding pipeline always runs before store) hit
+    // this fast path and never write .meta. Test fixtures and other paths
+    // that store entries without embeddings still write .meta as the
+    // supplementary durable store for those entries.
+    if (this.nativeDb) {
+      let allHaveEmbeddings = true;
+      for (const e of this.entries.values()) {
+        if (!e.embedding) { allHaveEmbeddings = false; break; }
+      }
+      if (allHaveEmbeddings && !existsSync(this.metadataPath)) {
+        this._diag(`persistToDiskInner.skipped-meta-write (native + all-embedded + no-prior-meta)`);
+        this.dirty = false;
+        return;
+      }
+    }
 
     const target = this.metadataPath;
     const dir = dirname(target);
