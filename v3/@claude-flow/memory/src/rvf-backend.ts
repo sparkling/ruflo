@@ -2320,6 +2320,30 @@ export class RvfBackend implements IMemoryBackend {
               ? `${decoded.namespace}:${decoded.key}`
               : composite);
         const entry: any = { ...decoded, id: stringId };
+
+        // ADR-0154 follow-up: pull the embedding back from the runtime via
+        // `getVector(numId)`. The embedding was written to VEC_SEG by
+        // `ingestBatch` and is no longer duplicated in the entry-blob. Be
+        // defensive: if the runtime doesn't expose `getVector` (older
+        // @latest), or the lookup fails, leave `embedding` undefined —
+        // callers that don't need the embedding still work.
+        try {
+          const vec = (this.nativeDb as any).getVector?.(numId) as
+            | Float32Array
+            | null
+            | undefined;
+          if (vec && vec.length > 0) {
+            entry.embedding = vec;
+          }
+        } catch (vecErr) {
+          if (this.config.verbose) {
+            console.warn(
+              `[RvfBackend] getVector(${numId}) failed:`,
+              (vecErr as Error).message,
+            );
+          }
+        }
+
         this.entries.set(stringId, entry);
         this.seenIds.add(stringId);
         this.keyIndex.set(composite, stringId);

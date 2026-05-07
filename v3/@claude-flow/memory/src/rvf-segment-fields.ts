@@ -111,21 +111,12 @@ export function encodeMemoryEntryMetadata(
   out.push(i64Entry(RVF_FIELD_ID.VERSION, entry.version ?? 0));
   out.push(stringEntry(RVF_FIELD_ID.REFERENCES_JSON, JSON.stringify(entry.references ?? [])));
 
-  // Entry-blob: full record INCLUDING embedding (as a regular JSON array).
-  //
-  // Trade-off: doubles the on-disk size for embeddings (also stored in
-  // VEC_SEG by ingestBatch). The alternative — strip embedding and rely on
-  // a `getVector(id)` API to reconstruct it — requires runtime work that
-  // hasn't landed yet. Once that runtime API is available, the blob can
-  // drop the embedding and shrink ~3KB per 768-dim entry. Tracked as
-  // ADR-0154 follow-up.
-  //
-  // Float32Array doesn't JSON-serialize cleanly (becomes `{0:..,1:..}`),
-  // so we convert to a regular array first.
-  const stripped: Record<string, unknown> = { ...entry };
-  if (entry.embedding) {
-    stripped.embedding = Array.from(entry.embedding as Iterable<number>);
-  }
+  // Entry-blob: full record minus embedding. The embedding is already
+  // persisted in VEC_SEG by `ingestBatch`; the runtime exposes
+  // `getVector(id)` (ADR-0154 follow-up) to reconstruct it on load, so
+  // duplicating it in the blob would be ~3KB redundancy per 768-dim entry.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { embedding: _stripEmbedding, ...stripped } = entry as MemoryEntry;
   const blob = Buffer.from(JSON.stringify(stripped), 'utf8');
   out.push({
     fieldId: RVF_FIELD_ID.ENTRY_BLOB,
@@ -154,15 +145,9 @@ export function decodeMemoryEntryMetadata(
   const blob = entries.find((e) => e.fieldId === RVF_FIELD_ID.ENTRY_BLOB);
   if (blob && blob.valueType === 'bytes' && blob.valueBytes) {
     try {
-      const parsed = JSON.parse(blob.valueBytes.toString('utf8')) as
-        Omit<MemoryEntry, 'embedding'> & { embedding?: number[] | Float32Array };
+      const parsed = JSON.parse(blob.valueBytes.toString('utf8')) as Omit<MemoryEntry, 'embedding'>;
       if (parsed && typeof parsed === 'object' && typeof parsed.key === 'string') {
-        // Embedding was JSON-serialized as a number[]; restore as Float32Array
-        // so callers get the same type they put in.
-        if (Array.isArray(parsed.embedding)) {
-          parsed.embedding = new Float32Array(parsed.embedding);
-        }
-        return parsed as Omit<MemoryEntry, 'embedding'>;
+        return parsed;
       }
     } catch {
       // Fall through to per-field reconstruction.
