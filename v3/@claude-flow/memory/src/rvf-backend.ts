@@ -14,6 +14,11 @@ import type {
 } from './types.js';
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
 import { deriveHNSWParams } from './hnsw-utils.js';
+import {
+  encodeMemoryEntryMetadata,
+  decodeMemoryEntryMetadata,
+  type RvfMetadataEntryWire,
+} from './rvf-segment-fields.js';
 
 /** Validate a file path is safe (no null bytes, no traversal above root) */
 function validatePath(p: string): void {
@@ -493,7 +498,12 @@ export class RvfBackend implements IMemoryBackend {
         if (this.nativeDb) {
           const numId = this.assignNativeId(e.id);
           try {
-            this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId]);
+            // ADR-0154 Phase 3: persist metadata via META_SEG alongside the
+            // vector. The native runtime now writes a META_SEG immediately
+            // after the VEC_SEG and reconstructs metadata on reopen, so the
+            // .meta sidecar (ADR-0095 d5 workaround) is no longer needed.
+            const metaEntries = encodeMemoryEntryMetadata(e);
+            this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId], metaEntries);
           } catch (err) {
             // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
             // file's segment hashes no longer validate — further native ops
@@ -564,7 +574,11 @@ export class RvfBackend implements IMemoryBackend {
         const numId = this.assignNativeId(id);
         try {
           this.nativeDb.delete([numId]);
-          this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId]);
+          // ADR-0154 Phase 3: re-emit metadata on update so the new META_SEG
+          // shadows the previous one. boot() replays segments in order so
+          // the latest write wins.
+          const metaEntries = encodeMemoryEntryMetadata(updated);
+          this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId], metaEntries);
         } catch (err) {
           // ADR-0095 d5: checksum failure during update — degrade, then
           // re-apply via reIndexAfterDegrade (idempotent remove+add).
@@ -819,7 +833,9 @@ export class RvfBackend implements IMemoryBackend {
         if (this.nativeDb) {
           const numId = this.assignNativeId(entry.id);
           try {
-            this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId]);
+            // ADR-0154 Phase 3: persist metadata via META_SEG.
+            const metaEntries = encodeMemoryEntryMetadata(entry);
+            this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId], metaEntries);
           } catch (err) {
             // ADR-0095 d5: same degrade path used by store() — first
             // InvalidChecksum kills native for this process and re-routes
@@ -1577,6 +1593,20 @@ export class RvfBackend implements IMemoryBackend {
     return numId;
   }
 
+  /**
+   * ADR-0154 Phase 4: bind a numId observed during boot's META_SEG replay
+   * to its reconstructed string id, BYPASSING `nextNativeId++`. The numId
+   * came from disk; we must reuse the exact same value or query() results
+   * keyed on the numId would mismap.
+   */
+  private _reserveAssignedNativeId(stringId: string, numId: number): void {
+    this.nativeIdMap.set(stringId, numId);
+    this.nativeReverseMap.set(numId, stringId);
+    if (numId >= this.nextNativeId) {
+      this.nextNativeId = numId + 1;
+    }
+  }
+
   /** ADR-0094 Sprint 1.4 d8 (ruflo-patch): lazy native re-ingest gate.
    *
    *  Called from `search()` and `query(semantic)` before the
@@ -1610,7 +1640,12 @@ export class RvfBackend implements IMemoryBackend {
     for (const { id, embedding } of this._pendingNativeIngest) {
       const numId = this.assignNativeId(id);
       try {
-        this.nativeDb.ingestBatch(new Float32Array(embedding), [numId]);
+        // ADR-0154 Phase 3: lazy rehydrate also emits metadata so the new
+        // META_SEG carries the entry shape; without it, reading back
+        // post-rehydrate would yield a vector with no metadata.
+        const entry = this.entries.get(id);
+        const metaEntries = entry ? encodeMemoryEntryMetadata(entry) : undefined;
+        this.nativeDb.ingestBatch(new Float32Array(embedding), [numId], metaEntries);
       } catch (err) {
         // ADR-0095 d5: same degrade discriminator as store/update/load.
         if (!this.degradeToFallbackMode('ensureNativeSemanticReady', err)) {
@@ -2245,8 +2280,97 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
+  /**
+   * ADR-0154 Phase 4: load metadata from native META_SEGs.
+   *
+   * Iterates `nativeDb.listMetadataIds()`, reads each entry's segment data
+   * via `nativeDb.getMetadataEntries(numId)`, decodes via the field
+   * registry (`rvf-segment-fields.ts`), and populates `this.entries`.
+   *
+   * Returns `true` when at least one entry was loaded (so the caller knows
+   * the native source was authoritative). Returns `false` when the file
+   * contains no META_SEGs — typical for either a fresh store or a legacy
+   * project still using the .meta sidecar; caller falls back to the
+   * legacy load path in that case.
+   */
+  private async loadFromNativeSegments(): Promise<boolean> {
+    if (!this.nativeDb) return false;
+    const ids = (this.nativeDb as any).listMetadataIds?.() as number[] | undefined;
+    if (!ids || ids.length === 0) return false;
+
+    let loaded = 0;
+    for (const numId of ids) {
+      const wireEntries = (this.nativeDb as any).getMetadataEntries?.(numId) as
+        | RvfMetadataEntryWire[]
+        | undefined;
+      if (!wireEntries || wireEntries.length === 0) continue;
+      try {
+        const decoded = decodeMemoryEntryMetadata(wireEntries);
+        // The decoder doesn't recover `id` (intentional — the runtime ID is
+        // a u64 numId, not the MemoryEntry string id). Reconstruct the id
+        // from the namespace+key composite the same way `assignNativeId`
+        // assigned `numId` originally; failing that, derive a stable id
+        // from key+namespace so `entries` stays keyed correctly.
+        const composite = this.compositeKey(decoded.namespace, decoded.key);
+        const stringId = decoded.key && decoded.namespace
+          ? `${decoded.namespace}:${decoded.key}`
+          : composite;
+        const entry: any = { ...decoded, id: stringId };
+        this.entries.set(stringId, entry);
+        this.seenIds.add(stringId);
+        this.keyIndex.set(composite, stringId);
+        // Map numId ↔ stringId so future query() results route correctly.
+        this._reserveAssignedNativeId(stringId, numId);
+        loaded++;
+      } catch (err) {
+        if (this.config.verbose) {
+          console.warn(
+            `[RvfBackend] failed to decode META_SEG entries for numId=${numId}:`,
+            (err as Error).message,
+          );
+        }
+      }
+    }
+    this._diag(`loadFromNativeSegments.done loaded=${loaded}`);
+    return loaded > 0;
+  }
+
+  /**
+   * Replay the WAL if it exists. Extracted from the legacy loadFromDisk
+   * tail so the native segment-loader path can call it without duplicating
+   * the conditional logic.
+   */
+  private async replayWalIfPresent(): Promise<void> {
+    if (this.walPath && existsSync(this.walPath)) {
+      await this.replayWal();
+    }
+  }
+
   private async loadFromDisk(): Promise<void> {
     if (this.config.databasePath === ':memory:') return;
+
+    // ADR-0154 Phase 4: when native is active, metadata lives in META_SEGs
+    // inside the .rvf file (Phase 1 runtime persistence + Phase 3 ingest
+    // wiring). Read it back via the napi getMetadataEntries reader rather
+    // than parsing the legacy .meta sidecar. If the .meta sidecar still
+    // exists (legacy project pre-migration), the migration tool in Phase 6c
+    // is responsible for moving it; the loader here ignores it for
+    // native-mode reads.
+    if (this.nativeDb) {
+      const restoredFromSegments = await this.loadFromNativeSegments();
+      if (restoredFromSegments) {
+        // Still replay the WAL — it may contain entries from a peer process
+        // that exited after appending but before native ingest committed.
+        // Same WAL replay as the legacy path; non-native reads also fall
+        // through to it below.
+        await this.replayWalIfPresent();
+        return;
+      }
+      // restoredFromSegments returned false: native is active but the
+      // file has no META_SEGs (fresh store, or legacy file pre-Phase 1).
+      // Fall through to the legacy .meta path so existing projects
+      // continue to load until 6c migration runs against them.
+    }
 
     // Determine which file to load metadata from:
     // 1. Try the .meta sidecar (used when native DB owns the main path)
@@ -2657,6 +2781,24 @@ export class RvfBackend implements IMemoryBackend {
     // chronological last-write-wins via the existing `replayWal()` path,
     // which is the correct ordering for entries appended after our init.
     await this.mergePeerStateBeforePersist();
+
+    // ADR-0154 Phase 5c (conditional gate): when the native binding is the
+    // active backend, metadata is already persisted to `.rvf` via META_SEG
+    // by every `ingestBatch` call (ADR-0154 Phase 3). The legacy `.meta`
+    // sidecar write is the ADR-0095 d5 workaround for the now-fixed
+    // `RvfStore::create` race; with metadata in segments, writing it again
+    // to `.meta` is double-bookkeeping that creates the bug class HM hit
+    // (stale .meta + live .rvf — silent data loss on restart).
+    //
+    // We still need the rest of this method to perform WAL compaction
+    // bookkeeping (caller's compactWal() unlinks the WAL file after we
+    // return). Skip the .meta write but keep state consistent.
+    if (this.nativeDb) {
+      this._diag(`persistToDiskInner.skipped-meta-write (native active; metadata in META_SEGs)`);
+      this.dirty = false;
+      this.persisting = false;
+      return;
+    }
 
     const target = this.metadataPath;
     const dir = dirname(target);
