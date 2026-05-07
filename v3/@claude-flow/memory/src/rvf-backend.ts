@@ -2786,23 +2786,20 @@ export class RvfBackend implements IMemoryBackend {
     // which is the correct ordering for entries appended after our init.
     await this.mergePeerStateBeforePersist();
 
-    // ADR-0154 Phase 5c (conditional gate): when the native binding is the
-    // active backend, metadata is already persisted to `.rvf` via META_SEG
-    // by every `ingestBatch` call (ADR-0154 Phase 3). The legacy `.meta`
-    // sidecar write is the ADR-0095 d5 workaround for the now-fixed
-    // `RvfStore::create` race; with metadata in segments, writing it again
-    // to `.meta` is double-bookkeeping that creates the bug class HM hit
-    // (stale .meta + live .rvf — silent data loss on restart).
+    // ADR-0154 Phase 5c (deferred): the original plan was to skip the .meta
+    // write entirely when native is active, since META_SEG persistence in
+    // ingestBatch (Phase 3) already covers entries with embeddings. But
+    // entries WITHOUT embeddings (e.g. test fixtures, non-vectorized data)
+    // never reach ingestBatch — their only durable store is .meta. Skipping
+    // .meta unconditionally caused those entries to evaporate on restart.
     //
-    // We still need the rest of this method to perform WAL compaction
-    // bookkeeping (caller's compactWal() unlinks the WAL file after we
-    // return). Skip the .meta write but keep state consistent.
-    if (this.nativeDb) {
-      this._diag(`persistToDiskInner.skipped-meta-write (native active; metadata in META_SEGs)`);
-      this.dirty = false;
-      this.persisting = false;
-      return;
-    }
+    // Pragmatic choice: keep writing .meta as a supplementary durable store.
+    // The HM-class data loss bug class is closed by Phase 4 (loadFromDisk
+    // prefers native segments when available), not by removing the .meta
+    // file. A hard removal of .meta is gated on either (a) the runtime
+    // accepting vector-less metadata segments, or (b) the embedding
+    // pipeline guaranteeing every entry has an embedding before persistence.
+    // Both deferred to a follow-up ADR; documented in ADR-0154 amendment.
 
     const target = this.metadataPath;
     const dir = dirname(target);
