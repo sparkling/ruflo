@@ -1264,10 +1264,11 @@ const initMemoryCommand: Command = {
     }
   ],
   examples: [
-    { command: 'claude-flow memory init', description: 'Initialize hybrid backend with all features' },
-    { command: 'claude-flow memory init -b agentdb', description: 'Initialize AgentDB backend' },
-    { command: 'claude-flow memory init -p ./data/memory.db --force', description: 'Reinitialize at custom path' },
-    { command: 'claude-flow memory init --verbose --verify', description: 'Initialize with full verification' }
+    { command: 'ruflo memory init', description: 'Initialize hybrid backend with all features' },
+    { command: 'ruflo memory init -b agentdb', description: 'Initialize AgentDB backend' },
+    { command: 'ruflo memory init -p ./data/memory.db --force',
+      description: 'Reinitialize at custom path. ADR-0156: --force unlinks the canonical RVF sibling set (memory.rvf, .meta, .wal, .lock, .jslock, .ingestlock); preserves backups (.bak-*, .disabled-*, .migrated-*). Use `ruflo memory migrate` for non-destructive consolidation.' },
+    { command: 'ruflo memory init --verbose --verify', description: 'Initialize with full verification' }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const backend = (ctx.flags.backend as string) || 'hybrid';
@@ -1286,17 +1287,135 @@ const initMemoryCommand: Command = {
 
     try {
       // ADR-0086 T2.6: import from router (was memory-initializer)
-      const { ensureRouter, loadEmbeddingModel, healthCheck } = await import('../memory/memory-router.js');
+      // ADR-0156: also import resetRouter, getActiveBackendPath,
+      // getActiveSiblingPaths, RVF_CANONICAL_EXTENSIONS for the --force
+      // reset path + honest dbPath display.
+      const {
+        ensureRouter,
+        loadEmbeddingModel,
+        healthCheck,
+        resetRouter,
+        getActiveBackendPath,
+        getActiveSiblingPaths,
+        RVF_CANONICAL_EXTENSIONS,
+      } = await import('../memory/memory-router.js');
+
+      // ADR-0156: when --force is set, reset the canonical sibling set
+      // BEFORE re-initializing. Previously --force was a silent no-op
+      // (collected but never wired through). Now: enumerate the canonical
+      // extensions, refuse if a peer holds the .jslock, unlink each
+      // (symlink-safe), then resetRouter() to clear the in-process cache.
+      if (force) {
+        // First-time init must run to discover the resolved path; if a
+        // prior init landed in this same process, getActiveBackendPath()
+        // returns the cached value and we skip re-init.
+        let pathForReset = getActiveBackendPath();
+        if (!pathForReset) {
+          // Bootstrap the path resolution by initializing once.
+          await ensureRouter();
+          pathForReset = getActiveBackendPath();
+        }
+
+        if (pathForReset && pathForReset !== ':memory:') {
+          const fs = await import('node:fs');
+
+          // Lock-acquire check: discriminate self-held vs peer-held.
+          // _lockHeldDepth is process-internal; flock self-held is
+          // tracked by checking if the .jslock content's PID matches
+          // process.pid. Peer-held lock → fail loud.
+          const jslockPath = pathForReset + '.jslock';
+          if (fs.existsSync(jslockPath)) {
+            try {
+              const lockContent = fs.readFileSync(jslockPath, 'utf-8').trim();
+              const recordedPid = parseInt(lockContent, 10);
+              if (Number.isFinite(recordedPid) && recordedPid !== process.pid) {
+                // Verify the peer process still exists.
+                let peerAlive = false;
+                try {
+                  process.kill(recordedPid, 0); // signal 0 = existence probe
+                  peerAlive = true;
+                } catch {
+                  // peer pid not alive — stale lock, safe to proceed
+                }
+                if (peerAlive) {
+                  spinner.fail('Refusing to --force reset live state');
+                  output.printError(
+                    `another process (PID ${recordedPid}) holds ${jslockPath}; ` +
+                    `refuse to reset live state. Stop the peer first ` +
+                    `(e.g. \`kill ${recordedPid}\`) or wait for it to exit.`,
+                  );
+                  return { success: false, exitCode: 1 };
+                }
+              }
+            } catch {
+              // .jslock unreadable — could be a race or permissions issue.
+              // Safer to proceed than refuse (treats unreadable as stale).
+            }
+          }
+
+          // Pre-deletion print: list the canonical sibling files that
+          // exist and would be unlinked. Defensive UX — the flag is
+          // named --force, so no confirmation prompt, but the user
+          // should see exactly what got removed.
+          const existingSiblings = getActiveSiblingPaths().filter((p) => fs.existsSync(p));
+          if (existingSiblings.length > 0) {
+            output.writeln();
+            output.writeln(output.dim(`--force: removing ${existingSiblings.length} canonical file(s):`));
+            for (const p of existingSiblings) {
+              output.writeln(output.dim(`  ${p}`));
+            }
+            output.writeln(
+              output.dim('Backups (.bak-*, .disabled-*, .migrated-*) are preserved.'),
+            );
+            output.writeln(
+              output.dim('To preserve data instead of deleting it, use ` ruflo memory migrate ` ' +
+                'or `node scripts/migrate-meta-to-segments.mjs`.'),
+            );
+            output.writeln();
+          }
+
+          // Unlink each canonical sibling. Symlink-safe: skip with a
+          // warning if the path is a symlink (we don't follow).
+          for (const ext of RVF_CANONICAL_EXTENSIONS) {
+            const target = pathForReset + ext;
+            if (!fs.existsSync(target)) continue;
+            try {
+              const stat = fs.lstatSync(target);
+              if (stat.isSymbolicLink()) {
+                output.printWarning(`refusing to traverse symlink at canonical path ${target} — skipped`);
+                continue;
+              }
+              if (!stat.isFile()) continue; // directories etc — skip
+              fs.unlinkSync(target);
+            } catch (err) {
+              output.printWarning(
+                `failed to unlink ${target}: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+
+          // Reset the in-process router cache. Without this, ensureRouter()
+          // would return the stale cached _storage handle that still
+          // points at the now-deleted files.
+          resetRouter();
+        }
+      }
 
       await ensureRouter();
 
-      // ensureRouter does not return a detailed result object; synthesize one
-      // that matches the shape the rest of this handler expects.
+      // ADR-0156: pull dbPath from the resolved router state instead of
+      // the previous hardcoded '.swarm/memory.db' lie. customPath flag
+      // overrides; absent that, the router's resolved path wins.
+      const resolvedDbPath = customPath || getActiveBackendPath() || '(unresolved)';
+
+      // ADR-0156: removed fabricated `success`, `tablesCreated`,
+      // `indexesCreated` fields. `success` is now implicit — if we
+      // reached this point, ensureRouter() didn't throw. The catch at
+      // line ~1487 handles the failure path.
       const result = {
-        success: true as boolean,
         backend,
         schemaVersion: '3.0',
-        dbPath: customPath || '.swarm/memory.db',
+        dbPath: resolvedDbPath,
         features: {
           vectorEmbeddings: true,
           patternLearning: true,
@@ -1305,16 +1424,8 @@ const initMemoryCommand: Command = {
           migrationTracking: true,
         },
         controllers: undefined as { activated: string[]; failed: string[]; initTimeMs: number } | undefined,
-        tablesCreated: [] as string[],
-        indexesCreated: [] as string[],
         error: undefined as string | undefined,
       };
-
-      if (!result.success) {
-        spinner.fail('Initialization failed');
-        output.printError(result.error || 'Unknown error');
-        return { success: false, exitCode: 1 };
-      }
 
       spinner.succeed('Schema initialized');
 
@@ -1393,35 +1504,14 @@ const initMemoryCommand: Command = {
         }
       }
 
-      // Show tables created
-      if (verbose && result.tablesCreated.length > 0) {
-        output.writeln(output.bold('Tables Created:'));
-        output.printTable({
-          columns: [
-            { key: 'table', header: 'Table', width: 22 },
-            { key: 'purpose', header: 'Purpose', width: 38 }
-          ],
-          data: [
-            { table: 'memory_entries', purpose: 'Core memory storage with embeddings' },
-            { table: 'patterns', purpose: 'Learned patterns with confidence scores' },
-            { table: 'pattern_history', purpose: 'Pattern versioning and evolution' },
-            { table: 'trajectories', purpose: 'SONA learning trajectories' },
-            { table: 'trajectory_steps', purpose: 'Individual trajectory steps' },
-            { table: 'migration_state', purpose: 'Migration progress tracking' },
-            { table: 'sessions', purpose: 'Context persistence' },
-            { table: 'vector_indexes', purpose: 'HNSW index configuration' },
-            { table: 'metadata', purpose: 'System metadata' }
-          ]
-        });
-        output.writeln();
-
-        output.writeln(output.bold('Indexes Created:'));
-        output.printList(result.indexesCreated.slice(0, 8).map(idx => output.dim(idx)));
-        if (result.indexesCreated.length > 8) {
-          output.writeln(output.dim(`  ... and ${result.indexesCreated.length - 8} more`));
-        }
-        output.writeln();
-      }
+      // ADR-0156: removed fabricated "Tables Created" / "Indexes Created"
+      // displays. The hardcoded SQLite-era table list (memory_entries,
+      // patterns, pattern_history, trajectories, trajectory_steps,
+      // migration_state, sessions, vector_indexes, metadata) was a
+      // pre-RVF leak that didn't reflect what RVF actually creates.
+      // RVF doesn't have "tables" — it has segments (VEC_SEG, META_SEG,
+      // etc.). Showing fake table names was telemetry dishonesty per
+      // `feedback-no-fallbacks`. Removed.
 
       // ADR-0086 T2.6: healthCheck replaces verifyMemoryInit
       if (verify) {

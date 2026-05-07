@@ -211,6 +211,28 @@ let _embeddingsJsonWarned = false;
 // path is available even if `_storage` gets nulled out later.
 let _lockPath: string | null = null;
 
+// ADR-0156: capture the resolved canonical database path at init time so
+// `commands/memory.ts:initMemoryCommand` can report it honestly (rather
+// than the previous hardcoded `.swarm/memory.db` lie). Same lifecycle as
+// `_lockPath` — set in `_doInit`, cleared in `resetRouter`.
+let _databasePath: string | null = null;
+
+// ADR-0156: canonical RVF sibling-extension set. The `--force` reset path
+// in `commands/memory.ts` enumerates these against the resolved
+// `_databasePath` to know what to unlink. Centralised here so the
+// migration tool, the reset path, and any future tooling share one
+// source of truth — drift in this set silently widens or narrows the
+// reset's blast radius. The empty-string "" entry represents the main
+// path itself; the rest are suffix-extensions.
+export const RVF_CANONICAL_EXTENSIONS = [
+  '',           // <path>            — main RVF/SFVR file
+  '.meta',      // <path>.meta       — legacy sidecar (post-ADR-0154 still written)
+  '.wal',       // <path>.wal        — write-ahead log
+  '.lock',      // <path>.lock       — native flock file
+  '.jslock',    // <path>.jslock     — JS advisory lock
+  '.ingestlock', // <path>.ingestlock — native ingest lock
+] as const;
+
 function _findProjectRoot(): string {
   let dir = findProjectRoot();
   while (dir !== path.dirname(dir)) {
@@ -726,6 +748,9 @@ async function _doInit(): Promise<void> {
   // before fix). See rvf-backend.ts constructor comment for the .jslock
   // rename rationale.
   if (databasePath && databasePath !== ':memory:') _lockPath = databasePath + '.jslock';
+  // ADR-0156: capture for `getActiveBackendPath()`. Set even for `:memory:`
+  // so callers can discriminate ephemeral vs file-backed.
+  _databasePath = databasePath;
   try {
     // ADR-0069 Bug #3: ensure the parent directory exists before RvfBackend
     // tries to open the file. The per-user path `$HOME/.claude-flow/data/`
@@ -2155,4 +2180,33 @@ export function resetRouter(): void {
   // ADR-0094 Sprint 1.4 (d6): clear lockPath so a subsequent init
   // recaptures it from the (possibly new) storage config.
   _lockPath = null;
+  // ADR-0156: clear captured databasePath so a subsequent init reports
+  // the freshly-resolved path, not a stale one.
+  _databasePath = null;
+}
+
+/**
+ * ADR-0156: return the resolved canonical RVF database path that the
+ * router opened during `_doInit`. Returns `null` if `ensureRouter()` has
+ * not been called yet, OR if the router has been reset.
+ *
+ * Replaces the hardcoded `.swarm/memory.db` lie at
+ * `commands/memory.ts:1299`. Honest source of truth: the path the
+ * storage actually opened, not the user's `--backend` flag echo or a
+ * compile-time default.
+ */
+export function getActiveBackendPath(): string | null {
+  return _databasePath;
+}
+
+/**
+ * ADR-0156: return the canonical sibling-file paths that `--force` would
+ * unlink for the active backend. Useful for the pre-deletion print and
+ * for tests that want to assert the enumerated set without re-deriving
+ * it from the constant. Returns empty array for ephemeral backends
+ * (`:memory:`) or before init.
+ */
+export function getActiveSiblingPaths(): string[] {
+  if (!_databasePath || _databasePath === ':memory:') return [];
+  return RVF_CANONICAL_EXTENSIONS.map((ext) => _databasePath + ext);
 }
