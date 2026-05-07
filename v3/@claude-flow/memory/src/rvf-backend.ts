@@ -2308,15 +2308,17 @@ export class RvfBackend implements IMemoryBackend {
       if (!wireEntries || wireEntries.length === 0) continue;
       try {
         const decoded = decodeMemoryEntryMetadata(wireEntries);
-        // The decoder doesn't recover `id` (intentional — the runtime ID is
-        // a u64 numId, not the MemoryEntry string id). Reconstruct the id
-        // from the namespace+key composite the same way `assignNativeId`
-        // assigned `numId` originally; failing that, derive a stable id
-        // from key+namespace so `entries` stays keyed correctly.
+        // The entry-blob preserves the original MemoryEntry.id (e.g. UUIDs
+        // assigned at store() time); use it verbatim. Only fall back to a
+        // synthetic `${namespace}:${key}` id if the blob is absent or
+        // malformed (per-field decode path), where decoded.id is empty
+        // string per decodeMemoryEntryMetadata's documented contract.
         const composite = this.compositeKey(decoded.namespace, decoded.key);
-        const stringId = decoded.key && decoded.namespace
-          ? `${decoded.namespace}:${decoded.key}`
-          : composite;
+        const stringId = decoded.id && decoded.id.length > 0
+          ? decoded.id
+          : (decoded.key && decoded.namespace
+              ? `${decoded.namespace}:${decoded.key}`
+              : composite);
         const entry: any = { ...decoded, id: stringId };
         this.entries.set(stringId, entry);
         this.seenIds.add(stringId);
