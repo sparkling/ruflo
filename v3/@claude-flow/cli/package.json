@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/cli",
-  "version": "3.5.58-patch.399",
+  "version": "3.5.58-patch.400",
   "type": "module",
   "description": "Ruflo CLI - Enterprise AI agent orchestration with 60+ specialized agents, swarm coordination, MCP server, self-learning hooks, and vector memory for Claude Code",
   "main": "dist/src/index.js",
@@ -87,18 +87,18 @@
   },
   "dependencies": {
     "@claude-flow/mcp": "3.0.0-alpha.8-patch.455",
-    "@claude-flow/memory": "3.0.0-alpha.13-patch.370",
+    "@claude-flow/memory": "3.0.0-alpha.13-patch.371",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.447",
     "@noble/ed25519": "^2.1.0",
     "semver": "^7.6.0"
   },
   "optionalDependencies": {
-    "@claude-flow/aidefence": "3.0.2-patch.492",
-    "@claude-flow/codex": "3.0.0-alpha.9-patch.535",
-    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.525",
-    "@claude-flow/guidance": "3.0.0-alpha.2-patch.58",
-    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.493",
-    "agentic-flow": "2.0.2-alpha-patch.515",
+    "@claude-flow/aidefence": "3.0.2-patch.493",
+    "@claude-flow/codex": "3.0.0-alpha.9-patch.536",
+    "@claude-flow/embeddings": "3.0.0-alpha.12-patch.526",
+    "@claude-flow/guidance": "3.0.0-alpha.2-patch.59",
+    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.494",
+    "agentic-flow": "2.0.2-alpha-patch.516",
     "better-sqlite3": "^11.3.0",
     "@ruvector/attention": "0.1.4-patch.54",
     "@ruvector/learning-wasm": "0.1.29-patch.50",
