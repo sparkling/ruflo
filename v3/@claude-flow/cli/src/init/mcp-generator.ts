@@ -4,7 +4,6 @@
  * Handles cross-platform compatibility (Windows requires cmd /c wrapper)
  */
 
-import { execSync } from 'node:child_process';
 import type { InitOptions, MCPConfig } from './types.js';
 
 /**
@@ -14,40 +13,25 @@ function isWindows(): boolean {
   return process.platform === 'win32';
 }
 
-// ADR-0104 §4a: detect a globally-installed `ruflo` binary so init can write
-// `.mcp.json` with a direct path. Eliminates ~5–8s `npx -y` cold start that
-// exceeds claude-code's MCP handshake budget in `-p` mode.
-// Cached at module load — `init` runs once per project.
-let cachedRufloPath: string | null | undefined;
-function detectRufloPath(): string | null {
-  if (cachedRufloPath !== undefined) return cachedRufloPath;
-  const cmd = isWindows() ? 'where ruflo' : 'which ruflo';
-  try {
-    const out = execSync(cmd, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const path = out.split(/\r?\n/)[0].trim();
-    cachedRufloPath = path || null;
-  } catch {
-    cachedRufloPath = null;
-  }
-  return cachedRufloPath ?? null;
-}
-
 /**
- * Build the `ruflo` MCP server entry. Prefers a directly-resolved path
- * over `npx -y` to avoid the cold-start that breaks claude-code MCP attach
- * in `-p` mode (ADR-0104 §4a). Falls back to npx when not globally installed.
+ * Build the `ruflo` MCP server entry. Always uses `npx -y
+ * @sparkleideas/ruflo@latest mcp start` (the user-facing wrapper, per
+ * ADR-0143).
+ *
+ * ADR-0104 §4a (superseded by ADR-0155 2026-05-07): the previous default
+ * was a directly-resolved global binary path when `which ruflo` succeeded.
+ * That optimised the ~5-8s npx cold-start at the cost of pinning every
+ * MCP boot to whatever `@claude-flow/cli` was bundled at last
+ * `npm install -g` time. The validation around ADR-0154 made the failure
+ * mode concrete: stale wrappers miss subsequent runtime fixes (d12
+ * typed-retry, musl prebuild, Phase 4 loader-preference) — same staleness
+ * shape as HM's pinned-npx-cache `.mcp.json`, just at the global-wrapper
+ * layer. Per `feedback-always-npx-for-ruflo`, freshness wins; the
+ * cold-start cost is the user's call to optimise out manually if they
+ * care.
  */
 function createRufloEntry(env: Record<string, string>, additionalProps: Record<string, unknown> = {}): object {
-  const rufloPath = detectRufloPath();
-  if (rufloPath) {
-    return {
-      command: rufloPath,
-      args: ['mcp', 'start'],
-      env,
-      ...additionalProps,
-    };
-  }
-  return createMCPServerEntry(['@sparkleideas/cli@latest', 'mcp', 'start'], env, additionalProps);
+  return createMCPServerEntry(['@sparkleideas/ruflo@latest', 'mcp', 'start'], env, additionalProps);
 }
 
 /**
