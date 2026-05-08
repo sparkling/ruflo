@@ -317,12 +317,22 @@ export async function downloadEmbeddingModel(
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Distinguish "package missing" from real download errors so callers
-    // can surface the right hint to users.
-    if (/Cannot find package 'agentic-flow'|Cannot find module/.test(msg)) {
-      console.warn('[embeddings] agentic-flow not installed — skipping eager model download. ' +
+    // Distinguish "package missing" / "subpath unsupported" from real
+    // download errors so callers can surface the right hint to users.
+    // #1468: Windows + Node strict-ESM raises
+    //   `Package subpath './embeddings' is not defined by "exports"`
+    // when the bundled agentic-flow's package.json doesn't declare the
+    // ./embeddings entry. WSL/Linux is more permissive on the same code,
+    // so the bug only surfaces on Windows. Treat both shapes as
+    // "agentic-flow neural extras unavailable, fall back to lazy fetch".
+    if (
+      /Cannot find package 'agentic-flow'|Cannot find module/.test(msg)
+      || /Package subpath ['"]\.\/embeddings['"] is not defined/.test(msg)
+      || /ERR_PACKAGE_PATH_NOT_EXPORTED/.test(msg)
+    ) {
+      console.warn('[embeddings] agentic-flow neural extras unavailable — skipping eager model download. ' +
         'Models will be fetched lazily by @xenova/transformers on first generate. ' +
-        'For pre-downloaded models, run: npm install agentic-flow');
+        `Reason: ${msg}`);
       return targetDir ?? '.models';
     }
     throw err;
