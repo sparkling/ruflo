@@ -3131,6 +3131,18 @@ export async function abBenchmark(
 
   const contentAware = isContentAwareExecutor(executor);
 
+  // #1652: a non-content-aware executor reads CLAUDE.md from disk for both
+  // configs, so the delta is architecturally guaranteed to be zero — yet
+  // the verdict implies the user's CLAUDE.md is ineffective. Detect and
+  // abort with a clear, actionable message before spending ~$23 in tokens
+  // on a meaningless run. The default executor IS content-aware, so this
+  // only triggers when callers inject a bare IHeadlessExecutor.
+  if (!contentAware) {
+    throw new Error(
+      'abBenchmark requires a content-aware executor. The provided IHeadlessExecutor lacks `setContext()`, so Config A and Config B will both read the same on-disk CLAUDE.md and the delta is guaranteed to be zero. Either use the DefaultHeadlessExecutor (content-aware as of @claude-flow/guidance@3.0.0-alpha.2) or implement IContentAwareExecutor on your custom executor.',
+    );
+  }
+
   // ── Config A: No control plane ──────────────────────────────────────
   // For content-aware executors, set empty context (simulating no guidance)
   if (contentAware) executor.setContext('');

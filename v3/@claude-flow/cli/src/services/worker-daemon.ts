@@ -910,6 +910,16 @@ export class WorkerDaemon extends EventEmitter {
       try {
         this.log('info', `Running ${workerConfig.type} in headless mode (Claude Code AI)`);
         result = await this.headlessExecutor.execute(workerConfig.type as HeadlessWorkerType);
+        // #1793: persist the headless result to the same metrics files the
+        // local workers write to. Without this, AI-mode runs produced rich
+        // parsedOutput that lived only in `.claude-flow/logs/headless/*` and
+        // never reached `.claude-flow/metrics/<name>.json` — `memory stats`
+        // and downstream consumers saw nothing despite successful runs.
+        try {
+          this.persistHeadlessResult(workerConfig.type as HeadlessWorkerType, result);
+        } catch (persistError) {
+          this.log('warn', `Failed to persist headless result for ${workerConfig.type}: ${(persistError as Error).message}`);
+        }
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         this.log('warn', `Headless execution threw for ${workerConfig.type}: ${errorMsg}`);
@@ -954,6 +964,59 @@ export class WorkerDaemon extends EventEmitter {
       default:
         return { status: 'unknown worker type', mode: 'local' };
     }
+  }
+
+  /**
+   * #1793: persist a headless worker result to the same metrics file the
+   * local fallback writes to. Without this, AI-mode workers produced rich
+   * structured output (audit findings, perf signals, test-gap analysis)
+   * that lived only in `.claude-flow/logs/headless/*_result.log` and was
+   * invisible to `npx ruflo memory stats` or the metrics consumers.
+   *
+   * The mapping mirrors the `*Local` worker implementations below so a
+   * single consumer path works regardless of execution mode.
+   */
+  private persistHeadlessResult(
+    workerType: HeadlessWorkerType,
+    result: HeadlessExecutionResult,
+  ): void {
+    const metricsDir = join(this.projectRoot, '.claude-flow', 'metrics');
+    if (!existsSync(metricsDir)) mkdirSync(metricsDir, { recursive: true });
+
+    // Filename mirrors the local-mode worker writes (security-audit.json,
+    // performance.json, test-gaps.json) so a downstream reader doesn't
+    // care which mode produced the data.
+    const filenameMap: Partial<Record<HeadlessWorkerType, string>> = {
+      audit: 'security-audit.json',
+      optimize: 'performance.json',
+      testgaps: 'test-gaps.json',
+      document: 'documentation.json',
+      refactor: 'refactor.json',
+      deepdive: 'deepdive.json',
+      ultralearn: 'ultralearn.json',
+      predict: 'predictions.json',
+    };
+    const filename = filenameMap[workerType] ?? `${workerType}.json`;
+    const metricsFile = join(metricsDir, filename);
+
+    const persisted = {
+      timestamp: result.timestamp instanceof Date ? result.timestamp.toISOString() : new Date().toISOString(),
+      mode: 'headless' as const,
+      workerType,
+      model: result.model,
+      durationMs: result.durationMs,
+      tokensUsed: result.tokensUsed,
+      executionId: result.executionId,
+      success: result.success,
+      // Structured findings live here when the worker emits JSON (e.g. the
+      // audit worker's vulnerability list). Fall back to a raw-output
+      // pointer so consumers can still locate the full log.
+      findings: result.parsedOutput ?? null,
+      rawOutputPreview: typeof result.output === 'string' ? result.output.slice(0, 2000) : undefined,
+      rawOutputLength: typeof result.output === 'string' ? result.output.length : 0,
+    };
+
+    writeFileSync(metricsFile, JSON.stringify(persisted, null, 2));
   }
 
   // Worker implementations
