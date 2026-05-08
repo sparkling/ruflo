@@ -17,7 +17,7 @@
     "@ruvector/sona": "0.1.6-patch.28"
   },
   "optionalDependencies": {
-    "agentdb": "3.0.0-alpha.10-patch.492"
+    "agentdb": "3.0.0-alpha.14-patch.1"
   },
   "publishConfig": {
     "access": "public",

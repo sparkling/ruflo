@@ -65,7 +65,7 @@
     "@ruvector/router": "0.1.30-patch.28",
     "@ruvector/router-linux-x64-gnu": "0.1.30-patch.28",
     "@ruvector/sona": "0.1.6-patch.28",
-    "agentdb": "3.0.0-alpha.10-patch.492",
+    "agentdb": "3.0.0-alpha.14-patch.1",
     "agentic-flow": "2.0.2-alpha-patch.536"
   },
   "overrides": {
