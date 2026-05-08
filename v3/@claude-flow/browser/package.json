@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/browser",
-  "version": "3.0.0-alpha.3-patch.535",
+  "version": "3.0.0-alpha.3-patch.536",
   "description": "Browser automation for AI agents - integrates agent-browser with claude-flow swarms",
   "type": "module",
   "main": "dist/index.js",
@@ -23,11 +23,11 @@
   },
   "dependencies": {
     "agent-browser": "^0.6.0",
-    "agentic-flow": "2.0.2-alpha-patch.543",
+    "agentic-flow": "2.0.2-alpha-patch.544",
     "zod": "^3.22.4"
   },
   "peerDependencies": {
-    "@claude-flow/cli": "3.5.58-patch.427"
+    "@claude-flow/cli": "3.5.58-patch.428"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
