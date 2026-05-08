@@ -9,8 +9,11 @@
  */
 
 import { EventEmitter } from 'node:events';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { MEMORY_ENTRIES_DDL, MEMORY_ENTRIES_INDEXES, MEMORY_EMBEDDINGS_DDL } from './memory-schema.js';
+import { safeJsonParse } from './json-security.js';
+
+type DatabaseCtor = typeof Database;
 import {
   IMemoryBackend,
   MemoryEntry,
@@ -108,8 +111,19 @@ export class SQLiteBackend extends EventEmitter implements IMemoryBackend {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
+    let DatabaseCtor: DatabaseCtor;
+    try {
+      DatabaseCtor = (await import('better-sqlite3')).default as DatabaseCtor;
+    } catch (err) {
+      throw new Error(
+        "@claude-flow/memory: SQLiteBackend requires the optional 'better-sqlite3' package. " +
+        "Install it with `npm i better-sqlite3` or use a different DatabaseProvider " +
+        "(sql.js / rvf / json). Original error: " + (err instanceof Error ? err.message : String(err))
+      );
+    }
+
     // Open database connection
-    this.db = new Database(this.config.databasePath, {
+    this.db = new DatabaseCtor(this.config.databasePath, {
       verbose: this.config.verbose ? console.log : undefined,
     });
 
