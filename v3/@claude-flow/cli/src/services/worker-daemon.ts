@@ -135,6 +135,9 @@ export class WorkerDaemon extends EventEmitter {
   private config: DaemonConfig;
   private workers: Map<WorkerType, WorkerState> = new Map();
   private timers: Map<WorkerType, NodeJS.Timeout> = new Map();
+  // #1845: separate timer for the MCP-dispatch queue poller. Kept off
+  // the per-worker map so stop() clears both kinds without confusion.
+  private queuePollTimer?: NodeJS.Timeout;
   private running = false;
   private startedAt?: Date;
   private projectRoot: string;
@@ -345,8 +348,11 @@ export class WorkerDaemon extends EventEmitter {
   }
 
   /**
-   * Read daemon-specific config from .claude-flow/config.json
-   * Supports dot-notation keys like 'daemon.resourceThresholds.maxCpuLoad'
+   * Read daemon-specific config from .claude-flow/config.{json,yaml,yml}.
+   * Supports dot-notation keys like 'daemon.resourceThresholds.maxCpuLoad'.
+   * #1844: prefer JSON when both exist (existing behavior) but fall back
+   * to YAML so operators using the v3 canonical YAML format aren't silently
+   * ignored. The chosen path is logged at info level.
    */
   private readDaemonConfigFromFile(claudeFlowDir: string): {
     autoStart?: boolean;
@@ -356,18 +362,49 @@ export class WorkerDaemon extends EventEmitter {
     minFreeMemoryPercent?: number;
     workerTriggers?: Record<string, { timeoutMs?: number; priority?: string }>;
   } {
-    const configPath = join(claudeFlowDir, 'config.json');
-    if (!existsSync(configPath)) {
-      // Warn if config.yaml exists but config.json does not (#1395 Bug 4)
-      const yamlPath = join(claudeFlowDir, 'config.yaml');
-      const ymlPath = join(claudeFlowDir, 'config.yml');
-      if (existsSync(yamlPath) || existsSync(ymlPath)) {
-        this.log('warn', `Found ${existsSync(yamlPath) ? 'config.yaml' : 'config.yml'} but daemon reads only config.json — YAML config is being ignored. Convert to JSON or create config.json.`);
+    const jsonPath = join(claudeFlowDir, 'config.json');
+    const yamlPath = join(claudeFlowDir, 'config.yaml');
+    const ymlPath = join(claudeFlowDir, 'config.yml');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let raw: Record<string, any> | undefined;
+    let chosenPath: string | undefined;
+
+    if (existsSync(jsonPath)) {
+      try {
+        raw = JSON.parse(readFileSync(jsonPath, 'utf-8'));
+        chosenPath = jsonPath;
+      } catch {
+        return {};
       }
+    } else if (existsSync(yamlPath) || existsSync(ymlPath)) {
+      const yPath = existsSync(yamlPath) ? yamlPath : ymlPath;
+      try {
+        // Lazy-load yaml so the daemon doesn't hard-require it; if the
+        // dep isn't installed, fall back to the previous warn-only path.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const yamlMod = require('yaml') as { parse(s: string): unknown };
+        const parsed = yamlMod.parse(readFileSync(yPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          raw = parsed as Record<string, any>;
+          chosenPath = yPath;
+        }
+      } catch {
+        this.log(
+          'warn',
+          `Found ${yPath} but yaml parser unavailable. Install \`yaml\` or convert to JSON. Falling back to defaults.`,
+        );
+        return {};
+      }
+    }
+
+    if (!raw || !chosenPath) {
       return {};
     }
+    this.log('info', `Daemon config loaded from ${chosenPath}`);
+
     try {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
       // Support both flat keys at root and nested under scopes.project
       const cfg = raw?.scopes?.project ?? raw;
       const rawCpuLoad = cfg['daemon.resourceThresholds.maxCpuLoad'] ?? raw['daemon.resourceThresholds.maxCpuLoad'];
@@ -653,10 +690,76 @@ export class WorkerDaemon extends EventEmitter {
       }
     }
 
+    // #1845: poll the MCP-dispatch queue directory so workers requested
+    // via mcp__hooks_worker-dispatch (in a separate process) actually
+    // execute here. Previously the dispatch wrote to a process-local Map
+    // that the daemon could never see.
+    this.queuePollTimer = setInterval(() => {
+      void this.processDispatchQueue();
+    }, 5_000);
+    if (typeof this.queuePollTimer.unref === 'function') {
+      this.queuePollTimer.unref();
+    }
+
     // Save state
     this.saveState();
 
     this.log('info', `Daemon started (PID: ${process.pid}, CPUs: ${cpus().length}, workers: ${this.config.workers.filter(w => w.enabled).length}, maxCpuLoad: ${this.config.resourceThresholds.maxCpuLoad}, minFreeMemoryPercent: ${this.config.resourceThresholds.minFreeMemoryPercent}%)`);
+  }
+
+  /**
+   * #1845: ingest queue entries written by mcp__hooks_worker-dispatch.
+   * Each entry is a JSON file at `.claude-flow/daemon-queue/<id>.json`
+   * with `{ workerId, trigger, context, enqueuedAt }`. We move processed
+   * files to `.claude-flow/daemon-queue/.processed/` so the daemon never
+   * re-runs the same dispatch and operators can inspect history.
+   */
+  private async processDispatchQueue(): Promise<void> {
+    if (!this.running) return;
+    const queueDir = join(this.projectRoot, '.claude-flow', 'daemon-queue');
+    if (!existsSync(queueDir)) return;
+
+    let entries: string[];
+    try {
+      const fs = await import('fs');
+      entries = fs.readdirSync(queueDir).filter((n) => n.endsWith('.json'));
+    } catch {
+      return;
+    }
+    if (entries.length === 0) return;
+
+    const fs = await import('fs');
+    const processedDir = join(queueDir, '.processed');
+    if (!existsSync(processedDir)) {
+      try { fs.mkdirSync(processedDir, { recursive: true }); } catch { /* race ok */ }
+    }
+
+    for (const entry of entries) {
+      const src = join(queueDir, entry);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let payload: any;
+      try {
+        payload = JSON.parse(fs.readFileSync(src, 'utf-8'));
+      } catch {
+        // Malformed entry — quarantine so we don't loop on it
+        try { fs.renameSync(src, join(processedDir, `bad-${entry}`)); } catch { /* nothing more we can do */ }
+        continue;
+      }
+      const trigger = payload?.trigger as WorkerType | undefined;
+      const workerId = payload?.workerId as string | undefined;
+      if (!trigger || !this.config.workers.some((w) => w.type === trigger)) {
+        try { fs.renameSync(src, join(processedDir, `unknown-${entry}`)); } catch { /* ok */ }
+        continue;
+      }
+      try {
+        this.log('info', `Dequeued ${trigger}${workerId ? ` (id=${workerId})` : ''} from MCP dispatch queue`);
+        await this.triggerWorker(trigger);
+      } catch (err) {
+        this.log('warn', `Queued worker ${trigger} failed: ${(err as Error).message}`);
+      } finally {
+        try { fs.renameSync(src, join(processedDir, entry)); } catch { /* ignore */ }
+      }
+    }
   }
 
   /**
@@ -680,6 +783,12 @@ export class WorkerDaemon extends EventEmitter {
     if (this.ipcServer) {
       try { await this.ipcServer.stop(); } catch { /* ignore */ }
       this.ipcServer = null;
+    }
+
+    // #1845: stop the MCP-dispatch queue poller too.
+    if (this.queuePollTimer) {
+      clearInterval(this.queuePollTimer);
+      this.queuePollTimer = undefined;
     }
 
     this.running = false;
