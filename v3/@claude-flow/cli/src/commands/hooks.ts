@@ -4015,7 +4015,13 @@ const statuslineCommand: Command = {
     },
     {
       name: 'compact',
-      description: 'Compact single-line output',
+      description: 'Compact single-line output (auto-enabled when terminal width < 100 cols)',
+      type: 'boolean',
+      default: false
+    },
+    {
+      name: 'full',
+      description: 'Force the full multi-line output even on narrow terminals',
       type: 'boolean',
       default: false
     },
@@ -4254,8 +4260,16 @@ const statuslineCommand: Command = {
       return { success: true, data: statusData };
     }
 
-    // Compact output
-    if (ctx.flags.compact) {
+    // #1153: auto-collapse to compact on narrow terminals so the full
+    // 6+ line statusline doesn't dominate the screen. Honors:
+    //   - explicit --compact → compact
+    //   - explicit --full    → full (overrides auto-detection)
+    //   - else                → compact when terminal < 100 cols (full multi-line
+    //                            output expects ~100 cols of horizontal space)
+    const COMPACT_WIDTH_THRESHOLD = 100;
+    const terminalCols = process.stdout.columns ?? 80;
+    const autoCompact = !ctx.flags.full && terminalCols < COMPACT_WIDTH_THRESHOLD;
+    if (ctx.flags.compact || autoCompact) {
       const line = `DDD:${progress.domainsCompleted}/${progress.totalDomains} CVE:${security.cvesFixed}/${security.totalCves} Swarm:${swarm.activeAgents}/${swarm.maxAgents} Ctx:${system.contextPct}% Int:${system.intelligencePct}%`;
       output.writeln(line);
       return { success: true, data: statusData };
