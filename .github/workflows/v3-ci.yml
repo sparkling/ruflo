@@ -119,6 +119,63 @@ jobs:
           name: v3-build-${{ matrix.os }}
           path: v3/@claude-flow/*/dist/
 
+  smoke-install-no-bsqlite:
+    # Regression guard for ruvnet/ruflo#1867 — ensures @claude-flow/memory
+    # installs and loads when better-sqlite3 fails to build (e.g. Node 26
+    # without prebuilds). Reproduces the user-visible failure mode by
+    # installing with --omit=optional.
+    name: Smoke (no better-sqlite3) / Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Build @claude-flow/memory
+        working-directory: v3/@claude-flow/memory
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Pack tarball
+        id: pack
+        working-directory: v3/@claude-flow/memory
+        run: |
+          TARBALL=$(npm pack --silent)
+          echo "tarball=$GITHUB_WORKSPACE/v3/@claude-flow/memory/$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Install with --omit=optional (simulates Node 26 native build failure)
+        run: |
+          mkdir -p /tmp/smoke
+          cd /tmp/smoke
+          npm init -y >/dev/null
+          npm pkg set type=module
+          npm install "${{ steps.pack.outputs.tarball }}" --omit=optional --no-audit --no-fund
+
+      - name: Assert better-sqlite3 was NOT installed
+        run: |
+          if [ -d /tmp/smoke/node_modules/better-sqlite3 ]; then
+            echo "FAIL: better-sqlite3 installed despite --omit=optional — smoke setup is wrong"
+            exit 1
+          fi
+          echo "ok: better-sqlite3 absent (regression scenario active)"
+
+      - name: Run smoke script
+        run: |
+          cp v3/@claude-flow/memory/scripts/smoke-no-bsqlite.mjs /tmp/smoke/
+          cd /tmp/smoke
+          node smoke-no-bsqlite.mjs
+
   publish:
     name: Publish to npm (alpha)
     runs-on: ubuntu-latest
