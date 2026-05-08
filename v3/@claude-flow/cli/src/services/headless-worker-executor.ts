@@ -1168,12 +1168,23 @@ Analyze the above codebase context and provide your response following the forma
 
       // Spawn claude CLI process in bare mode — workers don't need MCP servers,
       // hooks, or plugins. --bare skips all of these, saving ~340 MB per worker.
-      const child = spawn('claude', ['--bare', '--print', prompt], {
+      // #1852: prompt is piped via stdin instead of positional arg. On Windows
+      // `claude` resolves to `claude.cmd` which routes through cmd.exe; positional
+      // prompt args containing `>` `<` `&` `|` (arrow funcs, comparisons) get
+      // re-tokenized as shell redirects. `child.stdin.end(prompt)` writes the
+      // prompt + EOF atomically without any shell tokenization.
+      const child = spawn('claude', ['--bare', '--print'], {
         cwd: this.projectRoot,
         env,
-        stdio: ['ignore', 'pipe', 'pipe'], // 'ignore' closes stdin at spawn — fixes #1395 where claude --print blocks on EOF
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true, // Prevent phantom console windows on Windows
       });
+      try {
+        child.stdin?.end(prompt);
+      } catch {
+        // stdin already closed (e.g. spawn failed) — `error` handler below
+        // will surface the real cause.
+      }
 
       // Setup timeout
       const timeoutHandle = setTimeout(() => {

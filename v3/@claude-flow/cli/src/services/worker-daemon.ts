@@ -574,12 +574,24 @@ export class WorkerDaemon extends EventEmitter {
   /**
    * Check if another daemon instance is already running.
    * Returns the existing PID if alive, or null if no daemon is running.
+   *
+   * #1853: ignore self-PID matches. The detached-spawn path in
+   * `commands/daemon.ts` writes the child's PID into the file as a
+   * fallback after a 500ms wait. If the child reaches `start()` slower
+   * than the parent's 500ms wait (observed on Node 25 / macOS 26), the
+   * child reads its own PID back from the file and concludes "another
+   * daemon is already running" — so it exits before scheduling workers
+   * and `daemon status` reports STOPPED forever. A daemon process is
+   * never "another instance" of itself; treat self-match as absence.
    */
   private checkExistingDaemon(): number | null {
     if (!existsSync(this.pidFile)) return null;
     try {
       const pid = parseInt(readFileSync(this.pidFile, 'utf-8').trim(), 10);
       if (isNaN(pid)) return null;
+      // #1853: a PID file containing our own PID is not "another daemon".
+      // Treat as absent so the start() path proceeds normally.
+      if (pid === process.pid) return null;
       // Check if process is alive (signal 0 = existence check)
       process.kill(pid, 0);
       return pid; // Process is alive
