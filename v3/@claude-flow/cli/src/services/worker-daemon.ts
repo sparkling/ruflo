@@ -242,6 +242,10 @@ export class WorkerDaemon extends EventEmitter {
     // Setup graceful shutdown handlers
     this.setupShutdownHandlers();
 
+    // #1855: install crash handlers so uncaught exceptions and unhandled
+    // rejections don't leak the PID file or orphan child processes.
+    this.installCrashHandlers();
+
     // Ensure directories exist
     if (!existsSync(claudeFlowDir)) {
       mkdirSync(claudeFlowDir, { recursive: true });
@@ -277,16 +281,21 @@ export class WorkerDaemon extends EventEmitter {
       if (this.headlessAvailable) {
         this.log('info', 'Claude Code headless mode available - AI workers enabled');
 
-        // Forward headless executor events
+        // Forward headless executor events. #1855: also snapshot the
+        // active child PIDs to disk on every transition so the next
+        // lifetime can reap orphans after a hard crash.
         this.headlessExecutor.on('execution:start', (data) => {
+          this.writeChildrenSnapshot();
           this.emit('headless:start', data);
         });
 
         this.headlessExecutor.on('execution:complete', (data) => {
+          this.writeChildrenSnapshot();
           this.emit('headless:complete', data);
         });
 
         this.headlessExecutor.on('execution:error', (data) => {
+          this.writeChildrenSnapshot();
           this.emit('headless:error', data);
         });
 
@@ -443,6 +452,118 @@ export class WorkerDaemon extends EventEmitter {
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
     process.on('SIGHUP', shutdown);
+  }
+
+  /**
+   * #1855: install crash handlers for uncaught exceptions and unhandled
+   * rejections. Without these, a thrown error from any timer callback,
+   * worker logic path, or transitive import crashes the daemon process
+   * silently — the PID file leaks and any in-flight child processes
+   * orphan. With these, we log a structured crash record, run stop()
+   * to clean up, then exit 1 so the process actually dies (otherwise
+   * Node would crash anyway after the handler returns).
+   */
+  private installCrashHandlers(): void {
+    const onCrash = (kind: 'uncaughtException' | 'unhandledRejection', err: unknown) => {
+      // Best-effort logging; never throw from inside the crash handler.
+      try {
+        this.writeCrashRecord(kind, err);
+      } catch { /* nothing more we can do */ }
+      try {
+        // Synchronous stop — don't await; the process is dying. Just
+        // remove the PID file and snapshot state so the next start
+        // sees a clean slate.
+        this.removePidFile();
+        this.saveState();
+        // Snapshot any in-flight child PIDs one last time so the next
+        // lifetime can reap them.
+        this.writeChildrenSnapshot();
+      } catch { /* ignore */ }
+      // Exit non-zero so supervisors / shells see the failure.
+      process.exit(1);
+    };
+    process.on('uncaughtException', (err) => onCrash('uncaughtException', err));
+    process.on('unhandledRejection', (err) => onCrash('unhandledRejection', err));
+  }
+
+  /**
+   * Append a structured crash record to .claude-flow/logs/crash.log.
+   * Inspectable by hand or via `ruflo daemon status` follow-ups.
+   */
+  private writeCrashRecord(kind: string, err: unknown): void {
+    const logDir = this.config.logDir;
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+    const crashLog = join(logDir, 'crash.log');
+    const ts = new Date().toISOString();
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error && err.stack ? err.stack : '<no stack>';
+    const record = `[${ts}] [${kind}] pid=${process.pid} ${message}\n${stack}\n---\n`;
+    appendFileSync(crashLog, record, 'utf-8');
+    this.log('warn', `Daemon crashed (${kind}): ${message} — see ${crashLog}`);
+  }
+
+  /**
+   * Path to the on-disk children registry — list of headless worker
+   * child PIDs the daemon currently owns. #1855: written on every
+   * execution:start / :complete / :error transition; read by the next
+   * lifetime to reap orphans after a hard crash.
+   */
+  private get childrenFile(): string {
+    return join(this.projectRoot, '.claude-flow', 'daemon-children.json');
+  }
+
+  /**
+   * Snapshot the currently-active headless worker child PIDs to disk.
+   * Best-effort; failures don't propagate.
+   */
+  private writeChildrenSnapshot(): void {
+    if (!this.headlessExecutor) return;
+    try {
+      const pids = this.headlessExecutor.getActiveChildPids();
+      const dir = join(this.projectRoot, '.claude-flow');
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        this.childrenFile,
+        JSON.stringify({ pids, daemonPid: process.pid, timestamp: new Date().toISOString() }, null, 2),
+        'utf-8',
+      );
+    } catch { /* best-effort */ }
+  }
+
+  /**
+   * #1855: reap orphan headless worker children left behind by a
+   * previous crashed lifetime. Reads `.claude-flow/daemon-children.json`,
+   * SIGTERMs any PID still alive that doesn't belong to the current
+   * daemon, then truncates the file. Called at the top of `start()`
+   * so the next lifetime starts with a clean process tree.
+   */
+  private reapOrphanedChildren(): void {
+    const file = this.childrenFile;
+    if (!existsSync(file)) return;
+    let snapshot: { pids?: number[]; daemonPid?: number };
+    try {
+      snapshot = JSON.parse(readFileSync(file, 'utf-8'));
+    } catch {
+      try { unlinkSync(file); } catch { /* ignore */ }
+      return;
+    }
+    const pids = Array.isArray(snapshot.pids) ? snapshot.pids : [];
+    let reaped = 0;
+    for (const pid of pids) {
+      if (typeof pid !== 'number' || pid <= 0) continue;
+      if (pid === process.pid) continue; // never our own PID
+      try {
+        process.kill(pid, 0); // is alive?
+        process.kill(pid, 'SIGTERM');
+        reaped++;
+      } catch {
+        // already dead — fine
+      }
+    }
+    if (reaped > 0) {
+      this.log('info', `Reaped ${reaped} orphan headless worker child(ren) from previous lifetime`);
+    }
+    try { unlinkSync(file); } catch { /* ignore */ }
   }
 
   /**
@@ -663,6 +784,12 @@ export class WorkerDaemon extends EventEmitter {
       this.emit('warning', `Daemon already running (PID: ${existingPid})`);
       return;
     }
+
+    // #1855: reap orphan headless worker children left by a previous
+    // crashed lifetime, BEFORE we mark ourselves running and start
+    // accepting new work. The children file from the prior daemon's
+    // last-snapshot is the authoritative list.
+    this.reapOrphanedChildren();
 
     // ADR-0088: Emit exactly one honest startup line. Headless mode means
     // 9 of 12 workers can invoke Claude Code; local mode means those

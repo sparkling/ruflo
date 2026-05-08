@@ -711,6 +711,20 @@ export class HeadlessWorkerExecutor extends EventEmitter {
   /**
    * Get pool status
    */
+  /**
+   * #1855: return the PIDs of all currently-running headless worker
+   * children. Used by `WorkerDaemon` to snapshot active child PIDs to
+   * disk so the next lifetime can reap orphans after a hard crash.
+   */
+  getActiveChildPids(): number[] {
+    const out: number[] = [];
+    for (const entry of this.processPool.values()) {
+      const pid = entry.process?.pid;
+      if (typeof pid === 'number' && pid > 0) out.push(pid);
+    }
+    return out;
+  }
+
   getPoolStatus(): PoolStatus {
     const now = Date.now();
     return {
