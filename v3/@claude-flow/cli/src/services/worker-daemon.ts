@@ -56,6 +56,12 @@ interface WorkerState {
   failureCount: number;
   averageDurationMs: number;
   isRunning: boolean;
+  // #1856: track when the worker last *started* in addition to when it
+  // last successfully completed (lastRun). On crash recovery we scan for
+  // workers where lastStartedAt > lastRun and count them as failed —
+  // otherwise their runCount drifts above successCount + failureCount
+  // with no diagnostic trail.
+  lastStartedAt?: Date;
 }
 
 interface WorkerResult {
@@ -513,6 +519,37 @@ export class WorkerDaemon extends EventEmitter {
   }
 
   /**
+   * #1856: detect workers that were mid-flight when the previous daemon
+   * lifetime ended. A mid-flight worker has `lastStartedAt > lastRun`
+   * (started after the last successful completion). On crash recovery
+   * we count these as failures so the run-counter math stays consistent
+   * (`runCount === successCount + failureCount`). Workers naturally
+   * retry at their next scheduled interval; we deliberately don't
+   * immediately re-run because the failure may have been deterministic.
+   */
+  private detectMidFlightFailures(): void {
+    let detected = 0;
+    for (const [type, state] of this.workers.entries()) {
+      const startedAt = state.lastStartedAt?.getTime() ?? 0;
+      const lastRunAt = state.lastRun?.getTime() ?? 0;
+      // started after the last successful completion → was mid-flight
+      if (startedAt > 0 && startedAt > lastRunAt) {
+        state.failureCount++;
+        state.isRunning = false;
+        // Don't bump runCount — it was already incremented at start
+        this.log(
+          'info',
+          `Worker ${type} was mid-flight at last crash (started ${state.lastStartedAt?.toISOString()}); counted as failure, will retry at next scheduled interval`,
+        );
+        detected++;
+      }
+    }
+    if (detected > 0) {
+      this.saveState();
+    }
+  }
+
+  /**
    * Snapshot the currently-active headless worker child PIDs to disk.
    * Best-effort; failures don't propagate.
    */
@@ -655,12 +692,14 @@ export class WorkerDaemon extends EventEmitter {
           for (const [type, state] of Object.entries(saved.workers)) {
             const savedState = state as Record<string, unknown>;
             const lastRunValue = savedState.lastRun;
+            const lastStartedAtValue = savedState.lastStartedAt;
             this.workers.set(type as WorkerType, {
               runCount: (savedState.runCount as number) || 0,
               successCount: (savedState.successCount as number) || 0,
               failureCount: (savedState.failureCount as number) || 0,
               averageDurationMs: (savedState.averageDurationMs as number) || 0,
               lastRun: lastRunValue ? new Date(lastRunValue as string) : undefined,
+              lastStartedAt: lastStartedAtValue ? new Date(lastStartedAtValue as string) : undefined,
               nextRun: undefined,
               isRunning: false,
             });
@@ -790,6 +829,14 @@ export class WorkerDaemon extends EventEmitter {
     // accepting new work. The children file from the prior daemon's
     // last-snapshot is the authoritative list.
     this.reapOrphanedChildren();
+
+    // #1856: detect workers that were mid-flight at the previous crash
+    // and count them as failures so runCount/successCount/failureCount
+    // stay consistent. Workers retry naturally at their next scheduled
+    // interval — we don't immediately re-run them, which avoids a
+    // freshly-recovered daemon hammering the same code path that just
+    // killed it.
+    this.detectMidFlightFailures();
 
     // ADR-0088: Emit exactly one honest startup line. Headless mode means
     // 9 of 12 workers can invoke Claude Code; local mode means those
@@ -1031,6 +1078,8 @@ export class WorkerDaemon extends EventEmitter {
     // Track running worker
     this.runningWorkers.add(workerConfig.type);
     state.isRunning = true;
+    state.lastStartedAt = new Date(); // #1856: timestamp the start
+    this.saveState();                  // persist before we run anything
     this.emit('worker:start', { workerId, type: workerConfig.type });
     this.log('info', `Starting worker: ${workerConfig.type} (${this.runningWorkers.size}/${this.config.maxConcurrent} concurrent)`);
 
@@ -1583,6 +1632,7 @@ export class WorkerDaemon extends EventEmitter {
           {
             ...state,
             lastRun: state.lastRun?.toISOString(),
+            lastStartedAt: state.lastStartedAt?.toISOString(),
             nextRun: state.nextRun?.toISOString(),
           }
         ])
