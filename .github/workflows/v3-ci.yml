@@ -6,10 +6,22 @@ on:
     paths:
       - 'v3/**'
       - '.github/workflows/v3-ci.yml'
+      # Witness-verify + plugin-hooks-smoke depend on these scripts;
+      # path filter keeps CI in sync with their changes.
+      - 'plugins/ruflo-core/scripts/witness/**'
+      - 'plugins/ruflo-core/scripts/test-hooks.mjs'
+      - 'plugins/ruflo-core/hooks/hooks.json'
+      - 'verification.md.json'
+      - 'verification-history.jsonl'
+      - 'witness-fixes.json'
   pull_request:
     branches: [main]
     paths:
       - 'v3/**'
+      - 'plugins/ruflo-core/scripts/witness/**'
+      - 'plugins/ruflo-core/scripts/test-hooks.mjs'
+      - 'plugins/ruflo-core/hooks/hooks.json'
+  workflow_dispatch:
 
 env:
   NODE_VERSION: '20'
