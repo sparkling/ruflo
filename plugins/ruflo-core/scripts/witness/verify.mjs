@@ -83,11 +83,26 @@ process.exit(ok ? 0 : 1);
 
 // ─── ed25519 helpers ─────────────────────────────────────────────
 async function verifySignature(witness, repoRoot) {
+  // Probe multiple plausible install roots — pnpm's isolated linker
+  // doesn't hoist transitive deps to v3/node_modules, so we also check
+  // workspace packages that declare @noble/ed25519 directly. A user's
+  // flat npm install satisfies the first probe; pnpm satisfies the latter.
   let ed;
-  for (const root of [repoRoot, join(repoRoot, 'v3')]) {
-    try { ed = createRequire(join(root, 'noop.js'))('@noble/ed25519'); break; } catch { /* try next */ }
+  let probeErr;
+  const probes = [
+    repoRoot,
+    join(repoRoot, 'v3'),
+    join(repoRoot, 'v3/@claude-flow/cli'),
+    join(repoRoot, 'v3/@claude-flow/plugin-agent-federation'),
+  ];
+  for (const root of probes) {
+    try { ed = createRequire(join(root, 'noop.js'))('@noble/ed25519'); break; }
+    catch (e) { probeErr = e; }
   }
-  if (!ed) return { manifestHashOk: false, publicKeyReproducible: false, signatureValid: false };
+  if (!ed) {
+    console.error(`verify.mjs: could not load @noble/ed25519 from any of:\n  ${probes.join('\n  ')}\n  last error: ${probeErr?.message ?? '?'}`);
+    return { manifestHashOk: false, publicKeyReproducible: false, signatureValid: false };
+  }
 
   ed.etc.sha512Sync = (...m) => { const h = createHash('sha512'); for (const x of m) h.update(x); return h.digest(); };
 

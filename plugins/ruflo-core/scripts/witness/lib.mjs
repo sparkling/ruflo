@@ -21,8 +21,19 @@ import { createRequire } from 'node:module';
 // install roots so the toolkit works in ruflo's monorepo layout *and*
 // a user's flat node_modules.
 function loadEd25519(probeRoots) {
+  // Expand caller-supplied roots with workspace-package locations so
+  // pnpm's isolated layout (where transitive deps don't hoist to the
+  // workspace root) still resolves @noble/ed25519. Callers don't need
+  // to know about this — the function just probes more places.
+  const expanded = [
+    ...probeRoots,
+    ...probeRoots.flatMap(r => [
+      join(r, 'v3/@claude-flow/cli'),
+      join(r, 'v3/@claude-flow/plugin-agent-federation'),
+    ]),
+  ];
   let lastErr;
-  for (const root of probeRoots) {
+  for (const root of expanded) {
     try {
       const req = createRequire(join(root, 'noop.js'));
       const ed = req('@noble/ed25519');
@@ -37,7 +48,8 @@ function loadEd25519(probeRoots) {
   throw new Error(
     "Could not locate '@noble/ed25519'. Install it in your project " +
     "(npm i @noble/ed25519) or pass a node_modules root via the " +
-    "WITNESS_ED25519_ROOT env var. Last error: " + (lastErr?.message ?? '?')
+    "WITNESS_ED25519_ROOT env var. Probed: " + expanded.join(', ') +
+    ". Last error: " + (lastErr?.message ?? '?')
   );
 }
 
