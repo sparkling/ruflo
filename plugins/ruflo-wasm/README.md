@@ -27,13 +27,13 @@ Sandboxed WASM agent creation, execution, and gallery sharing.
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
-- **WASM runtime:** built on `@ruvector/rvagent-wasm` + `@ruvector/ruvllm-wasm`. Both are declared in `@claude-flow/cli`'s `optionalDependencies` per [ADR-070 (Implemented)](../../v3/implementation/adrs/ADR-070-rvagent-wasm-completion.md). Without those packages, runtime falls through to the graceful-degradation path and the MCP tools no-op.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
+- **WASM runtime:** built on `@sparkleideas/ruvector-rvagent-wasm` + `@sparkleideas/ruvector-ruvllm-wasm`. Both are declared in `@sparkleideas/cli`'s `optionalDependencies` per [ADR-070 (Implemented)](../../v3/implementation/adrs/ADR-070-rvagent-wasm-completion.md). Without those packages, runtime falls through to the graceful-degradation path and the MCP tools no-op.
 - **Verification:** `bash plugins/ruflo-wasm/scripts/smoke.sh` is the contract.
 
 ## MCP surface (10 tools)
 
-All defined at `v3/@claude-flow/cli/src/mcp-tools/wasm-agent-tools.ts`:
+All defined at `v3/@sparkleideas/cli/src/mcp-tools/wasm-agent-tools.ts`:
 
 ### Agent lifecycle (7)
 
@@ -82,4 +82,4 @@ bash plugins/ruflo-wasm/scripts/smoke.sh
 
 - `ruflo-agentdb` — namespace convention owner
 - `ruflo-aidefence` — 3-gate pattern applies to sandbox output flowing back to the host LLM
-- `ruflo-ruvector` — the underlying ruvector substrate that ships @ruvector/rvagent-wasm
+- `ruflo-ruvector` — the underlying ruvector substrate that ships @sparkleideas/ruvector-rvagent-wasm

@@ -153,7 +153,7 @@ neural-trader uses Rust/NAPI bindings for zero-overhead performance:
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Runtime:** `npx neural-trader` (Rust/NAPI bindings — 112+ MCP tools).
 - **Verification:** `bash plugins/ruflo-neural-trader/scripts/smoke.sh` is the contract.
 

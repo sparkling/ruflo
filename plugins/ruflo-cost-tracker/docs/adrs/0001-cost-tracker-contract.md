@@ -42,7 +42,7 @@ The CLI examples in the agent file have always been correct (`memory store --nam
 ### 3. README augment
 
 Append:
-- **Compatibility** — pin to `@claude-flow/cli` v3.6.
+- **Compatibility** — pin to `@sparkleideas/cli` v3.6.
 - **Namespace coordination** — owns `cost-tracking` (memory-routed) + `cost-patterns` (memory-routed). Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
 - **Architecture Decisions** + **Verification** sections.
 - The federation budget pairing block already in README stays as-is (already correctly references ADR-097).
@@ -59,7 +59,7 @@ Bump `0.2.1 → 0.2.2`. Patch bump justified: skill fixes are functional changes
 2. Both skills (`cost-report`, `cost-optimize`) present with valid frontmatter.
 3. Skills use `memory_search` / `memory_store` for `cost-tracking` and `cost-patterns` namespaces (not `agentdb_hierarchical-*` / `agentdb_pattern-*` with a namespace arg).
 4. `cost-optimize` documents both pattern-store paths (ReasoningBank vs namespace-routable).
-5. README pins to `@claude-flow/cli` v3.6.
+5. README pins to `@sparkleideas/cli` v3.6.
 6. README references ruflo-agentdb namespace convention.
 7. README's federation budget circuit breaker pairing block (ADR-097) is intact.
 8. ADR-0001 exists with status `Proposed`.

@@ -10,7 +10,7 @@ tags: [plugin, autopilot, loop, learning, mcp, smoke-test]
 
 ## Context
 
-`ruflo-autopilot` wraps the 10 `autopilot_*` MCP tools at `v3/@claude-flow/cli/src/mcp-tools/autopilot-tools.ts:27, 49, 65, 79, 107, 124, 141, 168, 186, 212` (`status`, `enable`, `disable`, `config`, `reset`, `log`, `progress`, `learn`, `history`, `predict`). Plugin is at v0.1.0 with two skills + two commands, integrates with Claude Code's native `/loop` + `ScheduleWakeup` (270s default to keep the prompt cache warm).
+`ruflo-autopilot` wraps the 10 `autopilot_*` MCP tools at `v3/@sparkleideas/cli/src/mcp-tools/autopilot-tools.ts:27, 49, 65, 79, 107, 124, 141, 168, 186, 212` (`status`, `enable`, `disable`, `config`, `reset`, `log`, `progress`, `learn`, `history`, `predict`). Plugin is at v0.1.0 with two skills + two commands, integrates with Claude Code's native `/loop` + `ScheduleWakeup` (270s default to keep the prompt cache warm).
 
 Surface count is correct (the plugin claims "10 autopilot MCP tools" and the source confirms 10). What's missing is the contract pattern every other plugin updated this session has adopted.
 
@@ -44,4 +44,4 @@ bash plugins/ruflo-autopilot/scripts/smoke.sh
 - `plugins/ruflo-intelligence/docs/adrs/0001-intelligence-surface-completeness.md`
 - `plugins/ruflo-adr/docs/adrs/0001-adr-plugin-pattern.md`
 - `plugins/ruflo-aidefence/docs/adrs/0001-aidefence-contract.md` — 3-gate pattern
-- `v3/@claude-flow/cli/src/mcp-tools/autopilot-tools.ts` — 10 `autopilot_*` tool definitions
+- `v3/@sparkleideas/cli/src/mcp-tools/autopilot-tools.ts` — 10 `autopilot_*` tool definitions

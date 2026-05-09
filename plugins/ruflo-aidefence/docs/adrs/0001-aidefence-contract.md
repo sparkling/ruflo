@@ -10,7 +10,7 @@ tags: [plugin, aidefence, security, pii, prompt-injection, namespace, smoke-test
 
 ## Context
 
-`ruflo-aidefence` documents the AIDefence MCP family (`aidefence_scan`, `_analyze`, `_stats`, `_learn`, `_is_safe`, `_has_pii`) — 6 tools at `v3/@claude-flow/cli/src/mcp-tools/security-tools.ts:108, 191, 277, 329, 424, 479`. Plugin is at v0.2.0 with full surface coverage and a "Defence-in-depth pairing" block already documenting the host-level hardening (loader-hijack denylist, file mode 0600, encryption-at-rest opt-in).
+`ruflo-aidefence` documents the AIDefence MCP family (`aidefence_scan`, `_analyze`, `_stats`, `_learn`, `_is_safe`, `_has_pii`) — 6 tools at `v3/@sparkleideas/cli/src/mcp-tools/security-tools.ts:108, 191, 277, 329, 424, 479`. Plugin is at v0.2.0 with full surface coverage and a "Defence-in-depth pairing" block already documenting the host-level hardening (loader-hijack denylist, file mode 0600, encryption-at-rest opt-in).
 
 Gaps observed against the pattern from `ruflo-ruvector` / `ruflo-agentdb` / `ruflo-browser` / `ruflo-intelligence` / `ruflo-adr` ADRs:
 
@@ -30,7 +30,7 @@ Gaps observed against the pattern from `ruflo-ruvector` / `ruflo-agentdb` / `ruf
 
 Append three sections, retain existing content:
 
-- **Compatibility** — pin to `@claude-flow/cli` v3.6.
+- **Compatibility** — pin to `@sparkleideas/cli` v3.6.
 - **Namespace coordination** — `security-patterns` as the canonical namespace this plugin owns; defer to `ruflo-agentdb` ADR-0001 §"Namespace convention".
 - **The 3-gate pattern** — formalize the gates `ruflo-browser` ADR-0001 §4 already uses. Three gates, every consumer plugin handling untrusted content should apply them in this order:
   1. **Pre-storage PII gate** (`aidefence_has_pii`) — before any AgentDB / memory_store write
@@ -84,4 +84,4 @@ bash plugins/ruflo-aidefence/scripts/smoke.sh
 - `plugins/ruflo-browser/docs/adrs/0001-browser-skills-architecture.md` — §4 codifies the 3-gate pattern this ADR canonicalizes
 - `plugins/ruflo-intelligence/docs/adrs/0001-intelligence-surface-completeness.md`
 - `plugins/ruflo-adr/docs/adrs/0001-adr-plugin-pattern.md`
-- `v3/@claude-flow/cli/src/mcp-tools/security-tools.ts` — 6 `aidefence_*` tool definitions
+- `v3/@sparkleideas/cli/src/mcp-tools/security-tools.ts` — 6 `aidefence_*` tool definitions

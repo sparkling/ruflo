@@ -10,7 +10,7 @@ tags: [plugin, jujutsu, git, diff, risk-analysis, namespace, smoke-test]
 
 ## Context
 
-`ruflo-jujutsu` (v0.1.0) — git workflow + diff analysis. Wraps **6 `analyze_*` MCP tools** at `v3/@claude-flow/cli/src/mcp-tools/analyze-tools.ts:24, 100, 143, 185, 234, 291` (`analyze_diff`, `analyze_diff-risk`, `analyze_diff-classify`, `analyze_diff-reviewers`, `analyze_file-risk`, `analyze_diff-stats`).
+`ruflo-jujutsu` (v0.1.0) — git workflow + diff analysis. Wraps **6 `analyze_*` MCP tools** at `v3/@sparkleideas/cli/src/mcp-tools/analyze-tools.ts:24, 100, 143, 185, 234, 291` (`analyze_diff`, `analyze_diff-risk`, `analyze_diff-classify`, `analyze_diff-reviewers`, `analyze_file-risk`, `analyze_diff-stats`).
 
 Surface: 1 agent (`git-specialist`), 2 skills (`diff-analyze`, `git-workflow`), 1 command (`/jujutsu`). All 6 MCP tools correctly referenced.
 
@@ -40,4 +40,4 @@ bash plugins/ruflo-jujutsu/scripts/smoke.sh
 
 - `plugins/ruflo-adr/docs/adrs/0001-adr-plugin-pattern.md` — `/adr check` consumes this plugin's diff analysis
 - `plugins/ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md` — namespace convention
-- `v3/@claude-flow/cli/src/mcp-tools/analyze-tools.ts` — 6 `analyze_*` tools
+- `v3/@sparkleideas/cli/src/mcp-tools/analyze-tools.ts` — 6 `analyze_*` tools

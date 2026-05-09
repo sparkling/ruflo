@@ -59,12 +59,12 @@ Phase 1 enforces at the **send** side. Phase 2 (peer state machine: ACTIVE / SUS
 ## Requires
 
 - `ruflo-core` plugin (provides MCP server)
-- `@claude-flow/security` (cryptographic primitives)
+- `@sparkleideas/security` (cryptographic primitives)
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
-- **Federation runtime:** `@claude-flow/plugin-agent-federation` (resolved via `npx -y -p`).
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
+- **Federation runtime:** `@sparkleideas/plugin-agent-federation` (resolved via `npx -y -p`).
 - **Verification:** `bash plugins/ruflo-federation/scripts/smoke.sh` is the contract.
 
 ## Alignment with the canonical 3-gate pattern

@@ -27,7 +27,7 @@ Dynamic Agentic Architecture with cognitive patterns, knowledge sharing, and ada
 
 ## MCP surface (8 tools)
 
-All defined at `v3/@claude-flow/cli/src/mcp-tools/daa-tools.ts`:
+All defined at `v3/@sparkleideas/cli/src/mcp-tools/daa-tools.ts`:
 
 | Tool | Purpose |
 |------|---------|
@@ -42,7 +42,7 @@ All defined at `v3/@claude-flow/cli/src/mcp-tools/daa-tools.ts`:
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-daa/scripts/smoke.sh` is the contract.
 
 ## Intelligence-pipeline alignment

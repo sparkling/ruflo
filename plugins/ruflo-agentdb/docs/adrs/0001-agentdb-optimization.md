@@ -12,7 +12,7 @@ tags: [plugin, agentdb, mcp, hnsw, rabitq, controllers, namespacing, smoke-test]
 
 ### Today's `ruflo-agentdb`
 
-`ruflo-agentdb` is a thin documentation wrapper around three MCP tool families exposed by `@claude-flow/cli`: `agentdb_*` (controller bridge), `embeddings_*` (RuVector ONNX engine), and `ruvllm_hnsw_*` (WASM-backed pattern router). The plugin ships six files:
+`ruflo-agentdb` is a thin documentation wrapper around three MCP tool families exposed by `@sparkleideas/cli`: `agentdb_*` (controller bridge), `embeddings_*` (RuVector ONNX engine), and `ruvllm_hnsw_*` (WASM-backed pattern router). The plugin ships six files:
 
 - `.claude-plugin/plugin.json:2` — `name: "ruflo-agentdb"`, `version: "0.2.0"`, keywords `agentdb, ruvector, hnsw, embeddings, vector-search`.
 - `README.md:16` — claims `19 AgentDB controllers`; `README.md:49` — calls out HNSW "150x-12,500x" speedup and "384-dim ONNX" embeddings.
@@ -30,15 +30,15 @@ Counted directly from source on 2026-05-04 (HEAD of `main`):
 
 | Surface | Plugin claim | Real count | Source |
 |---|---|---|---|
-| `agentdb_*` MCP tools | "19 controllers" → implies tools | **15 tools** | `v3/@claude-flow/cli/src/mcp-tools/agentdb-tools.ts:629–645` (`agentdbTools` export array) |
-| `embeddings_*` MCP tools | 7 enumerated in skill | **10 tools** | `v3/@claude-flow/cli/src/mcp-tools/embeddings-tools.ts:159, 260, 328, 418, 520, 717, 835, 910, 926, 970` |
-| `ruvllm_hnsw_*` MCP tools | 3 enumerated | **3 tools** (correct) but capacity is **~11 patterns**, not 10,000 | `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts:57–58` ("Max ~11 patterns (v2.0.1 limit)") |
-| Controllers in `ControllerRegistry` | "19" | **29** names across 6 init levels: 13 AgentDB-layer + 16 CLI-layer | `v3/@claude-flow/memory/src/controller-registry.ts:34–73` (type `ControllerName`) and `:160–174` (`INIT_LEVELS`) |
-| RaBitQ 1-bit quantization | Not documented | 32× compression, two-phase Hamming-prefilter + exact-rerank pipeline | `embeddings_rabitq_build`, `_search`, `_status` at `embeddings-tools.ts:910, 926, 970`; impl at `v3/@claude-flow/cli/src/memory/rabitq-index.ts` |
-| HNSW tuning (`efSearch`, `efConstruction`, `M`) | Not surfaced in any skill | `efSearch` accepted as a constructor param on `ruvllm_hnsw_create`; `efConstruction` defaulted to 200 in the lite index; `M` not exposed via MCP | `ruvllm-tools.ts:64`, `v3/@claude-flow/memory/src/hnsw-index.ts:537` |
+| `agentdb_*` MCP tools | "19 controllers" → implies tools | **15 tools** | `v3/@sparkleideas/cli/src/mcp-tools/agentdb-tools.ts:629–645` (`agentdbTools` export array) |
+| `embeddings_*` MCP tools | 7 enumerated in skill | **10 tools** | `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts:159, 260, 328, 418, 520, 717, 835, 910, 926, 970` |
+| `ruvllm_hnsw_*` MCP tools | 3 enumerated | **3 tools** (correct) but capacity is **~11 patterns**, not 10,000 | `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts:57–58` ("Max ~11 patterns (v2.0.1 limit)") |
+| Controllers in `ControllerRegistry` | "19" | **29** names across 6 init levels: 13 AgentDB-layer + 16 CLI-layer | `v3/@sparkleideas/memory/src/controller-registry.ts:34–73` (type `ControllerName`) and `:160–174` (`INIT_LEVELS`) |
+| RaBitQ 1-bit quantization | Not documented | 32× compression, two-phase Hamming-prefilter + exact-rerank pipeline | `embeddings_rabitq_build`, `_search`, `_status` at `embeddings-tools.ts:910, 926, 970`; impl at `v3/@sparkleideas/cli/src/memory/rabitq-index.ts` |
+| HNSW tuning (`efSearch`, `efConstruction`, `M`) | Not surfaced in any skill | `efSearch` accepted as a constructor param on `ruvllm_hnsw_create`; `efConstruction` defaulted to 200 in the lite index; `M` not exposed via MCP | `ruvllm-tools.ts:64`, `v3/@sparkleideas/memory/src/hnsw-index.ts:537` |
 | Pattern-store fallback when ReasoningBank unavailable | Not documented | ADR-093 F4: when controller registry returns null, `agentdb_pattern-store` writes to `memory_store` with `controller: 'memory-store-fallback'` | `agentdb-tools.ts:138–161` |
 | Native graph-node backend for causal edges | Not documented | ADR-087: `agentdb_causal-edge` tries graph-node first, falls back to bridge | `agentdb-tools.ts:267–290` |
-| `agentdb` npm dep version | Not pinned in plugin | `agentdb: ^3.0.0-alpha.11` in CLI's `package.json:120`; `pnpm-lock.yaml` resolves multiple versions (1.6.1, 2.0.0-alpha.3.4/3.7, 3.0.0-alpha.10/11) | `v3/@claude-flow/cli/package.json:120`; `v3/node_modules/.pnpm/` |
+| `agentdb` npm dep version | Not pinned in plugin | `agentdb: ^3.0.0-alpha.11` in CLI's `package.json:120`; `pnpm-lock.yaml` resolves multiple versions (1.6.1, 2.0.0-alpha.3.4/3.7, 3.0.0-alpha.10/11) | `v3/@sparkleideas/cli/package.json:120`; `v3/node_modules/.pnpm/` |
 
 The "19 controllers" number appears to be a stale snapshot from before ADR-095 G7 closed five disabled-by-default controllers (`gnnService`, `rvfOptimizer`, `mutationGuard`, `attestationLog`, `GuardedVectorBackend`) and before ADR-053 added `mmrDiversityRanker`, `contextSynthesizer`, `batchOperations`, `memoryConsolidation`, `hierarchicalMemory` to the CLI-layer registry. The plugin README block on G7 (`README.md:22–35`) is accurate about the five activated controllers and about `graphAdapter` still being disabled — but the surrounding "19" framing is not.
 
@@ -49,7 +49,7 @@ Beyond the count drift, the plugin omits four substantive capabilities of the su
 1. **Quantization.** `embeddings_rabitq_*` provides 32× memory reduction at index time. CLAUDE.md's V3 perf targets explicitly call out "Memory Reduction 50–75% with quantization" as **Implemented**; the plugin advertises HNSW speedup but never mentions quantization.
 2. **Index tunables.** `efSearch` / `efConstruction` / `M` directly control the recall/latency tradeoff; the plugin presents HNSW as a binary "150–12,500×" claim with no operating points.
 3. **Namespacing convention.** Every consumer plugin (`ruflo-browser` defines `browser-sessions / browser-selectors / browser-templates / browser-cookies` in its ADR-0001 §3; `ruflo-rag-memory` references `claude-memories / patterns / tasks / solutions`; `ruflo-intelligence` writes to `pattern`) reinvents namespace naming. There is no contract from `ruflo-agentdb` about how namespaces should be named, what they should contain, or how they are GC'd. The `agentdb_*` tools mostly do not even take a namespace parameter — they route to controllers (`reasoningBank`, `hierarchicalMemory`, `causalGraph`) — but the CLI fallback `memory_store` and `embeddings_search` *do* take namespace strings, so the surface is mixed and undocumented.
-4. **Token-efficiency path.** The repo ships `getCompactContext` on the `TokenOptimizer` (`v3/@claude-flow/integration/src/token-optimizer.ts:109`), and `agentdb_context-synthesize` exists for the same goal at the MCP layer. Neither is surfaced by the plugin as a "use this when you want compact retrieved context for an LLM call" workflow.
+4. **Token-efficiency path.** The repo ships `getCompactContext` on the `TokenOptimizer` (`v3/@sparkleideas/integration/src/token-optimizer.ts:109`), and `agentdb_context-synthesize` exists for the same goal at the MCP layer. Neither is surfaced by the plugin as a "use this when you want compact retrieved context for an LLM call" workflow.
 
 ### Why now
 
@@ -95,7 +95,7 @@ The plugin currently presents HNSW as a magic number (`12,500x faster` at `vecto
 
 `efSearch` is passed via `ruvllm_hnsw_create` (`ruvllm-tools.ts:64`). `M` is not currently MCP-exposed; we document it as a registry-level setting with a forward reference: "raise as a follow-up ADR if `M` should be MCP-tunable."
 
-We also fix the speed claim. The 12,500× number is for the embeddings/HNSW path inside `@claude-flow/memory`, not for the WASM `ruvllm_hnsw_*` tools — those are capped at ~11 patterns (`ruvllm-tools.ts:58`). The skill currently lumps them together. The new copy reads: "`embeddings_search` uses the `@claude-flow/memory` HNSW index (large-scale, 150–12,500×). `ruvllm_hnsw_*` is a separate WASM-backed router for ≤11 high-priority patterns — useful for hot routes, not for corpus search."
+We also fix the speed claim. The 12,500× number is for the embeddings/HNSW path inside `@sparkleideas/memory`, not for the WASM `ruvllm_hnsw_*` tools — those are capped at ~11 patterns (`ruvllm-tools.ts:58`). The skill currently lumps them together. The new copy reads: "`embeddings_search` uses the `@sparkleideas/memory` HNSW index (large-scale, 150–12,500×). `ruvllm_hnsw_*` is a separate WASM-backed router for ≤11 high-priority patterns — useful for hot routes, not for corpus search."
 
 ### 4. Define a namespace convention contract for downstream plugins
 
@@ -114,12 +114,12 @@ This section is the load-bearing artifact for cross-plugin discipline. Without i
 Three fallback paths exist in the bridge code and are invisible in the plugin's docs:
 
 - **Pattern-store fallback** (`agentdb-tools.ts:138–161`, ADR-093 F4): when ReasoningBank's controller registry is unavailable, `agentdb_pattern-store` returns `controller: 'memory-store-fallback'`. Document this in `agents/agentdb-specialist.md` so the agent does not interpret a fallback response as a soft failure.
-- **Causal-edge graph-node backend** (`agentdb-tools.ts:267–290`, ADR-087): `agentdb_causal-edge` tries the native `@ruvector/graph-node` backend first, then the bridge. Document the `_graphNodeBackend: true` field so consumers can branch on it.
+- **Causal-edge graph-node backend** (`agentdb-tools.ts:267–290`, ADR-087): `agentdb_causal-edge` tries the native `@sparkleideas/ruvector-graph-node` backend first, then the bridge. Document the `_graphNodeBackend: true` field so consumers can branch on it.
 - **Bridge unavailable** (returned by every handler when `bridgeHealthCheck` returns null): the response is `{ success: false, error: '...Use memory_store/memory_search instead.' }`. Add one paragraph in the README enumerating which `memory_*` tool replaces which `agentdb_*` tool when the bridge is unavailable.
 
 ### 6. Smoke test as the contract (mirrors ruvector ADR-0001 §5)
 
-Add `scripts/smoke.sh` (file does not exist yet — first one in this plugin). It runs against any environment that has `npx @claude-flow/cli@latest` available with MCP enabled. Each check is a one-liner around `mcp tool call ... --json` + `jq`. The contract is "10 passed, 0 failed".
+Add `scripts/smoke.sh` (file does not exist yet — first one in this plugin). It runs against any environment that has `npx @sparkleideas/cli@latest` available with MCP enabled. Each check is a one-liner around `mcp tool call ... --json` + `jq`. The contract is "10 passed, 0 failed".
 
 Numbered checks (this is the verifiable artifact, not the prose above):
 
@@ -140,7 +140,7 @@ The script does NOT test the controller count exactly, does NOT depend on `agent
 
 Following ruvector ADR-0001:
 
-- Add a "Compatibility" subsection to README.md that states: "Plugin v0.3.x targets `@claude-flow/cli` v3.6.x with bundled `agentdb@^3.0.0-alpha.11`. The plugin is documentation-only and does not pin via package.json; the smoke contract is the verification mechanism."
+- Add a "Compatibility" subsection to README.md that states: "Plugin v0.3.x targets `@sparkleideas/cli` v3.6.x with bundled `agentdb@^3.0.0-alpha.11`. The plugin is documentation-only and does not pin via package.json; the smoke contract is the verification mechanism."
 - Bump `.claude-plugin/plugin.json` to `0.3.0` when this ADR's changes land. Patch bumps thereafter for accuracy fixes; minor for new namespace-convention rules or new MCP tools surfaced.
 - Plugin pins the **CLI**'s major+minor (`v3.6`), not the npm `agentdb` package, because the CLI is the layer the plugin actually invokes. AgentDB internals (e.g., the alpha.11 → alpha.12 bump) are not the plugin's contract.
 
@@ -191,10 +191,10 @@ Plus three documentation invariants checked by a one-line `grep` each:
 - `v3/docs/adr/ADR-087-graph-node-native-backend.md` — graph-node backend used as the primary `agentdb_causal-edge` path.
 - `v3/docs/adr/ADR-093-mcp-audit-may-2026-remediation.md` — F4 introduced the `memory-store-fallback` controller string surfaced by §5.
 - `v3/docs/adr/ADR-095-architectural-gaps-from-april-audit.md` — G7 closed five disabled controllers; the README block `README.md:22–35` summarizes G7 correctly.
-- `v3/@claude-flow/cli/src/mcp-tools/agentdb-tools.ts` — 15 `agentdb_*` tool definitions (canonical surface for §6 check 3).
-- `v3/@claude-flow/cli/src/mcp-tools/embeddings-tools.ts` — 10 `embeddings_*` tool definitions including RaBitQ trio at `:910–981`.
-- `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts` — 3 `ruvllm_hnsw_*` tools, ~11-pattern WASM cap at `:58`.
-- `v3/@claude-flow/memory/src/controller-registry.ts:34–73` — `ControllerName` union (canonical 29-name list).
-- `v3/@claude-flow/memory/src/controller-registry.ts:160–174` — `INIT_LEVELS` (canonical dependency-ordered grouping).
-- `v3/@claude-flow/cli/src/memory/rabitq-index.ts` — RaBitQ implementation referenced by the quantization workflow in §2.
-- `v3/@claude-flow/integration/src/token-optimizer.ts:109` — `getCompactContext` token-efficiency path (deferred: §6 covers `agentdb_context-synthesize` only; the integration-layer optimizer is a separate ADR if surfaced).
+- `v3/@sparkleideas/cli/src/mcp-tools/agentdb-tools.ts` — 15 `agentdb_*` tool definitions (canonical surface for §6 check 3).
+- `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts` — 10 `embeddings_*` tool definitions including RaBitQ trio at `:910–981`.
+- `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts` — 3 `ruvllm_hnsw_*` tools, ~11-pattern WASM cap at `:58`.
+- `v3/@sparkleideas/memory/src/controller-registry.ts:34–73` — `ControllerName` union (canonical 29-name list).
+- `v3/@sparkleideas/memory/src/controller-registry.ts:160–174` — `INIT_LEVELS` (canonical dependency-ordered grouping).
+- `v3/@sparkleideas/cli/src/memory/rabitq-index.ts` — RaBitQ implementation referenced by the quantization workflow in §2.
+- `v3/@sparkleideas/integration/src/token-optimizer.ts:109` — `getCompactContext` token-efficiency path (deferred: §6 covers `agentdb_context-synthesize` only; the integration-layer optimizer is a separate ADR if surfaced).

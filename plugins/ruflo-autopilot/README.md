@@ -44,11 +44,11 @@ Combines Ruflo's 10 autopilot MCP tools with Claude Code's native `/loop` + `Sch
 | `autopilot_history` | Browse past iterations |
 | `autopilot_predict` | Predict the optimal next action from learned patterns |
 
-All 10 are wired in `v3/@claude-flow/cli/src/mcp-tools/autopilot-tools.ts`.
+All 10 are wired in `v3/@sparkleideas/cli/src/mcp-tools/autopilot-tools.ts`.
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **MCP surface:** the 10 tools above.
 - **Verification:** `bash plugins/ruflo-autopilot/scripts/smoke.sh` is the contract.
 

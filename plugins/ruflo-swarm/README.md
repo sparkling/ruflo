@@ -24,7 +24,7 @@ Agent teams, swarm coordination, Monitor streams, and worktree isolation.
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-swarm/scripts/smoke.sh` is the contract.
 
 ## MCP surface (12 tools)
@@ -34,7 +34,7 @@ Agent teams, swarm coordination, Monitor streams, and worktree isolation.
 | `swarm_*` | 4 | `swarm_init`, `swarm_status`, `swarm_shutdown`, `swarm_health` |
 | `agent_*` | 8 | `agent_spawn`, `agent_execute`, `agent_terminate`, `agent_status`, `agent_list`, `agent_pool`, `agent_health`, `agent_update` |
 
-Sources: `v3/@claude-flow/cli/src/mcp-tools/swarm-tools.ts:71, 145, 208, 270` and `agent-tools.ts:182, 287, 319, 356, 395, 451, 573, 651`.
+Sources: `v3/@sparkleideas/cli/src/mcp-tools/swarm-tools.ts:71, 145, 208, 270` and `agent-tools.ts:182, 287, 319, 356, 395, 451, 573, 651`.
 
 ## Built-in Claude Code coordination tools
 

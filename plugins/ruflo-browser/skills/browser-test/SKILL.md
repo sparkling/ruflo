@@ -2,7 +2,7 @@
 name: browser-test
 description: UI test recipe -- composes browser-record (capture) + browser-replay (verify) so every test produces a replayable RVF artifact, not an ephemeral run
 argument-hint: "<url> [--screenshot] [--against <prior-session-id>]"
-allowed-tools: mcp__claude-flow__browser_open mcp__claude-flow__browser_click mcp__claude-flow__browser_fill mcp__claude-flow__browser_type mcp__claude-flow__browser_press mcp__claude-flow__browser_check mcp__claude-flow__browser_uncheck mcp__claude-flow__browser_select mcp__claude-flow__browser_hover mcp__claude-flow__browser_wait mcp__claude-flow__browser_screenshot mcp__claude-flow__browser_snapshot mcp__claude-flow__browser_get-text mcp__claude-flow__browser_get-title mcp__claude-flow__browser_get-url mcp__claude-flow__browser_get-value mcp__claude-flow__browser_eval mcp__claude-flow__browser_close mcp__claude-flow__browser_session-list mcp__claude-flow__aidefence_is_safe Bash Read Write
+allowed-tools: mcp__ruflo__browser_open mcp__ruflo__browser_click mcp__ruflo__browser_fill mcp__ruflo__browser_type mcp__ruflo__browser_press mcp__ruflo__browser_check mcp__ruflo__browser_uncheck mcp__ruflo__browser_select mcp__ruflo__browser_hover mcp__ruflo__browser_wait mcp__ruflo__browser_screenshot mcp__ruflo__browser_snapshot mcp__ruflo__browser_get-text mcp__ruflo__browser_get-title mcp__ruflo__browser_get-url mcp__ruflo__browser_get-value mcp__ruflo__browser_eval mcp__ruflo__browser_close mcp__ruflo__browser_session-list mcp__ruflo__aidefence_is_safe Bash Read Write
 ---
 
 # Browser Test

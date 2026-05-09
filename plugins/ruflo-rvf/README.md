@@ -39,7 +39,7 @@ Confirm the gate state with `ruflo doctor -c encryption`.
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-rvf/scripts/smoke.sh` is the contract.
 
 ## Cross-plugin RVF ownership

@@ -16,9 +16,9 @@ Out of the box, several `/vector` subcommands fail with a confusing dep error:
 | Error | Missing package |
 |-------|-----------------|
 | `ONNX WASM files not bundled. The onnx/ directory is missing.` | `ruvector-onnx-embeddings-wasm` |
-| `Brain commands require @ruvector/pi-brain` | `@ruvector/pi-brain` |
-| `SONA not available. Native error: Cannot find module '/.../@ruvector/sona/index.js'` | `@ruvector/ruvllm` (JS fallback) |
-| `LLM commands require @ruvector/ruvllm` | `@ruvector/ruvllm` |
+| `Brain commands require @sparkleideas/ruvector-pi-brain` | `@sparkleideas/ruvector-pi-brain` |
+| `SONA not available. Native error: Cannot find module '/.../@sparkleideas/ruvector-sona/index.js'` | `@sparkleideas/ruvector-ruvllm` (JS fallback) |
+| `LLM commands require @sparkleideas/ruvector-ruvllm` | `@sparkleideas/ruvector-ruvllm` |
 
 This skill installs them in one pass.
 
@@ -31,16 +31,16 @@ This skill installs them in one pass.
 2. **Install the add-ons** (idempotent — only what's missing):
    ```bash
    npm install ruvector-onnx-embeddings-wasm \
-               @ruvector/pi-brain \
-               @ruvector/ruvllm
+               @sparkleideas/ruvector-pi-brain \
+               @sparkleideas/ruvector-ruvllm
    ```
-   For a leaner install, pass `--full` to also pull `@ruvector/graph-node` and `@ruvector/router`:
+   For a leaner install, pass `--full` to also pull `@sparkleideas/ruvector-graph-node` and `@sparkleideas/ruvector-router`:
    ```bash
    npm install ruvector-onnx-embeddings-wasm \
-               @ruvector/pi-brain \
-               @ruvector/ruvllm \
-               @ruvector/graph-node \
-               @ruvector/router
+               @sparkleideas/ruvector-pi-brain \
+               @sparkleideas/ruvector-ruvllm \
+               @sparkleideas/ruvector-graph-node \
+               @sparkleideas/ruvector-router
    ```
 3. **Verify the binary**:
    ```bash
@@ -76,7 +76,7 @@ It checks: version pin, top-level subcommand visibility, `hooks ast-analyze`, `h
 ## What this does not install
 
 - Native Rust toolchain (optional; only needed for source builds)
-- Platform-specific native bindings (auto-detected by `@ruvector/core`)
-- `@ruvector/sona` native binding (the JS fallback via `@ruvector/ruvllm` is sufficient on macOS arm64; Linux x64 has its own native binding)
+- Platform-specific native bindings (auto-detected by `@sparkleideas/ruvector-core`)
+- `@sparkleideas/ruvector-sona` native binding (the JS fallback via `@sparkleideas/ruvector-ruvllm` is sufficient on macOS arm64; Linux x64 has its own native binding)
 
 If `doctor` still reports a problem after this skill runs, paste its output verbatim and ask.

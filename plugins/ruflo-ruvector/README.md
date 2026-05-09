@@ -16,8 +16,8 @@ npm install ruvector@0.2.25
 
 # Optional add-ons (install as needed)
 npm install ruvector-onnx-embeddings-wasm   # required for `embed text` to work
-npm install @ruvector/pi-brain              # required for `brain` subcommands
-npm install @ruvector/ruvllm                # required for `sona` subcommands (JS fallback)
+npm install @sparkleideas/ruvector-pi-brain              # required for `brain` subcommands
+npm install @sparkleideas/ruvector-ruvllm                # required for `sona` subcommands (JS fallback)
 ```
 
 Run a health check:
@@ -99,9 +99,9 @@ The full surface is documented in `commands/vector.md` (80+ subcommands). Quick 
 /vector workers triggers|presets|phases|dispatch|status|...
 
 # Collective intelligence
-/vector brain status|search|share|list|drift|partition|transfer|sync|page  (needs @ruvector/pi-brain)
-/vector sona status|info|stats|patterns|train|export                       (needs @ruvector/ruvllm)
-/vector llm models|embed|benchmark|info                                    (needs @ruvector/ruvllm)
+/vector brain status|search|share|list|drift|partition|transfer|sync|page  (needs @sparkleideas/ruvector-pi-brain)
+/vector sona status|info|stats|patterns|train|export                       (needs @sparkleideas/ruvector-ruvllm)
+/vector llm models|embed|benchmark|info                                    (needs @sparkleideas/ruvector-ruvllm)
 
 # Identity + edge compute (pi network)
 /vector identity generate|show|export|import
@@ -205,7 +205,7 @@ npx -y ruvector@0.2.25 hooks security-scan src/
 ## Brain (Collective Knowledge)
 
 ```bash
-npm install @ruvector/pi-brain   # required dependency
+npm install @sparkleideas/ruvector-pi-brain   # required dependency
 
 npx -y ruvector@0.2.25 brain status
 npx -y ruvector@0.2.25 brain search "authentication patterns"
@@ -227,15 +227,15 @@ npx -y ruvector@0.2.25 sona stats
 |-----------|---------|-------|
 | HNSW search | ~0.045ms | 8,800x vs ONNX inference |
 | Memory cache | ~0.01ms | 40,000x vs ONNX inference |
-| Insert | 52,000+/sec | Rust backend (`@ruvector/core`) |
+| Insert | 52,000+/sec | Rust backend (`@sparkleideas/ruvector-core`) |
 | Memory per vector | ~50 bytes | Efficient storage |
 
 ## Known Caveats
 
 - **ONNX runtime not bundled by default** — `embed text` will report `ONNX WASM files not bundled` until you install `ruvector-onnx-embeddings-wasm`.
 - **No `--file`, `--batch`, `--glob`, `--namespace`, `--k`, `--task`, `--model poincare` flags** — these were in older docs but never shipped in 0.2.25. See `agents/vector-engineer.md` for the replacement table.
-- **`brain` requires `@ruvector/pi-brain`** — install separately.
-- **`sona` requires `@ruvector/ruvllm`** — install separately (the native binding is not always present in the npm tarball).
+- **`brain` requires `@sparkleideas/ruvector-pi-brain`** — install separately.
+- **`sona` requires `@sparkleideas/ruvector-ruvllm`** — install separately (the native binding is not always present in the npm tarball).
 - **Top-level `cluster` is "Coming Soon"** — for actual clustering use `hooks graph-cluster <files>`.
 - **`compare`, `midstream`, top-level `index` subcommands do not exist.**
 

@@ -52,7 +52,7 @@ Relationships tracked as causal edges: `supersedes`, `amends`, `depends-on`, `re
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-adr/scripts/smoke.sh` is the contract.
 
 ## Namespace coordination

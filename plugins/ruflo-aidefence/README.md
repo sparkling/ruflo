@@ -35,7 +35,7 @@ This plugin pairs with three runtime hardening features that ship in the host (A
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **MCP surface:** 6 `aidefence_*` tools (`scan`, `analyze`, `stats`, `learn`, `is_safe`, `has_pii`) plus `transfer_detect-pii` for categorized findings.
 - **Verification:** `bash plugins/ruflo-aidefence/scripts/smoke.sh` is the contract.
 

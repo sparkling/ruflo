@@ -52,7 +52,7 @@ The `create-plugin` skill is updated to scaffold:
 3. `create-plugin` skill scaffolds ADR, smoke, README contract sections.
 4. `create-plugin` skill includes the MCP-tool drift warnings.
 5. `create-plugin` skill no longer claims "19 AgentDB controllers" (regression check).
-6. README pins to `@claude-flow/cli` v3.6.
+6. README pins to `@sparkleideas/cli` v3.6.
 7. README has Architecture Decisions section.
 8. ADR-0001 exists with status `Proposed`.
 9. `validate-plugin` skill present.

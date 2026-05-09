@@ -161,7 +161,7 @@ When `ruflo-ruvector` is also loaded, rag-memory delegates to ruvector's backend
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-rag-memory/scripts/smoke.sh` is the contract.
 
 ## Namespace coordination — claude-memories consumer

@@ -24,7 +24,7 @@ Documentation generation, drift detection, and API docs automation.
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Agent model:** Haiku (cost-efficient for docs work).
 - **Verification:** `bash plugins/ruflo-docs/scripts/smoke.sh` is the contract.
 
@@ -34,8 +34,8 @@ Drives the `document` background worker (one of 12 workers in CLAUDE.md). Two in
 
 ```bash
 # CLI
-npx @claude-flow/cli@latest hooks worker dispatch --trigger document
-npx @claude-flow/cli@latest hooks worker dispatch --trigger document --scope api
+npx @sparkleideas/cli@latest hooks worker dispatch --trigger document
+npx @sparkleideas/cli@latest hooks worker dispatch --trigger document --scope api
 
 # MCP
 mcp tool call hooks_worker-dispatch --json -- '{"trigger": "document", "scope": "api"}'

@@ -18,9 +18,9 @@ The plugin documents three tool families. Counts and authoritative sources:
 
 | Family | Count | Source |
 |---|---|---|
-| `agentdb_*` (controller bridge) | 15 | `v3/@claude-flow/cli/src/mcp-tools/agentdb-tools.ts` |
-| `embeddings_*` (RuVector ONNX) | 10 | `v3/@claude-flow/cli/src/mcp-tools/embeddings-tools.ts` |
-| `ruvllm_hnsw_*` (WASM router) | 3 | `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts` |
+| `agentdb_*` (controller bridge) | 15 | `v3/@sparkleideas/cli/src/mcp-tools/agentdb-tools.ts` |
+| `embeddings_*` (RuVector ONNX) | 10 | `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts` |
+| `ruvllm_hnsw_*` (WASM router) | 3 | `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts` |
 
 For the canonical list of *controllers* (distinct from MCP tools), call `agentdb_controllers` at runtime. Do not hard-code a count anywhere in agent reasoning — the runtime tool is the source of truth.
 
@@ -60,8 +60,8 @@ When you observe these responses, branch on them — they are intentional, not s
 | Response field | Meaning | Source |
 |---|---|---|
 | `controller: 'memory-store-fallback'` | ReasoningBank registry unavailable; pattern persisted via `memory_store --namespace pattern`. | `agentdb-tools.ts:138-161` (ADR-093 F4) |
-| `_graphNodeBackend: true` | Native `@ruvector/graph-node` handled the causal-edge call. | `agentdb-tools.ts:267-290` (ADR-087) |
-| `success: false, error: '...Use memory_store/memory_search instead.'` | Bridge unavailable (`@claude-flow/memory` not installed). Use the README replacement table. | every handler |
+| `_graphNodeBackend: true` | Native `@sparkleideas/ruvector-graph-node` handled the causal-edge call. | `agentdb-tools.ts:267-290` (ADR-087) |
+| `success: false, error: '...Use memory_store/memory_search instead.'` | Bridge unavailable (`@sparkleideas/memory` not installed). Use the README replacement table. | every handler |
 
 ### Namespace handling
 
@@ -80,5 +80,5 @@ Reserved namespaces (do not shadow): `pattern`, `claude-memories`, `default`. Se
 
 After completing tasks, store successful patterns:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```

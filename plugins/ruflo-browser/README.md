@@ -1,6 +1,6 @@
 # ruflo-browser
 
-Session-as-skill browser automation. Playwright-backed via 23 `mcp__claude-flow__browser_*` tools, with each session captured as a first-class **RVF cognitive container** holding manifest + trajectory + screenshots + sanitized cookies + findings, indexed in AgentDB and gated by AIDefence.
+Session-as-skill browser automation. Playwright-backed via 23 `mcp__ruflo__browser_*` tools, with each session captured as a first-class **RVF cognitive container** holding manifest + trajectory + screenshots + sanitized cookies + findings, indexed in AgentDB and gated by AIDefence.
 
 > **v0.2.0 architecture** — every browser session is now an addressable, replayable, federatable artifact. Status is **Proposed** per [ADR-0001](./docs/adrs/0001-browser-skills-architecture.md); the load-bearing replay assumption requires a pre-Accept spike (see ADR Verification §4).
 
@@ -76,7 +76,7 @@ Raw cookies and tokens never enter AgentDB unwrapped — see ADR §3.
 
 ## MCP surface
 
-23 existing `mcp__claude-flow__browser_*` tools (interaction primitive) **+ 5 new `browser_session_*` lifecycle tools (implemented in v0.2.0)**:
+23 existing `mcp__ruflo__browser_*` tools (interaction primitive) **+ 5 new `browser_session_*` lifecycle tools (implemented in v0.2.0)**:
 
 | Tool | Purpose |
 |------|---------|
@@ -86,7 +86,7 @@ Raw cookies and tokens never enter AgentDB unwrapped — see ADR §3.
 | `browser_template_apply` | Fetch a recipe from `browser-templates` AgentDB namespace. |
 | `browser_cookie_use` | Fetch an opaque vault handle from `browser-cookies`; raw values never returned. |
 
-Implementation: [`v3/@claude-flow/cli/src/mcp-tools/browser-session-tools.ts`](../../v3/@claude-flow/cli/src/mcp-tools/browser-session-tools.ts), registered in `mcp-client.ts`. Each handler shells out to the pinned `ruvector@0.2.25` CLI for trajectory + RVF, the existing `agent-browser` CLI for browser actions, and the bridged `claude-flow memory` for AgentDB. Missing dependencies degrade with structured `success: false` errors instead of crashing.
+Implementation: [`v3/@sparkleideas/cli/src/mcp-tools/browser-session-tools.ts`](../../v3/@sparkleideas/cli/src/mcp-tools/browser-session-tools.ts), registered in `mcp-client.ts`. Each handler shells out to the pinned `ruvector@0.2.25` CLI for trajectory + RVF, the existing `agent-browser` CLI for browser actions, and the bridged `claude-flow memory` for AgentDB. Missing dependencies degrade with structured `success: false` errors instead of crashing.
 
 `browser_session_replay` is deliberately a primitive: it derives a child RVF container and surfaces the source trajectory so the caller dispatches each step through the appropriate `browser_*` tool. That keeps the replay engine out of the MCP layer and makes the load-bearing assumption (replay-fidelity across DOM drift) testable via the spike harness below rather than buried in tool internals.
 

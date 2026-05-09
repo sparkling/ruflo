@@ -52,7 +52,7 @@ Cost tracking commands:
 **`cost outcome <task> <model> <outcome>`** -- Emit a `hooks_model-outcome` event so the router learns from applied recommendations. Auto-wired into `cost-optimize` step 8.
 1. Validates `outcome ∈ {success, escalated, failure}`
 2. Runs `node plugins/ruflo-cost-tracker/scripts/outcome.mjs "<task>" <model> <outcome>`
-3. The script wraps `npx @claude-flow/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv spawnSync so quoting is safe
+3. The script wraps `npx @sparkleideas/cli hooks model-outcome -t ... -m ... -o ...` with explicit-argv spawnSync so quoting is safe
 4. Without this, the router doesn't learn from cost-optimize recommendations and the Tier 1 bypass rate doesn't tighten over time
 
 **`cost summary [--format json|markdown]`** -- Single-shot programmatic dump of all cost data. Other plugins/scripts can shell out and parse the JSON.
@@ -92,8 +92,8 @@ Cost tracking commands:
 6. Smoke step 23 fails the build if `winRate < 0.80`. See `cost-benchmark` skill for env-var overrides.
 
 **`cost workers`** -- Inspect the `optimize` and `benchmark` background workers consumed from ruflo-loop-workers.
-1. Call `mcp__claude-flow__hooks_worker-status --worker optimize` -- report last-run timestamp, outcome, and any pending recommendations
-2. Call `mcp__claude-flow__hooks_worker-status --worker benchmark` -- report last-run timestamp, outcome, and any pending benchmark deltas
+1. Call `mcp__ruflo__hooks_worker-status --worker optimize` -- report last-run timestamp, outcome, and any pending recommendations
+2. Call `mcp__ruflo__hooks_worker-status --worker benchmark` -- report last-run timestamp, outcome, and any pending benchmark deltas
 3. Cross-link [ruflo-loop-workers ADR-0001 §"12-worker trigger map"](../../ruflo-loop-workers/docs/adrs/0001-loop-workers-contract.md) — the contract this command honors
 4. Display: worker name, status, last-run timestamp, outcome, last-summary
 

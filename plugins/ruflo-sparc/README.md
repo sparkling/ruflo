@@ -57,7 +57,7 @@ sparc report                 # Generate full SPARC methodology report with trace
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-sparc/scripts/smoke.sh` is the contract.
 
 ## Phase-to-plugin alignment

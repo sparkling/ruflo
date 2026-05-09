@@ -2,7 +2,7 @@
 
 The substrate plugin for Ruflo memory. Wraps three CLI MCP families — `agentdb_*` (controller bridge, 15 tools), `embeddings_*` (RuVector ONNX engine, 10 tools), and `ruvllm_hnsw_*` (WASM-backed pattern router, 3 tools) — into discoverable skills and commands. Other plugins (`ruflo-browser`, `ruflo-rag-memory`, `ruflo-intelligence`) compose this substrate; this plugin owns the namespace convention and the smoke contract for the substrate as a whole.
 
-> **Status:** ADR-0001 implemented. Plugin v0.3.0 targets `@claude-flow/cli` v3.6.x with bundled `agentdb@^3.0.0-alpha.11`. The smoke contract (10 checks) is the verification mechanism — see [docs/adrs/0001-agentdb-optimization.md](./docs/adrs/0001-agentdb-optimization.md).
+> **Status:** ADR-0001 implemented. Plugin v0.3.0 targets `@sparkleideas/cli` v3.6.x with bundled `agentdb@^3.0.0-alpha.11`. The smoke contract (10 checks) is the verification mechanism — see [docs/adrs/0001-agentdb-optimization.md](./docs/adrs/0001-agentdb-optimization.md).
 
 ## Install
 
@@ -13,7 +13,7 @@ The substrate plugin for Ruflo memory. Wraps three CLI MCP families — `agentdb
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor. Patch bumps within v3.6 are expected to be no-op.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor. Patch bumps within v3.6 are expected to be no-op.
 - **AgentDB:** the CLI bundles `agentdb@^3.0.0-alpha.11`. The plugin does **not** pin the npm package — internals (alpha.11 → alpha.12 etc.) are not the plugin's contract.
 - **Verification:** the bundled smoke script is the source of truth (`bash plugins/ruflo-agentdb/scripts/smoke.sh`). If smoke passes against your CLI version, the plugin's contract holds.
 
@@ -26,7 +26,7 @@ The substrate plugin for Ruflo memory. Wraps three CLI MCP families — `agentdb
 
 ## Controllers (real registry, grouped by INIT_LEVELS)
 
-The "controller count" reported anywhere in this plugin is **whatever the runtime tool reports**. The canonical list of names is the `ControllerName` union at `v3/@claude-flow/memory/src/controller-registry.ts:34-73` (29 names across 6 init levels). Inspect at runtime:
+The "controller count" reported anywhere in this plugin is **whatever the runtime tool reports**. The canonical list of names is the `ControllerName` union at `v3/@sparkleideas/memory/src/controller-registry.ts:34-73` (29 names across 6 init levels). Inspect at runtime:
 
 ```bash
 mcp tool call agentdb_controllers --json
@@ -174,16 +174,16 @@ A `controller: 'memory-store-fallback'` response is a pattern that **was persist
 
 ### Causal-edge graph-node backend (ADR-087)
 
-`agentdb_causal-edge` tries the native `@ruvector/graph-node` backend first; on failure, falls back to the bridge. The response includes `_graphNodeBackend: true` when the native backend handled the call. Source: `agentdb-tools.ts:267-290`.
+`agentdb_causal-edge` tries the native `@sparkleideas/ruvector-graph-node` backend first; on failure, falls back to the bridge. The response includes `_graphNodeBackend: true` when the native backend handled the call. Source: `agentdb-tools.ts:267-290`.
 
 ### Bridge unavailable
 
-When `bridgeHealthCheck()` returns null (the `@claude-flow/memory` package is not installed or `controller-registry.ts` is missing), every `agentdb_*` handler returns:
+When `bridgeHealthCheck()` returns null (the `@sparkleideas/memory` package is not installed or `controller-registry.ts` is missing), every `agentdb_*` handler returns:
 
 ```json
 {
   "success": false,
-  "error": "AgentDB bridge not available — @claude-flow/memory not installed... Use memory_store/memory_search tools instead."
+  "error": "AgentDB bridge not available — @sparkleideas/memory not installed... Use memory_store/memory_search tools instead."
 }
 ```
 

@@ -27,5 +27,5 @@ Anti-drift rules:
 
 After completing a swarm cycle, feed the coordination outcome learning so topology + role choices compound:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```

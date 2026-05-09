@@ -23,12 +23,12 @@ Cache-aware /loop workers and CronCreate background automation. Substrate plugin
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-loop-workers/scripts/smoke.sh` is the contract.
 
 ## MCP surface (5 tools)
 
-All defined at `v3/@claude-flow/cli/src/mcp-tools/hooks-tools.ts`:
+All defined at `v3/@sparkleideas/cli/src/mcp-tools/hooks-tools.ts`:
 
 | Tool | Purpose |
 |------|---------|
@@ -59,7 +59,7 @@ Invocation pattern (CLI + MCP):
 
 ```bash
 # CLI
-npx @claude-flow/cli@latest hooks worker dispatch --trigger document --scope api
+npx @sparkleideas/cli@latest hooks worker dispatch --trigger document --scope api
 
 # MCP
 mcp tool call hooks_worker-dispatch --json -- '{"trigger": "document", "scope": "api"}'

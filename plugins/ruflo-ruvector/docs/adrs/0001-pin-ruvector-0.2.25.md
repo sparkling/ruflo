@@ -46,10 +46,10 @@ Rationale: the `-y` flag suppresses the npm interactive prompt; the version pin 
 | Package | Enables | Plugin subcommands gated on it |
 |---------|---------|------------------------------|
 | `ruvector-onnx-embeddings-wasm` | ONNX runtime | `embed text`, `embed adaptive`, `llm embed` |
-| `@ruvector/pi-brain` | Collective brain | `brain *` |
-| `@ruvector/ruvllm` | RuvLLM + SONA JS fallback | `sona *`, `llm *` |
-| `@ruvector/graph-node` | Graph database (Cypher) | `graph -q ...` |
-| `@ruvector/router` | Semantic router | `router --route ...` |
+| `@sparkleideas/ruvector-pi-brain` | Collective brain | `brain *` |
+| `@sparkleideas/ruvector-ruvllm` | RuvLLM + SONA JS fallback | `sona *`, `llm *` |
+| `@sparkleideas/ruvector-graph-node` | Graph database (Cypher) | `graph -q ...` |
+| `@sparkleideas/ruvector-router` | Semantic router | `router --route ...` |
 
 Rationale: these are heavy dependencies (ONNX runtime alone is large). Forcing them at install time penalizes users who only want hooks routing or RVF storage. Instead we provide a `vector-setup` skill and document the precise error message → install command mapping.
 
@@ -100,7 +100,7 @@ The plugin's own `version` field in `.claude-plugin/plugin.json` is bumped (patc
 **Negative:**
 
 - Bumping the pin requires a deliberate test pass. New ruvector features land in the plugin only after a manual review.
-- Add-on packages (`ruvector-onnx-embeddings-wasm`, `@ruvector/pi-brain`, `@ruvector/ruvllm`) must be installed manually or via `/vector-setup`. Users who skip this and try `embed text` will hit the documented error.
+- Add-on packages (`ruvector-onnx-embeddings-wasm`, `@sparkleideas/ruvector-pi-brain`, `@sparkleideas/ruvector-ruvllm`) must be installed manually or via `/vector-setup`. Users who skip this and try `embed text` will hit the documented error.
 
 **Neutral:**
 

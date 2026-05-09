@@ -12,7 +12,7 @@ tags: [plugin, wasm, sandbox, gallery, namespace, smoke-test]
 
 `ruflo-wasm` (v0.1.0) — sandboxed WASM agent creation, execution, and gallery sharing. 1 agent (`wasm-specialist`), 2 skills (`wasm-agent`, `wasm-gallery`), 1 command (`/wasm`).
 
-Wraps **10 `wasm_*` MCP tools** at `v3/@claude-flow/cli/src/mcp-tools/wasm-agent-tools.ts:18, 51, 74, 103, 117, 138, 160, 181, 195, 216`:
+Wraps **10 `wasm_*` MCP tools** at `v3/@sparkleideas/cli/src/mcp-tools/wasm-agent-tools.ts:18, 51, 74, 103, 117, 138, 160, 181, 195, 216`:
 
 | Tool | Purpose |
 |------|---------|
@@ -29,7 +29,7 @@ Wraps **10 `wasm_*` MCP tools** at `v3/@claude-flow/cli/src/mcp-tools/wasm-agent
 
 ### Upstream ADR-070 cross-reference
 
-[ADR-070 (Implemented)](../../../v3/implementation/adrs/ADR-070-rvagent-wasm-completion.md) closed the gap on `@ruvector/rvagent-wasm` + `@ruvector/ruvllm-wasm` integration. Per ADR-070, both packages are now declared in `package.json` `optionalDependencies` so `npm install` fetches them. Without ADR-070's fix, the runtime would always hit the graceful-degradation path and these MCP tools would no-op.
+[ADR-070 (Implemented)](../../../v3/implementation/adrs/ADR-070-rvagent-wasm-completion.md) closed the gap on `@sparkleideas/ruvector-rvagent-wasm` + `@sparkleideas/ruvector-ruvllm-wasm` integration. Per ADR-070, both packages are now declared in `package.json` `optionalDependencies` so `npm install` fetches them. Without ADR-070's fix, the runtime would always hit the graceful-degradation path and these MCP tools would no-op.
 
 ## Decision
 
@@ -40,7 +40,7 @@ Wraps **10 `wasm_*` MCP tools** at `v3/@claude-flow/cli/src/mcp-tools/wasm-agent
 
 ## Consequences
 
-**Positive:** plugin joins the cadence. The ADR-070 integration dependency is now contractually documented — readers know that `@ruvector/rvagent-wasm` + `@ruvector/ruvllm-wasm` must be installed (via npm install since ADR-070) for these tools to be functional.
+**Positive:** plugin joins the cadence. The ADR-070 integration dependency is now contractually documented — readers know that `@sparkleideas/ruvector-rvagent-wasm` + `@sparkleideas/ruvector-ruvllm-wasm` must be installed (via npm install since ADR-070) for these tools to be functional.
 
 **Negative:** none material.
 
@@ -56,4 +56,4 @@ bash plugins/ruflo-wasm/scripts/smoke.sh
 - `v3/implementation/adrs/ADR-070-rvagent-wasm-completion.md` — upstream integration completion (Implemented)
 - `plugins/ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md` — namespace convention
 - `plugins/ruflo-aidefence/docs/adrs/0001-aidefence-contract.md` — 3-gate pattern (relevant for sandboxed prompt-injection defense)
-- `v3/@claude-flow/cli/src/mcp-tools/wasm-agent-tools.ts` — 10 `wasm_*` tools
+- `v3/@sparkleideas/cli/src/mcp-tools/wasm-agent-tools.ts` — 10 `wasm_*` tools

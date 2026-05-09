@@ -136,7 +136,7 @@ pending → canary → rolling → complete
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Hardware:** requires Cognitum Seed device. SDK: `@cognitum-one/sdk/seed`.
 - **Verification:** `bash plugins/ruflo-iot-cognitum/scripts/smoke.sh` is the contract.
 

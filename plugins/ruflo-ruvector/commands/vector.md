@@ -90,21 +90,21 @@ Usage: /vector <subcommand> [options]
 53. **native compare** — `npx -y ruvector@0.2.25 native compare`
 54. **workers triggers / presets / phases / dispatch / status / stats / cleanup / cancel / run / create / init-config** — all available via `npx -y ruvector@0.2.25 workers <subcmd>`. First invocation auto-installs `agentic-flow` (slow).
 
-## Collective knowledge (brain) — needs `@ruvector/pi-brain`
+## Collective knowledge (brain) — needs `@sparkleideas/ruvector-pi-brain`
 
 55. **brain status** — `npx -y ruvector@0.2.25 brain status`
 56. **brain search `<query>`** — `npx -y ruvector@0.2.25 brain search "QUERY"`
 57. **brain share `<title>`** — `npx -y ruvector@0.2.25 brain share "TITLE"`
 58. **brain list / get / vote / delete / drift / partition / transfer / sync / page** — full Brainpedia + LoRA-weight management.
 
-## SONA (Self-Optimizing Neural Architecture) — needs `@ruvector/ruvllm`
+## SONA (Self-Optimizing Neural Architecture) — needs `@sparkleideas/ruvector-ruvllm`
 
 59. **sona status / info / stats** — `npx -y ruvector@0.2.25 sona status`
 60. **sona patterns `<query>`** — `npx -y ruvector@0.2.25 sona patterns "QUERY"`
 61. **sona train `<data>`** — `npx -y ruvector@0.2.25 sona train <data>` (record a training trajectory)
 62. **sona export** — `npx -y ruvector@0.2.25 sona export` (export learned weights)
 
-## LLM orchestration — needs `@ruvector/ruvllm`
+## LLM orchestration — needs `@sparkleideas/ruvector-ruvllm`
 
 63. **llm models** — `npx -y ruvector@0.2.25 llm models`
 64. **llm embed `<text>`** — `npx -y ruvector@0.2.25 llm embed "TEXT"` (RuvLLM-backed embeddings)
@@ -142,7 +142,7 @@ Usage: /vector <subcommand> [options]
 
 ## Setup helper
 
-For first-run users hitting `ONNX WASM files not bundled`, `Brain commands require @ruvector/pi-brain`, or `SONA not available`, invoke the `vector-setup` skill: `/vector-setup`.
+For first-run users hitting `ONNX WASM files not bundled`, `Brain commands require @sparkleideas/ruvector-pi-brain`, or `SONA not available`, invoke the `vector-setup` skill: `/vector-setup`.
 
 ## MCP server (103 tools)
 

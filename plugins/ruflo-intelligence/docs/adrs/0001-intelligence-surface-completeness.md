@@ -28,11 +28,11 @@ Counted directly from source:
 
 | Family | Plugin coverage | Real count | Source |
 |--------|-----------------|------------|--------|
-| `neural_*` | 5 of 6 | **6** (`neural_train`, `neural_predict`, `neural_patterns`, `neural_compress`, `neural_status`, `neural_optimize`) | `v3/@claude-flow/cli/src/mcp-tools/neural-tools.ts:195, 312, 413, 539, 651, 706` |
-| `hooks_intelligence_*` (and dispatcher / reset) | 6 of 10 | **10** (`hooks_intelligence`, `hooks_intelligence-reset`, `hooks_intelligence_trajectory-start/step/end`, `hooks_intelligence_pattern-store`, `hooks_intelligence_pattern-search`, `hooks_intelligence_stats`, `hooks_intelligence_learn`, `hooks_intelligence_attention`) | `v3/@claude-flow/cli/src/mcp-tools/hooks-tools.ts:2093, 2226, 2296, 2355, 2404, 2556, 2634, 2741, 2952, 3027` |
+| `neural_*` | 5 of 6 | **6** (`neural_train`, `neural_predict`, `neural_patterns`, `neural_compress`, `neural_status`, `neural_optimize`) | `v3/@sparkleideas/cli/src/mcp-tools/neural-tools.ts:195, 312, 413, 539, 651, 706` |
+| `hooks_intelligence_*` (and dispatcher / reset) | 6 of 10 | **10** (`hooks_intelligence`, `hooks_intelligence-reset`, `hooks_intelligence_trajectory-start/step/end`, `hooks_intelligence_pattern-store`, `hooks_intelligence_pattern-search`, `hooks_intelligence_stats`, `hooks_intelligence_learn`, `hooks_intelligence_attention`) | `v3/@sparkleideas/cli/src/mcp-tools/hooks-tools.ts:2093, 2226, 2296, 2355, 2404, 2556, 2634, 2741, 2952, 3027` |
 | Routing & meta hooks (`hooks_route`, `hooks_explain`, `hooks_pretrain`, `hooks_build-agents`, `hooks_metrics`, `hooks_transfer`) | 1 of 6 (only `hooks_route`) | **6** | `hooks-tools.ts:884, 1062, 1420, 1499, 1593, 1664` |
 | `hooks_model-*` | 2 of 3 | **3** (`hooks_model-route`, `hooks_model-outcome`, `hooks_model-stats`) | `hooks-tools.ts:3797, 3844, 3879` |
-| `ruvllm_sona_*` + `ruvllm_microlora_*` | 2 of 4 (only sona_create / sona_adapt) | **4** | `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222` |
+| `ruvllm_sona_*` + `ruvllm_microlora_*` | 2 of 4 (only sona_create / sona_adapt) | **4** | `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222` |
 | **Total** | ~14 of **29** | **29** | — |
 
 The plugin documents roughly half the intelligence-related surface that the CLI actually exposes. Specifically missing or underspecified:
@@ -91,7 +91,7 @@ The README becomes the canonical entry point with these new sections:
 - **Namespace coordination** — explicit deferral to `ruflo-agentdb` ADR-0001 §"Namespace convention"; reproduces the pluralization gotcha (`pattern` vs `patterns`).
 - **EWC++ explanation** — no longer just a feature claim. Maps to `agentdb_consolidate` and `ruvllm_microlora_adapt --consolidate`.
 - **MoE explanation** — `hooks_intelligence` modes (`balanced` / `sona` / `moe` / `hnsw`) enumerated.
-- **Compatibility** — pinned to `@claude-flow/cli` v3.6 (matches ruflo-agentdb).
+- **Compatibility** — pinned to `@sparkleideas/cli` v3.6 (matches ruflo-agentdb).
 
 ### 3. Agent rewrite — tool routing matrix
 
@@ -124,7 +124,7 @@ The README becomes the canonical entry point with these new sections:
 10. Pluralization gotcha referenced (`pattern` vs `patterns`) — defers to ruflo-agentdb.
 11. No skill grants wildcard tool access.
 12. ADR file exists with status Proposed.
-13. Compatibility section pins to `@claude-flow/cli` v3.6.
+13. Compatibility section pins to `@sparkleideas/cli` v3.6.
 
 Plus three doc invariants checked by single-line greps:
 
@@ -165,7 +165,7 @@ bash plugins/ruflo-intelligence/scripts/smoke.sh
 - `plugins/ruflo-ruvector/docs/adrs/0001-pin-ruvector-0.2.25.md` — pinning + smoke-as-contract precedent
 - `plugins/ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md` — namespace convention + reserved namespaces (`pattern`/`claude-memories`/`default`); pluralization gotcha; hook integration table
 - `plugins/ruflo-browser/docs/adrs/0001-browser-skills-architecture.md` — uses ruvector trajectory hooks (a primary learning input for this plugin)
-- `v3/@claude-flow/cli/src/mcp-tools/neural-tools.ts` — 6 neural tool definitions
-- `v3/@claude-flow/cli/src/mcp-tools/hooks-tools.ts` — 19 hooks-family tools (intelligence, route, model, transfer, metrics, explain, pretrain, build-agents)
-- `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts` — 4 SONA + MicroLoRA tools
+- `v3/@sparkleideas/cli/src/mcp-tools/neural-tools.ts` — 6 neural tool definitions
+- `v3/@sparkleideas/cli/src/mcp-tools/hooks-tools.ts` — 19 hooks-family tools (intelligence, route, model, transfer, metrics, explain, pretrain, build-agents)
+- `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts` — 4 SONA + MicroLoRA tools
 - CLAUDE.md (V3 Performance Targets + 4-step pipeline framing)

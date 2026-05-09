@@ -12,7 +12,7 @@ tags: [plugin, security, audit, cve, namespace, smoke-test]
 
 `ruflo-security-audit` (v0.2.0) — security review + dependency scanning + policy gates + CVE monitoring. 1 agent (`security-auditor`), 2 skills (`security-scan`, `dependency-check`), 1 command (`/audit`).
 
-Drives `npx @claude-flow/cli@latest security scan|audit|cve|threats|validate|report` (CLI commands, not dedicated MCP tools — the security CLI command surface lives in `v3/@claude-flow/cli/src/commands/security.ts`).
+Drives `npx @sparkleideas/cli@latest security scan|audit|cve|threats|validate|report` (CLI commands, not dedicated MCP tools — the security CLI command surface lives in `v3/@sparkleideas/cli/src/commands/security.ts`).
 
 Pairs with two sibling contracts:
 
@@ -44,4 +44,4 @@ bash plugins/ruflo-security-audit/scripts/smoke.sh
 - `plugins/ruflo-aidefence/docs/adrs/0001-aidefence-contract.md` — canonical 3-gate runtime pattern this plugin's static analysis complements
 - `plugins/ruflo-jujutsu/docs/adrs/0001-jujutsu-contract.md` — diff analysis substrate this plugin runs on for PR-time auditing
 - `plugins/ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md` — namespace convention
-- `v3/@claude-flow/cli/src/commands/security.ts` — `security scan|audit|cve|threats|validate|report` CLI command surface
+- `v3/@sparkleideas/cli/src/commands/security.ts` — `security scan|audit|cve|threats|validate|report` CLI command surface

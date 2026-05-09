@@ -27,12 +27,12 @@ Workflow automation with templates, orchestration, and full state-machine lifecy
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-workflows/scripts/smoke.sh` is the contract.
 
 ## MCP surface (10 tools)
 
-All defined at `v3/@claude-flow/cli/src/mcp-tools/workflow-tools.ts`:
+All defined at `v3/@sparkleideas/cli/src/mcp-tools/workflow-tools.ts`:
 
 | Tool | Purpose |
 |------|---------|

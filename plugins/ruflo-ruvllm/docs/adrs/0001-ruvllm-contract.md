@@ -12,7 +12,7 @@ tags: [plugin, ruvllm, microlora, sona, llm, namespace, smoke-test]
 
 `ruflo-ruvllm` (v0.1.0) — local LLM inference + MicroLoRA fine-tuning + chat formatting. 1 agent (`llm-specialist`), 2 skills (`llm-config`, `chat-format`), 1 command (`/ruvllm`).
 
-Wraps `ruvllm_*` MCP family — same family that exposes the SONA + MicroLoRA tools `ruflo-intelligence` ADR-0001 already documents (`ruvllm_sona_create`, `ruvllm_sona_adapt`, `ruvllm_microlora_create`, `ruvllm_microlora_adapt` per `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222`). The HNSW WASM router (`ruvllm_hnsw_create/_add/_route`) is documented in `ruflo-agentdb` ADR-0001 §"Tool inventory".
+Wraps `ruvllm_*` MCP family — same family that exposes the SONA + MicroLoRA tools `ruflo-intelligence` ADR-0001 already documents (`ruvllm_sona_create`, `ruvllm_sona_adapt`, `ruvllm_microlora_create`, `ruvllm_microlora_adapt` per `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222`). The HNSW WASM router (`ruvllm_hnsw_create/_add/_route`) is documented in `ruflo-agentdb` ADR-0001 §"Tool inventory".
 
 This plugin is the canonical owner of the LLM-config + chat-format slice of the `ruvllm_*` surface; SONA + MicroLoRA + HNSW each have other canonical homes.
 
@@ -41,4 +41,4 @@ bash plugins/ruflo-ruvllm/scripts/smoke.sh
 - `plugins/ruflo-intelligence/docs/adrs/0001-intelligence-surface-completeness.md` — owns SONA + MicroLoRA in the 4-step pipeline
 - `plugins/ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md` — owns HNSW WASM router (`ruvllm_hnsw_*`) + namespace convention
 - `plugins/ruflo-ruvector/docs/adrs/0001-pin-ruvector-0.2.25.md` — sibling substrate plugin
-- `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts` — 4 SONA + MicroLoRA tools at lines 142, 169, 192, 222
+- `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts` — 4 SONA + MicroLoRA tools at lines 142, 169, 192, 222

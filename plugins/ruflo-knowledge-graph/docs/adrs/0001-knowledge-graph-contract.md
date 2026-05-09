@@ -14,7 +14,7 @@ tags: [plugin, knowledge-graph, entities, relations, pathfinder, namespace, smok
 
 ### The drift this ADR fixes
 
-Two files reference `mcp__claude-flow__embeddings_embed`, but the real tool is `embeddings_generate` (`v3/@claude-flow/cli/src/mcp-tools/embeddings-tools.ts:260`). There is no `embeddings_embed` MCP tool.
+Two files reference `mcp__ruflo__embeddings_embed`, but the real tool is `embeddings_generate` (`v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts:260`). There is no `embeddings_embed` MCP tool.
 
 - `skills/kg-extract/SKILL.md:5` — `allowed-tools` line includes the wrong tool name
 - `agents/graph-navigator.md:56` — agent's tool list also wrong
@@ -56,4 +56,4 @@ bash plugins/ruflo-knowledge-graph/scripts/smoke.sh
 
 - `plugins/ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md` — namespace convention
 - `plugins/ruflo-cost-tracker/docs/adrs/0001-cost-tracker-contract.md` — sibling pattern of fixing real MCP-tool drift in skills
-- `v3/@claude-flow/cli/src/mcp-tools/embeddings-tools.ts:260` — `embeddings_generate` (the real tool name)
+- `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts:260` — `embeddings_generate` (the real tool name)

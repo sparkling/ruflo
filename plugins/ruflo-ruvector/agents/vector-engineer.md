@@ -27,8 +27,8 @@ npx -y ruvector@0.2.25 hooks diff-classify HEAD
 npx -y ruvector@0.2.25 hooks coverage-route src/module.ts
 npx -y ruvector@0.2.25 hooks security-scan src/
 
-# Brain (collective knowledge — requires @ruvector/pi-brain)
-npm install @ruvector/pi-brain
+# Brain (collective knowledge — requires @sparkleideas/ruvector-pi-brain)
+npm install @sparkleideas/ruvector-pi-brain
 npx -y ruvector@0.2.25 brain status
 npx -y ruvector@0.2.25 brain search "query"
 npx -y ruvector@0.2.25 brain list
@@ -60,8 +60,8 @@ Key tool categories:
 - `hooks_graph_mincut`, `hooks_graph_cluster` — code boundaries
 - `hooks_security_scan` — vulnerability detection
 - `hooks_rag_context` — semantic context retrieval
-- `brain_search`, `brain_share`, `brain_status` — shared brain knowledge (needs `@ruvector/pi-brain`)
-- `sona_status`, `sona_patterns`, `sona_stats` — SONA learning (needs `@ruvector/ruvllm`)
+- `brain_search`, `brain_share`, `brain_status` — shared brain knowledge (needs `@sparkleideas/ruvector-pi-brain`)
+- `sona_status`, `sona_patterns`, `sona_stats` — SONA learning (needs `@sparkleideas/ruvector-ruvllm`)
 - `attention_list`, `attention_compute` — attention mechanism dispatch
 - `gnn_info`, `gnn_layer`, `gnn_search` — graph neural net ops
 - `rvf_create`, `rvf_query`, `rvf_status` — cognitive container management
@@ -140,7 +140,7 @@ npx -y ruvector@0.2.25 search my.db -v '[0.1,0.2,...]' -k 10
 | `ruvector embed --model poincare T` | Embed normally, project to Poincare in user code |
 | `ruvector hooks route --task X` | `ruvector hooks route "X"` (positional) |
 | `ruvector hooks ast-analyze --file F` | `ruvector hooks ast-analyze F` (positional) |
-| `ruvector brain agi status` | `ruvector brain status` (needs `@ruvector/pi-brain`) |
+| `ruvector brain agi status` | `ruvector brain status` (needs `@sparkleideas/ruvector-pi-brain`) |
 | `ruvector midstream status` | (no replacement — command not present) |
 
 ### Performance (ruvector benchmarks)

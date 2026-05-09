@@ -25,7 +25,7 @@ Direct wrapper around `agent-booster.apply()` (npm `agent-booster` v0.2.x, expos
 
    ```bash
    node --input-type=module -e '
-     import("agent-booster")
+     import("@sparkleideas/agent-booster")
        .then(async ({ AgentBooster }) => {
          const booster = new AgentBooster();
          const r = await booster.apply({

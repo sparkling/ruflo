@@ -2,7 +2,7 @@
 
 User-facing surface for Ruflo's self-learning system. Wraps **29 intelligence-related MCP tools** across four families into discoverable skills, commands, and the canonical 4-step pipeline (RETRIEVE → JUDGE → DISTILL → CONSOLIDATE). Coordinates with `ruflo-agentdb` (namespace convention), `ruflo-ruvector` (trajectory recording substrate), and `ruflo-browser` (consumes trajectory hooks for session replay).
 
-> **Status:** ADR-0001 implemented. Plugin v0.3.0 targets `@claude-flow/cli` v3.6.x.
+> **Status:** ADR-0001 implemented. Plugin v0.3.0 targets `@sparkleideas/cli` v3.6.x.
 
 ## Install
 
@@ -13,18 +13,18 @@ User-facing surface for Ruflo's self-learning system. Wraps **29 intelligence-re
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-intelligence/scripts/smoke.sh` is the contract.
 
 ## Tool inventory
 
 | Family | Count | Source |
 |--------|------:|--------|
-| `neural_*` | 6 | `v3/@claude-flow/cli/src/mcp-tools/neural-tools.ts:195, 312, 413, 539, 651, 706` |
-| `hooks_intelligence_*` (incl. dispatcher + reset) | 10 | `v3/@claude-flow/cli/src/mcp-tools/hooks-tools.ts:2093, 2226, 2296, 2355, 2404, 2556, 2634, 2741, 2952, 3027` |
+| `neural_*` | 6 | `v3/@sparkleideas/cli/src/mcp-tools/neural-tools.ts:195, 312, 413, 539, 651, 706` |
+| `hooks_intelligence_*` (incl. dispatcher + reset) | 10 | `v3/@sparkleideas/cli/src/mcp-tools/hooks-tools.ts:2093, 2226, 2296, 2355, 2404, 2556, 2634, 2741, 2952, 3027` |
 | Routing & meta hooks (`hooks_route`, `hooks_explain`, `hooks_pretrain`, `hooks_build-agents`, `hooks_metrics`, `hooks_transfer`) | 6 | `hooks-tools.ts:884, 1062, 1420, 1499, 1593, 1664` |
 | `hooks_model-*` (3-tier routing) | 3 | `hooks-tools.ts:3797, 3844, 3879` |
-| `ruvllm_sona_*` + `ruvllm_microlora_*` | 4 | `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222` |
+| `ruvllm_sona_*` + `ruvllm_microlora_*` | 4 | `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222` |
 | **Total** | **29** | — |
 
 ## The 4-step intelligence pipeline

@@ -2,7 +2,7 @@
 name: browser-form-fill
 description: Fill a web form by mapping field-name → value, with optional template lookup from browser-templates for known forms
 argument-hint: "<url> <field-map.json> [--template <name>] [--submit]"
-allowed-tools: mcp__claude-flow__browser_open mcp__claude-flow__browser_close mcp__claude-flow__browser_fill mcp__claude-flow__browser_type mcp__claude-flow__browser_select mcp__claude-flow__browser_check mcp__claude-flow__browser_uncheck mcp__claude-flow__browser_click mcp__claude-flow__browser_wait mcp__claude-flow__browser_snapshot mcp__claude-flow__aidefence_has_pii Bash Read Write
+allowed-tools: mcp__ruflo__browser_open mcp__ruflo__browser_close mcp__ruflo__browser_fill mcp__ruflo__browser_type mcp__ruflo__browser_select mcp__ruflo__browser_check mcp__ruflo__browser_uncheck mcp__ruflo__browser_click mcp__ruflo__browser_wait mcp__ruflo__browser_snapshot mcp__ruflo__aidefence_has_pii Bash Read Write
 ---
 
 # Browser Form Fill
@@ -26,7 +26,7 @@ Fill a form using a structured field map (`{"first_name": "Ada", "company": "...
 5. **Submit** if `--submit`: locate the submit button via the snapshot, `browser_click`, then `browser_wait` for navigation.
 6. **Persist the template** if a new mapping was discovered:
    ```bash
-   npx -y @claude-flow/cli@latest memory store --namespace browser-templates \
+   npx -y @sparkleideas/cli@latest memory store --namespace browser-templates \
      --key "<host>:<form-name>" \
      --value "{field_map:{...}, submit_selector:..., post_submit_url_pattern:...}"
    ```

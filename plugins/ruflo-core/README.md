@@ -11,7 +11,7 @@ Foundation plugin. Registers the `ruflo` MCP server (300+ tools), provides three
 
 ## What's Included
 
-- **MCP Server**: 300+ tools via `@claude-flow/cli` (memory, agentdb, embeddings, hooks, neural, autopilot, browser, aidefence, agent, swarm, system, terminal, github, daa, coordination, performance, workflow, …)
+- **MCP Server**: 300+ tools via `@sparkleideas/cli` (memory, agentdb, embeddings, hooks, neural, autopilot, browser, aidefence, agent, swarm, system, terminal, github, daa, coordination, performance, workflow, …)
 - **CLI Commands**: 26 commands with 140+ subcommands for agent orchestration
 - **3-Tier Model Routing**: Agent Booster (WASM), Haiku, Sonnet/Opus with automatic cost optimization
 - **Session Management**: Persistent sessions with cross-conversation learning
@@ -23,7 +23,7 @@ The MCP server starts automatically when this plugin is active. Override environ
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor. The `.mcp.json` invocation uses `@latest` for dynamic resolution; the smoke contract verifies the resolved CLI matches the v3.6 line.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor. The `.mcp.json` invocation uses `@latest` for dynamic resolution; the smoke contract verifies the resolved CLI matches the v3.6 line.
 - **Verification:** `bash plugins/ruflo-core/scripts/smoke.sh` is the contract.
 
 ## MCP server contract

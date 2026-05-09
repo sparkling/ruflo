@@ -47,7 +47,7 @@ Long-horizon goal planning, deep research orchestration, and adaptive replanning
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-goals/scripts/smoke.sh` is the contract.
 
 ## Namespace coordination

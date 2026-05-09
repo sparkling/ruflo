@@ -83,7 +83,7 @@ Until Phase 3 ships, federated spend is **not** counted in the host's cost-track
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-cost-tracker/scripts/smoke.sh` is the contract.
 
 ## Namespace coordination

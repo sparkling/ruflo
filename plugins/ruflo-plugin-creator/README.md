@@ -27,7 +27,7 @@ Scaffold, validate, and publish new Claude Code plugins with proper structure, M
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-plugin-creator/scripts/smoke.sh` is the contract.
 
 ## Canonical plugin contract (what gets scaffolded)

@@ -63,7 +63,7 @@ Detected via import analysis: upstream/downstream, ACL, shared kernel, published
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-ddd/scripts/smoke.sh` is the contract.
 
 ## Namespace coordination

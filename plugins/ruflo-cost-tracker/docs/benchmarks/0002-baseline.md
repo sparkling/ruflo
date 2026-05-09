@@ -96,11 +96,11 @@ of the new skills, all caught and fixed before this baseline was recorded:
 |---|----------------------------------|-------------------------------------------------------------|----------|-----|
 | 1 | Upstream literals exist          | `grep "AGENT_BOOSTER_AVAILABLE" hooks-tools.ts`             | found at line 1228 ✓ | none |
 | 2 | `getTokenOptimizer` exported     | `grep` token-optimizer.ts:308                               | found ✓ | none |
-| 3 | `dist/token-optimizer.js` built  | `ls v3/node_modules/@claude-flow/integration/dist/`         | present ✓ | none |
+| 3 | `dist/token-optimizer.js` built  | `ls v3/node_modules/@sparkleideas/integration/dist/`         | present ✓ | none |
 | 4 | sibling contract honored both ways | `grep "cost-tracker" ruflo-loop-workers/README.md`        | declared at lines 46, 55 ✓ | none |
-| 5 | Skill's claimed import path      | `import("@claude-flow/integration/dist/token-optimizer.js")`| FAILED — Node resolver doubled `.js.js` via the `./*` exports rule | use canonical export `@claude-flow/integration/token-optimizer` |
+| 5 | Skill's claimed import path      | `import("@sparkleideas/integration/dist/token-optimizer.js")`| FAILED — Node resolver doubled `.js.js` via the `./*` exports rule | use canonical export `@sparkleideas/integration/token-optimizer` |
 | 6 | Skill's claimed availability API | `opt.isAgentBoosterAvailable?.()`                           | undefined — method does not exist on the singleton | switched to `getStats().agenticFlowAvailable` (the actual public field) |
-| 7 | Booster signal under published CLI | `npx @claude-flow/cli@latest hooks route --task "var to const"` | router used semantic-VectorDb path; **no `[AGENT_BOOSTER_AVAILABLE]` emitted** | added "sparse signal" caveat to the skill — the partition is a lower bound on Tier 1 eligibility |
+| 7 | Booster signal under published CLI | `npx @sparkleideas/cli@latest hooks route --task "var to const"` | router used semantic-VectorDb path; **no `[AGENT_BOOSTER_AVAILABLE]` emitted** | added "sparse signal" caveat to the skill — the partition is a lower bound on Tier 1 eligibility |
 | 8 | Bridge returns expected shape    | Node one-liner with corrected import + stats key            | `{memoriesRetrieved:0, tokensSaved:0, agenticFlowAvailable:false, cacheHitRate:"0%"}` ✓ — graceful fallback when agentic-flow not installed | none |
 
 The first four checks confirm what the ADR claimed about the upstream
@@ -231,7 +231,7 @@ Run command:
 
 ```bash
 node --input-type=module -e '
-  import("agent-booster").then(async ({ AgentBooster }) => {
+  import("@sparkleideas/agent-booster").then(async ({ AgentBooster }) => {
     const b = new AgentBooster();
     /* 5 cases */
   });

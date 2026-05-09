@@ -64,7 +64,7 @@ JSON structured logs with `timestamp`, `level`, `message`, `correlationId`, `age
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-observability/scripts/smoke.sh` is the contract.
 
 ## Namespace coordination

@@ -38,5 +38,5 @@ npx @sparkleideas/cli@latest memory search --query "cognitive pattern for TASK" 
 
 After completing tasks, feed the adaptive-agent learning loop:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```

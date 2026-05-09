@@ -37,7 +37,7 @@ A `ruflo verify` round-trip confirms 55 witnesses (27 regression-fix + 28 per-so
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-security-audit/scripts/smoke.sh` is the contract.
 
 ## AIDefence integration

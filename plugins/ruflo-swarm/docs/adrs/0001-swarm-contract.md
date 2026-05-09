@@ -16,8 +16,8 @@ Wraps **12 MCP tools** across two families:
 
 | Family | Count | Source |
 |--------|-------|--------|
-| `swarm_*` | 4 (`init`, `status`, `shutdown`, `health`) | `v3/@claude-flow/cli/src/mcp-tools/swarm-tools.ts:71, 145, 208, 270` |
-| `agent_*` | 8 (`spawn`, `execute`, `terminate`, `status`, `list`, `pool`, `health`, `update`) | `v3/@claude-flow/cli/src/mcp-tools/agent-tools.ts:182, 287, 319, 356, 395, 451, 573, 651` |
+| `swarm_*` | 4 (`init`, `status`, `shutdown`, `health`) | `v3/@sparkleideas/cli/src/mcp-tools/swarm-tools.ts:71, 145, 208, 270` |
+| `agent_*` | 8 (`spawn`, `execute`, `terminate`, `status`, `list`, `pool`, `health`, `update`) | `v3/@sparkleideas/cli/src/mcp-tools/agent-tools.ts:182, 287, 319, 356, 395, 451, 573, 651` |
 
 Plus the Monitor + Task tools from Claude Code (built-in: `Task`, `TaskList`, `TaskGet`, `TaskUpdate`, `Monitor`, etc.) which pair with this plugin for live streaming.
 
@@ -46,5 +46,5 @@ bash plugins/ruflo-swarm/scripts/smoke.sh
 - `plugins/ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md` — namespace convention
 - `plugins/ruflo-autopilot/docs/adrs/0001-autopilot-contract.md` — 270s cache-aware /loop heartbeat for swarm coordination
 - `plugins/ruflo-intelligence/docs/adrs/0001-intelligence-surface-completeness.md` — `hooks_route` powers swarm agent recommendation
-- `v3/@claude-flow/cli/src/mcp-tools/swarm-tools.ts` — 4 `swarm_*` tools
-- `v3/@claude-flow/cli/src/mcp-tools/agent-tools.ts` — 8 `agent_*` tools
+- `v3/@sparkleideas/cli/src/mcp-tools/swarm-tools.ts` — 4 `swarm_*` tools
+- `v3/@sparkleideas/cli/src/mcp-tools/agent-tools.ts` — 8 `agent_*` tools

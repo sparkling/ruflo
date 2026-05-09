@@ -28,7 +28,7 @@ RuVLLM local inference with chat formatting, model configuration, MicroLoRA fine
 
 ## Compatibility
 
-- **CLI:** pinned to `@claude-flow/cli` v3.6 major+minor.
+- **CLI:** pinned to `@sparkleideas/cli` v3.6 major+minor.
 - **Verification:** `bash plugins/ruflo-ruvllm/scripts/smoke.sh` is the contract.
 
 ## Cross-plugin tool ownership
@@ -41,7 +41,7 @@ This plugin shares the `ruvllm_*` MCP family with two sibling plugins. Each tool
 | `ruvllm_microlora_create`, `ruvllm_microlora_adapt` | [ruflo-intelligence ADR-0001](../ruflo-intelligence/docs/adrs/0001-intelligence-surface-completeness.md) (DISTILL + CONSOLIDATE phases via `--consolidate` flag) | Surfaces MicroLoRA in `llm-config` skill |
 | `ruvllm_hnsw_create`, `ruvllm_hnsw_add`, `ruvllm_hnsw_route` | [ruflo-agentdb ADR-0001](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md) (WASM router, ≤11 patterns — distinct from large-corpus `embeddings_search`) | References from `chat-format` for context routing |
 
-Source: `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222` (SONA + MicroLoRA) and `:57-58` (HNSW WASM router with `~11 patterns` cap).
+Source: `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts:142, 169, 192, 222` (SONA + MicroLoRA) and `:57-58` (HNSW WASM router with `~11 patterns` cap).
 
 ## Namespace coordination
 

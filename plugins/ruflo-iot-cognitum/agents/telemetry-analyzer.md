@@ -49,5 +49,5 @@ Telemetry and anomalies are persisted to AgentDB with vector indexing:
 
 After each analysis pass, feed the telemetry baseline learning so future Z-score thresholds adapt:
 ```bash
-npx @claude-flow/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
+npx @sparkleideas/cli@latest hooks post-task --task-id "TASK_ID" --success true --train-neural true
 ```
