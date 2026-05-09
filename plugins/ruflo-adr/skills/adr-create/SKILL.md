@@ -13,49 +13,104 @@ Create a new Architecture Decision Record with the next sequential number, regis
 
 When a significant architectural decision needs to be recorded -- new technology adoption, API design choices, data model changes, infrastructure decisions, or any cross-cutting concern that affects multiple components.
 
+## Format
+
+ADRs follow canonical MADR 4.x (https://adr.github.io/madr/) with one extension: a `tags:` frontmatter field for cross-cutting categorisation.
+
+- **Filename**: `docs/adr/NNNN-<slug>.md` — 4-digit zero-padded number, lowercase kebab-case slug derived from the title. NO `ADR-` filename prefix.
+- **H1**: `# <Title>` — title only, NO `ADR-NNNN:` prefix. The number lives in the filename.
+- **Metadata**: YAML frontmatter (NOT bullet-list metadata under H1).
+- **Status enum**: `proposed | accepted | rejected | deprecated | superseded by ADR-NNNN`. Lowercase exactly as listed.
+- **Required sections**: `## Context and Problem Statement`, `## Considered Options` (bullet list), `## Decision Outcome` containing `### Consequences` (flat bullets) and `### Confirmation`.
+- **Optional sections**: `## Decision Drivers`, `## Pros and Cons of the Options` (with `### {Option}` per option), `## More Information`.
+
 ## Steps
 
-1. **Find next number** -- `Glob` for `docs/adr/ADR-*.md` and parse existing numbers to determine the next sequential ID (ADR-001, ADR-002, etc.). Create `docs/adr/` if it does not exist.
+1. **Find next number** -- `Glob` for `docs/adr/*.md` and parse the leading 4-digit prefix from each filename to determine the next sequential ID (e.g. `0042`). Filter out non-ADR files (`README.md`, `INDEX.md`, `_template.md`). Create `docs/adr/` if it does not exist.
 
-2. **Slugify title** -- Convert the title argument to a lowercase, hyphen-separated slug (e.g., "Use PostgreSQL for persistence" becomes `use-postgresql-for-persistence`).
+2. **Slugify title** -- Convert the title argument to a lowercase, hyphen-separated slug (e.g., "Use PostgreSQL for persistence" becomes `use-postgresql-for-persistence`). Drop punctuation; collapse runs of hyphens.
 
-3. **Create ADR file** -- `Write` the file at `docs/adr/ADR-NNN-<slug>.md` using the standard template:
+3. **Create ADR file** -- `Write` the file at `docs/adr/NNNN-<slug>.md` using the canonical MADR template:
+
    ```markdown
-   # ADR-NNN: <Title>
+   ---
+   status: proposed
+   date: <today's date YYYY-MM-DD>
+   decision-makers:
+     - <leave blank for author to fill>
+   consulted: []
+   informed: []
+   tags: []
+   ---
 
-   - **Status**: proposed
-   - **Date**: <today's date YYYY-MM-DD>
-   - **Deciders**: <leave blank for author to fill>
-   - **Tags**: <leave blank>
+   # <Title>
 
-   ## Context
+   ## Context and Problem Statement
 
-   <!-- What is the issue that motivates this decision? -->
+   <!-- What is the issue that motivates this decision? Describe the situation and the question. -->
 
-   ## Decision
+   ## Decision Drivers
 
-   <!-- What is the change that we are proposing? -->
+   <!-- Optional. Forces shaping the decision: constraints, qualities, stakeholder concerns. Bullet list. -->
 
-   ## Consequences
+   * <driver 1>
+   * <driver 2>
 
-   ### Positive
-   -
+   ## Considered Options
 
-   ### Negative
-   -
+   <!-- Bullet list of alternatives evaluated. One option per line. -->
 
-   ### Neutral
-   -
+   * <Option A> — <brief description>
+   * <Option B> — <brief description>
 
-   ## Links
+   ## Decision Outcome
+
+   Chosen option: "<Option A>", because <justification — why this option meets the decision drivers, satisfies the K.O. criteria, or comes out best>.
+
+   ### Consequences
+
+   <!-- Flat bullet list. Use canonical phrasing: "* Good, because …" / "* Bad, because …" / "* Neutral, because …" -->
+
+   * Good, because <positive consequence>
+   * Bad, because <negative consequence>
+   * Neutral, because <neutral consequence>
+
+   ### Confirmation
+
+   <!-- Optional. How compliance with this decision is verified (review, ArchUnit test, lint rule, etc.). -->
+
+   ## Pros and Cons of the Options
+
+   <!-- Optional. Per-option deliberation detail. H3 per option. -->
+
+   ### <Option A>
+
+   * Good, because <argument>
+   * Bad, because <argument>
+
+   ### <Option B>
+
+   * Good, because <argument>
+   * Bad, because <argument>
+
+   ## More Information
+
+   <!-- Optional. Links, related ADRs, supporting evidence. -->
    ```
 
 4. **Store in AgentDB** -- Call `mcp__ruflo__agentdb_hierarchical-store` with:
-   - path: `adr/ADR-NNN`
-   - value: `{ "id": "ADR-NNN", "title": "<title>", "status": "proposed", "date": "<today>", "file": "docs/adr/ADR-NNN-<slug>.md" }`
+   - path: `adr/ADR-NNNN`
+   - value: `{ "id": "ADR-NNNN", "title": "<title>", "status": "proposed", "date": "<today>", "tags": [], "file": "docs/adr/NNNN-<slug>.md" }`
 
-5. **Find related ADRs** -- Call `mcp__ruflo__memory_search` with the title as query in namespace `adr-patterns` to find related decisions. If matches found, add them to the Links section and create causal edges with relation `depends-on`.
+5. **Find related ADRs** -- Call `mcp__ruflo__memory_search` with the title as query in namespace `adr-patterns` to find related decisions. If matches found, add them to the `## More Information` section and create causal edges with relation `depends-on`.
 
-6. **Store pattern** -- Call `mcp__ruflo__memory_store` in namespace `adr-patterns` with key `ADR-NNN` and the title + context as value for future semantic search.
+6. **Store pattern** -- Call `mcp__ruflo__memory_store` in namespace `adr-patterns` with key `ADR-NNNN` and the title + context as value for future semantic search.
 
 7. **Report** -- Output the created file path, ADR number, and any related ADRs found.
+
+## Notes
+
+- The `tags` frontmatter field is a project extension to canonical MADR for cross-cutting categorisation (e.g. `tags: [security, infrastructure]`). Optional — leave as `[]` if unused.
+- For supersession, set `status: superseded by ADR-NNNN` (lowercase, with the canonical ADR ID of the superseding decision). Reference the superseded ADR in `## More Information`.
+- The `### Confirmation` section is optional in canonical MADR but recommended — it answers "how do we know this decision is being followed?"
+- If an ADR has only one viable option, list it alone in `## Considered Options` and explain in `## Decision Outcome` why no alternatives were considered.
