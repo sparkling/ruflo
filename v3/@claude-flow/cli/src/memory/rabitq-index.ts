@@ -103,6 +103,9 @@ export async function buildRabitqIndex(options?: {
     // ADR-0084 + feedback-no-fallbacks (fail loud, never mask via silent catch).
     const { routerGetAllEmbeddings } = await import('./memory-router.js');
     const routerRows = await routerGetAllEmbeddings({ dimensions, dbPath: options?.dbPath });
+    if (routerRows === null) {
+      throw new Error('[rabitq-index] routerGetAllEmbeddings returned null — storage unavailable post-ensureRouter (ADR-0111 W1.5 Model 1 violation)');
+    }
     for (const row of routerRows) {
       entries.push({ id: row.id, key: row.key, namespace: row.namespace });
       vectors.push(...row.embedding);

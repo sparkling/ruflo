@@ -259,8 +259,6 @@ export interface RuntimeConfig {
   sonaMode?: string;
   /** Per-hour confidence decay rate (ADR-0080) */
   confidenceDecayRate?: number;
-  /** Confidence boost per access (ADR-0080) */
-  accessBoostAmount?: number;
   /** Min trajectories before consolidation (ADR-0080) */
   consolidationThreshold?: number;
   /** PageRank damping factor for memoryGraph (ADR-0080) */
@@ -300,6 +298,8 @@ export interface EmbeddingsConfig {
   enabled: boolean;
   /** ONNX model ID (ADR-0069: always use full Xenova/ prefix) */
   model: 'Xenova/all-MiniLM-L6-v2' | 'Xenova/all-mpnet-base-v2' | 'Xenova/bge-small-en-v1.5' | 'nomic-ai/nomic-embed-text-v1.5' | string;
+  /** Embedding vector dimension */
+  dimension?: number;
   /** Embedding provider (transformers or onnx) */
   provider?: 'transformers' | 'onnx' | string;
   /** Enable hyperbolic (Poincaré ball) embeddings */

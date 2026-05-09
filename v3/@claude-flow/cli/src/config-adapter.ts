@@ -127,7 +127,7 @@ export function v3ConfigToSystemConfig(v3Config: V3Config): Partial<SystemConfig
       maxSize: v3Config.memory.cacheSize,
       agentdb: {
         dimensions: v3Config.memory.vectorDimension,
-        indexType: ((v3Config.memory as Record<string, unknown>).indexType as string) ?? 'hnsw',
+        indexType: ((v3Config.memory as unknown as Record<string, unknown>).indexType as string) ?? 'hnsw',
         efConstruction: 100,
         m: 23,
         quantization: 'none',

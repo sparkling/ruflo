@@ -17,7 +17,8 @@ import { dirname, join } from 'node:path';
 
 // ADR-0076 Phase 2: lazily cache canonical cosineSimilarity at module load
 let _canonicalCosineSim: ((a: number[] | Float32Array, b: number[] | Float32Array) => number) | null = null;
-import('@claude-flow/memory').then(m => { _canonicalCosineSim = m.cosineSimilarity ?? null; }).catch(() => {});
+// WHY cast: @claude-flow/memory exports cosineSimilarity at runtime (embedding-pipeline.ts) but its dist/ may be unbuilt during sibling typecheck, leading TS to synthesize a partial module shape.
+import('@claude-flow/memory').then(m => { _canonicalCosineSim = (m as Record<string, unknown>).cosineSimilarity as typeof _canonicalCosineSim ?? null; }).catch(() => {});
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
@@ -892,6 +893,9 @@ export async function recordStep(step: TrajectoryStep): Promise<boolean> {
       const router = await import('./memory-router.js');
       const result = await router.generateEmbedding(step.content);
       embedding = result.embedding;
+    }
+    if (!embedding) {
+      throw new Error('[intelligence.recordStep] embedding is undefined post-generation — generateEmbedding contract violation (feedback-no-fallbacks)');
     }
 
     // Record in SONA - <0.05ms

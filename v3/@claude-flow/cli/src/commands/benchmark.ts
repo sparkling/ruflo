@@ -6,6 +6,7 @@
  */
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
+import type { MemoryOp, MemoryResult } from '../memory/memory-router.js';
 import { output } from '../output.js';
 import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -159,27 +160,22 @@ const neuralCommand: Command = {
       });
 
       // 2. Batch Cosine Similarity
+      // ADR-0086 T2.6: memory-router does not export batchCosineSim (raw vector helper
+      // was intentionally dropped from memory-initializer.ts deletion). Use inline JS.
       spinner.setText('Benchmarking batch cosine similarity...');
-      let batchCosineSim: (query: Float32Array, vectors: Float32Array[]) => Float32Array;
-      try {
-        // ADR-0086 T2.6: import from router (was memory-initializer)
-        const memory = await import('../memory/memory-router.js');
-        batchCosineSim = memory.batchCosineSim;
-      } catch {
-        batchCosineSim = (query: Float32Array, vectors: Float32Array[]) => {
-          const res = new Float32Array(vectors.length);
-          for (let i = 0; i < vectors.length; i++) {
-            let dot = 0, nQ = 0, nV = 0;
-            for (let j = 0; j < query.length; j++) {
-              dot += query[j] * vectors[i][j];
-              nQ += query[j] * query[j];
-              nV += vectors[i][j] * vectors[i][j];
-            }
-            res[i] = dot / (Math.sqrt(nQ) * Math.sqrt(nV));
+      const batchCosineSim = (query: Float32Array, vectors: Float32Array[]): Float32Array => {
+        const res = new Float32Array(vectors.length);
+        for (let i = 0; i < vectors.length; i++) {
+          let dot = 0, nQ = 0, nV = 0;
+          for (let j = 0; j < query.length; j++) {
+            dot += query[j] * vectors[i][j];
+            nQ += query[j] * query[j];
+            nV += vectors[i][j] * vectors[i][j];
           }
-          return res;
-        };
-      }
+          res[i] = dot / (Math.sqrt(nQ) * Math.sqrt(nV));
+        }
+        return res;
+      };
 
       const query = new Float32Array(dimension).map(() => Math.random());
       const vectors = Array.from({ length: numVectors }, () =>
@@ -203,35 +199,10 @@ const neuralCommand: Command = {
         met: cosineMean <= 5.0,
       });
 
-      // 3. Flash Attention Search (if available)
-      spinner.setText('Benchmarking flash attention search...');
-      const flashTimes: number[] = [];
-      try {
-        // ADR-0086 T2.6: import from router (was memory-initializer)
-        const memory = await import('../memory/memory-router.js');
-        if (memory.flashAttentionSearch) {
-          for (let i = 0; i < Math.min(iterations, 50); i++) {
-            const start = performance.now();
-            memory.flashAttentionSearch(query, vectors, { k: 10 });
-            flashTimes.push(performance.now() - start);
-          }
-        }
-      } catch {
-        // Flash attention not available
-      }
-
-      if (flashTimes.length > 0) {
-        const flashMean = flashTimes.reduce((a, b) => a + b, 0) / flashTimes.length;
-        const flashSorted = [...flashTimes].sort((a, b) => a - b);
-        results.push({
-          name: 'Flash Attention Search',
-          mean: flashMean,
-          p95: percentile(flashSorted, 95),
-          p99: percentile(flashSorted, 99),
-          target: 2.0,
-          met: flashMean <= 2.0,
-        });
-      }
+      // ADR-0086 T2.6: Flash Attention search benchmark removed.
+      // memory-router does not export flashAttentionSearch (raw vector helper was
+      // intentionally dropped from memory-initializer.ts deletion). Benchmarking a
+      // non-existent op is meaningless; do not stub.
 
       spinner.stop();
 
@@ -304,15 +275,13 @@ const memoryCommand: Command = {
 
       const results: { name: string; mean: number; p95: number; target: number; met: boolean }[] = [];
 
-      // ADR-0086 T2.6: import from router (was memory-initializer)
-      let routeMemoryOp: (op: { type: string; key?: string; value?: string; namespace?: string; query?: string; limit?: number }) => Promise<{ success: boolean; [k: string]: unknown }>;
-
-      try {
+      // ADR-0086 T2.6: import from router (was memory-initializer).
+      // No silent fallback: if the router import fails, the benchmark fails visibly
+      // (a fake `{ success: true }` stub would produce zero-latency fake metrics).
+      let routeMemoryOp: (op: MemoryOp) => Promise<MemoryResult>;
+      {
         const memory = await import('../memory/memory-router.js');
         routeMemoryOp = memory.routeMemoryOp;
-      } catch {
-        // @claude-flow/memory not available — return null metrics instead of fake numbers
-        routeMemoryOp = async () => ({ success: true });
       }
 
       // 1. Store benchmark
