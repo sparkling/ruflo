@@ -672,9 +672,20 @@ const statsCommand: Command = {
       // a fresh call still resolves quickly because we only need the
       // metadata, not a real embedding.
       try {
-        const { loadEmbeddingModel, getHNSWStatus } = await import('../memory/memory-initializer.js');
-        const embedding = await loadEmbeddingModel({ verbose: false });
-        const hnsw = getHNSWStatus();
+        // ADR-0162 Batch C+D hand-port: memory-initializer.js was deleted in our
+        // fork (ADR-0086 / ADR-0161 relocated the seam). The upstream introspection
+        // helpers now live in memory-router.ts. HNSW status is derived from the
+        // controller registry rather than a dedicated helper since the controller
+        // registry is the single source of truth for live indexing state.
+        const { loadEmbeddingModel: lem, getController: gc } = await import('../memory/memory-router.js');
+        const embedding = await lem({ verbose: false });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const enhEmb = await gc<any>('enhancedEmbedding');
+        const hnsw = {
+          available: !!enhEmb,
+          initialized: !!(enhEmb && typeof enhEmb.isReady === 'function' ? enhEmb.isReady() : enhEmb),
+          entryCount: enhEmb && typeof enhEmb.getStats === 'function' ? (enhEmb.getStats()?.totalEntries ?? 0) : 0,
+        };
         // Map model name → semantic capability so users can spot the
         // hash-fallback case without reading docs.
         const semanticProviders = new Set([
@@ -1464,6 +1475,24 @@ const initMemoryCommand: Command = {
         }
       }
 
+      // ADR-0162 Batch C+D #1791.6: detect pre-existing DB before init so we
+      // can short-circuit cleanly. memory-initializer.ts (deleted in our fork)
+      // would have surfaced this via MemoryInitResult.alreadyExists; we derive
+      // the same signal from disk presence at the resolved-path candidate.
+      const _preInitExists = await (async () => {
+        try {
+          const candidatePath = customPath || getActiveBackendPath() || '';
+          if (!candidatePath || candidatePath === '(unresolved)') return false;
+          const fsMod = await import('node:fs');
+          // RVF_CANONICAL_EXTENSIONS includes '' (the bare path) and sidecars;
+          // any of them being on-disk indicates an existing DB.
+          for (const ext of RVF_CANONICAL_EXTENSIONS) {
+            if (fsMod.existsSync(candidatePath + ext)) return true;
+          }
+          return false;
+        } catch { return false; }
+      })();
+
       await ensureRouter();
 
       // ADR-0156: pull dbPath from the resolved router state instead of
@@ -1486,6 +1515,10 @@ const initMemoryCommand: Command = {
           hnswIndexing: true,
           migrationTracking: true,
         },
+        // #1791.6 — set when DB was already on disk pre-ensureRouter and
+        // --force wasn't passed; the early-return branch turns this into a
+        // friendly no-op.
+        alreadyExists: _preInitExists && !force,
         controllers: undefined as { activated: string[]; failed: string[]; initTimeMs: number } | undefined,
         error: undefined as string | undefined,
       };

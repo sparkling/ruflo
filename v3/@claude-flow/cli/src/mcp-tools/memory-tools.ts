@@ -16,6 +16,83 @@ import { join, resolve } from 'path';
 import { createHash } from 'crypto';
 import type { MCPTool } from './types.js';
 import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
+import { validateIdentifier } from './validate-input.js';
+
+// ADR-0162 Batch C+D hand-port: upstream's memory-bridge.ts (deleted in our
+// fork per ADR-0086 / ADR-0161) housed `getMigrationMarkerPath`,
+// `loadLegacyStore`, and `getMemoryFunctions`. The legacy migration path was
+// removed from our fork's TS surface (only the compiled .js retained it as
+// dead-code). Reinstate minimal local equivalents so the new memory_migrate
+// and memory_import_claude tools landed by 8d2bfa91e / 3eb6b4d65 build.
+const LEGACY_MEMORY_DIR = '.claude-flow/memory';
+const MIGRATION_MARKER = '.migrated-to-sqlite';
+
+function getMigrationMarkerPath(): string {
+  return resolve(join(LEGACY_MEMORY_DIR, MIGRATION_MARKER));
+}
+
+/**
+ * Legacy JSON store loader. The fork removed the legacy migration source-of-
+ * truth but the memory_migrate tool still wants to surface "no legacy data"
+ * cleanly. Returns null when no legacy file is present (the only path our
+ * fork ever takes — legacy migration is a clean no-op now).
+ */
+function loadLegacyStore(): { entries: Record<string, unknown> } | null {
+  try {
+    const legacyPath = resolve(join(LEGACY_MEMORY_DIR, 'store.json'));
+    if (!existsSync(legacyPath)) return null;
+    const raw = readFileSync(legacyPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && parsed.entries
+      ? (parsed as { entries: Record<string, unknown> })
+      : { entries: {} };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Memory function bag. Upstream's memory-bridge re-exported a curated set of
+ * helpers; the new tools landed in this batch use storeEntry / listEntries /
+ * searchEntries. Re-derive them from memory-router's routeMemoryOp surface.
+ *
+ * Note: upstream's tool callers pass `generateEmbeddingFlag` (the flag name
+ * from upstream's own bridge API). We accept it as an alias for
+ * `generateEmbedding` (memory-router's flag name) so existing tool code
+ * compiles without modification.
+ */
+async function getMemoryFunctions(): Promise<{
+  storeEntry: (opts: { key: string; value: string; namespace?: string; tags?: string[]; metadata?: Record<string, unknown>; generateEmbeddingFlag?: boolean; generateEmbedding?: boolean }) => Promise<unknown>;
+  listEntries: (opts: { namespace?: string; limit?: number }) => Promise<{ entries: Array<Record<string, unknown>> }>;
+  searchEntries: (opts: { query: string; namespace?: string; limit?: number }) => Promise<{ results: Array<Record<string, unknown>> }>;
+}> {
+  return {
+    storeEntry: async (opts) => routeMemoryOp({
+      type: 'store',
+      key: opts.key,
+      value: opts.value,
+      namespace: opts.namespace ?? 'default',
+      tags: opts.tags ?? [],
+      generateEmbedding: opts.generateEmbeddingFlag ?? opts.generateEmbedding ?? true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...(opts.metadata ? { metadata: opts.metadata } : {}) as any,
+    }),
+    listEntries: async (opts) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await routeMemoryOp({ type: 'list', namespace: opts.namespace, limit: opts.limit } as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entries = ((result as any)?.entries ?? (result as any)?.results ?? []) as Array<Record<string, unknown>>;
+      return { entries };
+    },
+    searchEntries: async (opts) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await routeMemoryOp({ type: 'search', query: opts.query, namespace: opts.namespace, limit: opts.limit } as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const results = ((result as any)?.results ?? (result as any)?.entries ?? []) as Array<Record<string, unknown>>;
+      return { results };
+    },
+  };
+}
 
 // D-2: Input bounds for memory parameters
 const MAX_KEY_LENGTH = 1024;
@@ -864,10 +941,11 @@ export const memoryTools: MCPTool[] = [
           const r = await searchEntries({ query, namespace: searchNs, limit: limit * 2 });
           if (r?.results) {
             for (const entry of r.results) {
+              const e = entry as Record<string, unknown>;
               allResults.push({
-                key: entry.key || entry.id || '',
-                content: (entry.content || (entry as any).value || '').toString().slice(0, 200),
-                score: entry.score || 0,
+                key: (e.key as string) || (e.id as string) || '',
+                content: ((e.content as string) || (e.value as string) || '').toString().slice(0, 200),
+                score: (e.score as number) || 0,
                 namespace: searchNs,
                 source: searchNs === 'claude-memories' ? 'claude-code' : searchNs === 'auto-memory' ? 'auto-memory' : 'agentdb',
               });
