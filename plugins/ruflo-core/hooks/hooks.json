@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | jq -r '.tool_input.command // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks post-command --command '{}' --track-metrics true --store-results true"
+            "command": "/bin/bash -c 'INPUT=$(cat); CMD=$(printf %s \"$INPUT\" | jq -r \".tool_input.command // empty\"); [ -z \"$CMD\" ] && exit 0; EXIT=$(printf %s \"$INPUT\" | jq -r \".tool_response.exit_code // 0\"); SUCCESS=$([ \"$EXIT\" = \"0\" ] && echo true || echo false); npx claude-flow@alpha hooks post-command -c \"$CMD\" -s \"$SUCCESS\" -e \"$EXIT\"'"
           }
         ]
       },
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | jq -r '.tool_input.file_path // .tool_input.path // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks post-edit --file '{}' --format true --update-memory true"
+            "command": "/bin/bash -c 'INPUT=$(cat); FILE=$(printf %s \"$INPUT\" | jq -r \".tool_input.file_path // .tool_input.path // empty\"); [ -z \"$FILE\" ] && exit 0; npx claude-flow@alpha hooks post-edit -f \"$FILE\" -s true'"
           }
         ]
       }
