@@ -374,14 +374,52 @@ function _getConfigSwarmDir(): string {
   } catch { return '.swarm'; }
 }
 
+/**
+ * #1854 hand-port (ADR-0162 Batch A): single source of truth for the memory
+ * root directory. Precedence:
+ *   1. CLAUDE_FLOW_MEMORY_PATH env var (absolute path, used as-is)
+ *   2. memory.persistPath / memory.path in .claude-flow/config.json
+ *   3. memory.swarmDir in .claude-flow/config.json (legacy alias) → cwd/<swarmDir>
+ *   4. Default: cwd/.swarm
+ *
+ * Cached per-process; spawn a fresh process to pick up config changes.
+ */
+let _memoryRootCache: string | undefined;
+function _getMemoryRoot(): string {
+  if (_memoryRootCache !== undefined) return _memoryRootCache;
+
+  const envPath = process.env.CLAUDE_FLOW_MEMORY_PATH;
+  if (envPath && envPath.trim().length > 0) {
+    _memoryRootCache = path.resolve(envPath);
+    return _memoryRootCache;
+  }
+
+  const root = findProjectRoot();
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.claude-flow', 'config.json'), 'utf-8'));
+    const persistPath = cfg?.memory?.persistPath ?? cfg?.memory?.path;
+    if (typeof persistPath === 'string' && persistPath.trim().length > 0) {
+      _memoryRootCache = path.isAbsolute(persistPath) ? persistPath : path.resolve(root, persistPath);
+      return _memoryRootCache;
+    }
+  } catch { /* fall through */ }
+
+  _memoryRootCache = path.resolve(root, _getConfigSwarmDir());
+  return _memoryRootCache;
+}
+
+/** Reset the memory-root cache (test/runtime-reconfigure helper for #1854). */
+export function _resetMemoryRootCache(): void {
+  _memoryRootCache = undefined;
+}
+
 function _getDbPath(customPath?: string): string {
-  const swarmDir = path.resolve(findProjectRoot(), _getConfigSwarmDir());
-  if (!customPath) return path.join(swarmDir, 'memory.db');
+  if (!customPath) return path.join(_getMemoryRoot(), 'memory.db');
   if (customPath === ':memory:') return ':memory:';
   const resolved = path.resolve(customPath);
   const cwd = findProjectRoot();
   if (!resolved.startsWith(cwd)) {
-    return path.join(swarmDir, 'memory.db');
+    return path.join(_getMemoryRoot(), 'memory.db');
   }
   return resolved;
 }
