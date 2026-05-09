@@ -12,7 +12,7 @@
  * Note: For production neural features, use @claude-flow/neural module
  */
 
-import { type MCPTool, getProjectCwd } from './types.js';
+import { type MCPTool, findProjectRoot } from './types.js';
 import { validateIdentifier, validateText } from './validate-input.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -109,7 +109,7 @@ interface NeuralStore {
 }
 
 function getNeuralDir(): string {
-  return join(getProjectCwd(), STORAGE_DIR, NEURAL_DIR);
+  return join(findProjectRoot(), STORAGE_DIR, NEURAL_DIR);
 }
 
 function getNeuralPath(): string {
@@ -123,7 +123,7 @@ function ensureNeuralDir(): void {
   }
 }
 
-function loadNeuralStore(): NeuralStore {
+export function loadNeuralStore(): NeuralStore {
   try {
     const path = getNeuralPath();
     if (existsSync(path)) {
@@ -135,13 +135,13 @@ function loadNeuralStore(): NeuralStore {
   return { models: {}, patterns: {}, version: '3.0.0' };
 }
 
-function saveNeuralStore(store: NeuralStore): void {
+export function saveNeuralStore(store: NeuralStore): void {
   ensureNeuralDir();
   writeFileSync(getNeuralPath(), JSON.stringify(store, null, 2), 'utf-8');
 }
 
 // Generate embedding - uses real ML embeddings if available, falls back to deterministic hash
-async function generateEmbedding(text?: string, dims: number = 384): Promise<number[]> {
+export async function generateEmbedding(text?: string, dims: number = 384): Promise<number[]> {
   // If real embeddings available and text provided, use them
   if (realEmbeddings && text) {
     try {
@@ -564,6 +564,9 @@ export const neuralTools: MCPTool[] = [
 
       if (method === 'quantize') {
         try {
+          // @ts-expect-error — ../memory/memory-initializer.js was deleted in
+          // f2f86193a (ADR-0086 Phase 1); the dynamic import always falls
+          // through to the catch branch and the action is gracefully skipped.
           const { quantizeInt8, getQuantizationStats } = await import('../memory/memory-initializer.js');
           let totalCompressed = 0;
           for (const pattern of patterns) {
@@ -758,6 +761,9 @@ export const neuralTools: MCPTool[] = [
       // memory / balanced: quantize large embeddings
       if (target === 'memory' || target === 'balanced') {
         try {
+          // @ts-expect-error — ../memory/memory-initializer.js was deleted in
+          // f2f86193a (ADR-0086 Phase 1); the dynamic import always falls
+          // through to the catch branch and the action is gracefully skipped.
           const { quantizeInt8, getQuantizationStats } = await import('../memory/memory-initializer.js');
           for (const p of Object.values(store.patterns)) {
             if (p.embedding && p.embedding.length > 0 && !(p as any)._quantized) {

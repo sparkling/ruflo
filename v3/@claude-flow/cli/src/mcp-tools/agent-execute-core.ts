@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getProjectCwd } from './types.js';
+import { findProjectRoot } from './types.js';
 
 const STORAGE_DIR = '.claude-flow';
 const AGENT_DIR = 'agents';
@@ -37,7 +37,7 @@ interface AgentStore {
   version: string;
 }
 
-function getAgentDir(): string { return join(getProjectCwd(), STORAGE_DIR, AGENT_DIR); }
+function getAgentDir(): string { return join(findProjectRoot(), STORAGE_DIR, AGENT_DIR); }
 function getAgentPath(): string { return join(getAgentDir(), AGENT_FILE); }
 function ensureAgentDir(): void {
   const dir = getAgentDir();
