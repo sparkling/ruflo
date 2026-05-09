@@ -156,7 +156,7 @@ const session = sessions.createSession('http');
 
 // Initialize with client info
 sessions.initializeSession(session.id, {
-  protocolVersion: { major: 2024, minor: 11, patch: 5 },
+  protocolVersion: '2024-11-05', // MCP spec: YYYY-MM-DD string
   capabilities: { tools: { listChanged: true } },
   clientInfo: { name: 'Claude', version: '1.0' },
 });
