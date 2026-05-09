@@ -122,7 +122,8 @@
     "@ruvector/rvagent-wasm": "0.2.1-patch.53",
     "@ruvector/sona": "0.1.6-patch.31",
     "agentdb": "3.0.0-alpha.14-patch.16",
-    "agentic-flow": "2.0.2-alpha-patch.552"
+    "agentic-flow": "2.0.2-alpha-patch.552",
+    "better-sqlite3": "^12.9.0"
   },
   "publishConfig": {
     "access": "public",
