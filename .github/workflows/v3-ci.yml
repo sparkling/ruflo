@@ -289,16 +289,32 @@ jobs:
           # is the same script external adopters use — dogfooding ensures
           # the plugin pathway works and avoids CI-specific cli build
           # issues (e.g. missing @ruvector/sona, sharp native postinstall).
+          # Capture both streams; analyze regardless of exit code so we
+          # always see WHY a verification failed.
+          set +e
           node plugins/ruflo-core/scripts/witness/verify.mjs \
             --manifest verification.md.json \
-            --json > /tmp/witness-result.json
+            --json > /tmp/witness-result.json 2> /tmp/witness-result.err
+          VERIFY_EXIT=$?
+          set -e
+          echo "--- verify.mjs exit code: $VERIFY_EXIT ---"
+          echo "--- stderr ---"
+          cat /tmp/witness-result.err || true
+          echo "--- summary ---"
           node -e "
-            const r = require('/tmp/witness-result.json');
-            const s = r.summary;
-            console.log(JSON.stringify({signature: r.signature, summary: s}, null, 2));
+            const fs = require('fs');
+            const raw = fs.readFileSync('/tmp/witness-result.json', 'utf8');
+            if (!raw.trim()) { console.error('verify.mjs produced no JSON output'); process.exit(1); }
+            const r = JSON.parse(raw);
+            console.log(JSON.stringify({signature: r.signature, summary: r.summary}, null, 2));
+            const failures = (r.results || []).filter(x => x.status !== 'pass' && x.status !== 'drift');
+            if (failures.length) {
+              console.error('non-pass fixes:');
+              for (const f of failures) console.error('  ' + f.status + ': ' + f.id + ' (' + f.file + ')');
+            }
             if (!r.ok) { console.error('witness verify FAILED'); process.exit(1); }
-            if (s.regressed > 0) { console.error('regressed fixes:', s.regressed); process.exit(1); }
-            console.log('witness verify ok:', s.pass, 'fixes pass,', s.drift, 'drifted');
+            if (r.summary.regressed > 0) { console.error('regressed fixes:', r.summary.regressed); process.exit(1); }
+            console.log('witness verify ok:', r.summary.pass, 'pass,', r.summary.drift, 'drift');
           "
 
       - name: History summary (ADR-103 — surface regression-introduction commits)
