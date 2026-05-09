@@ -3607,7 +3607,7 @@ export const hooksWorkerDispatch: MCPTool = {
     // ADR-093 F2: stop returning status:"completed" for a worker that
     // never ran (#1700 item 1). Detect daemon presence via PID file and
     // surface honest verdicts (`no-daemon` / `queued` / `synthetic`).
-    const cwd = getProjectCwd();
+    const cwd = findProjectRoot();
     const pidFile = join(cwd, '.claude-flow', 'daemon.pid');
     let daemonPid: number | null = null;
     let daemonAlive = false;
