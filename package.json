@@ -36,7 +36,12 @@
     "!.claude/**/*.db",
     "!.claude/**/*.map",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "v3/@claude-flow/cli-core/bin/**",
+    "v3/@claude-flow/cli-core/dist/**/*.js",
+    "v3/@claude-flow/cli-core/dist/**/*.d.ts",
+    "!v3/@claude-flow/cli-core/dist/**/*.map",
+    "v3/@claude-flow/cli-core/package.json"
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
