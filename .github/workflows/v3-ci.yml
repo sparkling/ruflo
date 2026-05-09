@@ -217,10 +217,72 @@ jobs:
           node plugins/ruflo-core/scripts/test-hooks.mjs \
             "node $GITHUB_WORKSPACE/v3/@claude-flow/cli/bin/cli.js"
 
+  witness-verify:
+    # Cryptographic regression guard: runs `ruflo verify --manifest` against
+    # the local build to confirm every documented fix in verification.md.json
+    # still has its marker present. Catches silent regression of any of the
+    # 81+ fixes without requiring per-fix smoke tests.
+    #
+    # The smoke jobs above (smoke-install-no-bsqlite, plugin-hooks-smoke)
+    # exercise *behavior*; this job validates *presence* — both layers
+    # combined are what gates `publish`.
+    name: Witness verify (signed manifest)
+    runs-on: ubuntu-latest
+    needs: [build, smoke-install-no-bsqlite, plugin-hooks-smoke]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: v3/pnpm-lock.yaml
+
+      - name: Install + build v3 (so dist/ exists for marker checks)
+        working-directory: v3
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Verify witness manifest
+        run: |
+          node v3/@claude-flow/cli/bin/cli.js verify \
+            --manifest verification.md.json \
+            --json > /tmp/witness-result.json
+          # Exit non-zero if any fix regressed or signature invalid
+          node -e "
+            const r = require('/tmp/witness-result.json');
+            const s = r.summary;
+            console.log(JSON.stringify({signature: r.signature, summary: s}, null, 2));
+            if (!r.ok) { console.error('witness verify FAILED'); process.exit(1); }
+            if (s.regressed > 0) { console.error('regressed fixes:', s.regressed); process.exit(1); }
+            console.log('witness verify ok:', s.pass, 'fixes pass,', s.drift, 'drifted');
+          "
+
+      - name: History summary (ADR-103 — surface regression-introduction commits)
+        # Soft gate: prints transitions since the previous snapshot. The
+        # `summary` subcommand exits non-zero on any newly-regressed fix.
+        run: |
+          if [ -f verification-history.jsonl ]; then
+            node plugins/ruflo-core/scripts/witness/history.mjs \
+              --history verification-history.jsonl \
+              summary
+          else
+            echo "verification-history.jsonl not present — skipping temporal diff"
+          fi
+
   publish:
     name: Publish to npm (alpha)
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, smoke-install-no-bsqlite, plugin-hooks-smoke, witness-verify]
     if: github.ref == 'refs/heads/v3' && github.event_name == 'push'
 
     steps:

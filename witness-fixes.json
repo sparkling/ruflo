@@ -1,0 +1,23 @@
+{
+  "_comment": "Project-specific NEW_FIXES registered on each witness regen. Append { id, desc, file, marker } per shipped fix. Never edit verification.md.json directly — re-run scripts/regen-witness.mjs after editing this file.",
+  "fixes": [
+    {
+      "id": "#1867",
+      "desc": "Node 26 install: better-sqlite3 dynamic import + optionalDependencies",
+      "file": "v3/@claude-flow/memory/dist/sqlite-backend.js",
+      "marker": "(await import('better-sqlite3')).default"
+    },
+    {
+      "id": "#1859",
+      "desc": "CLI flag/positional priority swap — named flags win over stray positionals (14 sites in hooks.ts)",
+      "file": "v3/@claude-flow/cli/dist/src/commands/hooks.js",
+      "marker": "ctx.flags.file || ctx.args[0]"
+    },
+    {
+      "id": "#1862",
+      "desc": "ruflo-core PostToolUse hooks call documented CLI flags (-c/-s/-e, -f/-s) instead of bogus --format true",
+      "file": "plugins/ruflo-core/hooks/hooks.json",
+      "marker": "hooks post-edit -f \\\"$FILE\\\" -s true"
+    }
+  ]
+}
