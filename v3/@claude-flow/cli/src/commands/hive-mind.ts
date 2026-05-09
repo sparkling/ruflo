@@ -7,6 +7,7 @@
  */
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
+import { findProjectRoot } from '../mcp-tools/types.js';
 import { output } from '../output.js';
 import { select, confirm, input } from '../prompt.js';
 import { callMCPTool, MCPClientError } from '../mcp-client.js';
@@ -933,7 +934,9 @@ async function spawnClaudeCodeInstance(
       let mcpConfigPath: string | undefined = explicitMcpConfig;
       if (!mcpConfigPath) {
         const candidates = [
-          join(process.cwd(), '.mcp.json'),
+          // ADR-0100: anchor on findProjectRoot() so .mcp.json resolves at
+          // the project root even when hive-mind is invoked from a subdir.
+          join(findProjectRoot(), '.mcp.json'),
           join(process.env.HOME || process.env.USERPROFILE || '', '.claude.json'),
           join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'mcp.json'),
         ];

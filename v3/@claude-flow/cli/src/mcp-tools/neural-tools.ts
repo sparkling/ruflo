@@ -209,9 +209,29 @@ export const neuralTools: MCPTool[] = [
     handler: async (input) => {
       if (input.modelId) { const v = validateIdentifier(input.modelId as string, 'modelId'); if (!v.valid) return { success: false, error: v.error }; }
 
+      // ADR-0082: validate the schema-required modelType field. The schema
+      // declares modelType as a string enum; without runtime enforcement the
+      // handler silently accepts {patternType: 42} or {modelType: ""} and
+      // writes a model record under a meaningless type — exactly the silent
+      // -pass shape the P11 fuzz / P12 quality acceptance checks guard.
+      const VALID_MODEL_TYPES = ['moe', 'transformer', 'classifier', 'embedding'];
+      const rawModelType = input.modelType;
+      if (typeof rawModelType !== 'string' || rawModelType.length === 0) {
+        return {
+          success: false,
+          error: `Invalid input: 'modelType' is required and must be a non-empty string (one of ${VALID_MODEL_TYPES.join(', ')})`,
+        };
+      }
+      if (!VALID_MODEL_TYPES.includes(rawModelType)) {
+        return {
+          success: false,
+          error: `Invalid input: 'modelType' must be one of ${VALID_MODEL_TYPES.join(', ')} (got '${rawModelType}')`,
+        };
+      }
+
       const store = loadNeuralStore();
       const modelId = (input.modelId as string) || `model-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const modelType = input.modelType as NeuralModel['type'];
+      const modelType = rawModelType as NeuralModel['type'];
       const epochs = (input.epochs as number) || 10;
 
       const model: NeuralModel = {

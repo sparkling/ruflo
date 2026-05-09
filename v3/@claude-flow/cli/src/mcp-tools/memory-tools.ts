@@ -15,6 +15,7 @@ import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { createHash } from 'crypto';
 import type { MCPTool } from './types.js';
+import { findProjectRoot } from './types.js';
 import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
 import { validateIdentifier } from './validate-input.js';
 
@@ -722,7 +723,7 @@ export const memoryTools: MCPTool[] = [
         success: true,
         message: 'Migration completed',
         migrated: Object.keys(legacyStore.entries).length,
-        backend: 'sql.js + HNSW',
+        backend: 'SQLite + HNSW',
       };
     },
   },
@@ -767,8 +768,9 @@ export const memoryTools: MCPTool[] = [
           } catch { /* scan error */ }
         }
       } else {
-        // Current project only — find by CWD hash
-        const cwd = process.cwd();
+        // ADR-0100: anchor on findProjectRoot() so subdirectory invocations
+        // resolve to the same project hash as `claude` running at the root.
+        const cwd = findProjectRoot();
         const projectHash = cwd.replace(/\//g, '-');
         const memDir = join(claudeProjectsDir, projectHash, 'memory');
         if (existsSync(memDir)) {
@@ -901,7 +903,7 @@ export const memoryTools: MCPTool[] = [
 
       return {
         claudeCode: { memoryFiles: claudeFiles, projects: claudeProjects },
-        agentdb: { totalEntries: agentdbEntries, claudeMemoryEntries, backend: 'sql.js + ONNX' },
+        agentdb: { totalEntries: agentdbEntries, claudeMemoryEntries, backend: 'SQLite + ONNX' },
         intelligence,
         bridge: { status: claudeMemoryEntries > 0 ? 'connected' : 'not-synced', embedding: 'all-MiniLM-L6-v2 (384-dim)' },
       };

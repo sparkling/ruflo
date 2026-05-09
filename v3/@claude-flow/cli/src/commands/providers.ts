@@ -6,6 +6,7 @@
  */
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
+import { findProjectRoot } from '../mcp-tools/types.js';
 import { output } from '../output.js';
 import { configManager } from '../services/config-file-manager.js';
 
@@ -146,7 +147,9 @@ const listCommand: Command = {
     const activeOnly = ctx.flags.active as boolean;
 
     // Load user configuration
-    const cwd = process.cwd();
+    // ADR-0100: anchor on findProjectRoot() so config resolves at the
+    // project root even when invoked from a subdirectory.
+    const cwd = findProjectRoot();
     const config = configManager.getConfig(cwd);
     const agents = (config.agents ?? {}) as Record<string, unknown>;
     const configuredProviders = (agents.providers ?? []) as Array<Record<string, unknown>>;
@@ -266,7 +269,8 @@ const configureCommand: Command = {
         return { success: false, exitCode: 1 };
       }
 
-      const cwd = process.cwd();
+      // ADR-0100: anchor on findProjectRoot() — see list-handler comment.
+      const cwd = findProjectRoot();
       const config = configManager.getConfig(cwd);
 
       // Ensure agents.providers array exists
@@ -334,7 +338,8 @@ const testCommand: Command = {
       output.writeln(output.bold('Provider Connectivity Test'));
       output.writeln(output.dim('─'.repeat(50)));
 
-      const cwd = process.cwd();
+      // ADR-0100: anchor on findProjectRoot() — see list-handler comment.
+      const cwd = findProjectRoot();
       const config = configManager.getConfig(cwd);
       const agents = (config.agents ?? {}) as Record<string, unknown>;
       const configuredProviders = (agents.providers ?? []) as Array<Record<string, unknown>>;

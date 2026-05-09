@@ -6,6 +6,7 @@
  */
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
+import { findProjectRoot } from '../mcp-tools/types.js';
 import { output } from '../output.js';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join, dirname } from 'path';
@@ -291,8 +292,11 @@ async function checkGitRepo(): Promise<HealthCheck> {
     await runCommand('git rev-parse --is-inside-work-tree');
     return { name: 'Git Repository', status: 'pass', message: 'In a git repository' };
   } catch {
-    // Walk parents of cwd for a .git directory before reporting "not a repo"
-    let dir = process.cwd();
+    // Walk parents of cwd for a .git directory before reporting "not a repo".
+    // findProjectRoot() also matches CLAUDE.md+.claude/, which would mask a
+    // missing-.git/ false negative the doctor needs to surface — so we keep
+    // the diagnostic walk anchored on the user's interactive cwd here.
+    let dir = process.cwd(); // adr-0100-allow: diagnostic git-repo walk, see comment above
     while (true) {
       if (existsSync(join(dir, '.git'))) {
         return {
@@ -637,8 +641,10 @@ async function checkEncryptionAtRest(): Promise<HealthCheck> {
     };
   }
 
-  // Check the three high-tier store paths for RFE1 magic
-  const cwd = process.cwd();
+  // Check the three high-tier store paths for RFE1 magic.
+  // ADR-0100: anchor on findProjectRoot() so the doctor inspects the actual
+  // project artifact tree even when invoked from a subdirectory.
+  const cwd = findProjectRoot();
   const stores: Array<{ label: string; path: string }> = [
     { label: 'sessions/', path: join(cwd, '.claude-flow', 'sessions') },
     { label: 'terminals', path: join(cwd, '.claude-flow', 'terminals', 'store.json') },

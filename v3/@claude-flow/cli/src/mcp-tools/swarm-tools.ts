@@ -255,12 +255,29 @@ export const swarmTools: MCPTool[] = [
         const nowMs = Date.now();
 
         // ADR-0098: config-fingerprint dedupe.
-        // Find the most-recently-updated running swarm matching {topology, maxAgents, strategy}
+        // Find the most-recently-updated swarm matching {topology, maxAgents, strategy}
         // within the TTL window. Skipped entirely when force=true.
+        //
+        // Reuse pool spans 'running' AND host-exited 'terminated' entries: a CLI-
+        // invoked `swarm init` always exits, so #1799 reconciliation marks the
+        // prior swarm 'terminated' before the next call's dedupe filter runs.
+        // Without this, three back-to-back `swarm init` invocations mint three
+        // records (regression caught by acceptance check adr0098-b-dedupe).
+        // Termination reasons unrelated to host-exit (manual shutdown, TTL stale)
+        // remain ineligible — those swarms are intentionally retired.
+        const isReusable = (s: SwarmState): boolean => {
+          if (s.status === 'running') return true;
+          if (
+            s.status === 'terminated' &&
+            typeof s.terminationReason === 'string' &&
+            /^host process \d+ exited$/.test(s.terminationReason)
+          ) return true;
+          return false;
+        };
         if (!force) {
           const candidates = Object.values(store.swarms)
             .filter(s =>
-              s.status === 'running' &&
+              isReusable(s) &&
               s.topology === topology &&
               s.maxAgents === maxAgents &&
               (s.config as { strategy?: string }).strategy === strategy &&
@@ -273,6 +290,10 @@ export const swarmTools: MCPTool[] = [
           if (candidates.length > 0) {
             const existing = candidates[0];
             existing.updatedAt = now;
+            // Revive a host-exited entry so subsequent loads don't re-reconcile it.
+            existing.status = 'running';
+            existing.pid = process.pid;
+            delete existing.terminationReason;
             store.swarms[existing.swarmId] = existing;
             saveSwarmStore(store);
             return {

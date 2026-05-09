@@ -19,6 +19,7 @@
  */
 
 import type { MCPTool, MCPToolResult } from './types.js';
+import { findProjectRoot } from './types.js';
 import { validateIdentifier, validateText } from './validate-input.js';
 
 const RUVECTOR_PIN = 'ruvector@0.2.25';
@@ -55,7 +56,10 @@ async function shell(cmd: string, args: string[], opts: { timeout?: number } = {
 async function ensureSessionsDir(): Promise<string> {
   const { mkdir } = await import('node:fs/promises');
   const path = await import('node:path');
-  const dir = path.resolve(process.cwd(), RVF_DIR_DEFAULT);
+  // ADR-0100: anchor RVF browser sessions on findProjectRoot() so the
+  // .ruflo/browser-sessions/ tree lands at the project root regardless
+  // of which subdirectory the agent's cwd happens to be in.
+  const dir = path.resolve(findProjectRoot(), RVF_DIR_DEFAULT);
   await mkdir(dir, { recursive: true });
   return dir;
 }

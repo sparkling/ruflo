@@ -5,6 +5,7 @@
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
+import { findProjectRoot } from '../mcp-tools/types.js';
 import { WorkerDaemon, getDaemon, startDaemon, stopDaemon, type WorkerType, type DaemonConfig } from '../services/worker-daemon.js';
 // ADR-0088: getDaemonSocketPath import removed — status output no longer probes the socket.
 // ADR-0162 Batch A (spawn-only policy): kept spawn() instead of fork(); upstream's
@@ -842,7 +843,10 @@ const installSupervisorCommand: Command = {
     const force = ctx.flags.force === true;
     const load = ctx.flags.load !== false;
     const dryRun = ctx.flags['dry-run'] === true || ctx.flags.dryRun === true;
-    const projectRoot = process.cwd();
+    // ADR-0100: anchor the supervisor unit on findProjectRoot() so the
+    // launchd/systemd WorkingDirectory + log paths point at the project
+    // root regardless of which subdirectory the install was invoked from.
+    const projectRoot = findProjectRoot();
     const platform = process.platform;
 
     if (platform === 'win32') {

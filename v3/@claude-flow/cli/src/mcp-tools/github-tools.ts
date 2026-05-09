@@ -490,6 +490,11 @@ export const githubTools: MCPTool[] = [
             return { success: true, _real: true, workflows: JSON.parse(workflows) };
           } catch { /* fall through */ }
         }
+        // gh returned no usable data (typical in unauthenticated / no-CI repos
+        // and during acceptance runs where the temp workspace has no remote).
+        // Surface an empty list rather than the bottom "Unknown action" branch
+        // — action *is* 'list', it just had nothing to enumerate.
+        return { success: true, _real: true, requestedAction: 'list', runs: [], workflows: [] };
       }
 
       if (action === 'status') {

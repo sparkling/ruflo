@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from 'fs';
 import { dirname, join, sep } from 'path';
 import { fileURLToPath } from 'url';
 import type { Command, CommandContext, CommandResult } from '../types.js';
+import { findProjectRoot, getDisplayCwd } from '../mcp-tools/types.js';
 import { output } from '../output.js';
 
 interface ManifestFix {
@@ -86,8 +87,10 @@ function repoPathToInstalledPath(repoPath: string): string | null {
     const pkg = match[1];
     const rest = match[2];
     const candidates: string[] = [];
-    // 1. cwd/node_modules/<pkg>/<rest> (typical end-user install)
-    candidates.push(join(process.cwd(), 'node_modules', pkg, rest));
+    // 1. <projectRoot>/node_modules/<pkg>/<rest> (typical end-user install).
+    // ADR-0100: anchor on findProjectRoot() so subdirectory invocations
+    // resolve to the project's node_modules, not whatever cwd happens to be.
+    candidates.push(join(findProjectRoot(), 'node_modules', pkg, rest));
     // 2. Walk up from this script looking for node_modules/<pkg>/<rest>
     //    Covers cases where verify runs from inside a nested module.
     try {
@@ -115,14 +118,17 @@ function repoPathToInstalledPath(repoPath: string): string | null {
         dir = parent;
       }
     } catch { /* ignore */ }
-    candidates.push(join(process.cwd(), repoPath));
+    // ADR-0100: anchor on findProjectRoot() — same rationale as candidate 1.
+    candidates.push(join(findProjectRoot(), repoPath));
     for (const c of candidates) {
       if (existsSync(c)) return c;
     }
     return null;
   }
-  // Top-level paths (e.g. package.json) — return relative to cwd
-  const top = join(process.cwd(), repoPath);
+  // Top-level paths (e.g. package.json) — return relative to project root.
+  // ADR-0100: anchor on findProjectRoot() so subdir invocations still find
+  // the project's package.json instead of returning null.
+  const top = join(findProjectRoot(), repoPath);
   return existsSync(top) ? top : null;
 }
 
@@ -237,7 +243,7 @@ export const verifyCommand: Command = {
       const status: 'pass' | 'drift' | 'regressed' = sha256Match && markerPresent
         ? 'pass'
         : (markerPresent ? 'drift' : 'regressed');
-      return { ...fix, status, sha256Match, markerPresent, localSha256: localHash, installedPath: installedPath.replace(process.cwd() + sep, '') };
+      return { ...fix, status, sha256Match, markerPresent, localSha256: localHash, installedPath: installedPath.replace(findProjectRoot() + sep, '') };
     });
 
     const passCount = fileResults.filter((r) => r.status === 'pass').length;
