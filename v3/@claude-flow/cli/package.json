@@ -102,7 +102,6 @@
     "@claude-flow/neural": "3.0.0-alpha.8-patch.3",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.449",
     "@noble/ed25519": "^2.1.0",
-    "@ruvector/rabitq-wasm": "^0.1.0",
     "semver": "^7.6.0"
   },
   "optionalDependencies": {
@@ -117,6 +116,7 @@
     "@ruvector/attention-darwin-arm64": "0.1.1-patch.30",
     "@ruvector/diskann": "0.1.0-patch.30",
     "@ruvector/learning-wasm": "0.1.29-patch.52",
+    "@ruvector/rabitq-wasm": "^0.1.0",
     "@ruvector/router": "0.1.30-patch.30",
     "@ruvector/ruvllm-wasm": "^2.0.2",
     "@ruvector/rvagent-wasm": "0.2.1-patch.52",
