@@ -563,37 +563,13 @@ export const neuralTools: MCPTool[] = [
       const beforeSize = patterns.reduce((s, p) => s + (p.embedding?.length || 0) * 4, 0); // Float32 = 4 bytes
 
       if (method === 'quantize') {
-        try {
-          // @ts-expect-error — ../memory/memory-initializer.js was deleted in
-          // f2f86193a (ADR-0086 Phase 1); the dynamic import always falls
-          // through to the catch branch and the action is gracefully skipped.
-          const { quantizeInt8, getQuantizationStats } = await import('../memory/memory-initializer.js');
-          let totalCompressed = 0;
-          for (const pattern of patterns) {
-            if (pattern.embedding && pattern.embedding.length > 0) {
-              const stats = getQuantizationStats(pattern.embedding);
-              const quantized = quantizeInt8(pattern.embedding);
-              // Store quantized metadata (keep original embedding for search)
-              (pattern as any)._quantized = {
-                scale: quantized.scale,
-                zeroPoint: quantized.zeroPoint,
-                compressionRatio: stats.compressionRatio,
-              };
-              totalCompressed++;
-            }
-          }
-          saveNeuralStore(store);
-          return {
-            success: true, _real: true, method,
-            embeddingProvider: embeddingServiceName,
-            patternsCompressed: totalCompressed,
-            compressionRatio: '3.92x (Int8)',
-            beforeBytes: beforeSize,
-            afterBytes: Math.round(beforeSize / 3.92),
-          };
-        } catch {
-          return { success: false, error: 'Quantization requires memory-initializer. Run `memory init` first.' };
-        }
+        // ADR-0086 Phase 1 (commit f2f86193a): memory-initializer.ts was
+        // deleted, taking quantizeInt8/getQuantizationStats with it. The
+        // upstream dynamic-import-then-catch-as-fallthrough pattern is dead
+        // code in our fork; surface the missing capability as an error so
+        // callers don't silently see "patternsCompressed: 0". When the
+        // router gains a quantization op, route here.
+        return { success: false, error: 'Quantization not available — memory-initializer was removed in ADR-0086 Phase 1.' };
       }
 
       if (method === 'prune') {
@@ -770,25 +746,11 @@ export const neuralTools: MCPTool[] = [
         if (duplicatesRemoved > 0) actions.push(`Removed ${duplicatesRemoved} near-duplicate patterns`);
       }
 
-      // memory / balanced: quantize large embeddings
+      // memory / balanced: quantize large embeddings — ADR-0086 Phase 1
+      // removed memory-initializer (which provided quantizeInt8/getQuantizationStats);
+      // record the skip so callers know the action was not performed.
       if (target === 'memory' || target === 'balanced') {
-        try {
-          // @ts-expect-error — ../memory/memory-initializer.js was deleted in
-          // f2f86193a (ADR-0086 Phase 1); the dynamic import always falls
-          // through to the catch branch and the action is gracefully skipped.
-          const { quantizeInt8, getQuantizationStats } = await import('../memory/memory-initializer.js');
-          for (const p of Object.values(store.patterns)) {
-            if (p.embedding && p.embedding.length > 0 && !(p as any)._quantized) {
-              const stats = getQuantizationStats(p.embedding);
-              const q = quantizeInt8(p.embedding);
-              (p as any)._quantized = { scale: q.scale, zeroPoint: q.zeroPoint, compressionRatio: stats.compressionRatio };
-              patternsQuantized++;
-            }
-          }
-          if (patternsQuantized > 0) actions.push(`Quantized ${patternsQuantized} pattern embeddings (Int8, ~3.92x)`);
-        } catch {
-          actions.push('Quantization skipped (memory-initializer not available)');
-        }
+        actions.push('Quantization skipped (memory-initializer removed in ADR-0086 Phase 1)');
       }
 
       // accuracy / balanced: prune low-usage, zero-embedding patterns

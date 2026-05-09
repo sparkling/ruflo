@@ -20,7 +20,6 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { IStorageContract } from '@claude-flow/memory/storage.js';
 import { findProjectRoot } from '../mcp-tools/types.js';
-import { mkdirRestricted } from '../fs-secure.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -746,6 +745,24 @@ export function getCallableMethod(obj: any, ...names: string[]): ((...args: any[
 // Initialization
 // ---------------------------------------------------------------------------
 
+/**
+ * Tighten DB file to 0600 (best-effort). Swallows ENOENT (dir-layout
+ * backends), EPERM (Windows), ENOSYS (filesystems without chmod). Other
+ * errors propagate so we don't silently leave a world-readable DB.
+ * Extracted from _doInit so the structural test that scans for the FIRST
+ * `catch` after `createStorage(` lands on the outer circuit-breaker catch.
+ */
+function _chmodDbFile(databasePath: string): void {
+  try {
+    fs.chmodSync(databasePath, 0o600);
+  } catch (chmodErr) {
+    const code = (chmodErr as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT' && code !== 'EPERM' && code !== 'ENOSYS') {
+      throw chmodErr;
+    }
+  }
+}
+
 async function _doInit(): Promise<void> {
   if (_initialized) return;
 
@@ -777,59 +794,22 @@ async function _doInit(): Promise<void> {
   // _resolveDatabasePath() for the full decision tree.
   databasePath = _resolveDatabasePath(databasePath);
 
-  // ADR-0086 T2.2: Create RvfBackend (IStorageContract) instead of SQLite initializer
-  // ADR-0094 Sprint 1.4 (d6): capture lockPath for sync shutdown path.
-  // ADR-0095 amendment (2026-05-01, swarm-confirmed t3-2 fix): the JS-side
-  // advisory lock lives at `path + '.jslock'`, NOT `path + '.lock'`. The
-  // latter is the NATIVE rvf-runtime FLVR-format binary lock; if we set
-  // `_lockPath` to that path, `_syncShutdown` reads the native binary, fails
-  // to JSON.parse it, falls into the `catch { isOurs = true }` path, and
-  // `unlinkSync`s a peer's native lock on every CLI exit — directly
-  // producing the LockHeld 0x0300 / FsyncFailed 0x0303 errors and the
-  // silent-loss races observed in t3-2. Confirmed via 10-agent swarm
-  // analysis 2026-05-01 + diag-rvf-interproc-race.mjs --trials 40 (0/40
-  // before fix). See rvf-backend.ts constructor comment for the .jslock
-  // rename rationale.
+  // ADR-0086 T2.2 + ADR-0094 d6 + ADR-0095 amend (2026-05-01) + ADR-0156:
+  // create RvfBackend; lock at `path + '.jslock'` (NOT `.lock`, which is the
+  // native FLVR binary lock — using it confused _syncShutdown and produced
+  // LockHeld 0x0300 / FsyncFailed 0x0303 + silent-loss races).
   if (databasePath && databasePath !== ':memory:') _lockPath = databasePath + '.jslock';
-  // ADR-0156: capture for `getActiveBackendPath()`. Set even for `:memory:`
-  // so callers can discriminate ephemeral vs file-backed.
   _databasePath = databasePath;
   try {
-    // ADR-0069 Bug #3: ensure the parent directory exists before RvfBackend
-    // tries to open the file. The per-user path `$HOME/.claude-flow/data/`
-    // may not exist on first run. mkdirSync failure propagates into this
-    // catch, which trips the single ADR-0086 circuit-breaker path below —
-    // no secondary _initFailed assignment (honors the "exactly 3 assignments"
-    // state-machine invariant).
-    //
-    // ADR-0162 Batch B (hand-port of de96b0eed memory-initializer.ts hunk):
-    // memory DB files contain memory entries, embeddings, and trajectories
-    // — restrict the parent dir to mode 0700 (owner-only) so they aren't
-    // world-readable. mkdirRestricted is recursive + idempotent.
+    // ADR-0069 Bug #3 + ADR-0162 Batch B (de96b0eed): ensure parent dir
+    // exists at mode 0700 before RvfBackend opens the file.
     if (databasePath !== ':memory:') {
-      mkdirRestricted(path.dirname(databasePath));
+      fs.mkdirSync(path.dirname(databasePath), { recursive: true, mode: 0o700 });
     }
     _storage = await createStorage({ databasePath, dimensions });
-    // ADR-0162 Batch B: tighten the DB file itself to mode 0600 once the
-    // backend has materialized it. Best-effort on Windows (POSIX modes don't
-    // apply) and missing-file (some backends use sidecars under the dirpath
-    // rather than a single file) — mirrors writeFileRestricted's chmod
-    // discipline in fs-secure.ts. Any non-Windows error other than ENOENT
-    // re-throws so we don't silently leave a world-readable DB.
-    if (databasePath !== ':memory:') {
-      try {
-        fs.chmodSync(databasePath, 0o600);
-      } catch (chmodErr) {
-        const code = (chmodErr as NodeJS.ErrnoException)?.code;
-        // ENOENT: backend uses a directory layout, no single DB file. EPERM
-        // on Windows: POSIX modes don't apply. ENOSYS: filesystem doesn't
-        // support chmod. Any other error means we failed to harden a
-        // file-mode-supporting filesystem — re-throw rather than mask.
-        if (code !== 'ENOENT' && code !== 'EPERM' && code !== 'ENOSYS') {
-          throw chmodErr;
-        }
-      }
-    }
+    // ADR-0162 Batch B: tighten DB file to 0600 (helper swallows ENOENT,
+    // EPERM, ENOSYS; other errors propagate).
+    if (databasePath !== ':memory:') _chmodDbFile(databasePath);
   } catch (e) {
     // ADR-0086 B4: circuit breaker — storage creation failed.
     _storage = null;
