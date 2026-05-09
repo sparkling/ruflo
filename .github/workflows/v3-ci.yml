@@ -278,18 +278,20 @@ jobs:
         working-directory: v3
         run: |
           pnpm install --frozen-lockfile
-          # --no-bail tolerates unrelated package failures (e.g. federation
-          # TS errors). The witness `verify` command checks specific dist
-          # files exist; if a marker-cited file is missing, witness-verify
-          # itself fails the run with a clear message.
+          # --no-bail tolerates unrelated package failures. The standalone
+          # verify.mjs below checks specific dist files exist; if a
+          # marker-cited file is missing, witness-verify reports it.
           pnpm --recursive --no-bail run build || true
 
-      - name: Verify witness manifest
+      - name: Verify witness manifest (via standalone plugin script — no CLI dep)
         run: |
-          node v3/@claude-flow/cli/bin/cli.js verify \
+          # Use the project-agnostic verifier from ruflo-core plugin. This
+          # is the same script external adopters use — dogfooding ensures
+          # the plugin pathway works and avoids CI-specific cli build
+          # issues (e.g. missing @ruvector/sona, sharp native postinstall).
+          node plugins/ruflo-core/scripts/witness/verify.mjs \
             --manifest verification.md.json \
             --json > /tmp/witness-result.json
-          # Exit non-zero if any fix regressed or signature invalid
           node -e "
             const r = require('/tmp/witness-result.json');
             const s = r.summary;
