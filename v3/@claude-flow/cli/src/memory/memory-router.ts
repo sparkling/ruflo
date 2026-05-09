@@ -184,8 +184,12 @@ let _initFailed = false; // ADR-0086 I2: prevent retry storm on persistent failu
 
 // ADR-0086 Phase 3: _embeddingFns + _allFns removed (no more initializer dependency).
 
-// Lazy-cached Phase 4 controller-intercept module
-let _interceptMod: typeof import('../../../memory/src/controller-intercept.js') | null = null;
+// Lazy-cached Phase 4 controller-intercept module. Typed as `any` because
+// the sibling `@claude-flow/memory` project may be unbuilt during cli
+// typecheck (composite-reference dist gap); the runtime dynamic import
+// still resolves correctly when the workspace is properly installed.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _interceptMod: any = null;
 
 // ADR-0084 Phase 4: bridge module cache removed — route methods use controller-direct
 
@@ -1267,7 +1271,7 @@ export async function getController<T = unknown>(name: string): Promise<T | unde
   // Only reached when _registryInstance is null (init failed / neural disabled).
   const intercept = await loadIntercept();
   if (intercept?.getExisting) {
-    return intercept.getExisting<T>(name);
+    return intercept.getExisting(name) as T | undefined;
   }
   return undefined;
 }

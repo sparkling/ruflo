@@ -994,7 +994,8 @@ export const hooksRoute: MCPTool = {
     // Phase 4: SkillLibrary — check for learned skills matching this task (P4-A: ADR-0033)
     try {
       const { getController: getCtrl } = await import('../memory/memory-router.js');
-      const skills = await getCtrl('skills');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const skills = await getCtrl<any>('skills');
       if (skills && typeof skills.search === 'function') {
         const taskType = (params.task_type as string) || task || 'default';
         const skillResult = await Promise.race([
@@ -1024,7 +1025,8 @@ export const hooksRoute: MCPTool = {
     // Phase 4: LearningSystem algorithm recommendation
     try {
       const { getController: getCtrlLS } = await import('../memory/memory-router.js');
-      const ls = await getCtrlLS('learningSystem');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ls = await getCtrlLS<any>('learningSystem');
       if (ls && typeof ls.recommendAlgorithm === 'function') {
         const taskType = task;
         const recommendation = await Promise.race([
@@ -1980,7 +1982,8 @@ export const hooksSessionEnd: MCPTool = {
     // Phase 3: Trigger NightlyLearner consolidation on session end (ADR-0084 Phase 3: via memory-router)
     try {
       const { getController: getCtrlNL } = await import('../memory/memory-router.js');
-      const registry = await getCtrlNL('nightlyLearner');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const registry = await getCtrlNL<any>('nightlyLearner');
       if (registry && typeof registry.consolidate === 'function') {
         // Fire-and-forget — consolidation is background work
         Promise.race([
