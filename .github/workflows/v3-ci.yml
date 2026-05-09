@@ -124,9 +124,11 @@ jobs:
     # installs and loads when better-sqlite3 fails to build (e.g. Node 26
     # without prebuilds). Reproduces the user-visible failure mode by
     # installing with --omit=optional.
+    #
+    # Independent of the workspace `build` job because we only need to
+    # build a single package (memory) — no workspace-wide dist required.
     name: Smoke (no better-sqlite3) / Node ${{ matrix.node }}
     runs-on: ubuntu-latest
-    needs: [test]
     strategy:
       fail-fast: false
       matrix:
@@ -182,9 +184,11 @@ jobs:
     # JSON against the locally built CLI. Catches:
     #   - hooks calling flags the CLI doesn't accept (#1862's --format true)
     #   - CLI parser ambiguity recording the wrong value (#1859's "true" filename)
+    #
+    # Independent of the workspace `build` job — only the cli package needs
+    # to be built. We use `pnpm --filter @claude-flow/cli...` to scope.
     name: Plugin hooks smoke / Node ${{ matrix.node }}
     runs-on: ubuntu-latest
-    needs: [build]
     strategy:
       fail-fast: false
       matrix:
@@ -206,11 +210,11 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: v3/pnpm-lock.yaml
 
-      - name: Install + build v3
+      - name: Install + build cli (scoped, avoids unrelated workspace failures)
         working-directory: v3
         run: |
           pnpm install --frozen-lockfile
-          pnpm build
+          pnpm --filter @claude-flow/cli... build
 
       - name: Run plugin hooks smoke against local CLI build
         run: |
@@ -226,9 +230,14 @@ jobs:
     # The smoke jobs above (smoke-install-no-bsqlite, plugin-hooks-smoke)
     # exercise *behavior*; this job validates *presence* — both layers
     # combined are what gates `publish`.
+    #
+    # Builds the cli + memory + security packages specifically (the ones
+    # whose dist files are referenced by witness markers). Avoids depending
+    # on the workspace `build` job so unrelated package failures don't
+    # block this regression guard.
     name: Witness verify (signed manifest)
     runs-on: ubuntu-latest
-    needs: [build, smoke-install-no-bsqlite, plugin-hooks-smoke]
+    needs: [smoke-install-no-bsqlite, plugin-hooks-smoke]
 
     steps:
       - name: Checkout code
@@ -246,11 +255,14 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: v3/pnpm-lock.yaml
 
-      - name: Install + build v3 (so dist/ exists for marker checks)
+      - name: Install + build packages witness markers reference (scoped)
         working-directory: v3
         run: |
           pnpm install --frozen-lockfile
-          pnpm build
+          pnpm --filter @claude-flow/cli... \
+               --filter @claude-flow/memory... \
+               --filter @claude-flow/security... \
+               build
 
       - name: Verify witness manifest
         run: |

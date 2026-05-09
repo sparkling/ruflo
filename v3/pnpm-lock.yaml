@@ -30,7 +30,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/aidefence':
     dependencies:
@@ -96,7 +96,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/cli':
     dependencies:
@@ -118,6 +118,9 @@ importers:
       semver:
         specifier: ^7.6.0
         version: 7.7.3
+      yaml:
+        specifier: ^2.8.0
+        version: 2.8.2
     optionalDependencies:
       '@claude-flow/aidefence':
         specifier: ^3.0.2
@@ -132,7 +135,7 @@ importers:
         specifier: ^3.0.0-alpha.1
         version: link:../guidance
       '@claude-flow/memory':
-        specifier: ^3.0.0-alpha.12
+        specifier: ^3.0.0-alpha.14
         version: link:../memory
       '@claude-flow/plugin-gastown-bridge':
         specifier: ^0.1.3
@@ -162,7 +165,7 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0
       '@ruvector/sona':
-        specifier: ^0.1.5
+        specifier: ^0.1.6
         version: 0.1.6
       agentdb:
         specifier: ^3.0.0-alpha.11
@@ -176,7 +179,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)(yaml@2.8.2)
 
   '@claude-flow/cli-core': {}
 
@@ -234,7 +237,7 @@ importers:
         version: 25.0.2(typescript@5.9.3)
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/embeddings':
     dependencies:
@@ -285,7 +288,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/hooks':
     dependencies:
@@ -317,7 +320,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/integration':
     dependencies:
@@ -362,19 +365,20 @@ importers:
         version: 8.18.1
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/memory':
     dependencies:
       agentdb:
         specifier: ^3.0.0-alpha.10
-        version: 3.0.0-alpha.10(@types/node@20.19.27)(better-sqlite3@11.10.0)(marked@11.2.0)
-      better-sqlite3:
-        specifier: ^11.0.0
-        version: 11.10.0
+        version: 3.0.0-alpha.10(@types/node@20.19.27)(better-sqlite3@12.9.0)(marked@11.2.0)
       sql.js:
         specifier: ^1.10.3
         version: 1.13.0
+    optionalDependencies:
+      better-sqlite3:
+        specifier: ^12.9.0
+        version: 12.9.0
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.11
@@ -384,7 +388,7 @@ importers:
         version: 1.4.9
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/neural':
     dependencies:
@@ -410,7 +414,7 @@ importers:
     devDependencies:
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/plugin-agent-federation':
     dependencies:
@@ -476,7 +480,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/providers':
     dependencies:
@@ -517,7 +521,7 @@ importers:
         version: 5.0.2
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/shared':
     dependencies:
@@ -551,7 +555,7 @@ importers:
         version: 7.2.0
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
       ws:
         specifier: ^8.16.0
         version: 8.19.0
@@ -563,7 +567,7 @@ importers:
     devDependencies:
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
   '@claude-flow/testing':
     devDependencies:
@@ -581,7 +585,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+        version: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
 
 packages:
 
@@ -2241,7 +2245,6 @@ packages:
     resolution: {integrity: sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==}
     engines: {node: '>=8.0.0'}
     requiresBuild: true
-    dev: false
 
   /@opentelemetry/api@1.9.1:
     resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
@@ -5520,7 +5523,7 @@ packages:
       obug: 2.1.1
       std-env: 3.10.0
       tinyrainbow: 3.0.3
-      vitest: 4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27)
+      vitest: 4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27)
     transitivePeerDependencies:
       - supports-color
     dev: true
@@ -5945,7 +5948,7 @@ packages:
       - supports-color
     dev: false
 
-  /agentdb@3.0.0-alpha.10(@types/node@20.19.27)(better-sqlite3@11.10.0)(marked@11.2.0):
+  /agentdb@3.0.0-alpha.10(@types/node@20.19.27)(better-sqlite3@12.9.0)(marked@11.2.0):
     resolution: {integrity: sha512-Sk3yRRR44obOHRHKagD9svC5dYksVTMDB96+PeRTWcD9gPRPLhvGhVati8eS8cHW+RxPjfSzuQ7syuzlpY3BvQ==}
     engines: {node: '>=18.0.0'}
     hasBin: true
@@ -5965,7 +5968,7 @@ packages:
       '@modelcontextprotocol/sdk': 1.27.1(zod@3.25.76)
       '@ruvector/graph-transformer': 2.0.4
       ajv: 8.18.0
-      better-sqlite3: 11.10.0
+      better-sqlite3: 12.9.0
       ruvector: 0.1.100(zod@3.25.76)
       sql.js: 1.13.0
       zod: 3.25.76
@@ -6662,6 +6665,15 @@ packages:
 
   /better-sqlite3@11.10.0:
     resolution: {integrity: sha512-EwhOpyXiOEL/lKzHz9AW1msWFNzGc/z+LzeB3/jnFJpxu+th2yqvzsSWas1v9jgs9+xiXJcD5A8CJxAG2TaghQ==}
+    requiresBuild: true
+    dependencies:
+      bindings: 1.5.0
+      prebuild-install: 7.1.3
+    dev: false
+
+  /better-sqlite3@12.9.0:
+    resolution: {integrity: sha512-wqUv4Gm3toFpHDQmaKD4QhZm3g1DjUBI0yzS4UBl6lElUmXFYdTQmmEDpAFa5o8FiFiymURypEnfVHzILKaxqQ==}
+    engines: {node: 20.x || 22.x || 23.x || 24.x || 25.x}
     requiresBuild: true
     dependencies:
       bindings: 1.5.0
@@ -7810,6 +7822,7 @@ packages:
   /expand-template@2.0.3:
     resolution: {integrity: sha512-XYfuKMvj4O35f/pOXLObndIRvyQ+/+6AhODh+OKWj9S9498pHHn/IMszH+gt0fBCRWMNfk1ZSp5x3AifmnI2vg==}
     engines: {node: '>=6'}
+    requiresBuild: true
     dev: false
 
   /expect-type@1.3.0:
@@ -8402,6 +8415,7 @@ packages:
 
   /github-from-package@0.0.0:
     resolution: {integrity: sha512-SyHy3T1v2NUXn29OsWdxmK6RwHD+vkj3v8en8AOBZ1wBQ/hCAQ5bAQTD02kW4W9tUp/3Qh6J8r9EvntiyCmOOw==}
+    requiresBuild: true
     dev: false
 
   /glob-parent@6.0.2:
@@ -9651,6 +9665,7 @@ packages:
 
   /mkdirp-classic@0.5.3:
     resolution: {integrity: sha512-gKLcREMhtuZRwRAfqP3RFW+TK4JqApVBtOIftVgjuABpAtpxhPGaDcfvbhNvD0B8iD1oUr/txX35NjcaY6Ns/A==}
+    requiresBuild: true
     dev: false
 
   /mkdirp@1.0.4:
@@ -9707,6 +9722,7 @@ packages:
 
   /napi-build-utils@2.0.0:
     resolution: {integrity: sha512-GEbrYkbfF7MoNaoh2iGG84Mnf/WZfB0GdGEsM8wz7Expx/LlWf5U8t9nvJKXSp3qr5IsEbK04cBGhol/KwOsWA==}
+    requiresBuild: true
     dev: false
 
   /natural-compare@1.4.0:
@@ -9738,6 +9754,7 @@ packages:
   /node-abi@3.85.0:
     resolution: {integrity: sha512-zsFhmbkAzwhTft6nd3VxcG0cvJsT70rL+BIGHWVq5fi6MwGrHwzqKaxXE+Hl2GmnGItnDKPPkO5/LQqjVkIdFg==}
     engines: {node: '>=10'}
+    requiresBuild: true
     dependencies:
       semver: 7.7.3
     dev: false
@@ -11754,6 +11771,7 @@ packages:
 
   /tar-fs@2.1.4:
     resolution: {integrity: sha512-mDAjwmZdh7LTT6pNleZ05Yt65HC3E+NiQzl672vQG38jIrehtJk/J3mNwIg+vShQPcLF/LV7CMnDW6vjj6sfYQ==}
+    requiresBuild: true
     dependencies:
       chownr: 1.1.4
       mkdirp-classic: 0.5.3
@@ -12487,6 +12505,76 @@ packages:
       - sugarss
       - supports-color
       - terser
+    dev: true
+
+  /vitest@4.0.16(@opentelemetry/api@1.9.0)(@types/node@20.19.27):
+    resolution: {integrity: sha512-E4t7DJ9pESL6E3I8nFjPa4xGUd3PmiWDLsDztS2qXSJWfHtbQnwAWylaBvSNY48I3vr8PTqIZlyK8TE3V3CA4Q==}
+    engines: {node: ^20.0.0 || ^22.0.0 || >=24.0.0}
+    hasBin: true
+    peerDependencies:
+      '@edge-runtime/vm': '*'
+      '@opentelemetry/api': ^1.9.0
+      '@types/node': ^20.0.0 || ^22.0.0 || >=24.0.0
+      '@vitest/browser-playwright': 4.0.16
+      '@vitest/browser-preview': 4.0.16
+      '@vitest/browser-webdriverio': 4.0.16
+      '@vitest/ui': 4.0.16
+      happy-dom: '*'
+      jsdom: '*'
+    peerDependenciesMeta:
+      '@edge-runtime/vm':
+        optional: true
+      '@opentelemetry/api':
+        optional: true
+      '@types/node':
+        optional: true
+      '@vitest/browser-playwright':
+        optional: true
+      '@vitest/browser-preview':
+        optional: true
+      '@vitest/browser-webdriverio':
+        optional: true
+      '@vitest/ui':
+        optional: true
+      happy-dom:
+        optional: true
+      jsdom:
+        optional: true
+    dependencies:
+      '@opentelemetry/api': 1.9.0
+      '@types/node': 20.19.27
+      '@vitest/expect': 4.0.16
+      '@vitest/mocker': 4.0.16(vite@7.3.0)
+      '@vitest/pretty-format': 4.0.16
+      '@vitest/runner': 4.0.16
+      '@vitest/snapshot': 4.0.16
+      '@vitest/spy': 4.0.16
+      '@vitest/utils': 4.0.16
+      es-module-lexer: 1.7.0
+      expect-type: 1.3.0
+      magic-string: 0.30.21
+      obug: 2.1.1
+      pathe: 2.0.3
+      picomatch: 4.0.3
+      std-env: 3.10.0
+      tinybench: 2.9.0
+      tinyexec: 1.0.2
+      tinyglobby: 0.2.15
+      tinyrainbow: 3.0.3
+      vite: 7.3.0(@types/node@20.19.27)(tsx@4.21.0)
+      why-is-node-running: 2.3.0
+    transitivePeerDependencies:
+      - jiti
+      - less
+      - lightningcss
+      - msw
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - terser
+      - tsx
+      - yaml
     dev: true
 
   /vitest@4.0.16(@opentelemetry/api@1.9.1)(@types/node@20.19.27):
