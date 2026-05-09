@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { IStorageContract } from '@claude-flow/memory/storage.js';
 import { findProjectRoot } from '../mcp-tools/types.js';
+import { mkdirRestricted } from '../fs-secure.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -800,10 +801,35 @@ async function _doInit(): Promise<void> {
     // catch, which trips the single ADR-0086 circuit-breaker path below —
     // no secondary _initFailed assignment (honors the "exactly 3 assignments"
     // state-machine invariant).
+    //
+    // ADR-0162 Batch B (hand-port of de96b0eed memory-initializer.ts hunk):
+    // memory DB files contain memory entries, embeddings, and trajectories
+    // — restrict the parent dir to mode 0700 (owner-only) so they aren't
+    // world-readable. mkdirRestricted is recursive + idempotent.
     if (databasePath !== ':memory:') {
-      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+      mkdirRestricted(path.dirname(databasePath));
     }
     _storage = await createStorage({ databasePath, dimensions });
+    // ADR-0162 Batch B: tighten the DB file itself to mode 0600 once the
+    // backend has materialized it. Best-effort on Windows (POSIX modes don't
+    // apply) and missing-file (some backends use sidecars under the dirpath
+    // rather than a single file) — mirrors writeFileRestricted's chmod
+    // discipline in fs-secure.ts. Any non-Windows error other than ENOENT
+    // re-throws so we don't silently leave a world-readable DB.
+    if (databasePath !== ':memory:') {
+      try {
+        fs.chmodSync(databasePath, 0o600);
+      } catch (chmodErr) {
+        const code = (chmodErr as NodeJS.ErrnoException)?.code;
+        // ENOENT: backend uses a directory layout, no single DB file. EPERM
+        // on Windows: POSIX modes don't apply. ENOSYS: filesystem doesn't
+        // support chmod. Any other error means we failed to harden a
+        // file-mode-supporting filesystem — re-throw rather than mask.
+        if (code !== 'ENOENT' && code !== 'EPERM' && code !== 'ENOSYS') {
+          throw chmodErr;
+        }
+      }
+    }
   } catch (e) {
     // ADR-0086 B4: circuit breaker — storage creation failed.
     _storage = null;
