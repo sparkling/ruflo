@@ -69,7 +69,8 @@
     "agentic-flow": "2.0.2-alpha-patch.548"
   },
   "overrides": {
-    "hono": ">=4.11.4"
+    "hono": ">=4.11.4",
+    "@ruvector/rvf-wasm": "0.1.5"
   },
   "devDependencies": {
     "@openai/codex": "^0.98.0",

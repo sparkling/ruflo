@@ -7,6 +7,8 @@ import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { WorkerDaemon, getDaemon, startDaemon, stopDaemon, type WorkerType, type DaemonConfig } from '../services/worker-daemon.js';
 // ADR-0088: getDaemonSocketPath import removed — status output no longer probes the socket.
+// ADR-0162 Batch A (spawn-only policy): kept spawn() instead of fork(); upstream's
+// #1691 fix is achieved here by adopting windowsHide+detached and dropping shell:true.
 import { spawn, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve, isAbsolute } from 'path';
@@ -257,32 +259,37 @@ async function startBackgroundDaemon(projectRoot: string, quiet: boolean, maxCpu
     return { success: false, exitCode: 1 };
   }
 
-  // Platform-aware spawn flags
+  // Platform-aware spawn flags. ADR-0088 + ADR-0162 spawn-only policy: we use
+  // spawn(process.execPath, ...) rather than fork() because the IPC channel
+  // fork() creates is dead code in our architecture (ADR-0088 removed the IPC
+  // path). Upstream's #1691 Windows-spaced-path fix is preserved here by
+  // dropping `shell: true` (cmd.exe is no longer involved) and relying on
+  // windowsHide + explicit args; this also clears the [DEP0190] warning.
   const isWin = process.platform === 'win32';
   const spawnOpts: Record<string, unknown> = {
     cwd: resolvedRoot,
-    detached: !isWin,  // detached is POSIX-only; Windows uses windowsHide
-    // Use 'ignore' for all stdio — passing fs.openSync() FDs causes the child to
-    // die on Windows when the parent exits and closes the FDs (#1478 Bug 3).
-    // The daemon writes its own logs via appendFileSync to .claude-flow/logs/.
+    // detached is POSIX-only; on Windows we rely on windowsHide.
+    detached: !isWin,
+    // Pass 'ignore' for all stdio. NO 'ipc' slot — spawn() does not establish
+    // an IPC channel and ADR-0088 removed the daemon-side IPC consumer.
+    // Passing fs.openSync() FDs causes the child to die on Windows when the
+    // parent exits and closes the FDs (#1478 Bug 3) — the daemon writes its
+    // own logs via appendFileSync to .claude-flow/logs/.
     stdio: ['ignore', 'ignore', 'ignore'],
+    windowsHide: true,
     env: {
       ...process.env,
       CLAUDE_FLOW_DAEMON: '1',
       // Prevent macOS SIGHUP kill when terminal closes
       ...(process.platform === 'darwin' ? { NOHUP: '1' } : {}),
     },
-    ...(isWin ? { shell: true, windowsHide: true } : {}),
   };
 
-  // Use spawn with explicit arguments instead of shell string interpolation
-  // This prevents command injection via paths
-  const spawnArgs = [
-    cliPath,
-    'daemon', 'start', '--foreground', '--quiet',
-  ];
-  // Forward resource threshold flags to the foreground child process
-  // Validate with strict numeric pattern to prevent shell injection on Windows (S1)
+  // Use explicit argv (no shell). spawn(process.execPath, [cliPath, ...]) is
+  // safe even when cliPath contains spaces because no cmd.exe interpretation
+  // pass occurs.
+  const spawnArgs = [cliPath, 'daemon', 'start', '--foreground', '--quiet'];
+  // Validate with strict numeric pattern to prevent injection via crafted flags.
   const SPAWN_NUMERIC_RE = /^\d+(\.\d+)?$/;
   if (maxCpuLoad && SPAWN_NUMERIC_RE.test(maxCpuLoad)) {
     spawnArgs.push('--max-cpu-load', maxCpuLoad);
