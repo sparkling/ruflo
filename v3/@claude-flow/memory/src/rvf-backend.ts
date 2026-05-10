@@ -477,6 +477,10 @@ export class RvfBackend implements IMemoryBackend {
           } else {
             this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
           }
+          // ADR-0163 (2026-05-10): correlation log for ns_hits=5/6
+          // read-side regression. Pair with the loadFromNativeSegments
+          // skip logs to identify which numId is silently dropped.
+          console.error(`[ADR-0163] store: ingest ok numId=${numId} key=${e.namespace}/${e.key} pid=${process.pid}`);
         } catch (err) {
           // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
           // file's segment hashes no longer validate — further native ops
@@ -2351,7 +2355,12 @@ export class RvfBackend implements IMemoryBackend {
       for (const numId of ids) {
         const metadata = (native.getMetadataEntries?.(numId) as RvfMetadataEntryWire[] | undefined)
           ?? [];
-        if (metadata.length === 0) continue;
+        if (metadata.length === 0) {
+          // ADR-0163 (2026-05-10): instrumentation for t3-2-concurrent
+          // ns_hits=5/6 read-side regression. Remove after closure.
+          console.error(`[ADR-0163] loadFromNativeSegments: skip numId=${numId} (empty metadata array) pid=${process.pid}`);
+          continue;
+        }
         let vec: Float32Array | null = null;
         try {
           vec = (native.getVector?.(numId) as Float32Array | null | undefined) ?? null;
@@ -2368,7 +2377,12 @@ export class RvfBackend implements IMemoryBackend {
     for (const snap of snapshots) {
       const numId = snap.id;
       const wireEntries = snap.metadata;
-      if (!wireEntries || wireEntries.length === 0) continue;
+      if (!wireEntries || wireEntries.length === 0) {
+        // ADR-0163 (2026-05-10): instrumentation for t3-2-concurrent.
+        // Remove after closure.
+        console.error(`[ADR-0163] loadFromNativeSegments: skip numId=${numId} (no wire entries from snapshot) pid=${process.pid}`);
+        continue;
+      }
       try {
         const decoded = decodeMemoryEntryMetadata(wireEntries);
         // The entry-blob preserves the original MemoryEntry.id (e.g. UUIDs

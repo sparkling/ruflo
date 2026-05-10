@@ -1140,11 +1140,12 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         const entries = await storage.query({
           type: 'prefix',
           namespace,
-          // ADR-0147 R6 (2026-05-06): forward keyPrefix to storage so it
-          // pre-filters during the scan instead of returning the first
-          // `limit` entries by insertion order. RVF rvf-backend.ts:637
-          // and SQLite sqlite-backend.ts:309 both honor q.keyPrefix.
-          keyPrefix: op.keyPrefix,
+          // ADR-0163 (2026-05-10): keyPrefix forwarding from ADR-0147 R6
+          // temporarily reverted while investigating t3-2-concurrent
+          // ns_hits=5/6 regression. routeCausalOp's cause= pushdown still
+          // sets listOp.keyPrefix at line ~1925, but `cli memory list`
+          // never sets op.keyPrefix (no --keyPrefix CLI flag). Restore
+          // after ADR-0163 closes.
           limit: op.limit || 50,
           offset: op.offset || 0,
         });
