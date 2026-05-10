@@ -2938,22 +2938,24 @@ export class RvfBackend implements IMemoryBackend {
     // which is the correct ordering for entries appended after our init.
     await this.mergePeerStateBeforePersist();
 
-    // ADR-0154 Phase 5c (G4 follow-up 2026-05-07 — REVERTED 2026-05-07T14):
-    // the conditional skip-meta-write attempted to suppress `.meta` for
-    // all-embedded fast-path persists. Empirically broke
-    // `p8-inv12-mem-full` (memory_retrieve null after session_restore) —
-    // session_save snapshots the on-disk state at a moment when the in-
-    // memory entries haven't yet been compacted, and the snapshot's
-    // round-trip relied on `.meta` being present. Without `.meta`, the
-    // session-restored project has no entries to find.
+    // ADR-0164 Phase B1 (re-land of ADR-0154 Phase 5c suppress-meta):
+    // when native owns the .rvf file (single-file storage under δ-strict),
+    // skip the .meta sidecar write. Native META_SEG persistence holds the
+    // metadata; .meta is redundant.
     //
-    // The validation swarm's G4 finding ("Phase 5c is a half-measure")
-    // remains true at the doc level (`.meta` still on disk), but the
-    // mechanical fix (skip the write) is gated on a deeper review of
-    // session_save/restore semantics. Reverted to unconditional `.meta`
-    // write; HM-class bug class is closed by Phase 4 loader preference,
-    // not by removing the file. Documented in ADR-0154 §"Decision
-    // delivery summary".
+    // Pure-TS mode (no native binding) keeps writing .meta because pure-TS
+    // has no other persistence target — without .meta, all data is lost on
+    // shutdown. Under δ-strict (Amendment 2026-05-10d), nativeFallbackMode
+    // is removed (degradeToFallbackMode now throws RvfCorruptError), so
+    // the only remaining "no native" case is "binding never loaded".
+    //
+    // Original Phase 5c was reverted 2026-05-07T14 because `p8-inv12-mem-
+    // full` failed: session_save snapshot needed .meta. ADR-0164 A0a–A0e
+    // resolves that by ingesting metadata-only entries into native via
+    // `ingestMetadataOnly` (J1/J2/J3) and migrating existing .meta on MCP
+    // start (A0e). Phase B re-lands the suppress now that those gates are
+    // closed.
+    if (!this.nativeDb) {
 
     const target = this.metadataPath;
     const dir = dirname(target);
@@ -3036,6 +3038,8 @@ export class RvfBackend implements IMemoryBackend {
       await dirHandle.datasync();
       await dirHandle.close();
     } catch {} // Best-effort — not all platforms support dir fsync
+
+    } // end ADR-0164 Phase B1: !this.nativeDb gate
 
     this.dirty = false;
     } finally {
