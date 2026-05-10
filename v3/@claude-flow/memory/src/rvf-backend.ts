@@ -460,29 +460,36 @@ export class RvfBackend implements IMemoryBackend {
       this.seenIds.add(e.id);
       this.keyIndex.set(this.compositeKey(e.namespace, e.key), e.id);
       // Index in ONE backend, not both (Debt 8)
-      if (e.embedding) {
-        if (this.nativeDb) {
-          const numId = this.assignNativeId(e.id);
-          try {
-            // ADR-0154 Phase 3: persist metadata via META_SEG alongside the
-            // vector. The native runtime now writes a META_SEG immediately
-            // after the VEC_SEG and reconstructs metadata on reopen, so the
-            // .meta sidecar (ADR-0095 d5 workaround) is no longer needed.
-            const metaEntries = encodeMemoryEntryMetadata(e);
+      // ADR-0164 A0c (J1): δ+ vectorless ingest path. Vectorless entries
+      // route to nativeDb.ingestMetadataOnly so they reach META_SEG and
+      // survive process restart without the legacy .meta sidecar. Vector-
+      // bearing entries continue through ingestBatch + HnswLite as before.
+      if (this.nativeDb) {
+        const numId = this.assignNativeId(e.id);
+        try {
+          // ADR-0154 Phase 3: persist metadata via META_SEG alongside the
+          // vector. The native runtime now writes a META_SEG immediately
+          // after the VEC_SEG and reconstructs metadata on reopen, so the
+          // .meta sidecar (ADR-0095 d5 workaround) is no longer needed.
+          const metaEntries = encodeMemoryEntryMetadata(e);
+          if (e.embedding) {
             this.nativeDb.ingestBatch(new Float32Array(e.embedding), [numId], metaEntries);
-          } catch (err) {
-            // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
-            // file's segment hashes no longer validate — further native ops
-            // would keep lying. Degrade loudly, then fall through to the
-            // pure-TS indexing branch via reIndexAfterDegrade.
-            if (!this.degradeToFallbackMode('store', err) && this.config.verbose) {
-              console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
-            }
-            this.reIndexAfterDegrade(e.id, e.embedding);
+          } else {
+            this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
           }
-        } else if (this.hnswIndex) {
-          this.hnswIndex.add(e.id, e.embedding);
+        } catch (err) {
+          // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
+          // file's segment hashes no longer validate — further native ops
+          // would keep lying. Degrade loudly, then fall through to the
+          // pure-TS indexing branch via reIndexAfterDegrade.
+          if (!this.degradeToFallbackMode('store', err) && this.config.verbose) {
+            console.error('[RvfBackend] Native ingest failed:', (err as Error).message);
+          }
+          // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
+          if (e.embedding) this.reIndexAfterDegrade(e.id, e.embedding);
         }
+      } else if (e.embedding && this.hnswIndex) {
+        this.hnswIndex.add(e.id, e.embedding);
       }
       this.dirty = true;
 
@@ -535,29 +542,36 @@ export class RvfBackend implements IMemoryBackend {
     };
     this.entries.set(id, updated);
     // Re-index in ONE backend, not both (Debt 8)
-    if (updated.embedding) {
-      if (this.nativeDb) {
-        const numId = this.assignNativeId(id);
-        try {
-          this.nativeDb.delete([numId]);
-          // ADR-0154 Phase 3: re-emit metadata on update so the new META_SEG
-          // shadows the previous one. boot() replays segments in order so
-          // the latest write wins.
-          const metaEntries = encodeMemoryEntryMetadata(updated);
+    // ADR-0164 A0c (J2): δ+ vectorless update path mirrors J1. Vectorless
+    // updates route delete + ingestMetadataOnly so the new META_SEG shadows
+    // any prior one for this id.
+    if (this.nativeDb) {
+      const numId = this.assignNativeId(id);
+      try {
+        this.nativeDb.delete([numId]);
+        // ADR-0154 Phase 3: re-emit metadata on update so the new META_SEG
+        // shadows the previous one. boot() replays segments in order so
+        // the latest write wins.
+        const metaEntries = encodeMemoryEntryMetadata(updated);
+        if (updated.embedding) {
           this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId], metaEntries);
-        } catch (err) {
-          // ADR-0095 d5: checksum failure during update — degrade, then
-          // re-apply via reIndexAfterDegrade (idempotent remove+add).
-          if (!this.degradeToFallbackMode('update', err) && this.config.verbose) {
-            console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
-          }
-          this.removeAfterDegrade(id);
-          this.reIndexAfterDegrade(id, updated.embedding);
+        } else {
+          this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
         }
-      } else if (this.hnswIndex) {
-        this.hnswIndex.remove(id);
-        this.hnswIndex.add(id, updated.embedding);
+      } catch (err) {
+        // ADR-0095 d5: checksum failure during update — degrade, then
+        // re-apply via reIndexAfterDegrade (idempotent remove+add).
+        if (!this.degradeToFallbackMode('update', err) && this.config.verbose) {
+          console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
+        }
+        // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
+        this.removeAfterDegrade(id);
+        // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
+        if (updated.embedding) this.reIndexAfterDegrade(id, updated.embedding);
       }
+    } else if (updated.embedding && this.hnswIndex) {
+      this.hnswIndex.remove(id);
+      this.hnswIndex.add(id, updated.embedding);
     }
     this.dirty = true;
     await this.appendToWal(updated);
@@ -795,25 +809,29 @@ export class RvfBackend implements IMemoryBackend {
       this.seenIds.add(entry.id);
       this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
       // Index in ONE backend, not both (Debt 8)
-      if (entry.embedding) {
-        if (this.nativeDb) {
-          const numId = this.assignNativeId(entry.id);
-          try {
-            // ADR-0154 Phase 3: persist metadata via META_SEG.
-            const metaEntries = encodeMemoryEntryMetadata(entry);
+      // ADR-0164 A0c (J3): δ+ vectorless bulk insert mirrors J1.
+      if (this.nativeDb) {
+        const numId = this.assignNativeId(entry.id);
+        try {
+          // ADR-0154 Phase 3: persist metadata via META_SEG.
+          const metaEntries = encodeMemoryEntryMetadata(entry);
+          if (entry.embedding) {
             this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId], metaEntries);
-          } catch (err) {
-            // ADR-0095 d5: same degrade path used by store() — first
-            // InvalidChecksum kills native for this process and re-routes
-            // subsequent entries via reIndexAfterDegrade.
-            if (!this.degradeToFallbackMode('bulkInsert', err) && this.config.verbose) {
-              console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
-            }
-            this.reIndexAfterDegrade(entry.id, entry.embedding);
+          } else {
+            this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
           }
-        } else if (this.hnswIndex) {
-          this.hnswIndex.add(entry.id, entry.embedding);
+        } catch (err) {
+          // ADR-0095 d5: same degrade path used by store() — first
+          // InvalidChecksum kills native for this process and re-routes
+          // subsequent entries via reIndexAfterDegrade.
+          if (!this.degradeToFallbackMode('bulkInsert', err) && this.config.verbose) {
+            console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
+          }
+          // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
+          if (entry.embedding) this.reIndexAfterDegrade(entry.id, entry.embedding);
         }
+      } else if (entry.embedding && this.hnswIndex) {
+        this.hnswIndex.add(entry.id, entry.embedding);
       }
       await this.appendToWal(entry);
     }
@@ -1500,53 +1518,40 @@ export class RvfBackend implements IMemoryBackend {
     this.hnswIndex.remove(id);
   }
 
-  /** ADR-0095 d5: downgrade this instance from native → pure-TS + .meta
-   *  sidecar when a native runtime call (query/ingestBatch/delete) throws
-   *  InvalidChecksum. Called from the native read/write catch sites. Idempotent:
-   *  if already degraded, no-op. After degrade, callers fall through to the
-   *  pure-TS branches of their respective code paths (HnswLite search, WAL
-   *  append + .meta compact — see `metadataPath`).
+  /** ADR-0164 A0d (δ-strict, fail-fast posture): throw `RvfCorruptError` on
+   *  any native InvalidChecksum (RVF 0x0102). The pre-A0d behavior — close
+   *  the native handle and silently fall through to a pure-TS + .meta path
+   *  — is gone under δ-strict per Amendment 2026-05-10d ("we don't need
+   *  recovery affordance, we will just reset the memory for our projects.
+   *  We also have a philosophy of fail fast, and fail loud").
    *
-   *  The degrade is LOUD: one stderr line per invocation (no throttling —
-   *  this is a first-time-transition event, not a per-use log). `noteNative
-   *  FallbackUse` handles the throttled steady-state per-use logs. */
+   *  All callsites (`if (!this.degradeToFallbackMode(...))` / `if (this.degradeToFallbackMode(...))`)
+   *  are intentionally left intact (minimize-diff per Adversarial Correction
+   *  #10). The throw propagates through them; any code AFTER the call in
+   *  those `catch` blocks (`reIndexAfterDegrade`, `removeAfterDegrade`,
+   *  `pureTsSearch` fallback, etc.) is unreachable under δ-strict and is
+   *  inline-annotated at each site. Phase B5 cleanup deletes the dead arms
+   *  and the `nativeFallbackMode` field.
+   *
+   *  Non-InvalidChecksum errors still return `false`, preserving the
+   *  ADR-0082 contract that LockHeld / OOM / unrelated failures continue
+   *  to propagate via the existing `throw err` paths.
+   *
+   *  Return type kept `boolean` so callsite expressions still type-check
+   *  even though the success branch never returns. */
   private degradeToFallbackMode(via: string, err: unknown): boolean {
     const msg = String((err as any)?.message ?? err ?? '');
     const isInvalidChecksum = msg.includes('0x0102') || /InvalidChecksum/i.test(msg);
     if (!isInvalidChecksum) return false;
-    if (!this.nativeFallbackMode) {
-      // First transition — emit the loud degrade banner.
-      console.error(
-        `[RvfBackend] native ${via} threw InvalidChecksum (RVF 0x0102) at ` +
-        `${this.config.databasePath} — degrading to pure-TS + .meta sidecar ` +
-        `for the remainder of this process. Future writes compact to .meta; ` +
-        `the corrupt native file is left intact for upstream recovery. ` +
-        `Root cause: unlocked ingestBatch race (ADR-0095 d7).`,
-      );
-      this.nativeFallbackMode = true;
-      // Also rehydrate HnswLite if we haven't already; otherwise pure-TS
-      // semantic search has no index to consult and will return empty.
-      // Vector fidelity is best-effort: entries loaded from .meta during
-      // init have embeddings, so we rebuild from those.
-      if (!this.hnswIndex) {
-        this.hnswIndex = new HnswLite(
-          this.config.dimensions,
-          this.config.hnswM,
-          this.config.hnswEfConstruction,
-          this.config.metric,
-        );
-        for (const e of this.entries.values()) {
-          if (e.embedding) this.hnswIndex.add(e.id, e.embedding);
-        }
-      }
-    }
-    // Close and drop the native handle — further native calls MUST NOT run
-    // against a corrupt file (they'd produce the same 0x0102 again forever).
-    if (this.nativeDb) {
-      try { this.nativeDb.close(); } catch { /* native already broken */ }
-      this.nativeDb = null;
-    }
-    return true;
+    const path = this.config.databasePath;
+    // <projectRoot> is the parent of the .swarm/ dir that holds memory.rvf.
+    // databasePath is typically <projectRoot>/.swarm/memory.rvf.
+    const projectRoot = dirname(dirname(path));
+    const reason =
+      `is corrupt and cannot be loaded (native ${via} threw RVF 0x0102 InvalidChecksum). ` +
+      `Memory state for this project must be reset. ` +
+      `Delete ${projectRoot}/.swarm/ and re-initialize.`;
+    throw new RvfCorruptError(path, reason);
   }
 
   /** Assign or retrieve a numeric ID for native NAPI backend */
@@ -1622,6 +1627,7 @@ export class RvfBackend implements IMemoryBackend {
             );
           }
         }
+        // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
         this.reIndexAfterDegrade(id, embedding);
       }
     }
@@ -2128,6 +2134,25 @@ export class RvfBackend implements IMemoryBackend {
       const raw = await readFile(this.walPath);
       let offset = 0;
       let count = 0;
+      // ADR-0164 A0c (J12) + Adversarial Correction #4: cache the existing
+      // META_SEG id-set once so vectorless WAL entries can be deduped before
+      // calling ingestMetadataOnly. Without dedup we'd re-emit META_SEGs for
+      // every WAL replay, contradicting d8's write-amplification rationale
+      // documented at the embedding-arm push site below. Cheap one-shot
+      // napi roundtrip; no per-entry crossings.
+      let existingMetaIds: Set<number> | null = null;
+      if (this.nativeDb) {
+        try {
+          const ids = (this.nativeDb as any).listMetadataIds?.() as number[] | undefined;
+          existingMetaIds = new Set<number>(ids ?? []);
+        } catch {
+          // listMetadataIds is best-effort dedup; if it throws the dedup
+          // collapses to "always re-ingest", which is correct (just less
+          // optimal). The real durability invariant is enforced by the
+          // ingestMetadataOnly call itself.
+          existingMetaIds = null;
+        }
+      }
       while (offset + 4 <= raw.length) {
         const entryLen = raw.readUInt32LE(offset);
         offset += 4;
@@ -2183,10 +2208,36 @@ export class RvfBackend implements IMemoryBackend {
               id: entry.id,
               embedding: entry.embedding,
             });
+          } else if (!entry.embedding && this.nativeDb) {
+            // ADR-0164 A0c (J12) + Adversarial Correction #4: vectorless
+            // WAL entries must reach META_SEG so they survive restart.
+            // Honor d8's write-amplification rationale by deduping against
+            // the existing META_SEG id-set captured once at the top of
+            // replayWal — never re-emit a META_SEG for an id already on
+            // disk. Only freshly-seen WAL entries call ingestMetadataOnly.
+            const numId = this.assignNativeId(entry.id);
+            const alreadyOnDisk = existingMetaIds !== null && existingMetaIds.has(numId);
+            if (!alreadyOnDisk) {
+              try {
+                const metaEntries = encodeMemoryEntryMetadata(entry);
+                this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
+                if (existingMetaIds !== null) existingMetaIds.add(numId);
+              } catch (err) {
+                if (!this.degradeToFallbackMode('replayWal', err) && this.config.verbose) {
+                  console.error('[RvfBackend] WAL replay metadata-only ingest failed:', (err as Error).message);
+                }
+              }
+            }
           }
           count++;
-        } catch {
-          // Corrupt individual entry — skip and continue
+        } catch (err) {
+          // ADR-0164 A0d: a δ-strict RvfCorruptError from an inner native
+          // call (e.g. J12's vectorless ingestMetadataOnly) must NOT be
+          // swallowed as "corrupt individual entry"; the whole store is
+          // unrecoverable and the user has to reset. Propagate it through
+          // the outer try/catch and on up to the caller.
+          if ((err as any)?.name === 'RvfCorruptError') throw err;
+          // Corrupt individual WAL entry — skip and continue.
         }
       }
       this.walEntryCount = count;
@@ -2194,6 +2245,8 @@ export class RvfBackend implements IMemoryBackend {
         console.log(`[RvfBackend] Replayed ${count} WAL entries`);
       }
     } catch (err) {
+      // ADR-0164 A0d: same fail-fast carve-out at the outer catch.
+      if ((err as any)?.name === 'RvfCorruptError') throw err;
       if (this.config.verbose) {
         console.error('[RvfBackend] Error replaying WAL:', err);
       }
@@ -2595,6 +2648,22 @@ export class RvfBackend implements IMemoryBackend {
                       id: entry.id,
                       embedding: entry.embedding,
                     });
+                  } else if (!entry.embedding && this.nativeDb) {
+                    // ADR-0164 A0c (J18): δ+ vectorless arm of the legacy
+                    // `.meta` reader. Phase B4 deletes this entire branch;
+                    // the edit lands in the same atomic release purely so
+                    // the `.meta`-migration window remains consistent
+                    // (vectorless entries from a stale `.meta` get pushed
+                    // to META_SEG before the legacy reader is removed).
+                    try {
+                      const numId = this.assignNativeId(entry.id);
+                      const metaEntries = encodeMemoryEntryMetadata(entry);
+                      this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
+                    } catch (err) {
+                      if (!this.degradeToFallbackMode('loadFromDisk', err) && this.config.verbose) {
+                        console.error('[RvfBackend] Legacy .meta vectorless ingest failed:', (err as Error).message);
+                      }
+                    }
                   }
                   loaded++;
                 }
@@ -2606,6 +2675,10 @@ export class RvfBackend implements IMemoryBackend {
           }
         }
       } catch (err) {
+        // ADR-0164 A0d: a δ-strict RvfCorruptError surfaced by the inner
+        // J18 vectorless arm is fail-fast; do not flatten into a corruption
+        // signal that the post-WAL guard would re-wrap with less context.
+        if ((err as any)?.name === 'RvfCorruptError') throw err;
         // Read error (permissions, EIO, etc.) — treat as corruption signal.
         loadFailed = true;
         loadFailReason = `read failed: ${(err as Error).message}`;
