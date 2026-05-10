@@ -1190,11 +1190,22 @@ export class RvfBackend implements IMemoryBackend {
           return true;
         } catch (err: any) {
           lastErr = err;
-          // Only retry the transient LockHeld shape (0x0300). Every other
-          // error falls through to the fatal/InvalidChecksum branch below.
+          // Retry transient cold-start race shapes. LockHeld (0x0300)
+          // is JS-layer retryable. ManifestNotFound + InvalidManifest
+          // are cold-start race shapes that Rust-side d12 typed-retry
+          // (forks/ruvector store.rs MAX_COLDSTART_RETRIES=8, 395ms
+          // total) already retried internally; under N≥8 contention
+          // the Rust budget can exhaust before all writers finish
+          // their FIFO turn. Give them another full Rust-retry cycle
+          // at the JS layer (5s budget = ~12 Rust cycles). Empirically
+          // N=8 cross-process passed at this layer pre-fail-loud;
+          // surfaces here once silent fallback paths are removed.
+          // InvalidChecksum (0x0102) is intentionally NOT retried — it
+          // has its own degrade-to-fallback path below.
           const msg = String(err?.message ?? err ?? '');
           const isLockHeld = msg.includes('0x0300') || /LockHeld/i.test(msg);
-          if (!isLockHeld) break;
+          const isColdStartExhausted = /ManifestNotFound|InvalidManifest/i.test(msg);
+          if (!isLockHeld && !isColdStartExhausted) break;
           const expDelay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
           const jitter = expDelay * 0.5 * Math.random();
           const delayMs = expDelay + jitter;
