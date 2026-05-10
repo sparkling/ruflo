@@ -1172,8 +1172,21 @@ export class RvfBackend implements IMemoryBackend {
       // backoff). Other error shapes (InvalidChecksum, parse, I/O) take
       // their own branches below and are NOT retried — they are
       // genuinely fatal and must surface immediately.
+      // ADR-0163/0164/0165 follow-up (2026-05-10): under release-pipeline
+      // parallel load (8 NPX subprocesses + Verdaccio + module loading +
+      // native binding init all racing the same .rvf), the 5s budget
+      // empirically exhausts before all writers' open() calls catch a
+      // gap in the contention. With the retry-allowlist now covering
+      // ManifestNotFound + InvalidManifest (cold-start race shapes from
+      // forks/ruvector store.rs:78-85), each iteration's full Rust
+      // retry-cycle (~395ms) + JS sleep (~400ms cap) = ~795ms per attempt.
+      // 30s budget = ~37 attempts. Genuinely-corrupt files still surface
+      // loud after the budget elapses; transient under-load races recover
+      // within seconds. The 5s cap was sized for the simpler LockHeld-only
+      // case; widening matches the real cost of cold-start race recovery
+      // under N≥8 process contention on macOS APFS.
       let lastErr: any = null;
-      const maxOpenWaitMs = 5000;
+      const maxOpenWaitMs = 30000;
       const openStartTime = Date.now();
       const baseDelayMs = 20;
       const maxDelayMs = 400;
