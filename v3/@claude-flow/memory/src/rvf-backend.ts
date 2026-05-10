@@ -26,6 +26,8 @@ import {
   type RvfHeader,
   MAGIC,
   NATIVE_MAGIC,
+  NATIVE_ROOT_HEADER_MAGIC,
+  NATIVE_ROOT_HEADER_MAGIC_PREFIX,
   VERSION,
   DEFAULT_DIMENSIONS,
   DEFAULT_M,
@@ -1129,12 +1131,29 @@ export class RvfBackend implements IMemoryBackend {
       try {
         const fd = openSync(this.config.databasePath, 'r');
         try {
-          const head = Buffer.alloc(4);
-          const bytesRead = readSync(fd, head, 0, 4, 0);
+          // ADR-0167 Phase 1: peek 8 bytes (not 4) so we can disambiguate
+          // the new RootHeader magic (`RVFROOT\0`) from the pure-TS magic
+          // (`RVF\0`). Both share the prefix `RVF` so a 4-byte peek can't
+          // tell them apart. The first 4 bytes still go into `peekStr` for
+          // the legacy `RVF\0` / `SFVR` checks below.
+          const head = Buffer.alloc(8);
+          const bytesRead = readSync(fd, head, 0, 8, 0);
           peekBytesRead = bytesRead;
-          if (bytesRead === 4) {
+          if (bytesRead >= 4) {
             peekStr = String.fromCharCode(head[0], head[1], head[2], head[3]);
             if (peekStr === NATIVE_MAGIC) hasNativeMagic = true;
+            // ADR-0167 Phase 1: 8-byte RootHeader magic at offset 0 of
+            // post-Phase-1 native files. Treat as native (same code path
+            // as `SFVR` legacy native files) — `RvfDatabase.open` knows
+            // how to parse RootHeader, fast-path to the manifest slot.
+            if (
+              bytesRead >= 8 &&
+              peekStr === NATIVE_ROOT_HEADER_MAGIC_PREFIX &&
+              String.fromCharCode(head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7]) ===
+                NATIVE_ROOT_HEADER_MAGIC
+            ) {
+              hasNativeMagic = true;
+            }
           }
         } finally {
           closeSync(fd);
@@ -1317,8 +1336,25 @@ export class RvfBackend implements IMemoryBackend {
       return false;
     }
 
+    // ADR-0167 Phase 1: partial RootHeader detection. The post-Phase-1
+    // native magic is 8 bytes (`RVFROOT\0`); a 4-7 byte file starting
+    // with `RVFR` is a peer mid-creating the RootHeader prefix. Defer
+    // (loadFromDisk's retry layer will re-peek after backoff).
+    if (
+      fileOnDisk &&
+      peekBytesRead >= 4 &&
+      peekBytesRead < 8 &&
+      peekStr === NATIVE_ROOT_HEADER_MAGIC_PREFIX
+    ) {
+      this._deferredCorruptReason =
+        `file exists but RootHeader is only ${peekBytesRead}/8 bytes present — ` +
+        `peer mid-creating Phase-1 native file (ADR-0167)`;
+      if (process.env.RVF_DEBUG) console.error(`[RVF-DEBUG pid=${process.pid}] tryNativeInit RETURN false: partial-RootHeader (peekBytesRead=${peekBytesRead})`);
+      return false;
+    }
+
     const isRVFNull = peekStr === 'RVF\0';
-    if (fileOnDisk && peekBytesRead === 4 && !isRVFNull) {
+    if (fileOnDisk && peekBytesRead >= 4 && !isRVFNull) {
       // Not SFVR (that path returned earlier) and not RVF\0 — unknown magic.
       //
       // ADR-0090 Tier B2 (ruflo-patch): defer rather than throw so
@@ -2582,11 +2618,22 @@ export class RvfBackend implements IMemoryBackend {
           const { openSync, readSync, closeSync } = await import('node:fs');
           const fd = openSync(this.config.databasePath, 'r');
           try {
-            const head = Buffer.alloc(4);
-            const bytesRead = readSync(fd, head, 0, 4, 0);
-            if (bytesRead === 4) {
-              const peek = String.fromCharCode(head[0], head[1], head[2], head[3]);
-              if (peek === NATIVE_MAGIC) isNativeFile = true;
+            // ADR-0167 Phase 1: peek 8 bytes so we can also detect the
+            // post-Phase-1 `RVFROOT\0` magic — same "native-format
+            // bytes left behind" diagnosis as the legacy `SFVR` case.
+            const head = Buffer.alloc(8);
+            const bytesRead = readSync(fd, head, 0, 8, 0);
+            if (bytesRead >= 4) {
+              const peek4 = String.fromCharCode(head[0], head[1], head[2], head[3]);
+              if (peek4 === NATIVE_MAGIC) isNativeFile = true;
+              if (
+                bytesRead >= 8 &&
+                peek4 === NATIVE_ROOT_HEADER_MAGIC_PREFIX &&
+                String.fromCharCode(head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7]) ===
+                  NATIVE_ROOT_HEADER_MAGIC
+              ) {
+                isNativeFile = true;
+              }
             }
           } finally {
             closeSync(fd);

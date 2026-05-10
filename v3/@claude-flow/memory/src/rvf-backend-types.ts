@@ -52,6 +52,16 @@ export const MAGIC = 'RVF\0';
 // was written to the `.meta` sidecar. Treat this as a valid native-owned file,
 // NOT corruption.
 export const NATIVE_MAGIC = 'SFVR';
+
+// ADR-0167 Phase 1 (2026-05-10): post-Phase-1 native `.rvf` files reserve
+// the first 128 bytes for a double-buffered RootHeader (atomic root
+// pointer). The first 8 bytes are this magic. The legacy `peekStr` 4-byte
+// check sees the FIRST FOUR bytes (`RVFR`) which is neither `SFVR` nor
+// `RVF\0` and would falsely flag the file as corrupt. Recognising the
+// 8-byte `RVFROOT\0` prefix routes the file to the native open path
+// alongside `SFVR`. See forks/ruvector/crates/rvf/rvf-runtime/src/root_header.rs.
+export const NATIVE_ROOT_HEADER_MAGIC = 'RVFROOT\0';
+export const NATIVE_ROOT_HEADER_MAGIC_PREFIX = 'RVFR';
 export const VERSION = 1;
 export const DEFAULT_DIMENSIONS = 768;
 export const DEFAULT_M = 16;
