@@ -1,7 +1,7 @@
 {
   "name": "ruflo-wasm",
   "description": "Sandboxed WASM agent creation, execution, and gallery sharing — wraps 10 wasm_* MCP tools (agent_create/prompt/tool/list/terminate/files/export + gallery_list/search/create); built on @ruvector/rvagent-wasm + @ruvector/ruvllm-wasm per ADR-070 (Implemented)",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "author": {
     "name": "ruvnet",
     "url": "https://github.com/ruvnet"
