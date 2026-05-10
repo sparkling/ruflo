@@ -2345,9 +2345,70 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
 
+    // ADR-0163 (2026-05-10) fix — vectorless-entry recovery pass.
+    //
+    // Root cause of the t3-2-concurrent "6 entries durable, 5 visible" failure:
+    //   `iterAllWithVectors` is backed by the Rust runtime's
+    //   `iter_metadata_with_vectors` which filters out any entry whose vector
+    //   is not present (`store.rs:1825-1832`: `let vec = self.vectors.get(*id)?;`).
+    //   ADR-0164 A0c shipped the δ+ vectorless ingest path (`ingestMetadataOnly`),
+    //   so vectorless entries are now legitimately persisted to META_SEG without
+    //   a paired VEC_SEG. They land in `metadata_full` but NOT in `vectors`, so
+    //   `iter_metadata_with_vectors` silently drops them. Under concurrent load
+    //   the embedding adapter at memory-router.ts:893 catches transient failures
+    //   and stores the entry without an embedding — exactly the shape that
+    //   triggers this filter. The vectorless entry is durable on disk (visible
+    //   in `entryCount` from the `.meta` header and via `listMetadataIds`),
+    //   but `cli memory list --namespace` reads through `RvfBackend.query()` →
+    //   `this.entries`, which is populated by this method. If we early-return
+    //   `true` after `iterAllWithVectors` populated only N-1 of N entries,
+    //   `loadFromDisk` skips the legacy `.meta` parser (line 2456) and the
+    //   vectorless entry is silently invisible to all read APIs. Same shape
+    //   poisons `nativeIdMap`: subsequent `assignNativeId(stringId)` calls
+    //   that hit the unreserved numId can collide with the on-disk vectorless
+    //   entry's vid, causing the `RvfStore::boot()` HashMap-overwrite
+    //   characterised in the Rust race investigator's INVESTIGATION.md.
+    //
+    // Fix: after the snapshot pass, enumerate `listMetadataIds()` (which is
+    // backed by `iter_metadata` and does NOT filter on vector presence) and
+    // load any IDs missing from the snapshot via `getMetadataEntries(numId)`.
+    // These are the vectorless entries; they get folded into `snapshots` with
+    // an empty Float32Array vector so the downstream loop reserves their
+    // numIds and registers them in `this.entries` / `seenIds` / `keyIndex` /
+    // `nativeIdMap` exactly as the with-vector entries.
+    if (snapshots !== null) {
+      try {
+        const allIds = (native.listMetadataIds?.() as number[] | undefined) ?? [];
+        if (allIds.length > snapshots.length) {
+          const seen = new Set<number>(snapshots.map(s => s.id));
+          for (const numId of allIds) {
+            if (seen.has(numId)) continue;
+            const metadata = (native.getMetadataEntries?.(numId) as RvfMetadataEntryWire[] | undefined)
+              ?? [];
+            if (metadata.length === 0) continue;
+            snapshots.push({ id: numId, vector: new Float32Array(0), metadata });
+          }
+        }
+      } catch (err) {
+        // silent-fallthrough-OK: the recovery pass is additive; if listMetadataIds
+        // or getMetadataEntries throws (older @latest binary, transient store-mutex
+        // contention) we fall through with whatever iterAllWithVectors returned.
+        // The legacy `.meta` parser remains the safety net via loadFromDisk's
+        // `restoredFromSegments === false` branch when no entries were loaded.
+        if (this.config.verbose) {
+          console.warn(
+            `[RvfBackend] vectorless-entry recovery pass failed:`,
+            (err as Error).message,
+          );
+        }
+      }
+    }
+
     if (!snapshots) {
       // Legacy per-id path. Same logic as before; preserved for compat with
-      // older @latest binaries that don't ship iterAllWithVectors.
+      // older @latest binaries that don't ship iterAllWithVectors. This path
+      // already enumerates via `listMetadataIds` and treats vectorless entries
+      // correctly (empty Float32Array fallback at the catch below).
       const ids = native.listMetadataIds?.() as number[] | undefined;
       // silent-fallthrough-OK: empty segment list is the expected fresh-store / legacy-pre-Phase-1 case; caller falls back to the legacy .meta path. Throwing would break every project on the day this version ships.
       if (!ids || ids.length === 0) return false;
@@ -2355,12 +2416,7 @@ export class RvfBackend implements IMemoryBackend {
       for (const numId of ids) {
         const metadata = (native.getMetadataEntries?.(numId) as RvfMetadataEntryWire[] | undefined)
           ?? [];
-        if (metadata.length === 0) {
-          // ADR-0163 (2026-05-10): instrumentation for t3-2-concurrent
-          // ns_hits=5/6 read-side regression. Remove after closure.
-          console.error(`[ADR-0163] loadFromNativeSegments: skip numId=${numId} (empty metadata array) pid=${process.pid}`);
-          continue;
-        }
+        if (metadata.length === 0) continue;
         let vec: Float32Array | null = null;
         try {
           vec = (native.getVector?.(numId) as Float32Array | null | undefined) ?? null;
@@ -2377,12 +2433,7 @@ export class RvfBackend implements IMemoryBackend {
     for (const snap of snapshots) {
       const numId = snap.id;
       const wireEntries = snap.metadata;
-      if (!wireEntries || wireEntries.length === 0) {
-        // ADR-0163 (2026-05-10): instrumentation for t3-2-concurrent.
-        // Remove after closure.
-        console.error(`[ADR-0163] loadFromNativeSegments: skip numId=${numId} (no wire entries from snapshot) pid=${process.pid}`);
-        continue;
-      }
+      if (!wireEntries || wireEntries.length === 0) continue;
       try {
         const decoded = decodeMemoryEntryMetadata(wireEntries);
         // The entry-blob preserves the original MemoryEntry.id (e.g. UUIDs
