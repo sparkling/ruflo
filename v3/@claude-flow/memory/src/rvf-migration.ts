@@ -221,9 +221,11 @@ export class RvfMigrator {
 
   /**
    * Detect file format by magic bytes.
-   * - RVF\0 (0x52 0x56 0x46 0x00) -> 'rvf'
-   * - SQLi  (0x53 0x51 0x4C 0x69) -> 'sqlite'
-   * - Leading [ or {              -> 'json'
+   * - RVF\0    (0x52 0x56 0x46 0x00)                    -> 'rvf' (pure-TS)
+   * - SFVR     (0x53 0x46 0x56 0x52)                    -> 'rvf' (native legacy)
+   * - RVFROOT\0 (0x52 0x56 0x46 0x52 0x4F 0x4F 0x54 0)  -> 'rvf' (native Phase-1, ADR-0167)
+   * - SQLi     (0x53 0x51 0x4C 0x69)                    -> 'sqlite'
+   * - Leading [ or {                                     -> 'json'
    */
   static async detectFormat(filePath: string): Promise<'rvf' | 'json' | 'sqlite' | 'unknown'> {
     if (!existsSync(filePath)) return 'unknown';
@@ -231,7 +233,15 @@ export class RvfMigrator {
     try {
       const buf = Buffer.alloc(16);
       await fd.read(buf, 0, 16, 0);
+      // RVF\0 (pure-TS)
       if (buf[0] === 0x52 && buf[1] === 0x56 && buf[2] === 0x46 && buf[3] === 0x00) return 'rvf';
+      // SFVR (native legacy — first segment-header magic)
+      if (buf[0] === 0x53 && buf[1] === 0x46 && buf[2] === 0x56 && buf[3] === 0x52) return 'rvf';
+      // RVFROOT\0 (native Phase-1, ADR-0167 RootHeader)
+      if (
+        buf[0] === 0x52 && buf[1] === 0x56 && buf[2] === 0x46 && buf[3] === 0x52 &&
+        buf[4] === 0x4F && buf[5] === 0x4F && buf[6] === 0x54 && buf[7] === 0x00
+      ) return 'rvf';
       if (buf[0] === 0x53 && buf[1] === 0x51 && buf[2] === 0x4C && buf[3] === 0x69) return 'sqlite';
       const head = buf.toString('utf-8').trimStart();
       if (head.startsWith('[') || head.startsWith('{')) return 'json';
