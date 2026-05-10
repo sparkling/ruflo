@@ -477,10 +477,6 @@ export class RvfBackend implements IMemoryBackend {
           } else {
             this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
           }
-          // ADR-0163 (2026-05-10): correlation log for ns_hits=5/6
-          // read-side regression. Pair with the loadFromNativeSegments
-          // skip logs to identify which numId is silently dropped.
-          console.error(`[ADR-0163] store: ingest ok numId=${numId} key=${e.namespace}/${e.key} pid=${process.pid}`);
         } catch (err) {
           // ADR-0095 d5: InvalidChecksum from ingestBatch means the native
           // file's segment hashes no longer validate — further native ops
