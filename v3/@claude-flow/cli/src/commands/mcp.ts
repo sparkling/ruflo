@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { findProjectRoot } from '../mcp-tools/types.js';
 
 // MCP tools categories
 const TOOL_CATEGORIES = [
@@ -222,7 +223,8 @@ const startCommand: Command = {
     // ADR-0164 Phase A0e: on-init `.meta` → segments migration.
     // Runs after prior-PID SIGKILL/cleanup, before `manager.start()`.
     // Warn-and-continue on failure or 10s timeout; does NOT block MCP boot.
-    await runOnInitMigration(process.cwd());
+    // ADR-0100/G: use findProjectRoot() not process.cwd() (gate-forbidden).
+    await runOnInitMigration(findProjectRoot());
 
     const options: MCPServerOptions = {
       transport,
