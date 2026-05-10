@@ -702,7 +702,14 @@ const initCommand: Command = {
       const dimension = ctx.flags.dimension as number
         || (model.includes('mpnet') || model.includes('bge-base') || model.includes('nomic') ? 768 : 384);
       // ADR-0069: include maxElements in embeddings.json template
-      const config = {
+      // ADR-0165 B2: preserve storage keys (databasePath, storageProvider, walMode,
+      // autoPersistInterval, maxEntries, defaultNamespace, dedupThreshold) that
+      // `init`'s writeRuntimeConfig writes at executor.ts:1444. Without these,
+      // resolve-config falls back to DEFAULT_DATABASE_PATH ('.claude-flow/memory.rvf')
+      // and `cli memory store` writes to .claude-flow/memory.rvf instead of the
+      // canonical .swarm/memory.rvf — breaking adr0080-rvf-size, adr0112-26-1, and
+      // p13-rvf-retrieve.
+      const config: Record<string, unknown> = {
         model,
         modelPath: modelDir,
         dimension,
@@ -710,6 +717,14 @@ const initCommand: Command = {
         cacheSize,
         metric: 'cosine',
         persistIndex: true,
+        // Canonical storage keys (must match executor.ts:1444 schema)
+        storageProvider: 'rvf',
+        databasePath: '.swarm/memory.rvf',
+        walMode: true,
+        autoPersistInterval: 30000,
+        maxEntries: 100000,
+        defaultNamespace: 'default',
+        dedupThreshold: 0.95,
         hnsw: {
           m: 23,
           efConstruction: 100,
@@ -729,6 +744,18 @@ const initCommand: Command = {
         },
         initialized: new Date().toISOString(),
       };
+
+      // ADR-0165 B2: if a prior embeddings.json exists, merge top-level user
+      // overrides for storage keys (databasePath, storageProvider, walMode, etc.)
+      // so users who explicitly configured them aren't silently clobbered.
+      try {
+        if (fs.existsSync(configPath)) {
+          const prior = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+          for (const k of ['databasePath', 'storageProvider', 'walMode', 'autoPersistInterval', 'maxEntries', 'defaultNamespace', 'dedupThreshold']) {
+            if (prior[k] !== undefined) config[k] = prior[k];
+          }
+        }
+      } catch { /* malformed prior config — keep defaults */ }
 
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
