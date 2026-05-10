@@ -1137,18 +1137,25 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         // (rvf-backend line 357), so passing undefined here returns all
         // namespaces. The 'all' sentinel is kept for back-compat callers.
         const namespace = op.namespace === 'all' ? undefined : op.namespace;
-        const entries = await storage.query({
+        // ADR-0147 R6: forward keyPrefix to storage so it pre-filters during
+        // the scan instead of returning the first `limit` entries by insertion
+        // order. Used by routeCausalOp's cause= prefix-pushdown for
+        // O(prefix-match) instead of O(N) scan + client-side filter.
+        // ADR-0163 follow-up (2026-05-10): conditional pass — only forward
+        // when the caller explicitly set keyPrefix. Prevents storage backends
+        // from receiving an `'keyPrefix' in q` shape that differs from the
+        // no-prefix shape (footgun for any backend that interpolates into
+        // SQL-style templates without an undefined check).
+        const queryArgs: any = {
           type: 'prefix',
           namespace,
-          // ADR-0163 (2026-05-10): keyPrefix forwarding from ADR-0147 R6
-          // temporarily reverted while investigating t3-2-concurrent
-          // ns_hits=5/6 regression. routeCausalOp's cause= pushdown still
-          // sets listOp.keyPrefix at line ~1925, but `cli memory list`
-          // never sets op.keyPrefix (no --keyPrefix CLI flag). Restore
-          // after ADR-0163 closes.
           limit: op.limit || 50,
           offset: op.offset || 0,
-        });
+        };
+        if (op.keyPrefix !== undefined) {
+          queryArgs.keyPrefix = op.keyPrefix;
+        }
+        const entries = await storage.query(queryArgs);
         const total = await storage.count(namespace);
         return { success: true, entries, total };
       } catch (e) {
