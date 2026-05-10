@@ -20,6 +20,10 @@ import {
   type MCPServerStatus,
 } from '../mcp-server.js';
 import { listMCPTools, callMCPTool, hasTool, getToolMetadata } from '../mcp-client.js';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 
 // MCP tools categories
 const TOOL_CATEGORIES = [
@@ -45,6 +49,64 @@ function formatUptime(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   return `${hours}h ${mins}m`;
+}
+
+/**
+ * ADR-0164 Phase A0e — Run on-init `.meta` → segments migration before
+ * `manager.start()` so stale legacy sidecars are converted before the new
+ * native loader runs. Warn-and-continue on any failure; never block boot.
+ *
+ * Hard 10s cap (per ADR Correction #6: relies on A0a perf fixes — both
+ * `inspectMeta` and `inspectRvfNative` peek the magic via `openSync` +
+ * `readSync(fd, buf, 0, 4, 0)` rather than slurping multi-MB sidecars).
+ *
+ * Acceptance gate (Correction #7): callers must redirect stderr explicitly;
+ * the marketplace harness pipes stderr to /dev/null and would swallow these
+ * warnings under default invocation.
+ */
+async function runOnInitMigration(projectRoot: string): Promise<void> {
+  // dist/src/commands/mcp.js -> dist/src/commands -> dist/src -> dist -> pkg root -> scripts/
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const migrationScript = resolve(join(__dirname, '..', '..', '..', 'scripts', 'migrate-meta-to-segments.mjs'));
+
+  if (!existsSync(migrationScript)) {
+    // Tool not packaged in this build — silent skip (warn-and-continue).
+    process.stderr.write(`[mcp] migration tool not found at ${migrationScript}; skipping\n`);
+    return;
+  }
+
+  await new Promise<void>((resolveDone) => {
+    const child = spawn(process.execPath, [migrationScript, projectRoot, '--auto', '--quiet'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+
+    let stderrBuf = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString('utf-8');
+    });
+
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* already exited */ }
+      process.stderr.write('[mcp] on-init migration timed out after 10s; continuing without migration\n');
+      resolveDone();
+    }, 10_000);
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      process.stderr.write(`[mcp] on-init migration spawn error: ${err.message}; continuing\n`);
+      resolveDone();
+    });
+
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code !== 0 && code !== null) {
+        const tail = stderrBuf.trim().split('\n').slice(-3).join(' | ');
+        process.stderr.write(`[mcp] on-init migration exited ${code}; continuing (stderr: ${tail})\n`);
+      }
+      resolveDone();
+    });
+  });
 }
 
 // Start MCP server
@@ -156,6 +218,11 @@ const startCommand: Command = {
         // Continue anyway - the stop/cleanup may partially fail
       }
     }
+
+    // ADR-0164 Phase A0e: on-init `.meta` → segments migration.
+    // Runs after prior-PID SIGKILL/cleanup, before `manager.start()`.
+    // Warn-and-continue on failure or 10s timeout; does NOT block MCP boot.
+    await runOnInitMigration(process.cwd());
 
     const options: MCPServerOptions = {
       transport,
