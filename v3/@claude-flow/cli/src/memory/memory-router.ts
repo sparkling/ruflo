@@ -838,13 +838,26 @@ async function _doInit(): Promise<void> {
   try {
     await initControllerRegistry();
   } catch (e) {
-    // ADR-0112 Phase 2 (memory-router track): unified fatal-init
-    // discrimination — slice 4 added DimensionMismatchError + RvfCorruptError
-    // + ControllerInitError to the set previously limited to the relabelled
-    // EmbeddingDimensionError + AgentDBInitError.
-    if (_isFatalInitError(e)) throw e;
-    // Other registry errors: best-effort — storage still works without the
-    // auxiliary controllers.
+    // ADR-0165 fix: AgentDB controller-registry init failure is FATAL.
+    // Per feedback-no-fallbacks + ADR-0082, silently continuing leaves
+    // agentdb_* MCP tools pointing at routeMemoryOp fallbacks that
+    // return success without writing to .swarm/memory.db — a classic
+    // silent-fallback that converts transient init failures into
+    // permanent data loss for the process lifetime. AgentDB is a
+    // required dep (ADR-0111 W1.5/W1.6); init failure means a broken
+    // install, NAPI binding error, or transient resource starvation
+    // — all of which the operator must see, not have masked.
+    _initialized = false;
+    _storage = null;
+    if (e instanceof Error) {
+      throw new Error(
+        `AgentDB controller registry initialization failed (fatal per ADR-0165): ${e.message}`,
+        { cause: e },
+      );
+    }
+    throw new Error(
+      `AgentDB controller registry initialization failed (fatal per ADR-0165): ${String(e)}`,
+    );
   }
 
   _initialized = true;
