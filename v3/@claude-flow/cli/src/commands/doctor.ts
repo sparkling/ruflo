@@ -361,6 +361,52 @@ async function checkAIDefence(): Promise<HealthCheck> {
   }
 }
 
+/**
+ * ADR-097 Phase 4: federation peer-state surface for doctor.
+ *
+ * Probes the federation plugin loadability + asserts the breaker entity
+ * layer is present in the installed version. Without the plugin
+ * installed this is a "not configured" pass — federation is opt-in.
+ *
+ * Live coordinator state (per-peer counts) requires a running MCP server
+ * with `federation_init` called; operators inspect that via the
+ * `federation_breaker_status` MCP tool, not the doctor (which is a
+ * one-shot CLI process with no coordinator session).
+ */
+async function checkFederationBreaker(): Promise<HealthCheck> {
+  try {
+    // Optional plugin — not a hard dep of @claude-flow/cli. Build the
+    // module specifier dynamically so TypeScript cannot statically
+    // resolve it (which would emit TS2307); at runtime the import
+    // either resolves (plugin installed) or throws (handled below).
+    const specifier = ['@claude-flow', 'plugin-agent-federation'].join('/');
+    const mod: { FederationNodeState?: unknown } = await import(specifier);
+    if (!mod.FederationNodeState) {
+      return {
+        name: 'Federation Breaker',
+        status: 'warn',
+        message:
+          '@claude-flow/plugin-agent-federation loaded but FederationNodeState export missing — version older than ADR-097 Phase 2',
+        fix: 'Upgrade: npm install @claude-flow/plugin-agent-federation@alpha',
+      };
+    }
+    return {
+      name: 'Federation Breaker',
+      status: 'pass',
+      message:
+        'ADR-097 breaker loadable — federation_breaker_status / federation_evict / federation_reactivate MCP tools available',
+    };
+  } catch {
+    return {
+      name: 'Federation Breaker',
+      status: 'pass',
+      message:
+        'Federation plugin not installed (optional) — install only if you need cross-installation peering',
+      fix: 'npm install --save @claude-flow/plugin-agent-federation@alpha',
+    };
+  }
+}
+
 // Check MCP servers
 async function checkMcpServers(): Promise<HealthCheck> {
   const mcpConfigPaths = [
@@ -779,6 +825,7 @@ export const doctorCommand: Command = {
       checkBuildTools,
       checkAgenticFlow,
       checkEncryptionAtRest, // ADR-096 Phase 5
+      checkFederationBreaker, // ADR-097 Phase 4
     ];
 
     const componentMap: Record<string, () => Promise<HealthCheck>> = {
@@ -799,6 +846,7 @@ export const doctorCommand: Command = {
       'typescript': checkBuildTools,
       'agentic-flow': checkAgenticFlow,
       'encryption': checkEncryptionAtRest, // ADR-096 Phase 5
+      'federation': checkFederationBreaker, // ADR-097 Phase 4
     };
 
     let checksToRun = allChecks;

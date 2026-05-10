@@ -128,6 +128,36 @@ Test surface:
 3. **Suspended peer recovery storm**. If many peers transition `SUSPENDED → ACTIVE` simultaneously after cooldown, they could all retry pending sends at once. Mitigation: jitter the cooldown by ±10% per peer.
 4. **Cost-tracker plugin not installed**. If the user runs federation without cost-tracker, USD-based breaker rules degrade to "always permitted." Token-count breaker still works (federation tracks tokens itself). Document this — cost-tracker is the recommended pair, not strictly required.
 
+## Implementation status (2026-05-09)
+
+**ADR-097 is functionally complete end-to-end.** All five phases are landed: Phase 1 (budget envelope), Phase 2.a (state machine entity), Phase 2.b (breaker service + outbound short-circuit), Phase 3 (consumer-side cost aggregation + upstream `reportSpend` emission with `SpendReporter` interface and breaker fan-out), Phase 4 (operator surface — `federation_breaker_status` / `federation_evict` / `federation_reactivate` MCP tools + `ruflo doctor --component federation`). Integrators wire a `SpendReporter` implementation to push to their cost-tracker / Datadog / accounting backend; the included `InMemorySpendReporter` covers tests + reference impl.
+
+| Phase / Component | Status | Files | Commit(s) |
+|---|---|---|---|
+| **Phase 1** — Budget envelope + hop counter on `federation_send` | Implemented | `v3/@claude-flow/plugin-agent-federation/src/domain/value-objects/federation-budget.ts` (new), `mcp-tools.ts` updated | `7e1cc06df feat(federation): ADR-097 Phase 1 — budget envelope + hop counter (#1723)` |
+| **Phase 2.a** — Peer state machine value object + entity transitions | Implemented | `domain/value-objects/federation-node-state.ts` (new), `domain/entities/federation-node.ts` (state field + suspend/evict/reactivate), `__tests__/unit/federation-node-state.test.ts` (27 tests) | `feat/adr-100-promote-097-phase2` |
+| **Phase 2.b** — Breaker service + outbound short-circuit | Implemented | `application/federation-breaker-service.ts` (new — pure `evaluatePolicy` + stateful `FederationBreakerService` with bounded per-peer buffer), `application/federation-coordinator.ts` (sendMessage gates on `!peer.isActive` with `PEER_SUSPENDED`/`PEER_EVICTED` constant errors), `__tests__/unit/federation-breaker-service.test.ts` (25 tests) | `feat/adr-100-promote-097-phase2` |
+| **Phase 3 consumer** — Cost-tracker bus event + per-peer rolling aggregation | Implemented | `plugins/ruflo-cost-tracker/scripts/federation.mjs`, `skills/cost-federation/SKILL.md` | `1c0804315 feat(cost-tracker): P6 — ADR-097 Phase 3 federation_spend consumer (v0.14.0)` |
+| **Phase 3 upstream** — Federation `reportSpend()` + `SpendReporter` interface + breaker fan-out + `federation_report_spend` MCP tool | Implemented | `application/spend-reporter.ts` (new — interface + `InMemorySpendReporter` reference impl), `application/federation-coordinator.ts` (new optional `spendReporter` + `breakerService` constructor integrations + `reportSpend` method), `mcp-tools.ts` (federation_report_spend), `__tests__/unit/coordinator-spend-reporting.test.ts` (10 tests) | `feat/adr-100-promote-097-phase2` |
+| **Phase 3 plugin wiring** — federation plugin adopts budget integration + ADR-097 doc | Implemented | `plugins/ruflo-federation/` (v0.2.0), `docs/adrs/0001-federation-contract.md` | `b0168e4a5 feat(ruflo-federation): adopt plugin contract — 3-gate alignment + ADR-097 budget integration + smoke` |
+| **Phase 4** — Operator surface: 3 MCP tools + doctor health-check | Implemented | `mcp-tools.ts` (federation_breaker_status / federation_evict / federation_reactivate), `application/federation-coordinator.ts` (getPeerStates / getPeerStateCounts / evictPeer / reactivatePeer), `v3/@claude-flow/cli/src/commands/doctor.ts` (checkFederationBreaker), `__tests__/unit/federation-coordinator-breaker.test.ts` (11 tests) | `feat/adr-100-promote-097-phase2` |
+
+### Open questions resolved during implementation
+
+| Original question | Resolution |
+|---|---|
+| Is upstream `federation_spend` event emission required for Phase 3 consumer? | No — the consumer (`scripts/federation.mjs`) activates the moment the upstream emitter lands; it reads from the `federation-spend` namespace. Until Phase 2/3 emit events, the consumer runs against an empty namespace and reports zero spend. |
+| Does Phase 1's default `maxHops=8` close the recursion-loop class for all callers? | Yes — hop enforcement fires even when no explicit budget is passed (`validateBudget(undefined)` returns a default-bounded budget). |
+
+### Deferred
+
+_All ADR-097 phases are landed. Future work is integrator-side wiring:_
+
+- **Production `SpendReporter` adapter** that persists to ruflo memory (`namespace=federation-spend`, `key=fed-spend-<peerId>-<ts>`) per the cost-tracker consumer convention. Reference implementation: `InMemorySpendReporter` (in-memory buffer, fine for tests, NOT for production). A real adapter is a thin shell around `memory_store` — left to the integrator since they own the credentials/quota policy.
+- **Auto-emission from `federation_send`** — currently `reportSpend()` is an explicit caller-side call (correct since the federation layer doesn't own model pricing). A future enhancement could auto-emit a "send-completed" event with the budget enforcement's predicted cost as a placeholder, but the integrator overrides with actual cost on completion. Decision deferred until a concrete integration request justifies the additional state.
+
+---
+
 ## Acceptance criteria
 
 The full implementation is done when:

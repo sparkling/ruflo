@@ -28,6 +28,20 @@ import { TrustEvaluator } from './application/trust-evaluator.js';
 import { PolicyEngine, type FederationClaimType } from './application/policy-engine.js';
 import { TrustLevel, getTrustLevelLabel } from './domain/entities/trust-level.js';
 import { type FederationMessageType } from './domain/entities/federation-envelope.js';
+
+// ADR-104: real wire transport via agentic-flow loader pattern.
+// Today this resolves to WebSocketFallbackTransport (real ws networking);
+// when ruvnet/agentic-flow ships a native QUIC binding the same import
+// auto-upgrades with no plugin changes (set AGENTIC_FLOW_QUIC_NATIVE=1).
+type LoadedTransport = Awaited<ReturnType<typeof loadQuicTransport>> & {
+  /** WebSocketFallbackTransport adds listen(); the loader's interface
+   * doesn't include it, so we cast at the call site. */
+  listen?: (port: number, host?: string) => Promise<void>;
+};
+import {
+  loadQuicTransport,
+  type AgentMessage,
+} from 'agentic-flow/transport/loader';
 import { createMcpTools } from './mcp-tools.js';
 import { createCliCommands } from './cli-commands.js';
 
@@ -40,6 +54,11 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
 
   private coordinator: FederationCoordinator | null = null;
   private context: PluginContext | null = null;
+  // ADR-104: live transport instance, created in initialize() and torn
+  // down in shutdown(). Null when transport is disabled (the legacy
+  // in-process behavior — preserves backward compat for tests that
+  // don't supply a port).
+  private transport: LoadedTransport | null = null;
 
   async initialize(context: PluginContext): Promise<void> {
     this.context = context;
@@ -196,6 +215,46 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
 
     const sessions: Map<string, import('./domain/entities/federation-session.js').FederationSession> = new Map();
 
+    // ADR-104: load wire transport. WebSocket fallback by default; native
+    // QUIC when AGENTIC_FLOW_QUIC_NATIVE=1 + binding installed. Failures
+    // here downgrade to in-process noop (logged), preserving backward
+    // compat for tests/environments without ws available.
+    let transport: LoadedTransport | null = null;
+    try {
+      transport = await loadQuicTransport({
+        serverName: nodeId,
+        maxIdleTimeoutMs: 30_000,
+        maxConcurrentStreams: 100,
+        enable0Rtt: true,
+      }) as LoadedTransport;
+      this.transport = transport;
+      context.logger.info(`Federation transport loaded: ${nodeId}`);
+    } catch (err) {
+      context.logger.warn(
+        `Federation transport unavailable (${err instanceof Error ? err.message : err}); ` +
+          `falling back to in-process routing — federation_send will log only`,
+      );
+    }
+
+    /**
+     * Resolve a peer's nodeId to a wire address suitable for
+     * transport.send(). Looks up the discovery registry to get the
+     * peer's published endpoint, then strips the protocol prefix to
+     * get a `host:port` string.
+     *
+     * Endpoint shapes accepted:
+     *   - "ws://host:port"      → "host:port"
+     *   - "tailscale://host:port" → "host:port"
+     *   - "host:port"           → "host:port" (passthrough)
+     */
+    const resolveAddress = (targetNodeId: string): string | null => {
+      const peer = discovery.getPeer(targetNodeId);
+      if (!peer) return null;
+      const ep = peer.endpoint;
+      const m = ep.match(/^(?:[a-z]+:\/\/)?(.+)$/);
+      return m ? m[1] : ep;
+    };
+
     const routing = new RoutingService({
       generateEnvelopeId: generateId,
       generateNonce: () => `nonce-${Math.random().toString(36).slice(2)}`,
@@ -219,7 +278,38 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
         };
       },
       sendToNode: async (targetNodeId, envelope) => {
-        context.logger.debug(`Sending envelope ${envelope.envelopeId} to ${targetNodeId}`);
+        // ADR-104: real wire send via the loaded transport. If the
+        // transport failed to load OR the peer's address can't be
+        // resolved, log + return (the upstream RoutingService.send
+        // already wraps this in try/catch and returns a RoutingResult
+        // with the error to the caller).
+        if (!transport) {
+          context.logger.debug(
+            `Federation send (in-process noop): ${envelope.envelopeId} → ${targetNodeId}`,
+          );
+          return;
+        }
+        const address = resolveAddress(targetNodeId);
+        if (!address) {
+          context.logger.warn(
+            `Federation send aborted: peer ${targetNodeId} not in discovery registry`,
+          );
+          throw new Error(`PEER_UNKNOWN: ${targetNodeId}`);
+        }
+        const message: AgentMessage = {
+          id: envelope.envelopeId,
+          type: envelope.messageType,
+          payload: envelope as unknown,
+          metadata: {
+            sourceNodeId: envelope.sourceNodeId,
+            targetNodeId: envelope.targetNodeId,
+            sessionId: envelope.sessionId,
+          },
+        };
+        await transport.send(address, message);
+        context.logger.debug(
+          `Federation send → ${address} (envelope=${envelope.envelopeId}, type=${envelope.messageType})`,
+        );
       },
       getActiveSessions: () => Array.from(sessions.values()).filter(s => s.active),
       getLocalNodeId: () => nodeId,
@@ -237,6 +327,28 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
     context.services.register('federation:trust', trustEvaluator);
     context.services.register('federation:policy', policyEngine);
     context.services.register('federation:routing', routing);
+    if (transport) {
+      context.services.register('federation:transport', transport);
+    }
+
+    // ADR-104: bind the inbound listener if config supplies a port. The
+    // port is OPTIONAL — peers that only initiate outbound (no inbound
+    // accept) leave it unset. Common config: port 9100 for tailscale
+    // hosts. Defaults to "no listener" so existing tests/configs don't
+    // need to free a port.
+    const listenPort = config['port'] as number | undefined;
+    if (transport && typeof listenPort === 'number' && transport.listen) {
+      const listenHost = (config['host'] as string | undefined) ?? '0.0.0.0';
+      try {
+        await transport.listen(listenPort, listenHost);
+        context.logger.info(`Federation listening on ${listenHost}:${listenPort}`);
+      } catch (err) {
+        context.logger.error(
+          `Federation listener bind failed on ${listenHost}:${listenPort}: ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
 
     context.logger.info('Agent Federation plugin initialized');
   }
@@ -245,6 +357,16 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
     if (this.coordinator) {
       await this.coordinator.shutdown();
       this.coordinator = null;
+    }
+    if (this.transport) {
+      try {
+        await this.transport.close();
+      } catch (err) {
+        this.context?.logger.warn(
+          `Federation transport close error: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      this.transport = null;
     }
     this.context?.logger.info('Agent Federation plugin shut down');
     this.context = null;

@@ -1,7 +1,11 @@
-import { FederationNode } from '../domain/entities/federation-node.js';
+import { FederationNode, type FederationNodeStateRecord } from '../domain/entities/federation-node.js';
 import { FederationSession } from '../domain/entities/federation-session.js';
 import { type FederationMessageType } from '../domain/entities/federation-envelope.js';
 import { TrustLevel } from '../domain/entities/trust-level.js';
+import {
+  FederationNodeState,
+  type SuspensionReason,
+} from '../domain/value-objects/federation-node-state.js';
 import { DiscoveryService, type FederationManifest } from '../domain/services/discovery-service.js';
 import { HandshakeService } from '../domain/services/handshake-service.js';
 import { RoutingService, type RoutingResult } from '../domain/services/routing-service.js';
@@ -15,6 +19,11 @@ import {
   enforceBudget,
   validateBudget,
 } from '../domain/value-objects/federation-budget.js';
+import type { FederationBreakerService } from './federation-breaker-service.js';
+import type {
+  FederationSpendEvent,
+  SpendReporter,
+} from './spend-reporter.js';
 
 /**
  * Optional per-call budget controls (ADR-097 Phase 1). All fields are
@@ -50,6 +59,22 @@ export interface FederationStatus {
   readonly healthy: boolean;
 }
 
+/**
+ * Optional integrations (ADR-097 Phase 3 upstream + Phase 2.b breaker
+ * wiring). Both are constructor-injected; both default to no-op.
+ *
+ * - `spendReporter` — invoked by reportSpend() when present; persists
+ *   the FederationSpendEvent to whatever backend the integrator wired
+ *   (cost-tracker bus, ruflo memory federation-spend namespace, etc.)
+ * - `breakerService` — invoked by reportSpend() when present; calls
+ *   recordOutcome() so the breaker's in-memory rolling buffer is fed
+ *   without requiring the integrator to wire two parallel pipelines
+ */
+export interface FederationCoordinatorIntegrations {
+  readonly spendReporter?: SpendReporter;
+  readonly breakerService?: FederationBreakerService;
+}
+
 export class FederationCoordinator {
   private readonly config: FederationCoordinatorConfig;
   private readonly discovery: DiscoveryService;
@@ -61,6 +86,8 @@ export class FederationCoordinator {
   private readonly policyEngine: PolicyEngine;
   private readonly sessions: Map<string, FederationSession>;
   private initialized: boolean;
+  private readonly spendReporter?: SpendReporter;
+  private readonly breakerService?: FederationBreakerService;
 
   constructor(
     config: FederationCoordinatorConfig,
@@ -71,6 +98,7 @@ export class FederationCoordinator {
     piiPipeline: PIIPipelineService,
     trustEvaluator: TrustEvaluator,
     policyEngine: PolicyEngine,
+    integrations: FederationCoordinatorIntegrations = {},
   ) {
     this.config = config;
     this.discovery = discovery;
@@ -82,6 +110,8 @@ export class FederationCoordinator {
     this.policyEngine = policyEngine;
     this.sessions = new Map();
     this.initialized = false;
+    this.spendReporter = integrations.spendReporter;
+    this.breakerService = integrations.breakerService;
   }
 
   async initialize(manifest: Omit<FederationManifest, 'signature'>): Promise<void> {
@@ -147,6 +177,28 @@ export class FederationCoordinator {
     options: SendOptions = {},
   ): Promise<RoutingResult> {
     this.ensureInitialized();
+
+    // ADR-097 Phase 2.b: outbound short-circuit on tripped breaker. If the
+    // peer is SUSPENDED or EVICTED we refuse the send before doing any work,
+    // and emit a constant-string error (no remaining-budget echo per the
+    // anti-oracle posture inherited from Phase 1). The check fires *before*
+    // session lookup so an evicted peer cannot consume cycles even on a
+    // dangling session reference.
+    const peer = this.discovery.getPeer(targetNodeId);
+    if (peer && !peer.isActive) {
+      const reason = peer.isEvicted ? 'PEER_EVICTED' : 'PEER_SUSPENDED';
+      await this.audit.log('message_rejected', {
+        targetNodeId,
+        metadata: { reason },
+      });
+      return {
+        success: false,
+        mode: 'direct',
+        envelopeId: '',
+        targetNodeIds: [targetNodeId],
+        error: reason,
+      };
+    }
 
     const session = this.findSessionByNodeId(targetNodeId);
     if (!session) {
@@ -308,6 +360,152 @@ export class FederationCoordinator {
       trustLevels,
       healthy: this.initialized,
     };
+  }
+
+  /**
+   * ADR-097 Phase 4: per-peer breaker state snapshot for the doctor
+   * surface and `federation_breaker_status` MCP tool.
+   *
+   * Returns one entry per known peer with the entity's stateRecord —
+   * what state, when it changed, why, and which caller's correlation
+   * key triggered it. Pure read; does not mutate.
+   */
+  getPeerStates(): readonly (FederationNodeStateRecord & { readonly nodeId: string })[] {
+    return this.discovery.listPeers().map((peer) => ({
+      nodeId: peer.nodeId,
+      ...peer.stateRecord,
+    }));
+  }
+
+  /**
+   * Aggregated counts for the doctor surface — `{ active: N, suspended: M,
+   * evicted: K }`. Cheap O(peers) sweep; safe to call from a status line.
+   */
+  getPeerStateCounts(): { readonly active: number; readonly suspended: number; readonly evicted: number } {
+    let active = 0;
+    let suspended = 0;
+    let evicted = 0;
+    for (const peer of this.discovery.listPeers()) {
+      switch (peer.state) {
+        case FederationNodeState.ACTIVE: active++; break;
+        case FederationNodeState.SUSPENDED: suspended++; break;
+        case FederationNodeState.EVICTED: evicted++; break;
+      }
+    }
+    return { active, suspended, evicted };
+  }
+
+  /**
+   * Operator-initiated evict. Returns true on transition, false if the
+   * peer was already EVICTED or unknown. Logs to audit either way.
+   *
+   * Does NOT remove the peer from the discovery registry — `leavePeer`
+   * is the registry-removal API. Eviction is the breaker layer; the peer
+   * remains queryable so the operator can later reactivate.
+   */
+  async evictPeer(
+    nodeId: string,
+    reason: SuspensionReason = 'MANUAL_EVICT',
+    correlationId?: string,
+  ): Promise<boolean> {
+    this.ensureInitialized();
+    const peer = this.discovery.getPeer(nodeId);
+    if (!peer) return false;
+
+    const ok = peer.evict({ reason, correlationId });
+    await this.audit.log('threat_blocked', {
+      targetNodeId: nodeId,
+      metadata: {
+        reason,
+        correlationId: correlationId ?? null,
+        state: peer.state,
+        applied: ok,
+      },
+    });
+    if (ok) {
+      const session = this.findSessionByNodeId(nodeId);
+      if (session) {
+        session.terminate();
+        this.sessions.delete(session.sessionId);
+      }
+    }
+    return ok;
+  }
+
+  /**
+   * ADR-097 Phase 3 upstream: report the actual cost of a federated
+   * call. Federation doesn't own model pricing, so the integrator calls
+   * this after the downstream agent completes.
+   *
+   * Fans out to:
+   *   - spendReporter (if injected) — persists to integrator's backend
+   *   - breakerService.recordOutcome (if injected) — feeds the breaker's
+   *     in-memory rolling buffer for cost/failure-ratio thresholds
+   *
+   * Both are no-ops if the corresponding integration isn't wired, so
+   * callers don't need to branch on configuration. Negative tokens/usd
+   * are clamped to 0 at the breaker layer (anti-credit-inflation); the
+   * spend reporter receives the raw values so backends can audit them.
+   *
+   * Auto-fills `ts` if the caller omits it.
+   */
+  async reportSpend(input: {
+    readonly peerId: string;
+    readonly taskId?: string;
+    readonly tokensUsed: number;
+    readonly usdSpent: number;
+    readonly success: boolean;
+    readonly ts?: string;
+  }): Promise<void> {
+    const event: FederationSpendEvent = {
+      peerId: input.peerId,
+      taskId: input.taskId,
+      tokensUsed: input.tokensUsed,
+      usdSpent: input.usdSpent,
+      success: input.success,
+      ts: input.ts ?? new Date().toISOString(),
+    };
+
+    // Fan out in parallel — neither side blocks the other. Reporter
+    // failures bubble up (integrator's responsibility); breaker is
+    // sync-internally so its branch is fire-and-forget safe.
+    const tasks: Promise<void>[] = [];
+    if (this.spendReporter) {
+      tasks.push(this.spendReporter.reportSpend(event));
+    }
+    if (this.breakerService) {
+      this.breakerService.recordOutcome({
+        nodeId: event.peerId,
+        success: event.success,
+        tokensUsed: event.tokensUsed,
+        usdSpent: event.usdSpent,
+        at: new Date(event.ts),
+      });
+    }
+    if (tasks.length > 0) await Promise.all(tasks);
+  }
+
+  /**
+   * Operator-initiated reactivate. Used after an integrator-supplied
+   * health probe confirms a SUSPENDED peer is healthy, OR as an
+   * operator-override escape from EVICTED. Returns true on transition.
+   */
+  async reactivatePeer(nodeId: string, correlationId?: string): Promise<boolean> {
+    this.ensureInitialized();
+    const peer = this.discovery.getPeer(nodeId);
+    if (!peer) return false;
+
+    const ok = peer.reactivate(correlationId);
+    await this.audit.log('trust_level_changed', {
+      targetNodeId: nodeId,
+      metadata: {
+        action: 'reactivate',
+        correlationId: correlationId ?? null,
+        state: peer.state,
+        applied: ok,
+      },
+    });
+    return ok;
   }
 
   getSession(sessionId: string): FederationSession | undefined {
