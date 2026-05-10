@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-code-intelligence",
-  "version": "3.0.0-alpha.3-patch.27",
+  "version": "3.0.0-alpha.3-patch.28",
   "description": "Advanced code intelligence plugin for Claude Flow V3 - semantic search, architecture analysis, refactoring impact, module splitting, and pattern learning",
   "type": "module",
   "main": "./dist/index.js",
@@ -69,7 +69,7 @@
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "@claude-flow/plugins": "3.0.0-alpha.7-patch.554"
+    "@claude-flow/plugins": "3.0.0-alpha.7-patch.555"
   },
   "engines": {
     "node": ">=20.0.0"
