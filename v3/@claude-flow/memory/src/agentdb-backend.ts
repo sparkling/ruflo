@@ -88,8 +88,32 @@ export interface AgentDBBackendConfig {
   /** Force WASM backend (skip native hnswlib) */
   forceWasm?: boolean;
 
-  /** Vector backend: 'auto', 'ruvector', 'hnswlib' */
+  /**
+   * Vector backend: 'auto', 'ruvector', 'hnswlib'.
+   *
+   * @deprecated ADR-0166 Phase 2: use `vectorIndex` for the vector-search-index
+   * axis and `primaryStorage` for the persistence axis. `vectorBackend` is
+   * forwarded as a deprecated alias; agentdb emits a stderr warning when it is
+   * the only field set on the AgentDB side.
+   */
   vectorBackend?: 'auto' | 'ruvector' | 'hnswlib';
+
+  /**
+   * Vector-search index engine (ADR-0166 Phase 2, Option E split).
+   *
+   * `'auto'` resolves at runtime. `'sqlite-vec'` is reserved for ADR-0166
+   * Phase 3 (Option F) per-controller virtual-table augmentation; agentdb
+   * throws a loud error if requested before Phase 3 lands.
+   */
+  vectorIndex?: 'auto' | 'ruvector' | 'hnswlib' | 'sqlite-vec';
+
+  /**
+   * Primary persistence substrate (ADR-0166 Phase 2, Option E split).
+   *
+   * Only `'sqlite'` is valid under Amendment 2026-05-11f (Option F retired
+   * the substrate-flip path). agentdb throws a loud error for any other value.
+   */
+  primaryStorage?: 'sqlite';
 
   /** Vector dimensions (default: 768) */
   vectorDimension?: number;
@@ -115,9 +139,15 @@ export interface AgentDBBackendConfig {
 
 /**
  * Fallback configuration (used when config chain is unavailable)
+ *
+ * ADR-0166 Phase 2: `vectorIndex` and `primaryStorage` are intentionally
+ * excluded from the Required<> — when omitted, AgentDB.initialize() applies
+ * its own defaults (vectorIndex='auto', primaryStorage='sqlite') and emits
+ * the deprecation warning if only the legacy `vectorBackend` field is set.
+ * Populating them here would suppress the warning and mask user intent.
  */
 const FALLBACK_CONFIG: Required<
-  Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator'>
+  Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator' | 'vectorIndex' | 'primaryStorage'>
 > = {
   namespace: 'default',
   forceWasm: false,
@@ -296,11 +326,17 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
       }
 
       // Initialize AgentDB with config
+      // ADR-0166 Phase 2: forward both legacy `vectorBackend` and new
+      // `vectorIndex` + `primaryStorage` fields. AgentDB.initialize() resolves
+      // precedence (vectorIndex > vectorBackend) and emits the deprecation
+      // warning if only the legacy alias is set.
       this.agentdb = new AgentDB({
         dbPath: this.config.dbPath || ':memory:',
         namespace: this.config.namespace,
         forceWasm: this.config.forceWasm,
         vectorBackend: this.config.vectorBackend,
+        vectorIndex: this.config.vectorIndex,
+        primaryStorage: this.config.primaryStorage,
         vectorDimension: this.config.vectorDimension,
       });
 
