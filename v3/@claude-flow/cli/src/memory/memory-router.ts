@@ -587,7 +587,17 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
               learningBridge: cfgJson.memory?.learningBridge?.enabled === true,
               tieredCache: true,
               hierarchicalMemory: true,
-              memoryConsolidation: true,
+              // ADR-0170 Phase B Wave 1a fix (2026-05-11): memoryConsolidation
+              // is a Wave 1b controller whose constructor still issues SQLite-
+              // dialect DDL (INTEGER PRIMARY KEY AUTOINCREMENT) against the
+              // PostgresBackend handle that Wave 1a now passes. Under strict
+              // mode (CLAUDE_FLOW_STRICT !== 'false' = default), the resulting
+              // ControllerInitError is fatal — it tears down the entire
+              // Registry init and cascades to every downstream tool ("Reflexion
+              // not available", "SkillLibrary not available" via p13/B5
+              // acceptance checks). Disable until Wave 1b ports the controller
+              // to PostgresBackend; flip back to true alongside the port.
+              memoryConsolidation: false,
               enhancedEmbedding: true,
               memoryGraph: true,
               mutationGuard: true,
