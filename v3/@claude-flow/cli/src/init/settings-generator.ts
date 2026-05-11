@@ -129,7 +129,15 @@ export function generateSettings(options: InitOptions): object {
       enableHNSW: options.runtime.enableHNSW,
       agentdb: {
         learningThreshold: 0.6,
-        vectorBackend: 'auto',
+        // ADR-0170 Phase A.8a: orthogonal axes (vectorIndex + primaryStorage)
+        // replace the legacy `vectorBackend` field. Phase A defaults:
+        //   - vectorIndex 'auto' (in-memory cascade until Phase C wires pgvector)
+        //   - primaryStorage 'pglite' (embedded WASM postgres via @electric-sql/pglite)
+        // Users override `primaryStorage` to 'postgres' + set `connectionString`
+        // to point at a server deployment. Legacy `vectorBackend: 'auto'`
+        // remains forwarded for back-compat; init no longer writes it.
+        vectorIndex: 'auto',
+        primaryStorage: 'pglite',
         tickInterval: 15000,
       },
       learningBridge: {

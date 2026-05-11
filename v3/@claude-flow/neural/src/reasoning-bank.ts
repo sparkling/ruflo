@@ -216,7 +216,12 @@ export class ReasoningBank {
             dbPath: this.config.dbPath || ':memory:',
             namespace: this.config.namespace,
             vectorDimension: this.config.vectorDimension,
-            vectorBackend: 'auto',
+            // ADR-0170 Phase A.8a: vectorIndex='auto' replaces the legacy
+            // vectorBackend='auto' alias. Phase C activates the pgvector
+            // path; until then the factory cascades through in-memory
+            // backends. primaryStorage defaults to 'pglite' on the AgentDB
+            // side (no opt-in needed here).
+            vectorIndex: 'auto',
           });
 
           await this.agentdb.initialize();

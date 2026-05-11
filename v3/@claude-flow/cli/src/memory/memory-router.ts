@@ -554,11 +554,14 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
             dbPath: dbPath || _getDbPath(),
             dimension: embJson.dimension ?? 768,
             embeddingModel: embJson.model ?? 'Xenova/all-mpnet-base-v2',
-            // ADR-0111 W1.5 — RVF-primary fail-loud (memory project-rvf-primary).
-            // 'ruvector' forces the native NAPI backend; 'auto' could silently
-            // fall through to hnswlib when the native binary is missing, which
-            // contradicts our fail-loud stance.
-            vectorBackend: 'ruvector',
+            // ADR-0170 Phase A.8a — vectorIndex='pgvector' replaces the
+            // legacy vectorBackend='ruvector' pin. Under ADR-0170, vectors
+            // become first-class postgres column types indexed by pgvector;
+            // the legacy in-memory backend selection ('ruvector' / 'hnswlib')
+            // is loud-rejected by AgentDB at boot. Phase C wires the
+            // pgvector tables; Phase A keeps 'auto' as a deferred-resolve
+            // path until then. 'pgvector' is the declared intent.
+            vectorIndex: 'pgvector',
             hnswM: embJson.hnsw?.m ?? 23,
             hnswEfConstruction: embJson.hnsw?.efConstruction ?? 100,
             hnswEfSearch: embJson.hnsw?.efSearch ?? 50,

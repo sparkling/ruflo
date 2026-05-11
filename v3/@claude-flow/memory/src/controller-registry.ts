@@ -317,17 +317,22 @@ export interface RuntimeConfig {
   embeddingModel?: string;
 
   /**
-   * Vector backend selection (ADR-0111 W1.5 — project-rvf-primary).
+   * Vector backend selection — LEGACY ALIAS.
    *
-   * - 'ruvector' (preferred): force the native RVF NAPI backend (fail-loud
-   *   if missing — matches RVF-primary stance).
-   * - 'auto': legacy behaviour; agentdb selects based on availability,
-   *   which can silently fall back to hnswlib.
-   * - 'hnswlib': force hnswlib-node (escape hatch for hosts without the
-   *   native binary).
+   * @deprecated ADR-0170 Phase A.8a: use `vectorIndex` for the vector-index
+   * axis. Under ADR-0170 the valid `vectorIndex` values are 'auto',
+   * 'pgvector', and 'postgres-cli'. The legacy 'ruvector' and 'hnswlib'
+   * values are loud-rejected by AgentDB at boot.
+   *
+   * The 'ruvector' / 'auto' / 'hnswlib' values listed below remain
+   * forwardable as a deprecation alias to AgentDB.vectorBackend — agentdb
+   * emits a stderr deprecation warning when only this alias is set, and
+   * loud-rejects the retired values when forwarded as vectorIndex.
    *
    * Default at the registry level: undefined (delegates to agentdb).
-   * Memory-router pins this to 'ruvector'.
+   * Memory-router previously pinned this to 'ruvector'; under ADR-0170
+   * memory-router pins vectorIndex='pgvector' (Phase A.8a) and Phase C
+   * activates the pgvector path.
    */
   vectorBackend?: 'auto' | 'ruvector' | 'hnswlib';
 
@@ -1043,10 +1048,17 @@ export class ControllerRegistry extends EventEmitter {
       maxEntries: config.maxEntries ?? 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
       dimension: config.dimension ?? 768,
       embeddingModel: config.embeddingModel ?? 'all-mpnet-base-v2',
-      // ADR-0111 W1.5 — forward vectorBackend pin (project-rvf-primary).
-      // memory-router pins to 'ruvector'; falls through to agentdb default
-      // ('auto') only when no caller forces a value.
-      ...(config.vectorBackend && { vectorBackend: config.vectorBackend }),
+      // ADR-0170 Phase A.8a — forward the orthogonal axes when set.
+      // Legacy `vectorBackend` is forwarded as a deprecation alias;
+      // memory-router emits a stderr warning. `vectorIndex` and
+      // `primaryStorage` are forwarded straight through and AgentDB
+      // loud-rejects retired values ('ruvector'/'hnswlib' on vectorIndex,
+      // 'sqlite' on primaryStorage). `connectionString` opts into
+      // postgres server mode.
+      ...((config as any).vectorBackend && { vectorBackend: (config as any).vectorBackend }),
+      ...((config as any).vectorIndex && { vectorIndex: (config as any).vectorIndex }),
+      ...((config as any).primaryStorage && { primaryStorage: (config as any).primaryStorage }),
+      ...((config as any).connectionString && { connectionString: (config as any).connectionString }),
       hnswM: config.hnswM ?? 23,
       hnswEfConstruction: config.hnswEfConstruction ?? 100,
       hnswEfSearch: config.hnswEfSearch ?? 50,

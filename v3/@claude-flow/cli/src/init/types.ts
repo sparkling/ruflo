@@ -243,8 +243,29 @@ export interface RuntimeConfig {
   modelPath?: string;
   /** Swarm auto-scale */
   autoScale?: boolean;
-  /** Vector backend for AgentDB */
+  /**
+   * Vector backend for AgentDB.
+   *
+   * @deprecated ADR-0170 Phase A.8a: use `vectorIndex` for the vector-index
+   * axis ('auto' | 'pgvector' | 'postgres-cli') and `primaryStorage` for
+   * the relational substrate axis ('pglite' | 'postgres'). The legacy
+   * `vectorBackend` field is forwarded as a deprecation alias.
+   */
   vectorBackend?: string;
+  /**
+   * Vector-search index engine (ADR-0170 Phase A.8a). Init template
+   * writes 'pgvector' by default once Phase C lights up pgvector tables;
+   * Phase A defaults to 'auto' so the in-memory cascade keeps working.
+   */
+  vectorIndex?: string;
+  /**
+   * Primary persistence substrate (ADR-0170 Phase A.8a). Init template
+   * writes 'pglite' (embedded WASM postgres) by default. Set 'postgres'
+   * and supply connectionString to use a server.
+   */
+  primaryStorage?: string;
+  /** PostgreSQL connection string (ADR-0170 Phase A.8a). */
+  connectionString?: string;
   /** Enable AgentDB learning */
   enableLearning?: boolean;
   /** AgentDB learning positive threshold */

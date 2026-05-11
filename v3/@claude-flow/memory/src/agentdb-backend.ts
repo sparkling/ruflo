@@ -91,29 +91,48 @@ export interface AgentDBBackendConfig {
   /**
    * Vector backend: 'auto', 'ruvector', 'hnswlib'.
    *
-   * @deprecated ADR-0166 Phase 2: use `vectorIndex` for the vector-search-index
-   * axis and `primaryStorage` for the persistence axis. `vectorBackend` is
-   * forwarded as a deprecated alias; agentdb emits a stderr warning when it is
-   * the only field set on the AgentDB side.
+   * @deprecated ADR-0166 Phase 2 / ADR-0170 Phase A.4: use `vectorIndex` for
+   * the vector-search-index axis and `primaryStorage` for the persistence
+   * axis. The legacy `vectorBackend` alias is forwarded with a stderr
+   * deprecation warning on the AgentDB side. Under ADR-0170 the legacy
+   * values 'ruvector' and 'hnswlib' are loud-rejected — pass 'auto' or
+   * 'pgvector' via vectorIndex instead.
    */
   vectorBackend?: 'auto' | 'ruvector' | 'hnswlib';
 
   /**
-   * Vector-search index engine (ADR-0166 Phase 2, Option E split).
+   * Vector-search index engine (ADR-0170 Phase A.4 widens the union).
    *
-   * `'auto'` resolves at runtime. `'sqlite-vec'` is reserved for ADR-0166
-   * Phase 3 (Option F) per-controller virtual-table augmentation; agentdb
-   * throws a loud error if requested before Phase 3 lands.
+   * Under ADR-0170 the valid values are:
+   *   - `'auto'` — runtime factory detection (Phase C prefers pgvector when it lands)
+   *   - `'pgvector'` — postgres-native HNSW/IVFFlat index (Phase C)
+   *   - `'postgres-cli'` — higher-level @ruvector/postgres-cli surface
+   * The legacy values 'ruvector' / 'hnswlib' / 'sqlite-vec' are retired
+   * and rejected at boot on the AgentDB side. See ADR-0170
+   * §"Implementation pre-flight item 1".
    */
-  vectorIndex?: 'auto' | 'ruvector' | 'hnswlib' | 'sqlite-vec';
+  vectorIndex?: 'auto' | 'pgvector' | 'postgres-cli';
 
   /**
-   * Primary persistence substrate (ADR-0166 Phase 2, Option E split).
+   * Primary persistence substrate (ADR-0170 Phase A.4).
    *
-   * Only `'sqlite'` is valid under Amendment 2026-05-11f (Option F retired
-   * the substrate-flip path). agentdb throws a loud error for any other value.
+   * Valid values:
+   *   - `'pglite'` (default) — embedded WASM postgres via @electric-sql/pglite
+   *   - `'postgres'` — server mode via node-postgres (connectionString opt-in)
+   *
+   * The legacy `'sqlite'` value is REMOVED. agentdb throws a loud error
+   * for any other value per memory feedback-no-fallbacks. See ADR-0170
+   * §"No-fallback policy".
    */
-  primaryStorage?: 'sqlite';
+  primaryStorage?: 'pglite' | 'postgres';
+
+  /**
+   * Optional PostgreSQL connection string (ADR-0170 Phase A.4).
+   *
+   * Forwarded to AgentDB.connectionString when set. Also reads
+   * AGENTDB_POSTGRES_URL env on the AgentDB side.
+   */
+  connectionString?: string;
 
   /** Vector dimensions (default: 768) */
   vectorDimension?: number;
@@ -140,14 +159,15 @@ export interface AgentDBBackendConfig {
 /**
  * Fallback configuration (used when config chain is unavailable)
  *
- * ADR-0166 Phase 2: `vectorIndex` and `primaryStorage` are intentionally
- * excluded from the Required<> — when omitted, AgentDB.initialize() applies
- * its own defaults (vectorIndex='auto', primaryStorage='sqlite') and emits
+ * ADR-0170 Phase A.8a: `vectorIndex`, `primaryStorage`, and `connectionString`
+ * are intentionally excluded from the Required<> — when omitted,
+ * AgentDB.initialize() applies its own defaults (vectorIndex='auto',
+ * primaryStorage='pglite', no connectionString → embedded mode) and emits
  * the deprecation warning if only the legacy `vectorBackend` field is set.
  * Populating them here would suppress the warning and mask user intent.
  */
 const FALLBACK_CONFIG: Required<
-  Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator' | 'vectorIndex' | 'primaryStorage'>
+  Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator' | 'vectorIndex' | 'primaryStorage' | 'connectionString'>
 > = {
   namespace: 'default',
   forceWasm: false,
@@ -228,18 +248,19 @@ const DEFAULT_CONFIG = FALLBACK_CONFIG;
  * - Compatible with RvfBackend for combined structured+vector queries
  */
 export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
-  // ADR-0166 Phase 2: vectorIndex + primaryStorage are intentionally NOT
-  // Required<>. Leaving them as undefined when not user-set is what lets
-  // agentdb fire its deprecation warning once on the legacy vectorBackend
-  // path. Forcing them populated here would suppress the warning + mask
-  // user intent.
+  // ADR-0170 Phase A.8a: vectorIndex + primaryStorage + connectionString are
+  // intentionally NOT Required<>. Leaving them as undefined when not user-set
+  // is what lets agentdb fire its deprecation warning once on the legacy
+  // vectorBackend path AND lets the new primaryStorage default ('pglite')
+  // apply on the AgentDB side without ruflo forcing a value here.
   private config: Required<
-    Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator' | 'vectorIndex' | 'primaryStorage'>
+    Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator' | 'vectorIndex' | 'primaryStorage' | 'connectionString'>
   > & {
     dbPath?: string;
     embeddingGenerator?: EmbeddingGenerator;
     vectorIndex?: AgentDBBackendConfig['vectorIndex'];
     primaryStorage?: AgentDBBackendConfig['primaryStorage'];
+    connectionString?: AgentDBBackendConfig['connectionString'];
   };
   private agentdb: any;
   private initialized: boolean = false;
@@ -333,10 +354,13 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
       }
 
       // Initialize AgentDB with config
-      // ADR-0166 Phase 2: forward both legacy `vectorBackend` and new
-      // `vectorIndex` + `primaryStorage` fields. AgentDB.initialize() resolves
-      // precedence (vectorIndex > vectorBackend) and emits the deprecation
-      // warning if only the legacy alias is set.
+      // ADR-0170 Phase A.8a: forward legacy `vectorBackend`, the orthogonal
+      // `vectorIndex` + `primaryStorage` fields (now 'pglite'|'postgres'),
+      // and the new `connectionString` field for postgres server mode.
+      // AgentDB.initialize() resolves precedence (vectorIndex > vectorBackend),
+      // emits the deprecation warning for the legacy alias, and loud-rejects
+      // any retired vectorIndex ('ruvector'/'hnswlib') or primaryStorage
+      // ('sqlite'/'auto') values.
       this.agentdb = new AgentDB({
         dbPath: this.config.dbPath || ':memory:',
         namespace: this.config.namespace,
@@ -344,6 +368,7 @@ export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
         vectorBackend: this.config.vectorBackend,
         vectorIndex: this.config.vectorIndex,
         primaryStorage: this.config.primaryStorage,
+        connectionString: this.config.connectionString,
         vectorDimension: this.config.vectorDimension,
       });
 
