@@ -228,11 +228,18 @@ const DEFAULT_CONFIG = FALLBACK_CONFIG;
  * - Compatible with RvfBackend for combined structured+vector queries
  */
 export class AgentDBBackend extends EventEmitter implements IMemoryBackend {
+  // ADR-0166 Phase 2: vectorIndex + primaryStorage are intentionally NOT
+  // Required<>. Leaving them as undefined when not user-set is what lets
+  // agentdb fire its deprecation warning once on the legacy vectorBackend
+  // path. Forcing them populated here would suppress the warning + mask
+  // user intent.
   private config: Required<
-    Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator'>
+    Omit<AgentDBBackendConfig, 'dbPath' | 'embeddingGenerator' | 'vectorIndex' | 'primaryStorage'>
   > & {
     dbPath?: string;
     embeddingGenerator?: EmbeddingGenerator;
+    vectorIndex?: AgentDBBackendConfig['vectorIndex'];
+    primaryStorage?: AgentDBBackendConfig['primaryStorage'];
   };
   private agentdb: any;
   private initialized: boolean = false;
