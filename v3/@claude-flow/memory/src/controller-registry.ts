@@ -1450,7 +1450,8 @@ export class ControllerRegistry extends EventEmitter {
 
       case 'hierarchicalMemory': {
         // HierarchicalMemory exported from agentdb 3.0.0-alpha.10 (ADR-066 Phase P2-3)
-        // Constructor: (db, embedder, vectorBackend?, graphBackend?, config?)
+        // Constructor: (db, embedder, vectorBackend?, config?) — ADR-0166 Phase 1.5
+        // removed the dead `graphBackend?` parameter (never read inside the class).
         //
         // ADR-0111 W1.5 — Model 1: missing-symbol returns the in-memory stub
         // only as a strict-mode-off escape hatch (matches the post-W1.5 catch
@@ -1477,7 +1478,8 @@ export class ControllerRegistry extends EventEmitter {
 
       case 'memoryConsolidation': {
         // MemoryConsolidation exported from agentdb 3.0.0-alpha.10 (ADR-066 Phase P2-3)
-        // Constructor: (db, hierarchicalMemory, embedder, vectorBackend?, graphBackend?, config?)
+        // Constructor: (db, hierarchicalMemory, embedder, vectorBackend?, config?) —
+        // ADR-0166 Phase 1.5 removed the dead `graphBackend?` parameter.
         //
         // ADR-0111 W1.5 — Model 1: same treatment as hierarchicalMemory above.
         // Missing-symbol now throws via the strict-mode-aware path.
