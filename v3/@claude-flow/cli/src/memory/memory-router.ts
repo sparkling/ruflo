@@ -182,6 +182,26 @@ let _initialized = false;
 let _initPromise: Promise<void> | null = null;
 let _initFailed = false; // ADR-0086 I2: prevent retry storm on persistent failure
 
+// ADR-0170 Phase C.3: split init into storage-only vs full registry. The
+// memory_* axis (routeMemoryOp / routeEmbeddingOp) only needs `_storage`
+// (RVF); the agentdb_* axis (controller-touching routes + getController)
+// needs the full ControllerRegistry init which eagerly opens the postgres
+// substrate and runs per-controller bootstrap DDL.
+//
+// Why the split exists: under ADR-0170 Phase C-1 the registry init now
+// pays a postgres cluster open + CREATE EXTENSION + per-controller
+// CREATE TABLE/INDEX IF NOT EXISTS on every fresh CLI process. The
+// per-CLI-invocation regression measured in Phase C-2 (+30% store p50,
+// +21% wall) was traced entirely to this eager init firing on memory_*
+// axis CLI commands that never touch any controller.
+//
+// Per `feedback-no-fallbacks`: lazy != silent. If `ensureRegistry()` is
+// called and pglite/agentdb is unavailable, the init still throws loudly
+// — only WHEN init runs changes, not whether it surfaces errors.
+let _registryInitialized = false;
+let _registryInitPromise: Promise<void> | null = null;
+let _registryInitFailed = false;
+
 // ADR-0086 Phase 3: _embeddingFns + _allFns removed (no more initializer dependency).
 
 // Lazy-cached Phase 4 controller-intercept module. Typed as `any` because
@@ -776,6 +796,20 @@ function _chmodDbFile(databasePath: string): void {
   }
 }
 
+/**
+ * ADR-0170 Phase C.3: RVF-only storage init.
+ *
+ * Initializes the RVF backend used by the memory_* axis (routeMemoryOp,
+ * routeEmbeddingOp). Does NOT touch the agentdb_* ControllerRegistry —
+ * that's deferred to `_doInitRegistry()` which is called on demand by
+ * agentdb_*-axis routes via `ensureRegistry()`.
+ *
+ * Pre-C.3: this body was the start of `_doInit()` followed by
+ * `initControllerRegistry()`. Splitting them lets memory_*-axis CLI
+ * invocations (the canonical cost-sensitive path) skip the postgres
+ * substrate open + per-controller CREATE TABLE/INDEX IF NOT EXISTS that
+ * Phase C-2 measured as a +30% store p50 / +21% wall regression.
+ */
 async function _doInit(): Promise<void> {
   if (_initialized) return;
 
@@ -838,7 +872,36 @@ async function _doInit(): Promise<void> {
     throw new Error('Storage initialization returned null');
   }
 
-  // ADR-0085: Bootstrap ControllerRegistry (best-effort — non-fatal)
+  _initialized = true;
+}
+
+/**
+ * ADR-0170 Phase C.3: agentdb_* ControllerRegistry init.
+ *
+ * Bootstraps the ControllerRegistry (and through it, the agentdb_*
+ * substrate: postgres cluster open, CREATE EXTENSION, per-controller
+ * CREATE TABLE/INDEX IF NOT EXISTS, etc.).
+ *
+ * Per `feedback-no-fallbacks`: this is loud-fail. If pglite is unavailable
+ * or the postgres connection cannot be established, the error propagates
+ * with the original ADR-0165 framing — silently continuing leaves
+ * agentdb_* MCP tools pointing at routeMemoryOp fallbacks that return
+ * success without writing, a classic silent-fallback antipattern.
+ *
+ * Called on demand by `ensureRegistry()` from agentdb_*-axis routes
+ * (getController, routePatternOp, routeReflexionOp, etc.). memory_*-axis
+ * routes (routeMemoryOp, routeEmbeddingOp) DO NOT call this — they only
+ * call `ensureRouter()` (storage-only).
+ */
+async function _doInitRegistry(): Promise<void> {
+  if (_registryInitialized) return;
+
+  // Storage must come up first — the registry's `dbPath` resolution
+  // depends on the same path machinery, and AgentDB construction inside
+  // ControllerRegistry consumes the resolved path.
+  await _doInit();
+
+  // ADR-0085: Bootstrap ControllerRegistry (now lazy per C.3).
   // ADR-0090 Tier B1 exception: EmbeddingDimensionError is FATAL. A stored-
   // vs-configured dimension mismatch means the user's persisted embeddings
   // are unreadable and any search/store would produce garbage results.
@@ -860,8 +923,7 @@ async function _doInit(): Promise<void> {
     // required dep (ADR-0111 W1.5/W1.6); init failure means a broken
     // install, NAPI binding error, or transient resource starvation
     // — all of which the operator must see, not have masked.
-    _initialized = false;
-    _storage = null;
+    _registryInitFailed = true;
     if (e instanceof Error) {
       throw new Error(
         `AgentDB controller registry initialization failed (fatal per ADR-0165): ${e.message}`,
@@ -873,10 +935,16 @@ async function _doInit(): Promise<void> {
     );
   }
 
-  _initialized = true;
+  _registryInitialized = true;
 }
 
-/** Ensure the router (storage + pipeline) is initialized. */
+/**
+ * Ensure the router (storage + pipeline) is initialized.
+ *
+ * ADR-0170 Phase C.3: storage-only. Memory_*-axis callers (routeMemoryOp,
+ * routeEmbeddingOp) use this. AgentDB_*-axis callers must use
+ * `ensureRegistry()` to also bootstrap the ControllerRegistry.
+ */
 export async function ensureRouter(): Promise<void> {
   if (_initialized) return;
   // ADR-0086 I2: fast-fail on persistent init failure — prevents retry storm
@@ -884,6 +952,32 @@ export async function ensureRouter(): Promise<void> {
   if (_initPromise) return _initPromise;
   _initPromise = _doInit().finally(() => { _initPromise = null; });
   return _initPromise;
+}
+
+/**
+ * ADR-0170 Phase C.3: ensure both the RVF storage AND the agentdb_*
+ * ControllerRegistry are initialized. Required for any caller that
+ * touches controllers via `getController`, `routePatternOp`,
+ * `routeFeedbackOp`, `routeReflexionOp`, `routeLearningOp`,
+ * `routeSessionOp`, `routeCausalOp`, `listControllerInfo`, `healthCheck`,
+ * or `waitForDeferred`.
+ *
+ * Idempotent and fast-failing — repeated calls after a successful init
+ * are O(1); repeated calls after a failed init throw immediately.
+ *
+ * Per `feedback-no-fallbacks`: failure propagates with the underlying
+ * error class preserved. Lazy != silent.
+ */
+export async function ensureRegistry(): Promise<void> {
+  if (_registryInitialized) return;
+  if (_registryInitFailed) {
+    throw new Error(
+      'AgentDB controller registry initialization permanently failed. Call resetRouter() or restart the process to retry.',
+    );
+  }
+  if (_registryInitPromise) return _registryInitPromise;
+  _registryInitPromise = _doInitRegistry().finally(() => { _registryInitPromise = null; });
+  return _registryInitPromise;
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,16 +1369,21 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
  * (e.g. neural.enabled=false), not as an independent controller source.
  */
 export async function getController<T = unknown>(name: string): Promise<T | undefined> {
-  // ADR-0090 Tier B5 fix: MCP tool handlers (agentdb_reflexion_store,
-  // agentdb_skill_create, etc.) call `getController` as the first
-  // memory-router touch-point in a fresh CLI process. Without
-  // `ensureRouter()`, `_registryInstance` is null and we fall straight
-  // through to `intercept.getExisting`, which returns undefined because
-  // nothing has populated the pool yet. Every controller-specific tool
-  // would return `"<Controller> not available"` — observed across all
-  // 15 Tier B5 verifiers before this fix. `ensureRouter` is idempotent
-  // (short-circuits on `_initialized`) and inexpensive.
-  try { await ensureRouter(); } catch { /* init failed; falls through below */ }
+  // ADR-0090 Tier B5 fix + ADR-0170 Phase C.3: MCP tool handlers
+  // (agentdb_reflexion_store, agentdb_skill_create, etc.) call
+  // `getController` as the first memory-router touch-point in a fresh
+  // CLI process. Without `ensureRegistry()`, `_registryInstance` is null
+  // and we fall straight through to `intercept.getExisting`, which
+  // returns undefined because nothing has populated the pool yet. Every
+  // controller-specific tool would return `"<Controller> not available"`
+  // — observed across all 15 Tier B5 verifiers before this fix.
+  //
+  // ADR-0170 Phase C.3 upgrades this from `ensureRouter()` (storage-only)
+  // to `ensureRegistry()` because `getController` is the canonical
+  // agentdb_* axis touch-point — memory_*-axis routes don't reach this
+  // function. `ensureRegistry` is idempotent (short-circuits on
+  // `_registryInitialized`) and inexpensive after first init.
+  try { await ensureRegistry(); } catch { /* init failed; falls through below */ }
   // Primary: router-local registry (populated by initControllerRegistry)
   if (_registryInstance && typeof _registryInstance.get === 'function') {
     try {
@@ -1347,7 +1446,9 @@ export async function hasController(name: string): Promise<boolean> {
  * init (short-circuits on `_initialized`).
  */
 export async function listControllerInfo(): Promise<unknown[]> {
-  try { await ensureRouter(); } catch { /* surface via empty list below */ }
+  // ADR-0170 Phase C.3: agentdb_*-axis route — needs full registry init,
+  // not just storage. `agentdb_controllers` MCP tool calls this directly.
+  try { await ensureRegistry(); } catch { /* surface via empty list below */ }
   if (_registryInstance && typeof _registryInstance.listControllers === 'function') {
     try {
       const controllers = _registryInstance.listControllers();
@@ -1389,7 +1490,8 @@ export async function listControllerInfo(): Promise<unknown[]> {
  * ControllerRegistry.get.
  */
 export async function waitForDeferred(): Promise<void> {
-  try { await ensureRouter(); } catch { /* registry will stay null; fall through */ }
+  // ADR-0170 Phase C.3: agentdb_*-axis route — needs full registry init.
+  try { await ensureRegistry(); } catch { /* registry will stay null; fall through */ }
   if (_registryInstance && typeof _registryInstance.waitForDeferred === 'function') {
     try {
       await _registryInstance.waitForDeferred();
@@ -1414,7 +1516,8 @@ export async function waitForDeferred(): Promise<void> {
  * invocation. See listControllerInfo() for the full rationale.
  */
 export async function healthCheck(): Promise<unknown> {
-  try { await ensureRouter(); } catch { /* surface via "available: false" below */ }
+  // ADR-0170 Phase C.3: agentdb_*-axis route — `agentdb_health` MCP tool.
+  try { await ensureRegistry(); } catch { /* surface via "available: false" below */ }
   if (_registryInstance && typeof _registryInstance.listControllers === 'function') {
     try {
       const controllers = _registryInstance.listControllers();
@@ -1518,7 +1621,9 @@ export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
  * ADR-0084 Phase 4: controller-direct — uses getController('reasoningBank') instead of bridge.
  */
 export async function routePatternOp(op: PatternOp): Promise<MemoryResult> {
-  await ensureRouter();
+  // ADR-0170 Phase C.3: pattern ops touch reasoningBank controller —
+  // requires the full registry init, not just storage.
+  await ensureRegistry();
 
   switch (op.type) {
     case 'store': {
@@ -1636,7 +1741,9 @@ export async function routePatternOp(op: PatternOp): Promise<MemoryResult> {
  * ADR-0084 Phase 4: controller-direct — uses getController('learningSystem') + getController('reasoningBank').
  */
 export async function routeFeedbackOp(op: FeedbackOp): Promise<MemoryResult> {
-  await ensureRouter();
+  // ADR-0170 Phase C.3: feedback ops touch learningSystem/reasoningBank
+  // controllers — requires the full registry init, not just storage.
+  await ensureRegistry();
 
   switch (op.type) {
     case 'record': {
@@ -1705,7 +1812,9 @@ export async function routeFeedbackOp(op: FeedbackOp): Promise<MemoryResult> {
  * ADR-0084 Phase 4: controller-direct — uses getController('reflexion') + getController('nightlyLearner').
  */
 export async function routeSessionOp(op: SessionOp): Promise<MemoryResult> {
-  await ensureRouter();
+  // ADR-0170 Phase C.3: session ops touch reflexion/nightlyLearner
+  // controllers — requires the full registry init, not just storage.
+  await ensureRegistry();
 
   switch (op.type) {
     case 'start': {
@@ -1803,7 +1912,10 @@ export async function routeSessionOp(op: SessionOp): Promise<MemoryResult> {
  * ADR-0084 Phase 4: controller-direct — uses getController('selfLearningRvfBackend') + getController('memoryConsolidation').
  */
 export async function routeLearningOp(op: LearningOp): Promise<MemoryResult> {
-  await ensureRouter();
+  // ADR-0170 Phase C.3: learning ops touch selfLearningRvfBackend +
+  // memoryConsolidation controllers — requires the full registry init,
+  // not just storage.
+  await ensureRegistry();
 
   switch (op.type) {
     case 'search': {
@@ -1863,7 +1975,9 @@ export async function routeLearningOp(op: LearningOp): Promise<MemoryResult> {
  * Uses reflexion controller directly (no bridge functions exist for reflexion).
  */
 export async function routeReflexionOp(op: ReflexionOp): Promise<MemoryResult> {
-  await ensureRouter();
+  // ADR-0170 Phase C.3: reflexion ops touch reflexion controller —
+  // requires the full registry init, not just storage.
+  await ensureRegistry();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const reflexion = await getController<any>('reflexion');
@@ -1918,7 +2032,9 @@ export async function routeReflexionOp(op: ReflexionOp): Promise<MemoryResult> {
  * ADR-0084 Phase 4: controller-direct — uses getController('causalGraph') + getController('causalRecall').
  */
 export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
-  await ensureRouter();
+  // ADR-0170 Phase C.3: causal ops touch causalGraph/causalRecall
+  // controllers — requires the full registry init, not just storage.
+  await ensureRegistry();
 
   switch (op.type) {
     case 'edge': {
@@ -2259,6 +2375,11 @@ export function resetRouter(): void {
   _registryPromise = null;
   _registryAvailable = null;
   _exitHookRegistered = false;
+  // ADR-0170 Phase C.3: reset the new split-init flags so a subsequent
+  // ensureRegistry() rebuilds the registry from scratch.
+  _registryInitialized = false;
+  _registryInitPromise = null;
+  _registryInitFailed = false;
   // ADR-0094 Sprint 1.4 (d6): clear lockPath so a subsequent init
   // recaptures it from the (possibly new) storage config.
   _lockPath = null;

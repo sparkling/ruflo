@@ -639,10 +639,15 @@ export {
 } from './mcp-server.js';
 
 // ADR-0086 Phase 3: Memory exports from router (RvfBackend) + adapter
+// ADR-0170 Phase C.3: `ensureRegistry` exposed alongside `ensureRouter`
+// so agentdb_*-axis consumers can opt into the full ControllerRegistry
+// init explicitly instead of relying on `ensureRouter` to bootstrap
+// everything. memory_*-axis consumers stay on `ensureRouter` (storage only).
 export {
   routeMemoryOp,
   routeEmbeddingOp,
   ensureRouter,
+  ensureRegistry,
   loadEmbeddingModel,
   generateEmbedding,
   generateBatchEmbeddings,
