@@ -7,13 +7,18 @@
  *
  * Priority (highest wins):
  *   1. Explicit args passed to resolveConfig()
- *   2. embeddings.json from .claude-flow/ (walk up from cwd)
- *   3. getEmbeddingConfig() from @claude-flow/agentdb (dynamic import)
+ *   2. embeddings.json from .claude-flow/ (walk up from cwd) for storage / HNSW /
+ *      memory / learning / graph keys
+ *   3. @claude-flow/config-chain.getEmbeddingConfig() for the embedding triple
+ *      (model / dimension / provider). Same .claude-flow/embeddings.json file,
+ *      shared walk-up algorithm, shared defaults — extracted in ADR-0177 Phase
+ *      1.6 refactor so memory and agentdb stop duplicating the same logic.
  *   4. Hardcoded defaults (model: Xenova/all-mpnet-base-v2, dim: 768)
  */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { getEmbeddingConfig, resetConfig as resetChainConfig } from '@claude-flow/config-chain';
 import { deriveHNSWParams } from './hnsw-utils.js';
 import type { HNSWParams } from './hnsw-utils.js';
 
@@ -83,9 +88,12 @@ export interface ConfigOverrides {
 // Hardcoded defaults (Layer 4 -- lowest priority)
 // ---------------------------------------------------------------------------
 
+// Embedding triple defaults (model / dimension / provider) live in
+// @claude-flow/config-chain — single source of truth shared with agentdb.
+// Memory-side fallback only for the model field, in the unlikely case the
+// shared accessor returns model=undefined (file present with model:"" — which
+// validateBoot rejects, but resolveConfig may be called pre-validation).
 const DEFAULT_MODEL = 'Xenova/all-mpnet-base-v2';
-const DEFAULT_DIMENSION = 768;
-const DEFAULT_PROVIDER = 'transformers.js';
 const DEFAULT_STORAGE_PROVIDER: 'rvf' | 'better-sqlite3' = 'rvf';
 const DEFAULT_DATABASE_PATH = '.claude-flow/memory.rvf';
 const DEFAULT_WAL_MODE = true;
@@ -126,26 +134,6 @@ function readEmbeddingsJson(): Record<string, unknown> | null {
   return null;
 }
 
-/** Try to import @claude-flow/agentdb and call getEmbeddingConfig(). */
-function tryAgentdbConfig(): { model?: string; dimension?: number; provider?: string } | null {
-  try {
-    // Dynamic require -- agentdb may not be installed in every context
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const agentdb = require('@claude-flow/agentdb');
-    if (typeof agentdb.getEmbeddingConfig === 'function') {
-      const cfg = agentdb.getEmbeddingConfig();
-      return {
-        model: cfg.model ?? undefined,
-        dimension: cfg.dimension ?? undefined,
-        provider: cfg.provider ?? undefined,
-      };
-    }
-  } catch {
-    // agentdb not available -- that is fine
-  }
-  return null;
-}
-
 /** Deep-freeze an object and all nested objects (recursive). */
 function deepFreeze<T extends object>(obj: T): Readonly<T> {
   Object.freeze(obj);
@@ -176,15 +164,26 @@ let _singleton: ResolvedConfig | null = null;
 export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
   if (_singleton && !overrides) return _singleton;
   if (_singleton && overrides) {
-    // Overrides after singleton is already cached — warn and re-resolve
+    // Overrides after singleton is already cached — warn and re-resolve.
+    // Reset the shared chain too so the re-resolve picks up any test-time
+    // mutations to .claude-flow/embeddings.json (the shared chain caches
+    // independently per its own singleton).
     console.warn('[resolve-config] resolveConfig() called with overrides after singleton was cached. Re-resolving.');
     _singleton = null;
+    resetChainConfig();
   }
 
-  // Layer 4: start with hardcoded defaults
-  let model: string = DEFAULT_MODEL;
-  let dimension: number = DEFAULT_DIMENSION;
-  let provider: string = DEFAULT_PROVIDER;
+  // Layers 4/3/2 for the embedding triple (model / dimension / provider) come
+  // from @claude-flow/config-chain.getEmbeddingConfig(), which reads the same
+  // .claude-flow/embeddings.json file with the same walk-up + defaults. Shared
+  // package eliminates the dual-implementation drift risk that this function
+  // previously carried (ADR-0177 Phase 1.6 refactor).
+  const embChain = getEmbeddingConfig();
+  let model: string = embChain.model ?? DEFAULT_MODEL;
+  let dimension: number = embChain.dimension;
+  let provider: string = embChain.provider;
+
+  // Layer 4: hardcoded defaults for the non-embedding keys
   let storageProvider: 'rvf' | 'better-sqlite3' = DEFAULT_STORAGE_PROVIDER;
   let databasePath: string = DEFAULT_DATABASE_PATH;
   let walMode: boolean = DEFAULT_WAL_MODE;
@@ -205,22 +204,11 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
   let hnswEfConstructionOverride: number | undefined;
   let hnswEfSearchOverride: number | undefined;
 
-  // Layer 3: agentdb getEmbeddingConfig() (if available)
-  const agentdbCfg = tryAgentdbConfig();
-  if (agentdbCfg) {
-    if (agentdbCfg.model) model = agentdbCfg.model;
-    if (agentdbCfg.dimension && agentdbCfg.dimension !== 384) dimension = agentdbCfg.dimension;
-    if (agentdbCfg.provider) provider = agentdbCfg.provider;
-  }
-
-  // Layer 2: embeddings.json from .claude-flow/
+  // Layer 2: embeddings.json from .claude-flow/ for the non-embedding keys
+  // (storage / HNSW / memory / learning / graph). The embedding triple is
+  // already resolved above via getEmbeddingConfig().
   const fileConfig = readEmbeddingsJson();
   if (fileConfig) {
-    if (typeof fileConfig.model === 'string') model = fileConfig.model;
-    if (typeof fileConfig.dimension === 'number' && fileConfig.dimension !== 384) {
-      dimension = fileConfig.dimension;
-    }
-    if (typeof fileConfig.provider === 'string') provider = fileConfig.provider;
     if (typeof fileConfig.storageProvider === 'string') {
       storageProvider = fileConfig.storageProvider as 'rvf' | 'better-sqlite3';
     }
@@ -345,7 +333,10 @@ export function getConfig(): ResolvedConfig {
   return _singleton ?? resolveConfig();
 }
 
-/** Reset the singleton (for testing only). */
+/** Reset the singleton (for testing only). Also resets the shared
+ * @claude-flow/config-chain singleton so the next resolveConfig() picks up
+ * any test mutations to .claude-flow/embeddings.json. */
 export function resetConfig(): void {
   _singleton = null;
+  resetChainConfig();
 }

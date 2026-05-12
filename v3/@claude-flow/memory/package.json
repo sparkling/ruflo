@@ -17,6 +17,7 @@
     "prepublishOnly": "npm run build && node -e \"const m = await import('./dist/index.js'); const required = ['ControllerRegistry','HnswLite','PersistentSonaCoordinator','RvfBackend','RvfLearningStore','RvfMigrator']; const missing = required.filter(k => !m[k]); if (missing.length) { console.error('Missing exports:', missing); process.exit(1); } console.log('All required exports present');\""
   },
   "dependencies": {
+    "@claude-flow/config-chain": "3.0.0-alpha.1-patch.65",
     "agentdb": "3.0.0-alpha.14-patch.77",
     "sql.js": "^1.10.3"
   },
