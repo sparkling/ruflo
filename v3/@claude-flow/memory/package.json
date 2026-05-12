@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/memory",
-  "version": "3.0.0-alpha.15-patch.56",
+  "version": "3.0.0-alpha.15-patch.57",
   "type": "module",
   "description": "Memory module - AgentDB unification, HNSW indexing, vector search, hybrid SQLite+AgentDB backend (ADR-009)",
   "main": "dist/index.js",
@@ -17,11 +17,11 @@
     "prepublishOnly": "npm run build && node -e \"const m = await import('./dist/index.js'); const required = ['ControllerRegistry','HnswLite','PersistentSonaCoordinator','RvfBackend','RvfLearningStore','RvfMigrator']; const missing = required.filter(k => !m[k]); if (missing.length) { console.error('Missing exports:', missing); process.exit(1); } console.log('All required exports present');\""
   },
   "dependencies": {
-    "agentdb": "3.0.0-alpha.14-patch.68",
+    "agentdb": "3.0.0-alpha.14-patch.69",
     "sql.js": "^1.10.3"
   },
   "optionalDependencies": {
-    "@claude-flow/neural": "3.0.0-alpha.8-patch.56",
+    "@claude-flow/neural": "3.0.0-alpha.8-patch.57",
     "@xenova/transformers": "^2.17.0",
     "better-sqlite3": "^12.9.0"
   },
