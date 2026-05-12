@@ -149,6 +149,7 @@ import {
   sessionEnd,
   hierarchicalStore,
   hierarchicalRecall,
+  hierarchicalQuery,
   contextSynthesize,
   flashConsolidate,
   batchOperation,
@@ -523,6 +524,40 @@ export const agentdbHierarchicalRecall: MCPTool = {
         topK: validatePositiveInt(params.topK, 5, MAX_TOP_K),
       });
       return result ?? { results: [], error: 'AgentDB not available. Use memory_search instead.' };
+    } catch (error) {
+      return { success: false, results: [], error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== agentdb_hierarchical-query — Path/glob enumeration over hierarchical store (ADR-0176 Phase 3) =====
+
+export const agentdbHierarchicalQuery: MCPTool = {
+  name: 'agentdb_hierarchical-query',
+  description: 'Enumerate records from hierarchical memory by path/glob pattern. Distinct from hierarchical-recall (similarity search) — use this when you have a path like "adr/*" and want all records under it. `*` matches multi-char, `?` matches single-char.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      pathPattern: { type: 'string', description: 'Path/glob pattern (e.g., "adr/*", "skills/*-store")' },
+      tier: { type: 'string', description: 'Optional filter by tier: working | episodic | semantic' },
+      limit: { type: 'number', description: 'Optional max results (default: unlimited)' },
+    },
+    required: ['pathPattern'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    try {
+      const pathPattern = validateString(params.pathPattern, 'pathPattern', 10_000);
+      if (!pathPattern) return { success: false, results: [], error: 'pathPattern is required (non-empty string, max 10KB)' };
+      const tier = validateString(params.tier, 'tier', 20);
+      if (tier && !['working', 'episodic', 'semantic'].includes(tier)) {
+        return { success: false, results: [], error: `Invalid tier: ${tier}. Must be working, episodic, or semantic` };
+      }
+      const result = await hierarchicalQuery({
+        pathPattern,
+        tier: tier as 'working' | 'episodic' | 'semantic' | undefined,
+        limit: validatePositiveInt(params.limit, undefined as any, MAX_TOP_K),
+      });
+      return result ?? { results: [], error: 'AgentDB not available.' };
     } catch (error) {
       return { success: false, results: [], error: sanitizeError(error) };
     }
@@ -2195,6 +2230,7 @@ export const agentdbTools: MCPTool[] = [
   agentdbSessionEnd,
   agentdbHierarchicalStore,
   agentdbHierarchicalRecall,
+  agentdbHierarchicalQuery,
   agentdbHierarchicalDelete,
   agentdbConsolidate,
   agentdbBatch,

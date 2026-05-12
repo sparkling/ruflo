@@ -323,6 +323,41 @@ export async function hierarchicalRecall(params: {
   }
 }
 
+// Delegates to: memory-router.ts getController('hierarchicalMemory')
+// Per ADR-0176 Phase 3: path/glob enumeration over the hierarchical store.
+// Distinct from hierarchicalRecall (similarity search) and hierarchical-delete (by-key).
+export async function hierarchicalQuery(params: {
+  pathPattern: string;
+  tier?: 'working' | 'episodic' | 'semantic';
+  limit?: number;
+}): Promise<any> {
+  const { getController } = await import('../memory/memory-router.js');
+  const hm = await getController<any>('hierarchicalMemory');
+  if (!hm) return { results: [], error: 'HierarchicalMemory not available' };
+
+  if (typeof hm.query !== 'function') {
+    // Stub fallback: emulate path/glob via prefix on cached entries when the real
+    // controller method is missing. Returns empty if the stub has no entries.
+    if (typeof hm.entries === 'function') {
+      const all = await hm.entries();
+      const prefix = params.pathPattern.replace(/[*?]/g, '');
+      const filtered = all
+        .filter((e: any) => typeof e.content === 'string' && e.content.startsWith(prefix))
+        .filter((e: any) => !params.tier || e.tier === params.tier)
+        .slice(0, params.limit ?? 100);
+      return { results: filtered, controller: 'hierarchicalMemory', stub: true };
+    }
+    return { results: [], error: 'HierarchicalMemory.query() not implemented in this controller version' };
+  }
+
+  try {
+    const results = await hm.query(params.pathPattern, { tier: params.tier, limit: params.limit });
+    return { results: results || [], controller: 'hierarchicalMemory' };
+  } catch (e: any) {
+    return { results: [], error: e.message };
+  }
+}
+
 // Delegates to: memory-router.ts getController('contextSynthesizer') + getController('hierarchicalMemory')
 export async function contextSynthesize(params: {
   query: string;
