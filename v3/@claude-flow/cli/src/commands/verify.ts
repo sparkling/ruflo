@@ -146,7 +146,11 @@ async function verifySignature(witness: Witness): Promise<{
   signatureValid: boolean;
 }> {
   // Lazy-load @noble/ed25519 — keep verify command snappy when no signature check needed
-  let ed: typeof import('@noble/ed25519') | null = null;
+  // `@noble/ed25519` is an optional dep — declared in package.json but not
+  // installed in the v3 workspace (matches the documented optional-imports
+  // pattern). Type as `any` so tsc compiles regardless of resolution path;
+  // runtime failure handled by the try/catch wrapping the dynamic import.
+  let ed: any = null;
   try {
     ed = await import('@noble/ed25519');
   } catch {

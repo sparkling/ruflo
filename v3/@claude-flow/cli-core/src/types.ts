@@ -114,6 +114,8 @@ export interface MemoryConfig {
   cacheSize: number;
   enableHNSW: boolean;
   vectorDimension: number;
+  /** Tiered cache override (config-adapter writes this; preserved as optional for downstream readers). */
+  tieredCache?: { maxSize: number };
 }
 
 export interface MCPConfig {
