@@ -17,6 +17,11 @@ import {
   FULL_INIT_OPTIONS,
   type InitOptions,
 } from '../init/index.js';
+// ADR-0177 Phase 1.6 (b) + (g): embedding model validation.
+import {
+  validateEmbeddingModel,
+  EmbeddingModelValidationError,
+} from '../init/embedding-models.js';
 
 // Codex initialization action
 async function initCodexAction(
@@ -298,6 +303,26 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
     options.runtime.maxAgents = maxAgents;
   }
 
+  // ADR-0177 Phase 1.6 (b) + (g): validate --embedding-model against the
+  //   canonical known-dim table in init/embedding-models.ts. Reject bare
+  //   names + unknown models with a typed error before any side effects
+  //   (filesystem writes, downloads). Auto-set matching dimension so the
+  //   config-template + embeddings.json receive a consistent (model, dim).
+  const embeddingModelFlag = (ctx.flags['embedding-model'] ?? ctx.flags.embeddingModel) as string | undefined;
+  if (embeddingModelFlag !== undefined) {
+    try {
+      const { model, dimension } = validateEmbeddingModel(embeddingModelFlag);
+      options.embeddings.model = model;
+      options.embeddings.dimension = dimension;
+    } catch (err) {
+      if (err instanceof EmbeddingModelValidationError) {
+        output.printError(err.message);
+        return { success: false, exitCode: 1, message: err.message };
+      }
+      throw err;
+    }
+  }
+
   // #1744 — opt-out of the user-global ~/.claude/CLAUDE.md "Ruflo Integration"
   // pointer block. Default behavior (off) preserves current install for users
   // who rely on it; opting in via --no-global keeps the global file pristine.
@@ -450,9 +475,10 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
 
     // Handle --with-embeddings
     const withEmbeddings = ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings;
-    // ADR-0069 A12: canonical model with config fallback
-    const _cfg = await import('agentdb').then((m: any) => m.getEmbeddingConfig()).catch(() => ({ model: 'Xenova/all-mpnet-base-v2' }));
-    const embeddingModel = (ctx.flags['embedding-model'] || ctx.flags.embeddingModel || _cfg.model) as string;
+    // ADR-0177 Phase 1.6 (b): use the already-validated options.embeddings.model
+    //   as the authoritative source — flag was validated by validateEmbeddingModel
+    //   earlier in this action.
+    const embeddingModel = options.embeddings.model;
 
     if (withEmbeddings) {
       output.writeln();
@@ -1240,10 +1266,12 @@ export const initCommand: Command = {
     },
     {
       name: 'embedding-model',
-      description: 'ONNX embedding model to use',
+      // ADR-0177 Phase 1.6 (b): canonical known-dim table lives in
+      //   src/init/embedding-models.ts; auto-sets matching dimension and
+      //   rejects bare / unknown names with EmbeddingModelValidationError.
+      description: 'ONNX embedding model (full-qualified Xenova/... name; see init/embedding-models.ts)',
       type: 'string',
-      default: 'Xenova/all-mpnet-base-v2', // ADR-0069 A12: canonical model is all-mpnet-base-v2 (768d)
-      choices: ['Xenova/all-mpnet-base-v2', 'Xenova/all-MiniLM-L6-v2'],
+      default: 'Xenova/all-mpnet-base-v2', // ADR-0069 A12 + ADR-0177 Phase 1.6 canonical
     },
     {
       name: 'codex',

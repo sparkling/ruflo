@@ -1,5 +1,10 @@
 // ADR-0069: config template for init command
 // ADR-0065 / ADR-0068 / ADR-0070: expanded tuning sections and memory.type alias
+// ADR-0177 Phase 1.6 (a): top-level `embedding.*` + `index.hnsw.*` keys per
+//   ADR-0068 + ADR-0102. Distinct from the existing `memory.embeddings.*`
+//   nested mirror in the full template: top-level is the canonical
+//   config-chain source of truth for substrate consumers; the nested mirror
+//   is retained for backwards-compatible source-inspection tooling.
 
 /**
  * Optional overrides applied when generating config templates.
@@ -19,6 +24,14 @@ export interface ConfigOverrides {
   pageRankDamping?: number;
 }
 
+// ADR-0177 Phase 1.6 defaults (per memory `reference-embedding-model` +
+//   `feedback-no-api-keys` + `feedback-full-model-names`).
+const PHASE_1_6_EMBEDDING_DEFAULT_MODEL = 'Xenova/all-mpnet-base-v2';
+const PHASE_1_6_EMBEDDING_DEFAULT_DIMENSION = 768;
+const PHASE_1_6_HNSW_M = 23;
+const PHASE_1_6_HNSW_EF_CONSTRUCTION = 100;
+const PHASE_1_6_HNSW_EF_SEARCH = 50;
+
 /**
  * Minimal config for `init` (default) — essential deployment keys only.
  * Produces ~40 lines of JSON when serialised.
@@ -32,6 +45,11 @@ export function getMinimalConfigTemplate(
   const port = overrides?.port ?? 3000;
   const similarityThreshold = overrides?.similarityThreshold ?? 0.7;
   const maxAgents = overrides?.maxAgents ?? 15;
+  // ADR-0177 Phase 1.6 (a): top-level `embedding.*` + `index.hnsw.*` keys.
+  //   `embeddingModel`/`embeddingDim` overrides flow from `ruflo init`
+  //   --embedding-model after validation in commands/init.ts.
+  const embeddingModel = overrides?.embeddingModel ?? PHASE_1_6_EMBEDDING_DEFAULT_MODEL;
+  const embeddingDim = overrides?.embeddingDim ?? PHASE_1_6_EMBEDDING_DEFAULT_DIMENSION;
 
   return {
     version: '3.0.0',
@@ -58,6 +76,26 @@ export function getMinimalConfigTemplate(
       defaultLearningRate: 0.001,
       qualityThreshold: 0.5,
     },
+    // ADR-0177 Phase 1.6 (a): canonical embedding config-chain keys. RVF
+    //   substrate + EmbeddingService read these (per 1.6 (c) + (d)) at
+    //   construction. `allowPaidProvider: false` enforces
+    //   `feedback-no-api-keys` discipline at config layer; only `onnx`
+    //   provider is allowed unless explicitly opted in via init.
+    embedding: {
+      provider: 'onnx',
+      model: embeddingModel,
+      dimension: embeddingDim,
+      allowPaidProvider: false,
+    },
+    // ADR-0177 Phase 1.6 (a) + ADR-0102: HNSW index params, top-level so
+    //   RVF segment creation reads them via canonical config accessor.
+    index: {
+      hnsw: {
+        m: PHASE_1_6_HNSW_M,
+        efConstruction: PHASE_1_6_HNSW_EF_CONSTRUCTION,
+        efSearch: PHASE_1_6_HNSW_EF_SEARCH,
+      },
+    },
     mcp: {
       autoStart: true,
       transport: { port }, // ADR-0065: mcp.transport.port, not flat mcp.port
@@ -80,12 +118,16 @@ export function getMinimalConfigTemplate(
  * Full config for `init --full` — all ADR-0069 / ADR-0070 keys with
  * documented defaults. Produces ~220 lines of JSON when serialised.
  *
- * Top-level keys (11):
- *   controllers, daemon, hooks, mcp, memory, neural,
+ * Top-level keys (13):
+ *   controllers, daemon, embedding, hooks, index, mcp, memory, neural,
  *   ports, rateLimiter, swarm, version, workers
  *
- * Note: embeddings settings are NOT written here — `init` writes them to a
- * separate `.claude-flow/embeddings.json` via `executor.ts`.
+ * Note: ADR-0177 Phase 1.6 adds top-level `embedding.*` + `index.hnsw.*` as
+ * canonical config-chain source of truth. The full template additionally
+ * mirrors them under `memory.embeddings.*` (lowercase model/dim/provider,
+ * uppercase HNSW M) for backwards-compatible source-inspection tooling
+ * (e.g., adr0080-maxelements). `init` ALSO writes `.claude-flow/embeddings.json`
+ * via `executor.ts` for the runtime embedding pipeline.
  *
  * @param overrides - Optional values that replace built-in defaults
  * @returns A plain object ready for `JSON.stringify`
