@@ -240,6 +240,288 @@ jobs:
           node plugins/ruflo-core/scripts/test-hooks.mjs \
             "node $GITHUB_WORKSPACE/v3/@claude-flow/cli/bin/cli.js"
 
+  mcp-protocol-smoke:
+    # Regression guard for ruvnet/ruflo#1874 — boots the HTTP MCP server,
+    # sends a real `initialize` request, and validates the response wire
+    # format against the MCP spec (YYYY-MM-DD protocolVersion string,
+    # not a {major,minor,patch} object). This was the missing layer that
+    # let #1874 ship — the existing in-process unit tests asserted the
+    # wrong shape, so test+prod agreed on a non-spec format that broke
+    # Claude Code's Zod validator.
+    name: MCP protocol smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: v3/pnpm-lock.yaml
+
+      - name: Build mcp + shared packages (static scan needs dist)
+        working-directory: v3
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @claude-flow/mcp... --filter @claude-flow/shared... run build
+
+      - name: Run MCP protocol-shape compliance scan
+        shell: bash
+        run: node plugins/ruflo-core/scripts/test-mcp-protocol.mjs
+
+  memory-import-smoke:
+    # Regression guard for ruvnet/ruflo#1883 + #1884 — drives the import-side
+    # invariants that single-component tests missed:
+    #   #1883 — memory_import_claude(allProjects=false) failed on WSL because
+    #           project-hash derivation was POSIX-only. Verified via candidate
+    #           set including the Claude-Code Windows hash form.
+    #   #1884 — import handler skipped validateMemoryInput, producing keys
+    #           memory_delete then rejected. Verified via property test
+    #           against 27 adversarial inputs covering the full
+    #           dangerous-character set.
+    # Static dist scan + property test combined cover the bug class.
+    name: Memory import smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: v3/pnpm-lock.yaml
+
+      - name: Build packages (static scan needs cli dist)
+        working-directory: v3
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          # Mirror witness-verify pattern — recursive + no-bail so unrelated
+          # package failures don't block this guard. The smoke script
+          # explicitly checks for memory-tools.js dist and fails loudly if
+          # the cli build itself didn't produce it.
+          pnpm --recursive --no-bail run build || true
+
+      - name: Run memory-import regression guards (#1883 + #1884)
+        shell: bash
+        run: node plugins/ruflo-core/scripts/test-memory-import.mjs
+
+  mcp-roundtrip-smoke:
+    # Regression guard for ruvnet/ruflo#1889 — paired MCP tool round-trip.
+    # When two MCP tools form a store/search pair, the contract is that
+    # data written by one MUST be retrievable by the other. The original
+    # bug: pattern-store wrote to memory-store-fallback while pattern-search
+    # only queried ReasoningBank (always empty), so writes were silently
+    # lost. Static dist-scan asserts both fallback paths are present;
+    # behavioural probe runs with an internal 30s timeout so CI never hangs
+    # on slow memory-backend init.
+    name: MCP paired-tool round-trip smoke (#1889)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: v3/pnpm-lock.yaml
+
+      - name: Build cli (smoke needs dist)
+        working-directory: v3
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --recursive --no-bail run build || true
+
+      - name: Run #1889 round-trip smoke
+        shell: bash
+        run: node plugins/ruflo-core/scripts/test-mcp-roundtrips.mjs
+
+      - name: Run #1863 cli-no-crash smoke
+        shell: bash
+        # Drives `task create` → `task status` + a few command formatters
+        # and asserts none crash with an unhandled exception. Catches the
+        # class where callMCPTool<{...}>() types a response field as
+        # non-optional but the server omits it → `.join()` on undefined.
+        run: node plugins/ruflo-core/scripts/test-cli-no-crash.mjs
+
+      - name: Run ADR-095 G2 consensus-transport guard
+        shell: bash
+        # Asserts @claude-flow/swarm ships a real pluggable ConsensusTransport
+        # (not the implicit single-process EventEmitter): required exports
+        # present, LocalTransport round-trip works, Ed25519 sign/verify is
+        # real (no `return true` stub regression). ADR-095 G2.
+        run: node plugins/ruflo-core/scripts/test-consensus-transport.mjs
+
+  tool-descriptions-audit:
+    # ADR-112 — gate: every MCP tool description must include "Use when …"
+    # guidance so Claude knows when to pick Ruflo's tool over native
+    # (Bash, Read, Grep, Glob, Task, TodoWrite, WebFetch). Baseline lives
+    # in verification/mcp-tool-baseline.json and is monotone-decreasing —
+    # the script fails the build if the no-guidance count goes UP. Run
+    # `node scripts/audit-tool-descriptions.mjs --update-baseline` after
+    # landing a description-improvement PR to lock the new floor.
+    name: Tool description discoverability (ADR-112)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run tool-description audit
+        shell: bash
+        run: node scripts/audit-tool-descriptions.mjs
+
+      - name: Run CLI ↔ MCP tool coverage audit (#1916)
+        # Fails if a `ruflo <cmd>` subcommand callMCPTool()s a tool that isn't
+        # registered in src/mcp-tools/*.ts (it would die with `MCP tool not
+        # found`). Monotone-decreasing baseline at verification/cli-mcp-tool-
+        # baseline.json — new dangling references fail; fixing one and running
+        # `node scripts/audit-cli-mcp-tools.mjs --update-baseline` lowers the floor.
+        shell: bash
+        run: node scripts/audit-cli-mcp-tools.mjs
+
+  plugin-package-audit:
+    # Regression guard for #1902/#1903/#1904 — plugin package.json install
+    # safety. Checks: (A) no unpublished @claude-flow/* hard dep / non-optional
+    # peer, (B) no bare-stable peer range that can't resolve a 3.x prerelease
+    # publish, (C) every main/module/exports path is covered by `files`,
+    # (D) after building each plugin, every main/module/exports path exists on
+    # disk (#1904). The build step is what makes check D live.
+    name: Plugin package install-safety (#1902/#1903/#1904)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: v3/pnpm-lock.yaml
+
+      - name: Install workspace + build plugins (so check D — exports-exist-after-build — is live)
+        working-directory: v3
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          for d in plugins/*/; do
+            if [ -f "$d/package.json" ] && node -e "process.exit(require('./'+process.argv[1]+'package.json').scripts?.build?0:1)" "$d"; then
+              echo "::group::build $d"
+              ( cd "$d" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install 2>/dev/null || true; pnpm run build || true )
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Run plugin package audit
+        shell: bash
+        run: node scripts/audit-plugin-packages.mjs
+
+  hook-command-audit:
+    # Regression guard for #1921 (and #1147) — plugin hooks.json must not
+    # invoke a bare `npx <pkg>@alpha hooks …` per fire. The fix is
+    # scripts/ruflo-hook.sh (prefers a local `ruflo`/`claude-flow` binary,
+    # falls back to `npx --prefer-offline`, always exits 0).
+    name: Hook-command install safety (#1921)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run hook-command audit
+        shell: bash
+        run: node scripts/audit-hook-commands.mjs
+
+      - name: Run hook-handler prompt-resolution audit (#1944)
+        shell: bash
+        run: node scripts/audit-hook-handler-prompt.mjs
+
+      - name: Lint the ruflo-hook shims
+        shell: bash
+        run: |
+          # Every shim must be valid bash and exit 0 even when no CLI is
+          # reachable (the #1921 contract). Probe with an empty PATH (invoke
+          # bash by full path since PATH= can't find it otherwise).
+          BASH="$(command -v bash)"
+          for sh in $(git ls-files '**/scripts/ruflo-hook.sh'); do
+            echo "checking $sh"
+            bash -n "$sh"
+            PATH= "$BASH" "$sh" modify-bash </dev/null || { echo "::error::$sh did not exit 0 with no CLI on PATH"; exit 1; }
+          done
+
+  vector-dim-audit:
+    # Regression guard for #1947 / #1942 / #1952 — `vector_indexes` rows for
+    # the `default` and `patterns` namespaces must use `dimensions = 384` to
+    # match the default ONNX embedding model (Xenova/all-MiniLM-L6-v2). A
+    # mismatched dim (the historical 768) is silent: HNSW rejects every
+    # `memory_store --vector` insert and `memory_search` always returns 0.
+    name: Vector-index dimension audit (#1947)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run vector-dim audit
+        shell: bash
+        run: node scripts/audit-vector-dim.mjs
+
   witness-verify:
     # Cryptographic regression guard: runs `ruflo verify --manifest` against
     # the local build to confirm every documented fix in verification.md.json

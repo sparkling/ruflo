@@ -100,7 +100,10 @@ async function main() {
   var toolInput = hookInput.toolInput || hookInput.tool_input || {};
   var toolName = hookInput.toolName || hookInput.tool_name || '';
 
-  var prompt = hookInput.prompt || hookInput.command || toolInput
+  // `toolInput` is an object (e.g. {command:"ls"}) — falling back to it
+  // directly bound `prompt` to the object and tripped `.toLowerCase()` /
+  // `.substring()` on every Bash hook (#1944). Use the `.command` field.
+  var prompt = hookInput.prompt || hookInput.command || toolInput.command
     || process.env.PROMPT || process.env.TOOL_INPUT_command || '';
 
 const handlers = {

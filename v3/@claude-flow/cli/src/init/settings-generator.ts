@@ -213,21 +213,35 @@ export function generateSettings(options: InitOptions): object {
 const IS_WINDOWS = process.platform === 'win32';
 
 /**
- * Build a hook command with reliable $CLAUDE_PROJECT_DIR expansion.
- * Wraps in `sh -c` to guarantee shell expansion on all platforms (macOS zsh,
- * Linux bash). Falls back to "." if CLAUDE_PROJECT_DIR is unset, since
- * Claude Code runs hooks from the project root.
- * On Windows, uses `cmd /c` with %CLAUDE_PROJECT_DIR%.
+ * Build a hook command that resolves to the right helpers dir on every
+ * install layout. `ruflo init` can land helpers either project-locally
+ * (`<project>/.claude/helpers/…`, when run from a project root) or globally
+ * (`$HOME/.claude/helpers/…`, when settings.json gets merged into the
+ * user-level Claude Code config). The earlier `${CLAUDE_PROJECT_DIR:-.}`
+ * form assumed project-local — so any global-install user hit
+ * `MODULE_NOT_FOUND` on every Bash/Edit/Session hook (#1943).
+ *
+ * The fix is a tiny POSIX `sh` probe: try `$CLAUDE_PROJECT_DIR/.claude/...`
+ * first, fall back to `$HOME/.claude/...` if it's missing. Both modes work,
+ * the global install never crashes, and project-local overrides still take
+ * precedence when present. On Windows, the same probe via `cmd /c` (the %~%
+ * fallback uses `IF EXIST`).
  */
 function hookCmd(script: string, subcommand: string): string {
   if (IS_WINDOWS) {
-    return `cmd /c node %CLAUDE_PROJECT_DIR%/${script} ${subcommand}`.trim();
+    // cmd.exe equivalent of the sh probe below. `IF EXIST` checks the
+    // project-local path; falls back to %USERPROFILE% if missing.
+    return `cmd /c "IF EXIST \"%CLAUDE_PROJECT_DIR%\\${script.replace(/\//g, '\\')}\" (node \"%CLAUDE_PROJECT_DIR%\\${script.replace(/\//g, '\\')}\" ${subcommand}) ELSE (node \"%USERPROFILE%\\${script.replace(/\//g, '\\')}\" ${subcommand})"`;
   }
-  // Use sh -c to ensure $CLAUDE_PROJECT_DIR is expanded by a real shell,
-  // even if Claude Code doesn't invoke hooks through a shell on macOS.
+  // POSIX sh: prefer project-local helpers, fall back to $HOME/.claude/.
+  // The fallback handles `ruflo init`'s global-install path where helpers
+  // live at `$HOME/.claude/helpers/` but Claude Code still sets
+  // `CLAUDE_PROJECT_DIR` to the *project* root (which has no helpers).
   // eslint-disable-next-line no-template-curly-in-string
-  const dir = '${CLAUDE_PROJECT_DIR:-.}';
-  return `sh -c 'exec node "${dir}/${script}" ${subcommand}'`;
+  const projVar = '${CLAUDE_PROJECT_DIR:-.}';
+  // eslint-disable-next-line no-template-curly-in-string
+  const homeVar = '${HOME}';
+  return `sh -c 'D="${projVar}"; [ -f "$D/${script}" ] || D="${homeVar}"; exec node "$D/${script}" ${subcommand}'`;
 }
 
 /** Shorthand for CJS hook-handler commands */
@@ -250,11 +264,18 @@ function generateStatusLineConfig(_options: InitOptions): object {
   // The script runs after each assistant message (debounced 300ms).
   // NOTE: statusline must NOT use `cmd /c` — Claude Code manages its stdin
   // directly for statusline commands, and `cmd /c` blocks stdin forwarding.
+  //
+  // Same project-local / $HOME fallback as `hookCmd()` (see #1943): the
+  // earlier `${CLAUDE_PROJECT_DIR:-.}` form broke statusline for any
+  // global-install user. Probe project-local first, fall back to $HOME.
+  const script = '.claude/helpers/statusline.cjs';
   // eslint-disable-next-line no-template-curly-in-string
-  const dir = '${CLAUDE_PROJECT_DIR:-.}';
+  const projVar = '${CLAUDE_PROJECT_DIR:-.}';
+  // eslint-disable-next-line no-template-curly-in-string
+  const homeVar = '${HOME}';
   return {
     type: 'command',
-    command: `sh -c 'exec node "${dir}/.claude/helpers/statusline.cjs"'`,
+    command: `sh -c 'D="${projVar}"; [ -f "$D/${script}" ] || D="${homeVar}"; exec node "$D/${script}"'`,
   };
 }
 
