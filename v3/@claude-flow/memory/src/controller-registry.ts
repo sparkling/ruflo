@@ -1717,30 +1717,20 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'rvfOptimizer': {
-        // ADR-0040: stats-only wrapper — backend optimization helper
-        // RVFOptimizer class doesn't exist in agentdb — wrap backend optimization
+        // RVFOptimizer restored in agentdb fork commit 9733a08 (ADR-0178 Follow-up #4 medium-priority batch).
+        // Real class exports: adaptiveQuantize / progressiveCompress / measureQuality / compressEmbedding /
+        // deduplicate / pruneMemories / batchEmbed / flush / clearCache / getStats.
+        // Constructor accepts Partial<RVFConfig> — defaults are baked in (ADR-0069 A11 aligned thresholds).
+        // Prior state (pre-restore): stats-only stub wrapping backend.optimize/getStats with comment
+        // "RVFOptimizer class doesn't exist in agentdb". Stub had zero consumers in fork or upstream
+        // (verified via grep across v3/ + forks/agentdb), so the API-shape change introduced by this
+        // swap breaks no callers.
+        if (!this.agentdb) return null;
         try {
-          const _agentdbModule = await import('agentdb');
-          const backend = this.backend;
-
-          return getOrCreate(name, () => ({
-            async optimize() {
-              // Run WAL checkpoint + VACUUM on the backend if supported
-              if (backend && typeof (backend as any).optimize === 'function') {
-                return (backend as any).optimize();
-              }
-              return { success: false, reason: 'no backend optimize method' };
-            },
-            async getStats() {
-              if (backend && typeof (backend as any).getStats === 'function') {
-                return (backend as any).getStats();
-              }
-              return { type: 'rvf-optimizer', status: 'wrapper' };
-            },
-            isAvailable() {
-              return !!backend;
-            },
-          }));
+          const agentdbModule: any = await import('agentdb');
+          const Optimizer = agentdbModule.RVFOptimizer;
+          if (!Optimizer) throw new Error('agentdb does not export RVFOptimizer (version mismatch)');
+          return getOrCreate(name, () => new Optimizer());
         } catch (e) {
           const err = new ControllerInitError(name, e instanceof Error ? e : new Error(String(e)));
           this.initErrors.push(err);
