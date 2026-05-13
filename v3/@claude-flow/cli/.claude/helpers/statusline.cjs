@@ -25,7 +25,36 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execSync, execFileSync } = require('child_process');
+
+// Read the installed plugin version once at startup. Probe the plugin's own
+// install location first (`~/.claude/plugins/marketplaces/ruflo/package.json`),
+// then npm-style installs, then the source-checkout location. The previous
+// code hardcoded `RuFlo V3.5` in the header — so users on alpha.27+ still
+// saw V3.5 in the statusline even though `ruflo doctor` reported the real
+// version (#1951).
+let RUFLO_VERSION = '3.6';
+try {
+  const home = os.homedir();
+  const cwd = process.cwd();
+  const pkgPaths = [
+    path.join(home, '.claude', 'plugins', 'marketplaces', 'ruflo', 'package.json'),
+    path.join(cwd, 'node_modules', '@claude-flow', 'cli', 'package.json'),
+    path.join(cwd, 'node_modules', 'ruflo', 'package.json'),
+    path.join(cwd, 'v3', '@claude-flow', 'cli', 'package.json'),
+  ];
+  for (const p of pkgPaths) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      if (pkg && typeof pkg.version === 'string' && pkg.version.length > 0) {
+        RUFLO_VERSION = pkg.version;
+        break;
+      }
+    } catch { /* malformed package.json — try next */ }
+  }
+} catch { /* fall through to the hardcoded default */ }
 
 // Configuration
 const CONFIG = {
@@ -401,7 +430,7 @@ function generateStatusline() {
   const lines = [];
 
   // Header Line
-  let header = `${c.bold}${c.brightPurple}▊ RuFlo V3.5 ${c.reset}`;
+  let header = `${c.bold}${c.brightPurple}▊ RuFlo V${RUFLO_VERSION} ${c.reset}`;
   header += `${swarm.coordinationActive ? c.brightCyan : c.dim}● ${c.brightCyan}${user.name}${c.reset}`;
   if (user.gitBranch) {
     header += `  ${c.dim}│${c.reset}  ${c.brightBlue}⎇ ${user.gitBranch}${c.reset}`;
@@ -507,7 +536,7 @@ function generateSafeStatusline() {
   const lines = [];
 
   // Header Line
-  let header = `${c.bold}${c.brightPurple}▊ RuFlo V3.5 ${c.reset}`;
+  let header = `${c.bold}${c.brightPurple}▊ RuFlo V${RUFLO_VERSION} ${c.reset}`;
   header += `${swarm.coordinationActive ? c.brightCyan : c.dim}● ${c.brightCyan}${user.name}${c.reset}`;
   if (user.gitBranch) {
     header += `  ${c.dim}│${c.reset}  ${c.brightBlue}⎇ ${user.gitBranch}${c.reset}`;

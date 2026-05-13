@@ -26,18 +26,29 @@ const CONFIG = {
 
 const CWD = process.cwd();
 
-// Read package version once at startup
+// Read package version once at startup. Probe the plugin's own install
+// location first — `~/.claude/plugins/marketplaces/ruflo/package.json` — so
+// users who installed via `/plugin install ruflo@ruflo` see the real version,
+// not the hardcoded fallback (#1951).
 let pkgVersion = '3.5';
 try {
+  const os = require('os');
+  const home = os.homedir();
   const pkgPaths = [
+    path.join(home, '.claude', 'plugins', 'marketplaces', 'ruflo', 'package.json'),
     path.join(CWD, 'node_modules', '@claude-flow', 'cli', 'package.json'),
+    path.join(CWD, 'node_modules', 'ruflo', 'package.json'),
     path.join(CWD, 'v3', '@claude-flow', 'cli', 'package.json'),
   ];
   for (const p of pkgPaths) {
-    if (fs.existsSync(p)) {
+    if (!fs.existsSync(p)) continue;
+    try {
       const pkg = JSON.parse(fs.readFileSync(p, 'utf-8'));
-      if (pkg.version) { pkgVersion = pkg.version; break; }
-    }
+      if (pkg && typeof pkg.version === 'string' && pkg.version.length > 0) {
+        pkgVersion = pkg.version;
+        break;
+      }
+    } catch { /* malformed package.json — try next */ }
   }
 } catch { /* use default */ }
 
