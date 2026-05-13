@@ -181,13 +181,30 @@ async function checkDaemonStatus(): Promise<HealthCheck> {
 
 // Check memory database
 async function checkMemoryDatabase(): Promise<HealthCheck> {
-  const dbPaths = [
-    '.claude-flow/memory.db',
+  // Authoritative path comes from `getMemoryRoot()` (honors
+  // `CLAUDE_FLOW_MEMORY_PATH`, claude-flow.config.json's `memory.persistPath`,
+  // then defaults to `.swarm/`). #1946: the previous hard-coded list missed
+  // `data/memory/memory.db` (a common config) and ignored the env var
+  // entirely, so doctor reported "Not initialized" on perfectly-init'd DBs.
+  // Try the configured path first, then fall back to the historic candidates.
+  const candidates: string[] = [];
+  try {
+    // Fork note: memory-bridge.ts was deleted per ADR-0085; getMemoryRoot
+    // now lives in memory-router.ts (with the same CLAUDE_FLOW_MEMORY_PATH
+    // precedence per #1854 hand-port / ADR-0162 Batch A).
+    const { getMemoryRoot } = await import('../memory/memory-router.js');
+    candidates.push(join(getMemoryRoot(), 'memory.db'));
+  } catch {
+    /* memory-router not available — fall through to legacy candidates */
+  }
+  candidates.push(
     '.swarm/memory.db',
-    'data/memory.db'
-  ];
+    '.claude-flow/memory.db',
+    'data/memory/memory.db', // matches `CLAUDE_FLOW_MEMORY_PATH=data/memory`
+    'data/memory.db',
+  );
 
-  for (const dbPath of dbPaths) {
+  for (const dbPath of candidates) {
     if (existsSync(dbPath)) {
       try {
         const stats = statSync(dbPath);

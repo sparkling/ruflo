@@ -441,6 +441,14 @@ function _getConfigSwarmDir(): string {
  * Cached per-process; spawn a fresh process to pick up config changes.
  */
 let _memoryRootCache: string | undefined;
+/**
+ * Public alias of `_getMemoryRoot` — exported so callers like `doctor`
+ * (#1946 hand-port) can resolve the configured memory root without
+ * duplicating the env-var / config-file precedence logic.
+ */
+export function getMemoryRoot(): string {
+  return _getMemoryRoot();
+}
 function _getMemoryRoot(): string {
   if (_memoryRootCache !== undefined) return _memoryRootCache;
 
