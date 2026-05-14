@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/config-chain",
-  "version": "3.0.0-alpha.1-patch.85",
+  "version": "3.0.0-alpha.1-patch.86",
   "type": "module",
   "description": "Canonical .claude-flow/embeddings.json walk-up accessor shared by @claude-flow/memory and agentdb. Breaks the conceptual cycle that previously forced memory to dynamic-require agentdb and forced agentdb to mirror memory's walk-up logic (ADR-0177 Phase 1.6 refactor).",
   "main": "dist/index.js",
