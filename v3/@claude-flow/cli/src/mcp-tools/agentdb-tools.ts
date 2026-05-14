@@ -593,11 +593,17 @@ export const agentdbConsolidate: MCPTool = {
     try {
       const ctrl = await getController<any>('memoryConsolidation');
       if (!ctrl) return { success: false, error: 'Memory consolidation controller not available' };
+      // consolidate(ctx?: MutationContext) takes an optional mutation context,
+      // NOT an options object. Passing { minAge, maxEntries } made the truthy
+      // object satisfy `ctx?.child` (no null short-circuit) but lack `.child`,
+      // throwing "ctx?.child is not a function" — the catch then returned the
+      // report WITHOUT calling logConsolidation(), so consolidation_log stayed
+      // empty (ADR-0082 silent-pass). The MCP path has no mutation context to
+      // thread, so call it with none. minAge/maxEntries remain in the schema
+      // for forward-compat but consolidate() does not consume them.
+      void params;
       const result = typeof ctrl.consolidate === 'function'
-        ? await ctrl.consolidate({
-            minAge: typeof params.minAge === 'number' ? Math.max(0, params.minAge) : undefined,
-            maxEntries: validatePositiveInt(params.maxEntries, 1000, 10_000),
-          })
+        ? await ctrl.consolidate()
         : null;
       return result ?? { success: false, error: 'consolidate method not available' };
     } catch (error) {
