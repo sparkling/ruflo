@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/cli",
-  "version": "3.7.0-alpha.10-patch.67",
+  "version": "3.7.0-alpha.10-patch.68",
   "type": "module",
   "description": "Ruflo CLI - Enterprise AI agent orchestration with 60+ specialized agents, swarm coordination, MCP server, self-learning hooks, and vector memory for Claude Code",
   "main": "dist/src/index.js",
@@ -97,20 +97,20 @@
     "vitest": "^4.0.16"
   },
   "dependencies": {
-    "@claude-flow/cli-core": "3.7.0-alpha.5-patch.27",
+    "@claude-flow/cli-core": "3.7.0-alpha.5-patch.28",
     "@claude-flow/mcp": "3.0.0-alpha.8-patch.480",
-    "@claude-flow/neural": "3.0.0-alpha.8-patch.67",
+    "@claude-flow/neural": "3.0.0-alpha.8-patch.68",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.471",
     "@noble/ed25519": "^2.1.0",
     "semver": "^7.6.0"
   },
   "optionalDependencies": {
-    "@claude-flow/aidefence": "3.0.2-patch.590",
-    "@claude-flow/codex": "3.0.0-alpha.9-patch.635",
-    "@claude-flow/embeddings": "3.0.0-alpha.15-patch.67",
-    "@claude-flow/guidance": "3.0.0-alpha.3-patch.67",
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.67",
-    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.591",
+    "@claude-flow/aidefence": "3.0.2-patch.591",
+    "@claude-flow/codex": "3.0.0-alpha.9-patch.636",
+    "@claude-flow/embeddings": "3.0.0-alpha.15-patch.68",
+    "@claude-flow/guidance": "3.0.0-alpha.3-patch.68",
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.68",
+    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.592",
     "@claude-flow/security": "3.0.0-alpha.7-patch.25",
     "@ruvector/attention": "0.1.4-patch.79",
     "@ruvector/attention-darwin-arm64": "0.1.1-patch.52",
@@ -121,8 +121,8 @@
     "@ruvector/ruvllm-wasm": "^2.0.2",
     "@ruvector/rvagent-wasm": "0.2.1-patch.74",
     "@ruvector/sona": "0.1.6-patch.52",
-    "agentdb": "3.0.0-alpha.14-patch.79",
-    "agentic-flow": "2.0.2-alpha-patch.615",
+    "agentdb": "3.0.0-alpha.14-patch.80",
+    "agentic-flow": "2.0.2-alpha-patch.616",
     "better-sqlite3": "^12.9.0"
   },
   "publishConfig": {
