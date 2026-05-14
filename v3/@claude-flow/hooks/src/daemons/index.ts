@@ -435,7 +435,13 @@ export class HooksLearningDaemon {
   }
 
   /**
-   * Start learning consolidation
+   * Start learning consolidation. The daemon is constructed with the
+   * 'hooks-learning' worker `enabled: true` — start() is only called when the
+   * caller wants learning. Per ADR-0082 / feedback-no-fallbacks /
+   * feedback-best-effort-must-rethrow-fatals: if ReasoningBank can't load or
+   * initialize, fail loud rather than silently no-op every consolidation tick.
+   * Hint message mirrors prior art at worker-daemon.ts:1442 and
+   * hooks-tools.ts:3060 so users know which config key to flip to disable.
    */
   async start(): Promise<void> {
     // Lazy load ReasoningBank to avoid circular dependencies
@@ -444,7 +450,11 @@ export class HooksLearningDaemon {
       this.reasoningBank = reasoningBank;
       await this.reasoningBank.initialize();
     } catch (error) {
-      console.warn('[HooksLearningDaemon] ReasoningBank not available:', error);
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `HooksLearningDaemon: ReasoningBank failed to load/initialize: ${msg}\n` +
+        `Fix: set "memory.agentdb.enableLearning": false in .claude-flow/config.json`
+      );
     }
 
     await this.manager.start('hooks-learning');
