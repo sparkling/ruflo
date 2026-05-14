@@ -1261,22 +1261,85 @@ export async function withHiveStoreLock<T>(fn: () => Promise<T>): Promise<T> {
 // Import agent store helpers for spawn functionality
 import { existsSync as agentStoreExists, readFileSync as readAgentStore, writeFileSync as writeAgentStore, mkdirSync as mkdirAgentStore } from 'node:fs';
 
-function loadAgentStore(): { agents: Record<string, unknown> } {
-  const storePath = join(findProjectRoot(), '.claude-flow', 'agents.json');
-  try {
-    if (agentStoreExists(storePath)) {
-      return JSON.parse(readAgentStore(storePath, 'utf-8'));
-    }
-  } catch { /* ignore */ }
-  return { agents: {} };
+function getAgentStorePath(): string {
+  return join(findProjectRoot(), '.claude-flow', 'agents.json');
 }
 
-function saveAgentStore(store: { agents: Record<string, unknown> }): void {
+// ADR-0180 §Migration concerns Phase 4 (surprise (a)): cross-process file lock
+// for agents.json read-modify-write, modeled on withHiveStoreLock above. Uses a
+// dedicated sentinel (.agents.json.lock) — distinct from the hive-state lock so
+// handlers that already hold withHiveStoreLock (e.g. hive-mind_spawn) don't
+// self-deadlock when they touch the agent store.
+async function withAgentStoreLock<T>(fn: () => Promise<T>): Promise<T> {
+  const lockPath = `${getAgentStorePath()}.lock`;
+  const MAX_WAIT_MS = 5000;
+  const POLL_MS = 50;
+  const STALE_LOCK_MS = 30_000;
+  const deadline = Date.now() + MAX_WAIT_MS;
+
   const storeDir = join(findProjectRoot(), '.claude-flow');
   if (!agentStoreExists(storeDir)) {
     mkdirAgentStore(storeDir, { recursive: true });
   }
-  writeAgentStore(join(storeDir, 'agents.json'), JSON.stringify(store, null, 2), 'utf-8');
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const fd = openSync(
+        lockPath,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+        0o600,
+      );
+      writeSync(fd, `${process.pid}\n${Date.now()}\n`);
+      closeSync(fd);
+      break;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'EEXIST') {
+        try {
+          const stat = statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+            try { unlinkSync(lockPath); } catch { /* ignore */ }
+            continue;
+          }
+        } catch { /* lockfile vanished between check and stat — retry */ }
+        if (Date.now() > deadline) {
+          throw new Error(`Timeout waiting for agent-store lock after ${MAX_WAIT_MS}ms`);
+        }
+        await new Promise(r => setTimeout(r, POLL_MS));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try { unlinkSync(lockPath); } catch { /* already removed */ }
+  }
+}
+
+async function loadAgentStore(): Promise<{ agents: Record<string, unknown> }> {
+  return withAgentStoreLock(async () => {
+    const storePath = getAgentStorePath();
+    try {
+      if (agentStoreExists(storePath)) {
+        return JSON.parse(readAgentStore(storePath, 'utf-8'));
+      }
+    } catch { /* ignore */ }
+    return { agents: {} };
+  });
+}
+
+async function saveAgentStore(store: { agents: Record<string, unknown> }): Promise<void> {
+  return withAgentStoreLock(async () => {
+    const storeDir = join(findProjectRoot(), '.claude-flow');
+    if (!agentStoreExists(storeDir)) {
+      mkdirAgentStore(storeDir, { recursive: true });
+    }
+    writeAgentStore(join(storeDir, 'agents.json'), JSON.stringify(store, null, 2), 'utf-8');
+  });
 }
 
 export const hiveMindTools: MCPTool[] = [
@@ -1405,7 +1468,7 @@ export const hiveMindTools: MCPTool[] = [
           return { success: false, error: 'Hive-mind not initialized. Run hive-mind/init first.' };
         }
 
-        const agentStore = loadAgentStore();
+        const agentStore = await loadAgentStore();
 
         const spawnedWorkers: Array<{ agentId: string; role: string; agentType: string; joinedAt: string; retryOf?: string }> = [];
 
@@ -1461,7 +1524,7 @@ export const hiveMindTools: MCPTool[] = [
           });
         }
 
-        saveAgentStore(agentStore);
+        await saveAgentStore(agentStore);
         saveHiveState(state);
 
         return {
@@ -1621,7 +1684,7 @@ export const hiveMindTools: MCPTool[] = [
       const uptime = state.createdAt ? Date.now() - new Date(state.createdAt).getTime() : 0;
 
       // Load agent store once for all workers
-      const agentStore = loadAgentStore();
+      const agentStore = await loadAgentStore();
 
       // Compute real task metrics from task store
       const taskStorePath = join(findProjectRoot(), '.claude-flow', 'tasks', 'store.json');
@@ -2812,13 +2875,13 @@ export const hiveMindTools: MCPTool[] = [
       }
 
       // Clear workers from agent store
-      const agentStore = loadAgentStore();
+      const agentStore = await loadAgentStore();
       for (const workerId of state.workers) {
         if (agentStore.agents[workerId]) {
           delete agentStore.agents[workerId];
         }
       }
-      saveAgentStore(agentStore);
+      await saveAgentStore(agentStore);
 
       // Reset hive state
       const shutdownTime = new Date().toISOString();
