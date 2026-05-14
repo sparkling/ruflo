@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/plugin-perf-optimizer",
-  "version": "3.0.0-alpha.1-patch.478",
+  "version": "3.0.0-alpha.1-patch.479",
   "description": "AI-powered performance optimization plugin for bottleneck detection, memory analysis, and configuration tuning",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
