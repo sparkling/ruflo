@@ -1113,7 +1113,7 @@ export class RvfBackend implements IMemoryBackend {
       );
     }
 
-    const { existsSync: fileExists, openSync, readSync, closeSync } = await import('node:fs');
+    const { existsSync: fileExists, openSync, readSync, closeSync, statSync } = await import('node:fs');
     const nativeMetric = this.config.metric === 'euclidean' ? 'l2'
       : this.config.metric === 'dot' ? 'inner_product'
       : 'cosine';
@@ -1175,6 +1175,22 @@ export class RvfBackend implements IMemoryBackend {
     }
 
     if (hasNativeMagic) {
+      // ADR-0090 Tier B2: a clearly-truncated SFVR file (too small to hold
+      // a manifest) must emit "truncated header" immediately rather than
+      // burning 30s retrying ManifestNotFound. Any valid SFVR file needs
+      // at minimum: 4-byte magic + manifest segment header — comfortably
+      // above 64 bytes. Skip the retry loop and defer a typed reason so
+      // loadFromDisk's final guard surfaces it as RvfCorruptError.
+      const SFVR_MIN_VALID_BYTES = 64;
+      try {
+        const fileSize = statSync(this.config.databasePath).size;
+        if (fileSize < SFVR_MIN_VALID_BYTES) {
+          this._deferredCorruptReason =
+            `truncated header (SFVR file is only ${fileSize} bytes — too small to contain a valid manifest)`;
+          return false;
+        }
+      } catch { /* stat race — let the open retry handle it */ }
+
       // Native file detected — must open-or-refuse.
       //
       // ADR-0094 Sprint 1.4 d10 (ruflo-patch): time-budgeted retry (5s
