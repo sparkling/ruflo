@@ -1910,6 +1910,16 @@ export const hiveMindTools: MCPTool[] = [
       required: ['action'],
     },
     handler: async (input) => {
+      // ADR-0180 Phase 4 pre-flight: wrap load → mutate → save under
+      // `withHiveStoreLock` (cross-process O_EXCL sentinel) so concurrent
+      // propose/vote/status calls cannot lost-update each other's
+      // `state.consensus.pending` / `state.consensus.history`. Pattern mirrors
+      // hive-mind_spawn and hive-mind_init. The lock is NOT reentrant
+      // (O_CREAT|O_EXCL); the handler must avoid calling other
+      // lock-acquiring code paths. The `list` action is read-only but
+      // harmlessly nested in the lock so the dispatch logic stays a single
+      // block.
+      return withHiveStoreLock(async () => {
       const state = loadHiveState();
       const action = input.action as string;
 
@@ -2769,6 +2779,7 @@ export const hiveMindTools: MCPTool[] = [
       }
 
       return { action, error: 'Unknown action' };
+      });
     },
   },
   /**
