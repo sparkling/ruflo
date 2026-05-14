@@ -713,6 +713,7 @@ const initCommand: Command = {
         model,
         modelPath: modelDir,
         dimension,
+        provider: 'transformers.js', // ADR-0177: runtime-canonical field; normalized to 'onnx' by config-chain accessor
         hashFallbackDimension: 128,
         cacheSize,
         metric: 'cosine',
