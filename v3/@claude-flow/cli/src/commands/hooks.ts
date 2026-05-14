@@ -5208,11 +5208,24 @@ const notifyCommand: Command = {
       output.printInfo(`[${timestamp}] ${message}`);
     }
 
-    // Store notification in memory if available
+    // Store notification in memory if available. Best-effort: swallow lifecycle
+    // failures (memory layer not yet initialized) but re-throw fatal data-integrity
+    // errors (ADR-0082 / feedback-best-effort-must-rethrow-fatals). Mirrors the
+    // _isFatalInitError set in memory-router; uses .name comparison because the
+    // error class is loaded across a dynamic-import boundary.
     try {
       const { routeMemoryOp } = await import('../memory/memory-router.js'); // ADR-0086 T2.6: import from router (was memory-initializer)
       await routeMemoryOp({ type: 'store', key: `notify-${Date.now()}`, value: `[${level}] ${message}`, namespace: 'notifications' });
-    } catch { /* memory not available */ }
+    } catch (e) {
+      if (e instanceof Error && (
+        e.name === 'EmbeddingDimensionError' ||
+        e.name === 'DimensionMismatchError' ||
+        e.name === 'RvfCorruptError' ||
+        e.name === 'AgentDBInitError' ||
+        e.name === 'ControllerInitError'
+      )) throw e;
+      /* memory lifecycle unavailable — best-effort */
+    }
 
     return { success: true, data: { timestamp, level, message } };
   }
