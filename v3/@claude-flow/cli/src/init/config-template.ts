@@ -91,7 +91,7 @@ export function getMinimalConfigTemplate(
     //   RVF segment creation reads them via canonical config accessor.
     index: {
       hnsw: {
-        m: PHASE_1_6_HNSW_M,
+        M: PHASE_1_6_HNSW_M,
         efConstruction: PHASE_1_6_HNSW_EF_CONSTRUCTION,
         efSearch: PHASE_1_6_HNSW_EF_SEARCH,
       },

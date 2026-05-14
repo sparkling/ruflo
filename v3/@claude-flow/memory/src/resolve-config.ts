@@ -94,6 +94,8 @@ export interface ConfigOverrides {
 // shared accessor returns model=undefined (file present with model:"" — which
 // validateBoot rejects, but resolveConfig may be called pre-validation).
 const DEFAULT_MODEL = 'Xenova/all-mpnet-base-v2';
+const DEFAULT_DIMENSION = 768; // ADR-0069: all-mpnet-base-v2 canonical dimension
+const DEFAULT_PROVIDER = 'transformers.js'; // ADR-0069: transformers.js provider
 const DEFAULT_STORAGE_PROVIDER: 'rvf' | 'better-sqlite3' = 'rvf';
 const DEFAULT_DATABASE_PATH = '.claude-flow/memory.rvf';
 const DEFAULT_WAL_MODE = true;
