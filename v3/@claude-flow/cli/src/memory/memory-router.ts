@@ -1709,8 +1709,14 @@ export async function routePatternOp(op: PatternOp): Promise<MemoryResult> {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             results: Array.isArray(results) ? results.map((r: any) => ({
               id: r.id || r.patternId || '',
-              content: r.content || r.pattern || '',
-              score: r.score ?? r.confidence ?? 0,
+              // agentdb's ReasoningPattern carries the pattern text in `approach`
+              // (schema: {taskType, approach, successRate, ...}); the legacy shape
+              // used `content`/`pattern`. Probe all three so the marker text is
+              // surfaced regardless of which controller version answered.
+              content: r.content || r.pattern || r.approach || '',
+              // Likewise the score field: agentdb returns `similarity` from the
+              // SQL fallback path and `successRate` from the pattern row.
+              score: r.score ?? r.confidence ?? r.similarity ?? r.successRate ?? 0,
             })) : [],
             controller: 'reasoningBank',
           };
