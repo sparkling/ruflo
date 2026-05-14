@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/providers",
-  "version": "3.0.0-alpha.6-patch.477",
+  "version": "3.0.0-alpha.6-patch.478",
   "description": "Multi-LLM Provider System for Claude Flow V3",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -53,7 +53,7 @@
     "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@ruvector/ruvllm": "2.5.5-patch.58"
+    "@ruvector/ruvllm": "2.5.5-patch.59"
   },
   "peerDependenciesMeta": {
     "@ruvector/ruvllm": {
