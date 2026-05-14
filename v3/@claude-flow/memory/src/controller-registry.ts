@@ -1725,6 +1725,7 @@ export class ControllerRegistry extends EventEmitter {
         // "RVFOptimizer class doesn't exist in agentdb". Stub had zero consumers in fork or upstream
         // (verified via grep across v3/ + forks/agentdb), so the API-shape change introduced by this
         // swap breaks no callers.
+        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; agentdb optional dep; null is the documented "not available in build" signal discriminated by callers per ADR-0112 Phase 2 controller-registry track.
         if (!this.agentdb) return null;
         try {
           const agentdbModule: any = await import('agentdb');
