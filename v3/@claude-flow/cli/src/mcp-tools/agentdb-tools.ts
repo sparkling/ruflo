@@ -286,6 +286,14 @@ export const agentdbPatternSearch: MCPTool = {
       query: { type: 'string', description: 'Search query' },
       topK: { type: 'number', description: 'Number of results (default: 5)' },
       minConfidence: { type: 'number', description: 'Minimum score threshold (0-1)' },
+      includeProvenance: {
+        type: 'boolean',
+        description:
+          'When true, return full RankedResult<T>[] shape with per-candidate provenance ' +
+          '({ storeId, matchType: "fused"|"bm25"|"semantic", rawScore, rank, matchedField?, explanation? }) ' +
+          'for ExplainableRecall (ADR-0180 §Provenance rollout scope — MANDATORY for this fusion site per ADR-0179). ' +
+          'When false/omitted, returns the legacy { results: { id, content, score }[], controller } shape for back-compat. Default: false.',
+      },
     },
     required: ['query'],
   },
@@ -298,7 +306,11 @@ export const agentdbPatternSearch: MCPTool = {
         topK: validatePositiveInt(params.topK, 5, MAX_TOP_K),
         minConfidence: validateScore(params.minConfidence, 0.3),
       });
-      return result ?? { results: [], controller: 'unavailable' };
+      if (!result) return { results: [], controller: 'unavailable' };
+      // includeProvenance branching INTENTIONALLY NOT implemented in cli (ADR-0180
+      // Phase 6, F4-3 deferral). The archivist handler emits canonical provenance
+      // once F4-2 wires the dispatch boundary; any synthesis here would diverge.
+      return result;
     } catch (error) {
       return { results: [], error: sanitizeError(error) };
     }
@@ -507,6 +519,7 @@ export const agentdbHierarchicalRecall: MCPTool = {
       query: { type: 'string', description: 'Recall query' },
       tier: { type: 'string', description: 'Filter by tier (working, episodic, semantic)' },
       topK: { type: 'number', description: 'Number of results (default: 5)' },
+      includeProvenance: { type: 'boolean', description: 'When true, return RankedResults<HierarchicalRecallHit> with per-hit provenance (storeId, matchType, rawScore, rank). Default false preserves legacy `{ results: [...] }` shape (ADR-0180 Phase 6).' },
     },
     required: ['query'],
   },
@@ -694,6 +707,14 @@ export const agentdbSemanticRoute: MCPTool = {
     type: 'object',
     properties: {
       input: { type: 'string', description: 'Input text to route' },
+      includeProvenance: {
+        type: 'boolean',
+        description:
+          'When true, return archivist RankedResults<SemanticRouteHit> shape with provenance ' +
+          '{ storeId: "semantic-router", matchType: "semantic", rawScore: confidence, rank } per entry ' +
+          '(ADR-0180 Phase 6 §Provenance rollout scope). When false/omitted, returns the legacy ' +
+          '{ route, confidence, ... } flat shape for back-compat. Default: false.',
+      },
     },
     required: ['input'],
   },
@@ -963,6 +984,14 @@ export const agentdbReflexionRetrieve: MCPTool = {
     properties: {
       task: { type: 'string', description: 'Task description to find relevant reflexions for' },
       k: { type: 'number', description: 'Number of results to return (default: 5)' },
+      includeProvenance: {
+        type: 'boolean',
+        description:
+          'When true, return full RankedResult<T>[] shape with per-candidate provenance ' +
+          '({ storeId: "reflexion", matchType: "semantic", rawScore, rank, matchedField?, explanation? }) ' +
+          'for ExplainableRecall (ADR-0180 §Provenance rollout scope — ranked recall site). ' +
+          'When false/omitted, returns the legacy episode array for back-compat. Default: false.',
+      },
     },
     required: ['task'],
   },
@@ -1208,6 +1237,7 @@ export const agentdbCausalRecall: MCPTool = {
       query: { type: 'string', description: 'Search query' },
       k: { type: 'number', description: 'Number of results (default: 10)' },
       include_evidence: { type: 'boolean', description: 'Include causal evidence chains' },
+      includeProvenance: { type: 'boolean', description: 'Return full RankedResults<CausalRecallHit> with provenance (storeId, matchType, rawScore, rank) per ADR-0180 §Provenance rollout scope; default false preserves legacy flattened shape' },
     },
     required: ['query'],
   },
@@ -1346,6 +1376,14 @@ const agentdbFilteredSearch: MCPTool = {
       namespace: { type: 'string', description: 'Namespace to search (default: all)' },
       limit: { type: 'number', description: 'Maximum results (default: 10)' },
       threshold: { type: 'number', description: 'Minimum similarity 0-1 (default: 0.3)' },
+      includeProvenance: {
+        type: 'boolean',
+        description:
+          'When true, return full RankedResult<T>[] shape with per-candidate provenance ' +
+          '({ storeId, matchType: "fused"|"bm25"|"semantic", rawScore, rank, matchedField?, explanation? }) ' +
+          'for ExplainableRecall (ADR-0180 §Provenance rollout scope — MANDATORY for this fusion site per ADR-0179). ' +
+          'When false/omitted, returns the legacy { id, content, score }[] flat shape for back-compat. Default: false.',
+      },
     },
     required: ['query'],
   },
@@ -1359,6 +1397,13 @@ const agentdbFilteredSearch: MCPTool = {
         threshold: input.threshold as number | undefined,
       });
       if (!result) return { success: false, error: 'FilteredSearch not available' };
+      // includeProvenance branching INTENTIONALLY NOT implemented in cli (ADR-0180
+      // Phase 6, F4-3 deferral). The cli must NOT synthesize provenance fields
+      // (e.g. matchType, storeId) — those values are the archivist handler's
+      // emission and any synthesis here will silently diverge when F4-2 wires
+      // the dispatch boundary. Until then the cli returns the legacy shape only;
+      // callers passing `includeProvenance: true` receive the legacy shape and
+      // a noted-but-unhandled flag. See archivist/handlers/agentdb/filtered-search.ts.
       return result;
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
@@ -1641,6 +1686,14 @@ export const agentdbSkillSearch: MCPTool = {
     properties: {
       query: { type: 'string', description: 'Search query' },
       limit: { type: 'number', description: 'Maximum results (default: 5)' },
+      includeProvenance: {
+        type: 'boolean',
+        description:
+          'When true, return full RankedResult<SkillSearchHit>[] shape with per-candidate provenance ' +
+          '({ storeId: "skills", matchType: "semantic", rawScore, rank, matchedField?: "name"|"description", explanation? }) ' +
+          'for ExplainableRecall (ADR-0180 §Provenance rollout scope). ' +
+          'When false/omitted, returns the legacy { success, skills: [...] } shape for back-compat. Default: false.',
+      },
     },
     required: ['query'],
   },
@@ -1867,6 +1920,13 @@ export const agentdbNeuralPatterns: MCPTool = {
       embedding: {
         type: 'array',
         description: 'Optional explicit embedding vector (number[]) for similarity queries.',
+      },
+      includeProvenance: {
+        type: 'boolean',
+        description:
+          'When true and action is "similar", return RankedResults<NeuralPatternHit> with provenance ' +
+          '({ storeId: "gnnService", matchType: "semantic", rawScore: similarity, rank }) per ADR-0180 ' +
+          '§Provenance rollout scope. Ignored for action "stats" (provenance-exempt). Default: false.',
       },
     },
   },

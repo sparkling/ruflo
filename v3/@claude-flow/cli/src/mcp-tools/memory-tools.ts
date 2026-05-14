@@ -19,6 +19,19 @@ import { findProjectRoot } from './types.js';
 import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
 import { validateIdentifier } from './validate-input.js';
 
+// ADR-0180 Phase 3: the archivist read-handler for memory_search registers at
+// `@sparkleideas/agentdb/src/archivist/handlers/memory/search.ts` and returns
+// `RankedResults<MemoryRecord>` (each candidate carries provenance per
+// §Architecture · Read-path return shape). The mutation handler for
+// memory_store registers at `.../handlers/memory/store.ts` as
+// `GuardedWrite<MemoryStorePayload>`. The cli handler below still drives
+// `routeMemoryOp` directly because `@sparkleideas/agentdb/archivist` lacks a
+// public `dispatch` export (`dispatchMutation`/`dispatchRead` are deliberately
+// NOT re-exported from `forks/agentdb/src/archivist/index.ts`, and the
+// `./archivist` subpath is not listed in `forks/agentdb/package.json` exports).
+// Once both land, the body collapses to a single
+// `dispatch('memory_store', payload)` / `dispatch('memory_search', query)` call.
+
 // ADR-0162 Batch C+D hand-port: upstream's memory-bridge.ts (deleted in our
 // fork per ADR-0086 / ADR-0161) housed `getMigrationMarkerPath`,
 // `loadLegacyStore`, and `getMemoryFunctions`. The legacy migration path was
@@ -280,6 +293,10 @@ export const memoryTools: MCPTool[] = [
       properties: {
         key: { type: 'string', description: 'Memory key' },
         namespace: { type: 'string', description: 'Namespace (e.g. "patterns", "solutions", "tasks")' },
+        includeProvenance: {
+          type: 'boolean',
+          description: 'ADR-0180 Phase 3: include archivist provenance metadata ({ storeId, matchType: "exact", rawScore: 1, rank: 1 }) on a found entry. Default false preserves the legacy retrieval shape.',
+        },
       },
       required: ['key', 'namespace'],
     },
@@ -291,6 +308,7 @@ export const memoryTools: MCPTool[] = [
       if (!namespace || namespace === 'all') {
         throw new Error("'namespace' is required and must be a specific string (cannot be \"all\"). Use namespace: \"patterns\", \"solutions\", or \"tasks\"");
       }
+      const includeProvenance = input.includeProvenance === true;
 
       validateMemoryInput(key);
 
@@ -307,7 +325,7 @@ export const memoryTools: MCPTool[] = [
             // Keep as string
           }
 
-          return {
+          const base = {
             key,
             namespace,
             value,
@@ -319,6 +337,24 @@ export const memoryTools: MCPTool[] = [
             found: true,
             backend: 'SQLite + HNSW',
           };
+          // ADR-0180 §Provenance rollout scope (Phase 3, 2026-05-14):
+          // memory_retrieve is a single-entry exact (namespace, key) lookup.
+          // matchType: 'exact' fits the closed Provenance union from
+          // handlers/memory/search.ts. rawScore: 1 reflects the lossless exact
+          // hit (vs memory_list enumeration's 0); rank: 1 because retrieve
+          // returns at most one entry. Shape parity with the list/search
+          // workers' optional `provenance` field.
+          return includeProvenance
+            ? {
+                ...base,
+                provenance: {
+                  storeId: 'memory_store',
+                  matchType: 'exact' as const,
+                  rawScore: 1,
+                  rank: 1,
+                },
+              }
+            : base;
         }
 
         return {
@@ -354,6 +390,7 @@ export const memoryTools: MCPTool[] = [
         synthesize: { type: 'boolean', description: 'Synthesize context from search results (default: false)' },
         scope: { type: 'string', enum: ['agent', 'session', 'global'], description: 'Memory scope (default: unscoped)' },
         scope_id: { type: 'string', description: 'Scope identifier (agent ID or session ID)' },
+        includeProvenance: { type: 'boolean', description: 'When true, includes archivist provenance metadata on each result (ADR-0180 §102). Default false strips the provenance field for back-compat with existing scripts.' },
       },
       required: ['query'],
     },
@@ -364,6 +401,7 @@ export const memoryTools: MCPTool[] = [
       const namespace = (input.namespace as string) || 'all';
       const limit = (input.limit as number) || 10;
       const threshold = (input.threshold as number) || 0.3;
+      const includeProvenance = input.includeProvenance === true;
 
       validateMemoryInput(undefined, undefined, query);
 
@@ -504,11 +542,21 @@ export const memoryTools: MCPTool[] = [
           } catch { /* context synthesis unavailable */ }
         }
 
+        // ADR-0180 §102: Provenance shape branching.
+        // - includeProvenance=true: pass through full RankedResult shape (carries `provenance` once archivist handler lands).
+        // - includeProvenance=false (default): strip provenance field to preserve legacy shape for existing scripts.
+        const shapedResults = includeProvenance
+          ? outputResults
+          : outputResults.map(r => {
+              const { provenance: _provenance, ...rest } = r as Record<string, unknown>;
+              return rest;
+            });
+
         // ADR-0043: QueryOptimizer (B6) — cache results
         const response = {
           query,
-          results: outputResults,
-          total: outputResults.length,
+          results: shapedResults,
+          total: shapedResults.length,
           searchTime: `${duration.toFixed(2)}ms`,
           backend: 'HNSW + SQLite',
           attention: attentionApplied,
@@ -589,6 +637,10 @@ export const memoryTools: MCPTool[] = [
         namespace: { type: 'string', description: 'Namespace to list (default: "all" = all namespaces)' },
         limit: { type: 'number', description: 'Maximum results (default: 50)' },
         offset: { type: 'number', description: 'Offset for pagination (default: 0)' },
+        includeProvenance: {
+          type: 'boolean',
+          description: 'ADR-0180 Phase 3: include archivist provenance metadata ({ storeId, matchType: "exact", rawScore: 0, rank }) per entry. Default false preserves legacy enumeration shape.',
+        },
       },
     },
     handler: async (input) => {
@@ -605,6 +657,7 @@ export const memoryTools: MCPTool[] = [
       const namespace = rawNamespace && rawNamespace.length > 0 ? rawNamespace : undefined;
       const limit = (input.limit as number) || 50;
       const offset = (input.offset as number) || 0;
+      const includeProvenance = input.includeProvenance === true;
 
       try {
         const result = await routeMemoryOp({
@@ -615,15 +668,36 @@ export const memoryTools: MCPTool[] = [
         });
 
         const rawEntries = (result.entries as Array<Record<string, unknown>>) || [];
-        const entries = rawEntries.map(e => ({
-          key: e.key,
-          namespace: e.namespace,
-          storedAt: e.createdAt,
-          updatedAt: e.updatedAt,
-          accessCount: e.accessCount,
-          hasEmbedding: e.hasEmbedding,
-          size: e.size,
-        }));
+        const entries = rawEntries.map((e, index) => {
+          const base = {
+            key: e.key,
+            namespace: e.namespace,
+            storedAt: e.createdAt,
+            updatedAt: e.updatedAt,
+            accessCount: e.accessCount,
+            hasEmbedding: e.hasEmbedding,
+            size: e.size,
+          };
+          // ADR-0180 §Provenance rollout scope (Phase 3, 2026-05-14):
+          // memory_list is an enumeration, not a similarity rank — there is no
+          // relevance score. matchType: 'exact' is the closest member of the
+          // existing closed Provenance union in handlers/memory/search.ts —
+          // enumeration is a degenerate form where every entry "matches" its
+          // own (namespace, key) tuple exactly. rank reflects the
+          // post-pagination position (1-based, includes offset) so clients can
+          // correlate with offset+index. rawScore is 0 by enumeration semantics.
+          return includeProvenance
+            ? {
+                ...base,
+                provenance: {
+                  storeId: 'memory_store',
+                  matchType: 'exact' as const,
+                  rawScore: 0,
+                  rank: offset + index + 1,
+                },
+              }
+            : base;
+        });
 
         return {
           entries,
@@ -860,11 +934,17 @@ export const memoryTools: MCPTool[] = [
 
   {
     name: 'memory_bridge_status',
-    description: 'Show Claude Code memory bridge status — AgentDB vectors, SONA learning, intelligence patterns, and connection health.',
+    description: 'Show Claude Code memory bridge status — AgentDB vectors, SONA learning, intelligence patterns, and connection health. With includeProvenance=true, returns archivist RankedResults<BridgeStatusEntry> shape (ADR-0180 Phase 3) — one ranked entry per component carrying state ∈ {up,down,degraded}, metadata, and provenance{storeId,matchType:"status",rawScore,rank}.',
     category: 'memory',
-    inputSchema: { type: 'object', properties: {} },
-    handler: async () => {
+    inputSchema: {
+      type: 'object',
+      properties: {
+        includeProvenance: { type: 'boolean', description: 'When true, return archivist RankedResults<BridgeStatusEntry> shape with provenance{storeId,matchType:"status",rawScore,rank} per entry (ADR-0180 Phase 3). Default false preserves the legacy shape for existing scripts.' },
+      },
+    },
+    handler: async (input) => {
       await ensureInitialized();
+      const includeProvenance = (input as Record<string, unknown> | undefined)?.includeProvenance === true;
 
       // Count Claude memory files
       const claudeProjectsDir = join(homedir(), '.claude', 'projects');
@@ -885,28 +965,86 @@ export const memoryTools: MCPTool[] = [
       // AgentDB status
       let agentdbEntries = 0;
       let claudeMemoryEntries = 0;
+      let agentdbReachable = true;
       try {
         const { listEntries } = await getMemoryFunctions();
         const allEntries = await listEntries({});
         agentdbEntries = allEntries?.entries?.length ?? 0;
         const claudeEntries = await listEntries({ namespace: 'claude-memories' });
         claudeMemoryEntries = claudeEntries?.entries?.length ?? 0;
-      } catch { /* ignore */ }
+      } catch {
+        agentdbReachable = false;
+      }
 
       // Intelligence status
       let intelligence = { sonaEnabled: false, patternsLearned: 0, trajectoriesRecorded: 0 };
+      let intelligenceReachable = true;
       try {
         const int = await import('../memory/intelligence.js');
         const stats = int.getIntelligenceStats?.();
         if (stats) intelligence = { sonaEnabled: stats.sonaEnabled, patternsLearned: stats.patternsLearned, trajectoriesRecorded: stats.trajectoriesRecorded };
-      } catch { /* not initialized */ }
+        else intelligenceReachable = false;
+      } catch {
+        intelligenceReachable = false;
+      }
 
-      return {
-        claudeCode: { memoryFiles: claudeFiles, projects: claudeProjects },
-        agentdb: { totalEntries: agentdbEntries, claudeMemoryEntries, backend: 'SQLite + ONNX' },
-        intelligence,
-        bridge: { status: claudeMemoryEntries > 0 ? 'connected' : 'not-synced', embedding: 'all-MiniLM-L6-v2 (384-dim)' },
-      };
+      const claudeCode = { memoryFiles: claudeFiles, projects: claudeProjects };
+      const agentdb = { totalEntries: agentdbEntries, claudeMemoryEntries, backend: 'SQLite + ONNX' };
+      const bridge = { status: claudeMemoryEntries > 0 ? 'connected' : 'not-synced', embedding: 'all-MiniLM-L6-v2 (384-dim)' };
+
+      if (includeProvenance) {
+        // ADR-0180 §Architecture · Read-path return shape: RankedResults<BridgeStatusEntry>.
+        // One ranked entry per component; score=1.0 (status, not similarity);
+        // provenance.matchType='status' per Pass-3 disposition; rank assigned in order.
+        // Mirrors the registration shape in
+        // forks/agentdb/src/archivist/handlers/memory/bridge-status.ts.
+        const entries = [
+          {
+            item: {
+              component: 'claude-code',
+              state: claudeFiles > 0 ? 'up' as const : 'degraded' as const,
+              metadata: { ...claudeCode, namespace: 'filesystem' } as Record<string, unknown>,
+            },
+            score: 1.0 as const,
+            provenance: { storeId: 'claude-code-projects', matchType: 'status' as const, rawScore: 1.0 as const },
+          },
+          {
+            item: {
+              component: 'agentdb',
+              state: agentdbReachable ? 'up' as const : 'down' as const,
+              metadata: { ...agentdb, namespace: 'all' } as Record<string, unknown>,
+            },
+            score: 1.0 as const,
+            provenance: { storeId: 'agentdb', matchType: 'status' as const, rawScore: 1.0 as const },
+          },
+          {
+            item: {
+              component: 'intelligence',
+              state: intelligenceReachable
+                ? (intelligence.sonaEnabled ? 'up' as const : 'degraded' as const)
+                : 'down' as const,
+              metadata: { ...intelligence, namespace: 'sona' } as Record<string, unknown>,
+            },
+            score: 1.0 as const,
+            provenance: { storeId: 'intelligence', matchType: 'status' as const, rawScore: 1.0 as const },
+          },
+          {
+            item: {
+              component: 'bridge',
+              state: claudeMemoryEntries > 0 ? 'up' as const : 'degraded' as const,
+              metadata: { ...bridge, namespace: 'claude-memories' } as Record<string, unknown>,
+            },
+            score: 1.0 as const,
+            provenance: { storeId: 'memory-bridge', matchType: 'status' as const, rawScore: 1.0 as const },
+          },
+        ];
+        return {
+          results: entries.map((e, rank) => ({ ...e, provenance: { ...e.provenance, rank } })),
+          total: entries.length,
+        };
+      }
+
+      return { claudeCode, agentdb, intelligence, bridge };
     },
   },
 
@@ -920,6 +1058,7 @@ export const memoryTools: MCPTool[] = [
         query: { type: 'string', description: 'Search query (natural language)' },
         limit: { type: 'number', description: 'Max results (default: 10)' },
         namespace: { type: 'string', description: 'Filter to namespace (omit for all)' },
+        includeProvenance: { type: 'boolean', description: 'When true, includes archivist provenance metadata on each result (ADR-0180 §102). Cross-store fusion uses Reciprocal Rank Fusion (k=60) — provenance carries per-store rank and storeId so ExplainableRecall can reconstruct the fusion. Default false strips the provenance field for back-compat.' },
       },
       required: ['query'],
     },
@@ -931,27 +1070,40 @@ export const memoryTools: MCPTool[] = [
       const query = input.query as string;
       const limit = (input.limit as number) ?? 10;
       const ns = input.namespace as string | undefined;
+      const includeProvenance = input.includeProvenance === true;
 
       if (ns) { const vNs = validateIdentifier(ns, 'namespace'); if (!vNs.valid) return { success: false, query, results: [], total: 0, error: vNs.error }; }
 
       // Search all namespaces unless filtered
       const namespaces = ns ? [ns] : ['default', 'claude-memories', 'auto-memory', 'patterns', 'tasks', 'feedback'];
-      const allResults: Array<{ key: string; content: string; score: number; namespace: string; source: string }> = [];
+      const allResults: Array<{
+        key: string;
+        content: string;
+        score: number;
+        namespace: string;
+        source: string;
+        provenance: { storeId: string; matchType: 'semantic'; rawScore: number; rank: number; matchedField: 'content' };
+      }> = [];
 
       for (const searchNs of namespaces) {
         try {
           const r = await searchEntries({ query, namespace: searchNs, limit: limit * 2 });
           if (r?.results) {
-            for (const entry of r.results) {
+            r.results.forEach((entry: unknown, idx: number) => {
               const e = entry as Record<string, unknown>;
+              const rawScore = (e.score as number) || 0;
+              const source = searchNs === 'claude-memories' ? 'claude-code' : searchNs === 'auto-memory' ? 'auto-memory' : 'agentdb';
               allResults.push({
                 key: (e.key as string) || (e.id as string) || '',
                 content: ((e.content as string) || (e.value as string) || '').toString().slice(0, 200),
-                score: (e.score as number) || 0,
+                score: rawScore,
                 namespace: searchNs,
-                source: searchNs === 'claude-memories' ? 'claude-code' : searchNs === 'auto-memory' ? 'auto-memory' : 'agentdb',
+                source,
+                // ADR-0180 §102: per-store rank captured BEFORE cross-store dedup so RRF
+                // reconstruction (k=60) remains possible from provenance alone.
+                provenance: { storeId: source, matchType: 'semantic', rawScore, rank: idx, matchedField: 'content' },
               });
-            }
+            });
           }
         } catch { /* namespace may not exist */ }
       }
@@ -965,11 +1117,19 @@ export const memoryTools: MCPTool[] = [
         return true;
       }).slice(0, limit);
 
+      // ADR-0180 §102: provenance flag gates the response shape.
+      const shapedResults = includeProvenance
+        ? deduplicated
+        : deduplicated.map(r => {
+            const { provenance: _provenance, ...rest } = r;
+            return rest;
+          });
+
       return {
         success: true,
         query,
-        results: deduplicated,
-        total: deduplicated.length,
+        results: shapedResults,
+        total: shapedResults.length,
         searchedNamespaces: namespaces,
         searchTime: Date.now(),
       };

@@ -9,6 +9,12 @@
 
 import type { MCPTool } from './types.js';
 import { validateIdentifier, validateText } from './validate-input.js';
+// ADR-0180 F4-3 (deferred): mutating claims_* handlers will route through
+// `archivist.dispatch('claims_<action>', payload)` once the substrate seam
+// wire-up at `Archivist.initialize()` lands (F4-2). Handler files already
+// exist at `forks/agentdb/src/archivist/handlers/claims/**` (Phase 5
+// deliverable); cli boundary crossing is the F4-3 follow-up. Until then,
+// the cli stays authoritative via `withClaimsLock` + `loadClaims` / `saveClaims`.
 
 // Inline claim service since we can't import external modules
 interface Claimant {
@@ -184,6 +190,10 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format. Use "human:userId:name" or "agent:agentId:agentType"' };
       }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_claim') after
+      // substrate-seam lands (F4-2). Handler at
+      // `forks/agentdb/src/archivist/handlers/claims/claim.ts`.
+      //
       // ADR-0094 P9: read-check-write under file lock so 6 parallel
       // `claims_claim` against the same issue produce exactly one winner.
       return withClaimsLock(() => {
@@ -257,6 +267,8 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_release') after
+      // substrate-seam lands. Handler at handlers/claims/release.ts.
       const store = loadClaims();
       const claim = store.claims[issueId];
 
@@ -331,6 +343,8 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_handoff') after
+      // substrate-seam lands. Handler at handlers/claims/handoff.ts.
       const store = loadClaims();
       const claim = store.claims[issueId];
 
@@ -390,6 +404,8 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_accept-handoff')
+      // after substrate-seam lands. Handler at handlers/claims/accept-handoff.ts.
       const store = loadClaims();
       const claim = store.claims[issueId];
 
@@ -462,6 +478,8 @@ export const claimsTools: MCPTool[] = [
       { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
       if (note) { const v = validateText(note, 'note'); if (!v.valid) return { success: false, error: v.error }; }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_status') after
+      // substrate-seam lands. Handler at handlers/claims/status.ts.
       const store = loadClaims();
       const claim = store.claims[issueId];
 
@@ -583,6 +601,8 @@ export const claimsTools: MCPTool[] = [
       { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
       if (context) { const v = validateText(context, 'context'); if (!v.valid) return { success: false, error: v.error }; }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_mark-stealable')
+      // after substrate-seam lands. Handler at handlers/claims/mark-stealable.ts.
       const store = loadClaims();
       const claim = store.claims[issueId];
 
@@ -644,6 +664,8 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_steal') after
+      // substrate-seam lands. Handler at handlers/claims/steal.ts.
       const store = loadClaims();
       const claim = store.claims[issueId];
       const stealableInfo = store.stealable[issueId];
@@ -941,6 +963,9 @@ export const claimsTools: MCPTool[] = [
         }
       }
 
+      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_rebalance')
+      // after substrate-seam lands. Handler at handlers/claims/rebalance.ts.
+      //
       // When not a dry run, execute the suggested moves
       if (!dryRun) {
         for (const suggestion of suggestions) {

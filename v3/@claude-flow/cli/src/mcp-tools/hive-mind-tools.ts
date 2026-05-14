@@ -1661,6 +1661,12 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_status',
+    // ADR-0180 Phase 4: archivist read handler registered at
+    // forks/agentdb/src/archivist/handlers/hive-mind/status.ts as
+    // `GuardedRead<HiveMindStatusQuery, RankedResults<HiveMindStatusEntry>>`
+    // (matches Phase 3's `memory_bridge_status` shape; one ranked entry per
+    // hive component, matchType='status'). Handler body below stays
+    // load-bearing until the dispatch boundary is wired through cli.
     description: 'Get hive-mind status',
     category: 'hive-mind',
     inputSchema: {
@@ -1906,6 +1912,12 @@ export const hiveMindTools: MCPTool[] = [
         // the proposal's accumulator. If omitted, a minimal snapshot is
         // synthesised from the boolean `vote` field per row 14's overload rule.
         crdtSnapshot: { description: 'Optional CRDT-state triple { votes, approvers, verdict } for crdt strategy. Merged into the proposal accumulator on each vote.' },
+        // ADR-0180 §Read-path return shape — provenance rollout scope per the
+        // archivist (handlers/hive-mind/consensus.ts). When true, status/list
+        // responses opt into the full RankedResult provenance carry. Default
+        // false preserves the legacy flat response shape. Ignored on
+        // propose/vote (those return tally telemetry, not ranked candidates).
+        includeProvenance: { type: 'boolean', description: 'When true, status/list responses carry full RankedResult provenance (ADR-0180 §Read-path return shape). Default false preserves legacy flat shape.' },
       },
       required: ['action'],
     },
@@ -2854,6 +2866,9 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_shutdown',
+    // ADR-0180 Phase 4: archivist mutation handler registered at
+    // forks/agentdb/src/archivist/handlers/hive-mind/shutdown.ts. Handler body
+    // below stays load-bearing until the dispatch boundary is wired through cli.
     description: 'Shutdown the hive-mind and terminate all workers',
     category: 'hive-mind',
     inputSchema: {

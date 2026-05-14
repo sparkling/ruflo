@@ -42,6 +42,18 @@ For any of these, install `@claude-flow/cli@alpha` (the metapackage that re-expo
 
 `@claude-flow/cli-core@3.7.0-alpha.x` ships in lockstep with `@claude-flow/cli@3.7.0-alpha.x`. Once promoted from alpha → latest, the two packages will continue to share the major.minor line.
 
+## Non-archivist surface
+
+`@claude-flow/cli-core` is an **explicit non-archivist published surface** per [ADR-0180 Open Follow-up #9](../../../../../ruflo-patch/docs/adr/ADR-0180-adopt-thin-memory-coordinator-with-type-enforced-mutation-handlers.md) disposition. The package's `memory` commands write via `JsonMemoryBackend` to `.swarm/memory.json` — **storage-disjoint** from the archivist-managed substrates (RVF + the five SQLite carve-out controllers the heavy `@sparkleideas/cli` reads). cli-core does NOT route through the archivist runtime (`routeMemoryOp`). This is **deliberate decoupling** per ADR-0162 §Batch F-2 (cli-core split, 22.9× cold-cache speedup) — importing the archivist (which depends on `better-sqlite3`/RVF, OTEL, the controller registry, etc.) would defeat the lightweight-startup design goal that motivated the package's existence.
+
+Three operational rules apply:
+
+1. **No audit-chain completeness for `.swarm/memory.json` writes.** Mutations made through cli-core's `JsonMemoryBackend` are off-chain by construction. The "audit chain is complete" guarantee in ADR-0180 covers only mutations routed through the archivist; cli-core writes are outside that envelope.
+2. **Plugin authors who need audit chain MUST use the heavy `@sparkleideas/cli` path** (or `routeMemoryOp` directly). Use cli-core only when you can accept off-chain semantics — typically lightweight plugin scripts that need fast cold-cache startup and don't share state with the substrate the archivist coordinates.
+3. **Any future cli-core surface expansion that touches substrate beyond local JSON re-opens this disposition.** The current carve-out is justified because `JsonMemoryBackend` writes are storage-disjoint from the RVF / SQLite carve-out substrate. Adding HNSW, RVF, or SQLite-backed paths to cli-core (e.g., the `MIGRATION.md` "alpha.4 opt-in HNSW build" idea) requires a new ADR amendment.
+
+See ADR-0180 Open Follow-up #9 (lines ~440-457) for the full audit, caller analysis, and rationale.
+
 ## Verification
 
 ```bash
