@@ -300,10 +300,23 @@ export function resolveConfig(overrides?: ConfigOverrides): ResolvedConfig {
     }
   }
 
-  // Safety net: never resolve to 384 -- always 768 (ADR-0069). When the gate
-  // fires, drop any file-set HNSW overrides too — they were geometrically tied
-  // to the rejected dimension and would mismatch the rewritten 768-dim index.
-  if (dimension === 384) {
+  // Safety net: a 384-dim resolution is legitimate ONLY when the model is
+  // itself a known 384-dim model. ADR-0177 Phase 1.6 (b) added explicit
+  // MiniLM support, so `--embedding-model Xenova/all-MiniLM-L6-v2` must
+  // resolve to dimension 384 — stomping it to 768 (the old ADR-0069
+  // blanket gate) produces a model/dimension mismatch that crashes the
+  // embedding pipeline's startup dimension probe.
+  //
+  // The gate still fires for the genuine staleness case: dimension fell to
+  // 384 while the model is a 768-dim model (or the mpnet default). There
+  // the 384 is a stale carry-over — correct it to 768 and drop the
+  // file-set HNSW overrides, which were geometrically tied to the rejected
+  // dimension and would mismatch the rewritten 768-dim index.
+  const KNOWN_384_MODELS = new Set([
+    'Xenova/all-MiniLM-L6-v2',
+    'Xenova/all-MiniLM-L12-v2',
+  ]);
+  if (dimension === 384 && !KNOWN_384_MODELS.has(model)) {
     dimension = 768;
     hnswMOverride = undefined;
     hnswEfConstructionOverride = undefined;
