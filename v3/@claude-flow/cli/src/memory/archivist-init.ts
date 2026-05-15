@@ -130,41 +130,37 @@ import { existsSync, mkdirSync } from 'fs';
 // the public `buildArchivistConfig` signature can still resolve at
 // type-check time.
 import type BetterSqlite3 from 'better-sqlite3';
-import {
+// agentdb value imports (`Archivist`, `setAuditLogPath`, `MemoryRvfAdapter`)
+// are deferred to dynamic imports inside `initProcessArchivist()` and
+// `ensureRvfWired()` — the only call sites. Rationale (parallel to the
+// better-sqlite3 reasoning above): unit-test modules in the ruflo-patch
+// repo import the cli's compiled dist `hive-mind-tools.js`, which has a
+// static `import { getProcessArchivist } from '../memory/archivist-init.js'`.
+// Loading that triggers archivist-init's top-level imports — and at
+// `test-ci` time the build tree lives at `/tmp/ruflo-build/v3/@claude-flow/
+// cli/` BEFORE publish-verdaccio runs, so `@sparkleideas/agentdb` is not
+// yet in the build's `node_modules`. Static value imports therefore
+// hard-fail with `ERR_MODULE_NOT_FOUND`. Deferring them to async helpers
+// breaks the test-load chain while preserving the runtime behavior — the
+// archivist still wires the same `Archivist` + adapters once
+// `initProcessArchivist()` runs in the cli's startup path.
+//
+// Types (`ArchivistInitConfig`, `EmbeddingScorer`, `PatternReader`,
+// `RouteDecision`, `TaskRouter`, `VectorBackendAsync`, `PatternHit`) stay
+// as `import type` — erased at emit, produces zero runtime imports.
+import type {
   Archivist,
-  setAuditLogPath,
-  type ArchivistInitConfig,
-  type EmbeddingScorer,
-  type PatternHit,
-  type PatternReader,
-  type RouteDecision,
-  type TaskRouter,
+  ArchivistInitConfig,
+  EmbeddingScorer,
+  PatternHit,
+  PatternReader,
+  RouteDecision,
+  TaskRouter,
 } from 'agentdb/archivist';
-// `VectorBackendAsync` is the contract `ArchivistInitConfig.rvfBackend`
-// (agentdb archivist/index.ts:195) is typed against. The interface lives at
-// `agentdb/src/backends/VectorBackend.ts` but only `agentdb/wasm` re-exports
-// it (`agentdb/backends` barrel re-exports the *base* `VectorBackend`, not
-// the async variant). Importing from `agentdb/wasm` here is a minor naming
-// awkwardness; the alternative — typing `buildArchivistConfig` against the
-// concrete `MemoryRvfAdapter` class — over-constrains the parameter for no
-// gain. Keep the interface contract at the boundary.
 import type { VectorBackendAsync } from 'agentdb/wasm';
 import { findProjectRoot } from '../mcp-tools/types.js';
-// W1 adapter (ADR-0181 Phase 4): structurally types the cli's
-// `@claude-flow/memory` `RvfBackend` as `IMemoryRvfBackend` and presents
-// agentdb's `VectorBackendAsync` surface. No package dependency on
-// `@claude-flow/memory` — duck-typing keeps the fork boundary clean.
-// Sync `insert`/`search`/etc. throw fail-loud (the cli's memory-router is
-// eager-WAL async-only); `flush` / `save` / `load` are no-ops.
-//
-// The adapter lives in `agentdb/src/adapters/memory-rvf-adapter.ts`
-// (co-located with `agentdb/backends/rvf/*` so the `VectorBackendAsync`
-// contract owner stays in the same package). It reaches us via the
-// `./adapters/memory-rvf-adapter` subpath in agentdb's `exports` map.
-// `ArchivistInitConfig.rvfBackend` is typed against the `VectorBackendAsync`
-// interface (not the concrete `RvfBackend` class), so this adapter assigns
-// without any cast.
-import { MemoryRvfAdapter } from 'agentdb/adapters/memory-rvf-adapter';
+// (`MemoryRvfAdapter` is only used as a value at the `new MemoryRvfAdapter()`
+// call site in `ensureRvfWired` — deferred to a dynamic import there.)
 
 /**
  * The one per-process `Archivist`. ADR-0181 §Architecture mandates a per-process
@@ -432,6 +428,11 @@ export async function getProcessArchivist(): Promise<Archivist> {
  * invoked on the first call (it throws if called after the audit fd is open).
  */
 export async function initProcessArchivist(projectRoot?: string): Promise<Archivist> {
+  // Deferred dynamic import — see file header (`agentdb` is unavailable
+  // during test-ci, where unit tests load the build's compiled dist before
+  // publish-verdaccio installs `@sparkleideas/agentdb`).
+  const { Archivist, setAuditLogPath } = await import('agentdb/archivist');
+
   // Bootstrap: cannot call the guarded `getProcessArchivist()` here — the guard
   // throws if `!initialized`, and `initialized` does not flip until the end of
   // this function. Mint / fetch the singleton directly. After this function
@@ -622,6 +623,10 @@ export async function ensureRvfWired(): Promise<void> {
 
   const attempt = (async (): Promise<void> => {
     const { ensureRouter, getStorageInstance } = await import('./memory-router.js');
+    // Deferred — see file header (agentdb value imports defer to here so
+    // test-ci's pre-publish load of the cli dist doesn't trip
+    // ERR_MODULE_NOT_FOUND).
+    const { MemoryRvfAdapter } = await import('agentdb/adapters/memory-rvf-adapter');
     await ensureRouter();
     const cliMemoryRvfBackend = getStorageInstance();
     // ADR-0069/0072 unified embedding dimension — same value memory-router /
