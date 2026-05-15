@@ -507,11 +507,13 @@ export const agentdbHierarchicalStore: MCPTool = {
       }
       // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
       // `handlers/agentdb/hierarchical-store.ts` owns the HierarchicalMemory
-      // write under substrate.withWrite. ADR-0181 Phase 6 correction: the
-      // substrate-registry.ts L71 places `agentdb_hierarchical_store` in the
-      // RVF roster, not FS-JSON — gate behind ensureRvfWired() so the
-      // handler's substrate.withWrite resolves.
-      await ensureRvfWired();
+      // write under substrate.withWrite. ADR-0181 Phase 7 reclassification:
+      // `agentdb_hierarchical_store` moved from the RVF roster to the SQLite
+      // carve-out (substrate-registry.ts) so the archivist write hits the
+      // SAME `.swarm/memory.db` file the controllers initialize. Gate behind
+      // ensureSqliteWired() — mirrors the read-side pattern at the
+      // hierarchical-recall site below.
+      await ensureSqliteWired();
       await (await getProcessArchivist()).dispatch('agentdb_hierarchical_store', {
         key,
         value,
@@ -1092,9 +1094,13 @@ export const agentdbReflexionStore: MCPTool = {
       const success = params.success === true;
       // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
       // `handlers/agentdb/reflexion-store.ts` owns the ReflexionMemory write
-      // under substrate.withWrite. STORE_ID 'agentdb_reflexion_store' is in
-      // the RVF family per substrate-registry — gate behind ensureRvfWired().
-      await ensureRvfWired();
+      // under substrate.withWrite. ADR-0181 Phase 7 reclassification:
+      // `agentdb_reflexion_store` moved from the RVF roster to the SQLite
+      // carve-out (substrate-registry.ts) so the archivist write hits the
+      // SAME `.swarm/memory.db` file the controllers initialize. Gate behind
+      // ensureSqliteWired() — mirrors the read-side pattern at the
+      // reflexion-retrieve site above.
+      await ensureSqliteWired();
       await (await getProcessArchivist()).dispatch('agentdb_reflexion_store', {
         session_id: sessionId,
         task,
@@ -1718,9 +1724,13 @@ export const agentdbSkillCreate: MCPTool = {
       const successRate = validateScore(params.success_rate, 0.5);
       // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
       // `handlers/agentdb/skill-create.ts` owns the SkillLibrary write under
-      // substrate.withWrite. STORE_ID 'agentdb_skill_create' is in the RVF
-      // family per substrate-registry — gate behind ensureRvfWired().
-      await ensureRvfWired();
+      // substrate.withWrite. ADR-0181 Phase 7 reclassification: STORE_ID
+      // `agentdb_skill_create` moved from the RVF roster to the SQLite
+      // carve-out (substrate-registry.ts) so the archivist write hits the
+      // SAME `.swarm/memory.db` file the controllers initialize. Gate behind
+      // ensureSqliteWired() — mirrors the read-side pattern at the
+      // skill-search site below.
+      await ensureSqliteWired();
       await (await getProcessArchivist()).dispatch('agentdb_skill_create', {
         name,
         description,
