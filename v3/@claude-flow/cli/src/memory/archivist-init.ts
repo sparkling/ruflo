@@ -159,6 +159,7 @@ import type {
   EmbeddingScorer,
   FeedbackRecorder,
   FeedbackWriteResult,
+  GNNTelemetryReader,
   HierarchicalMemoryWriter,
   HierarchicalWriteResult,
   LearningSystemWriter,
@@ -170,6 +171,7 @@ import type {
   ReflexionStoreWriter,
   ReflexionWriteResult,
   RouteDecision,
+  SemanticRouteReader,
   SkillLibraryWriter,
   SkillLibraryWriteResult,
   SonaTrajectoryWriter,
@@ -725,6 +727,129 @@ function makeCliFeedbackRecorder(): FeedbackRecorder {
   };
 }
 
+// ── ADR-0181 Item 2 capability adapters (2026-05-15) ─────────────────────────
+//
+// `makeCliGnnTelemetryReader` / `makeCliSemanticRouteReader` adapt the cli
+// `getController('gnnService')` / `getController('semanticRouter')` paths down
+// to the narrow `GNNTelemetryReader` / `SemanticRouteReader` capability
+// surfaces. Both factories close over NOTHING — every method call resolves the
+// controller fresh via `getController(...)`. Caching the controller in a
+// closure-scoped variable would re-introduce the cli-vs-archivist split-brain
+// the Phase 7 r1 → r2 round eliminated (see handover §B Phase 7 root cause).
+// The `getController` helper itself memoises against `ControllerRegistry` so
+// per-call resolution is a Map lookup, not a re-construction.
+//
+// Per-call resolution discipline matches `makeCliTaskRouter` above (line 222) —
+// every `route(...)` call defers `import('../mcp-tools/agentdb-orchestration.js')`
+// then runs `routeTask(...)`; nothing about the route call's *target* is frozen
+// at factory-init time.
+
+/**
+ * Adapt the cli's `getController('gnnService')` telemetry surface down to the
+ * narrow `GNNTelemetryReader` capability. Used by the
+ * `agentdb_gnn_stats` archivist handler so the b5 `adr0090-b5-gnnService`
+ * probe receives `{success:true, controller:"gnnService", engine, count}`
+ * via dispatch (no per-action bypass; b5-queen verdict 2026-05-15 option a).
+ *
+ * GNNService has no SQLite persistence (compute-only —
+ * `controller-registry.ts:1707-1717`). The shape returned mirrors the
+ * pre-Phase-5 cli `agentdb_neural_patterns` `'stats'`-action response:
+ *   - `engine` from `getEngineType()` ('native' / 'js' / 'unknown')
+ *   - `initialized` from `isInitialized()` (boolean)
+ *   - `count` from `cachedPatterns.length` OR `getPatternCount()` (compute-
+ *     only — defaults to 0 on cold init)
+ *   - `config` from `getStats()` if exposed (carry-through; cli wrapper does
+ *     not surface it today but the capability surface keeps the door open)
+ *
+ * Throws fail-loud (`feedback-no-fallbacks`) if the controller is not wired —
+ * the dispatch boundary's `requireGnnTelemetryReader()` catches the unwired-
+ * factory case; this throw catches the unwired-controller case (registry
+ * returned null).
+ */
+function makeCliGnnTelemetryReader(): GNNTelemetryReader {
+  return {
+    async getStats() {
+      // Per-call controller resolution — see header above.
+      const { getController } = await import('./memory-router.js');
+      const ctrl = await getController<any>('gnnService');
+      if (!ctrl) {
+        throw new Error(
+          'archivist: cli GNNTelemetryReader capability — getController(\'gnnService\') ' +
+            'returned null (controller not wired in this build). The b5-gnnService ' +
+            'probe regex matches "not wired"/"not available"/"not initialized" so this ' +
+            'surfaces as SKIP_ACCEPTED at the harness boundary, not a silent zero-count.',
+        );
+      }
+      const engine: string =
+        typeof ctrl.getEngineType === 'function' ? String(ctrl.getEngineType() ?? 'unknown') : 'unknown';
+      const initialized: boolean =
+        typeof ctrl.isInitialized === 'function' ? Boolean(ctrl.isInitialized()) : false;
+      const count: number = Array.isArray(ctrl.cachedPatterns)
+        ? ctrl.cachedPatterns.length
+        : typeof ctrl.getPatternCount === 'function'
+          ? Number(ctrl.getPatternCount()) || 0
+          : 0;
+      const config: unknown =
+        typeof ctrl.getStats === 'function' ? (ctrl.getStats() as unknown) : undefined;
+      return { engine, initialized, count, config };
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `getController('semanticRouter').route(input)` path down to
+ * the narrow `SemanticRouteReader` capability. Used by the
+ * `agentdb_semantic_route` archivist handler's controller-first branch so the
+ * b5 `adr0090-b5-semanticRouter` probe sees the routes that
+ * `agentdb_semantic_add_route` persists into the in-memory Map +
+ * `.claude-flow/semantic-routes.json` (re-hydrated at registry init —
+ * controller-registry.ts:1422-1423).
+ *
+ * Returns `null` when the router has no matching route — legitimate empty
+ * result (e.g. fresh router with no `addRoute` calls). The handler returns
+ * `[]` on null; the cli wrapper at agentdb-tools.ts:778 already maps `top`
+ * undefined to `{success:false, route:null, error:'No route matched'}`.
+ *
+ * Throws fail-loud if the controller is not wired (`feedback-no-fallbacks`) —
+ * surfaced via the capability `require*` accessor or this throw, depending on
+ * which boundary the failure hits first.
+ */
+function makeCliSemanticRouteReader(): SemanticRouteReader {
+  return {
+    async route(input) {
+      // Per-call controller resolution — see header above.
+      const { getController } = await import('./memory-router.js');
+      const ctrl = await getController<any>('semanticRouter');
+      if (!ctrl) {
+        throw new Error(
+          'archivist: cli SemanticRouteReader capability — getController(\'semanticRouter\') ' +
+            'returned null (controller not wired in this build).',
+        );
+      }
+      if (typeof ctrl.route !== 'function') {
+        throw new Error(
+          'archivist: cli SemanticRouteReader capability — semanticRouter controller ' +
+            'has no route() method (version mismatch).',
+        );
+      }
+      const result = (await ctrl.route(input)) as
+        | { route?: string; confidence?: number; metadata?: Record<string, unknown> }
+        | null
+        | undefined;
+      if (!result || typeof result.route !== 'string') return null;
+      const route = result.route;
+      const confidence = typeof result.confidence === 'number' ? result.confidence : 0;
+      // SemanticRouter.keywordMatch returns route='' / confidence=0 when no
+      // keyword matches and route='default' as the conventional empty-pick.
+      // Both are "no real match" — surface as null so the cli wrapper's
+      // {success:false, route:null} branch fires consistently regardless of
+      // which underlying engine produced the empty pick.
+      if (route === '' || (route === 'default' && confidence === 0)) return null;
+      return result.metadata ? { route, confidence, metadata: result.metadata } : { route, confidence };
+    },
+  };
+}
+
 /**
  * Build the cli process's `ArchivistInitConfig`. Phase 4 wires `projectRoot`
  * plus four substrate/capability slots; `rvfBackend` is supplied separately by
@@ -782,6 +907,11 @@ export function buildArchivistConfig(
     learningSystemWriterFactory: makeCliLearningSystemWriter,
     sonaTrajectoryWriterFactory: makeCliSonaTrajectoryWriter,
     feedbackRecorderFactory: makeCliFeedbackRecorder,
+    // ADR-0181 Item 2 (2026-05-15): GNNService telemetry + SemanticRouter
+    // route-lookup capability surfaces. Adapters resolve the underlying
+    // controllers PER CALL via getController(...) — no closure caching.
+    gnnTelemetryReaderFactory: makeCliGnnTelemetryReader,
+    semanticRouteReaderFactory: makeCliSemanticRouteReader,
   };
 }
 
@@ -958,6 +1088,12 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
     learningSystemWriterFactory: makeCliLearningSystemWriter,
     sonaTrajectoryWriterFactory: makeCliSonaTrajectoryWriter,
     feedbackRecorderFactory: makeCliFeedbackRecorder,
+    // ADR-0181 Item 2 (2026-05-15): GNNService telemetry +
+    // SemanticRouter route-lookup capability surfaces. Adapters resolve
+    // controllers PER CALL — see makeCliGnnTelemetryReader / makeCli-
+    // SemanticRouteReader header for rationale (Phase 7 r1→r2 lesson).
+    gnnTelemetryReaderFactory: makeCliGnnTelemetryReader,
+    semanticRouteReaderFactory: makeCliSemanticRouteReader,
   };
 
   // Remember the resolved root so `ensureSqliteWired()` agrees with

@@ -1980,14 +1980,30 @@ export const agentdbNeuralPatterns: MCPTool = {
       const embedding = Array.isArray(params.embedding) && (params.embedding as unknown[]).every((n) => typeof n === 'number')
         ? (params.embedding as number[])
         : undefined;
-      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
-      // `handlers/agentdb/neural-patterns.ts` reads the RVF-family
-      // `agentdb_pattern_store` via `ctx.substrate.vectorSearch` — gate behind
-      // ensureRvfWired() (team-lead ruling: RVF-dependent). Returns
-      // RankedResults<NeuralPatternHit>; cli narrows to legacy
-      // `{ patterns: [{index, similarity}] }` envelope. The action ↔ shape
-      // semantics (stats vs similar) collapse at the handler — the cli now
-      // returns one canonical shape derived from the handler's response.
+
+      // ADR-0181 Item 2 (2026-05-15) — `'stats'` and `'similar'` route to
+      // SEPARATE dispatched handlers. Per b5-queen verdict, option (a) (split
+      // handler) over option (c) (cli-side bypass for stats) — keeps every
+      // action of this tool flowing through dispatch so the cli/archivist
+      // boundary stays clean. The new `agentdb_gnn_stats` handler reads
+      // GNNService telemetry through the `GNNTelemetryReader` capability
+      // (no substrate dependency — telemetry lives on the controller). The
+      // existing `agentdb_neural_patterns` handler stays substrate-backed for
+      // `'similar'` — `ctx.substrate.vectorSearch` against
+      // `agentdb_pattern_store` (RVF-family — gate behind ensureRvfWired).
+      if (action === 'stats') {
+        const stats = await (await getProcessArchivist()).dispatchRead('agentdb_gnn_stats', {
+          pattern: patternMarker,
+          type: patternType,
+        });
+        // Return the legacy cli `{success:true, controller:"gnnService",
+        // engine, count, ...}` shape the b5 PASS-branch matches at
+        // lib/acceptance-adr0090-b5-checks.sh:1540-1554. The handler already
+        // returns this shape verbatim so the response IS the cli envelope.
+        return stats;
+      }
+
+      // action === 'similar': substrate-backed read.
       await ensureRvfWired();
       const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_neural_patterns', {
         action,
