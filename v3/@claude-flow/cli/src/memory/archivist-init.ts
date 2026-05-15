@@ -152,9 +152,23 @@ import type {
   Archivist,
   ArchivistInitConfig,
   EmbeddingScorer,
+  FeedbackRecorder,
+  FeedbackWriteResult,
+  HierarchicalMemoryWriter,
+  HierarchicalWriteResult,
+  LearningSystemWriter,
+  LearningWriteResult,
   PatternHit,
   PatternReader,
+  ReasoningBankWriter,
+  ReasoningBankWriteResult,
+  ReflexionStoreWriter,
+  ReflexionWriteResult,
   RouteDecision,
+  SkillLibraryWriter,
+  SkillLibraryWriteResult,
+  SonaTrajectoryWriter,
+  SonaTrajectoryWriteResult,
   TaskRouter,
 } from 'agentdb/archivist';
 import type { VectorBackendAsync } from 'agentdb/wasm';
@@ -319,6 +333,313 @@ function makeCliPatternReader(): PatternReader {
   };
 }
 
+// ── ADR-0181 Phase 6 stub-body wire-up adapters ──────────────────────────────
+//
+// Each adapter below maps a cli orchestration helper (or controller call) into
+// the narrow capability surface defined in `agentdb/archivist/capabilities.ts`.
+// The handler bodies in `agentdb/src/archivist/handlers/agentdb/*.ts` call
+// `ctx.capabilities.requireXxxWriter()` and never see the cli function shapes
+// directly — the type-enforcement boundary holds.
+//
+// Imports are deferred inside each method body (`await import('../...')`) so
+// startup never pays for these — only first dispatch does.
+
+/**
+ * Adapt the cli's `storePattern(...)` orchestration helper
+ * (`mcp-tools/agentdb-orchestration.ts:16` → `routePatternOp({ type:'store' })`)
+ * to the narrow `ReasoningBankWriter` surface.
+ *
+ * The helper returns `null` only on the outer `try` catch (network / module
+ * load failure); a controller-level success/failure surfaces as `{ success,
+ * controller, error? }`. Both shapes propagate to the handler so it can
+ * decide between a substrate.withWrite RVF fallback (null / success:false
+ * + controller not wired) versus a fail-loud throw (success:false +
+ * controller-side error).
+ */
+function makeCliReasoningBankWriter(): ReasoningBankWriter {
+  return {
+    async storePattern(input): Promise<ReasoningBankWriteResult | null> {
+      const { storePattern } = await import('../mcp-tools/agentdb-orchestration.js');
+      const result = await storePattern({
+        pattern: input.pattern,
+        type: input.type,
+        confidence: input.confidence,
+      });
+      return result;
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `agentdb_skill_create` controller path
+ * (`mcp-tools/agentdb-tools.ts:1650` — prefers `createSkill({ name, description,
+ * code, successRate })` v3 API, falls back to `promote({ name, description,
+ * code }, successRate)` for legacy controllers) to the narrow
+ * `SkillLibraryWriter` surface.
+ */
+function makeCliSkillLibraryWriter(): SkillLibraryWriter {
+  return {
+    async createSkill(input): Promise<SkillLibraryWriteResult | null> {
+      const { getController, getCallableMethod } = await import('./memory-router.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const skills = await getController<any>('skills');
+      if (!skills) return null;
+      try {
+        // Prefer v3 createSkill, fall back to legacy promote.
+        let id: string | undefined;
+        const createFn = getCallableMethod(skills, 'createSkill', 'create', 'add');
+        const promoteFn = getCallableMethod(skills, 'promote');
+        if (createFn) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await (createFn as any).call(skills, {
+            name: input.name,
+            description: input.description,
+            code: input.code,
+            successRate: input.successRate,
+          });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          id = (result as any)?.id ?? (typeof result === 'string' ? result : input.name);
+        } else if (promoteFn) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await (promoteFn as any).call(
+            skills,
+            { name: input.name, description: input.description, code: input.code },
+            input.successRate,
+          );
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          id = (result as any)?.id ?? (typeof result === 'string' ? result : input.name);
+        } else {
+          return {
+            success: false,
+            skillId: '',
+            controller: 'skills',
+            error: 'SkillLibrary controller missing createSkill/promote method',
+          };
+        }
+        return { success: true, skillId: id ?? input.name, controller: 'skills' };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, skillId: '', controller: 'skills', error: msg };
+      }
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `agentdb_reflexion-store` controller path
+ * (`mcp-tools/agentdb-tools.ts:1003`) — probes `storeEpisode` (v3) then `store`
+ * (legacy) via `getCallableMethod`; passes BOTH camelCase `sessionId` and
+ * legacy snake_case `session_id` for back-compat (ADR-0090 B5). The 2-second
+ * timeout the cli enforces is preserved here.
+ */
+function makeCliReflexionStoreWriter(): ReflexionStoreWriter {
+  return {
+    async storeEpisode(input): Promise<ReflexionWriteResult | null> {
+      const { getController, getCallableMethod } = await import('./memory-router.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const reflexion = await getController<any>('reflexion');
+      if (!reflexion) return null;
+      const fn = getCallableMethod(reflexion, 'storeEpisode', 'store');
+      if (!fn) {
+        return {
+          success: false,
+          episodeId: '',
+          controller: 'reflexion',
+          error: 'ReflexionMemory controller missing storeEpisode/store method',
+        };
+      }
+      try {
+        // 2-second timeout per cli line ~1040 to prevent stalled controllers
+        // blocking dispatch. The substrate's withWrite owns the lock; this
+        // only bounds the controller call itself.
+        const TIMEOUT_MS = 2000;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const callPromise = (fn as any).call(reflexion, {
+          sessionId: input.sessionId,
+          session_id: input.sessionId, // back-compat
+          task: input.task,
+          reward: input.reward,
+          success: input.success,
+        });
+        let timer: NodeJS.Timeout | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`reflexion.storeEpisode timed out after ${TIMEOUT_MS}ms`));
+          }, TIMEOUT_MS);
+        });
+        try {
+          const result = await Promise.race([callPromise, timeoutPromise]);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const episodeId = (result as any)?.id ?? (typeof result === 'string' ? result : '');
+          return { success: true, episodeId, controller: 'reflexion' };
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, episodeId: '', controller: 'reflexion', error: msg };
+      }
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `hierarchicalStore(...)` orchestration helper
+ * (`mcp-tools/agentdb-orchestration.ts:269`) to the narrow
+ * `HierarchicalMemoryWriter` surface.
+ *
+ * The helper itself handles real-vs-stub HierarchicalMemory detection and
+ * surfaces controller-unavailable as `{ success:false, error: 'Hierarchical...
+ * not available' }` — we propagate the envelope unchanged so the handler can
+ * fall back to substrate.withWrite RVF when needed.
+ */
+function makeCliHierarchicalMemoryWriter(): HierarchicalMemoryWriter {
+  return {
+    async storeHierarchical(input): Promise<HierarchicalWriteResult | null> {
+      const { hierarchicalStore } = await import('../mcp-tools/agentdb-orchestration.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result: any = await hierarchicalStore({
+        key: input.key,
+        value: input.value,
+        tier: input.tier,
+      });
+      if (!result) return null;
+      // The helper returns shapes like:
+      //   { success: true, id?, key, tier }
+      //   { success: false, error: 'HierarchicalMemory not available' }
+      const success = result.success === true;
+      if (!success && /not available/i.test(String(result.error ?? ''))) {
+        return null; // controller-not-present → handler falls back to RVF
+      }
+      return {
+        success,
+        id: result.id,
+        key: result.key ?? input.key,
+        tier: result.tier ?? input.tier,
+        controller: 'hierarchicalMemory',
+        error: result.error,
+      };
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `agentdb_experience_record` controller path
+ * (`mcp-tools/agentdb-tools.ts:1797`) — calls `startSession()` first (FK
+ * requirement on `learning_experiences.session_id`) then `recordExperience({
+ * action: task, input, output, reward, success })` (ADR-0090 B5 / ADR-0082).
+ */
+function makeCliLearningSystemWriter(): LearningSystemWriter {
+  return {
+    async recordExperience(input): Promise<LearningWriteResult | null> {
+      const { getController, getCallableMethod } = await import('./memory-router.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const learning = await getController<any>('learningSystem');
+      if (!learning) return null;
+      const recordFn = getCallableMethod(learning, 'recordExperience', 'record');
+      if (!recordFn) {
+        return {
+          success: false,
+          experienceId: '',
+          controller: 'learningSystem',
+          error: 'LearningSystem controller missing recordExperience/record method',
+        };
+      }
+      try {
+        // FK-prime: synchronously start a session before recording so the
+        // INSERT into learning_experiences resolves session_id (cli L1834+,
+        // ADR-0090 B5 / ADR-0082).
+        const startSessionFn = getCallableMethod(learning, 'startSession');
+        if (startSessionFn) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (startSessionFn as any).call(learning);
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await (recordFn as any).call(learning, {
+          action: input.task, // cli L1803: task → action column
+          input: input.input,
+          output: input.output,
+          reward: input.reward,
+          success: input.success,
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const experienceId = (result as any)?.id ?? (typeof result === 'string' ? result : '');
+        return { success: true, experienceId, controller: 'learningSystem' };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, experienceId: '', controller: 'learningSystem', error: msg };
+      }
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `agentdb_sona_trajectory_store` `'record'` action path
+ * (`mcp-tools/agentdb-tools.ts:2039`) to the narrow `SonaTrajectoryWriter`
+ * surface. SonaTrajectoryService is pure-compute (in-memory RL store) — never
+ * silently falls back per cli L2031-2037.
+ */
+function makeCliSonaTrajectoryWriter(): SonaTrajectoryWriter {
+  return {
+    async recordTrajectory(input): Promise<SonaTrajectoryWriteResult | null> {
+      const { getController, getCallableMethod } = await import('./memory-router.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sona = await getController<any>('sonaTrajectory');
+      if (!sona) return null;
+      const fn = getCallableMethod(sona, 'recordTrajectory', 'record');
+      if (!fn) {
+        return {
+          success: false,
+          controller: 'sonaTrajectory',
+          error: 'SonaTrajectoryService controller missing recordTrajectory/record method',
+        };
+      }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await (fn as any).call(sona, {
+          pattern: input.pattern,
+          agentType: input.agentType,
+          type: input.type,
+          reward: input.reward,
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const trajectoryId = (result as any)?.id ?? (typeof result === 'string' ? result : undefined);
+        return { success: true, trajectoryId, controller: 'sonaTrajectory' };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, controller: 'sonaTrajectory', error: msg };
+      }
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `recordFeedback(...)` orchestration helper
+ * (`mcp-tools/agentdb-orchestration.ts:85` → `routeFeedbackOp({ type:'record',
+ * ... })`) fanning out across LearningSystem + ReasoningBank controllers to
+ * the narrow `FeedbackRecorder` surface.
+ */
+function makeCliFeedbackRecorder(): FeedbackRecorder {
+  return {
+    async recordFeedback(input): Promise<FeedbackWriteResult | null> {
+      const { recordFeedback } = await import('../mcp-tools/agentdb-orchestration.js');
+      const result = await recordFeedback({
+        taskId: input.taskId,
+        success: input.success,
+        quality: input.quality,
+        agent: input.agent,
+      });
+      if (!result) return null;
+      // Helper returns `{ success, controller, updated }`. Treat
+      // controller:'none' + success:false as "not wired" → null.
+      if (!result.success && (result.controller === 'none' || !result.controller)) {
+        return null;
+      }
+      return result;
+    },
+  };
+}
+
 /**
  * Build the cli process's `ArchivistInitConfig`. Phase 4 wires `projectRoot`
  * plus four substrate/capability slots; `rvfBackend` is supplied separately by
@@ -369,6 +690,13 @@ export function buildArchivistConfig(
     taskRouterFactory: makeCliTaskRouter,
     embeddingScorerFactory: makeCliEmbeddingScorer,
     patternReaderFactory: makeCliPatternReader,
+    reasoningBankWriterFactory: makeCliReasoningBankWriter,
+    skillLibraryWriterFactory: makeCliSkillLibraryWriter,
+    reflexionStoreWriterFactory: makeCliReflexionStoreWriter,
+    hierarchicalMemoryWriterFactory: makeCliHierarchicalMemoryWriter,
+    learningSystemWriterFactory: makeCliLearningSystemWriter,
+    sonaTrajectoryWriterFactory: makeCliSonaTrajectoryWriter,
+    feedbackRecorderFactory: makeCliFeedbackRecorder,
   };
 }
 
@@ -533,6 +861,18 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
     taskRouterFactory: makeCliTaskRouter,
     embeddingScorerFactory: makeCliEmbeddingScorer,
     patternReaderFactory: makeCliPatternReader,
+    // ADR-0181 Phase 6 writer-capability wire-up — adapt cli orchestration
+    // helpers / controller paths down to narrow capability surfaces so
+    // handlers/agentdb/{pattern,skill,reflexion,hierarchical,experience,sona,
+    // feedback}-* can dispatch through ctx.capabilities.requireXxxWriter().
+    // Each factory closure defers its `import(...)` so startup pays nothing.
+    reasoningBankWriterFactory: makeCliReasoningBankWriter,
+    skillLibraryWriterFactory: makeCliSkillLibraryWriter,
+    reflexionStoreWriterFactory: makeCliReflexionStoreWriter,
+    hierarchicalMemoryWriterFactory: makeCliHierarchicalMemoryWriter,
+    learningSystemWriterFactory: makeCliLearningSystemWriter,
+    sonaTrajectoryWriterFactory: makeCliSonaTrajectoryWriter,
+    feedbackRecorderFactory: makeCliFeedbackRecorder,
   };
 
   // Remember the resolved root so `ensureSqliteWired()` agrees with

@@ -241,6 +241,10 @@ export const agentdbPatternStore: MCPTool = {
       // (the prior `memory-store-fallback` branch — a silent fallback path under
       // ADR-0082 — is removed: the archivist surface fails loud if the substrate
       // is unwired, which is the documented dispatch contract).
+      // ADR-0181 Phase 6: agentdb_pattern_store classifies to RVF substrate
+      // (substrate-registry.ts L68); gate behind ensureRvfWired() so the
+      // handler's substrate.withWrite resolves.
+      await ensureRvfWired();
       await (await getProcessArchivist()).dispatch('agentdb_pattern_store', { pattern, type, confidence });
       return { success: true, pattern, type, confidence, controller: 'archivist' };
     } catch (error) {
@@ -327,6 +331,8 @@ export const agentdbFeedback: MCPTool = {
       // write under substrate.withWrite. Mutation handler returns void; cli
       // envelope reconstructs `{success, taskId, quality, agent}` from
       // validated inputs.
+      // ADR-0181 Phase 6: agentdb_feedback classifies to RVF — wire RVF.
+      await ensureRvfWired();
       await (await getProcessArchivist()).dispatch('agentdb_feedback', { taskId, success, quality, agent });
       return { success: true, taskId, recorded: { success, quality, agent }, controller: 'archivist' };
     } catch (error) {
@@ -501,10 +507,11 @@ export const agentdbHierarchicalStore: MCPTool = {
       }
       // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
       // `handlers/agentdb/hierarchical-store.ts` owns the HierarchicalMemory
-      // write under substrate.withWrite. The store routes to the
-      // `agentdb_hierarchical_store` FS-JSON-family substrate so neither
-      // ensureRvfWired nor ensureSqliteWired is needed (Phase 4
-      // `t1-6-empty-search` regression posture).
+      // write under substrate.withWrite. ADR-0181 Phase 6 correction: the
+      // substrate-registry.ts L71 places `agentdb_hierarchical_store` in the
+      // RVF roster, not FS-JSON — gate behind ensureRvfWired() so the
+      // handler's substrate.withWrite resolves.
+      await ensureRvfWired();
       await (await getProcessArchivist()).dispatch('agentdb_hierarchical_store', {
         key,
         value,
