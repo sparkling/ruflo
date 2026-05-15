@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/deployment",
-  "version": "3.0.0-alpha.7-patch.511",
+  "version": "3.0.0-alpha.7-patch.512",
   "type": "module",
   "description": "Deployment module - Release management, CI/CD, versioning",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "release": "semantic-release"
   },
   "dependencies": {
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.502"
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.503"
   },
   "devDependencies": {
     "semantic-release": "^25.0.2",
