@@ -2,6 +2,22 @@
  * Session MCP Tools for CLI
  *
  * Tool definitions for session management with file persistence.
+ *
+ * ADR-0181 Phase 5 NO-FLIP rationale (DA-memo carry-forward #5):
+ * The session_* tools here are intentionally NOT flipped to dispatch through
+ * `archivist.dispatch(...)`. There is no `session_*` entry in the archivist's
+ * ToolPayloadMap by design — per the ADR-0180 substrate-ownership cut, a
+ * cli-local FS-JSON session blob is not an archivist substrate operation.
+ * Sessions are user-facing CLI artifacts (save/restore/list flows) tied to
+ * the user's working directory, not a coordinated multi-process write that
+ * needs the audit chain.
+ *
+ * NOTE: A second `session-tools.ts` exists at `v3/mcp/tools/session-tools.ts`
+ * (slashed-name tools). The same no-flip rationale applies to both files.
+ * See DA-memo carry-forward #7 for the dual-file consolidation question.
+ *
+ * Council reference: docs/council/ADR-0181-phase-5-da-memo.md row #12
+ * (W-session verdict).
  */
 
 import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'node:fs';

@@ -1,6 +1,27 @@
 /**
  * Hooks MCP Tools
  * Provides intelligent hooks functionality via MCP protocol
+ *
+ * ADR-0181 Phase 5 NO-FLIP rationale (DA-memo carry-forward #5):
+ * The 37 hook tools in this file are intentionally NOT flipped to dispatch
+ * through `archivist.dispatch(...)` in Phase 5. Per ADR-0180 §160 the hooks
+ * surface is scheduled for Phase 7 work, not Phase 5. Three independent
+ * blockers must clear before any flip can land:
+ *
+ * (1) Name-mismatch: this cli surface uses plural-hyphenated tool names
+ *     (e.g. `pre-task`, `post-edit`, `session-start`) while the archivist
+ *     ToolPayloadMap uses singular-underscored names (`pre_task`, `post_edit`,
+ *     `session_start`). Phase 6 must harmonize the namespace before Phase 7
+ *     can flip — see DA-memo carry-forward #3.
+ * (2) ToolPayloadMap coverage gap: 33 of 37 hook tools have no archivist
+ *     counterpart entry today. ToolPayloadMap covers only 4 hook entries.
+ * (3) ADR-0180 §160 explicit Phase 7 scheduling: the per-tool disposition
+ *     table (29 stay cli-authoritative permanently, 4 lifecycle siblings,
+ *     4 with name-mismatched archivist counterparts) is documented in the
+ *     phase5-hooks worker handoff.
+ *
+ * Council reference: docs/council/ADR-0181-phase-5-da-memo.md row #11
+ * (W-hooks verdict).
  */
 
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';

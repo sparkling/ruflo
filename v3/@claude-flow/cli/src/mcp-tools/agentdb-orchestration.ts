@@ -6,6 +6,37 @@
  * and return shapes are unchanged -- agentdb-tools.ts callers need no edits.
  *
  * @module v3/cli/mcp-tools/agentdb-orchestration
+ *
+ * ADR-0181 Phase 5 NO-FLIP rationale (DA-memo carry-forward #5):
+ * This file is intentionally NOT one of the 13 mcp-tools files flipped to
+ * dispatch through `archivist.dispatch(...)`. Two independent reasons cover
+ * all 17 helpers in this module:
+ *
+ * (a) 7 helpers ("obsoleted from above") back pre-archivist routing that the
+ *     MCP-handler flips in agentdb-tools.ts already supersede. Re-flipping
+ *     here would dispatch twice for the same write.
+ *
+ * (b) 2 helpers (`routeTask` and `searchPatterns`) back archivist capability
+ *     adapters via Phase 4 W1/W2 wiring (`makeCliTaskRouter`,
+ *     `makeCliPatternReader`). They CANNOT dispatch through archivist —
+ *     doing so would create a literal infinite recursion via the capability
+ *     injection path:
+ *       MCP agentdb_route handler
+ *         -> archivist.dispatch('agentdb_route')
+ *         -> route.ts handler
+ *         -> ctx.capabilities.requireTaskRouter().route(...)
+ *         -> makeCliTaskRouter
+ *         -> routeTask
+ *         -> IF flipped: archivist.dispatch('agentdb_route') -> infinity
+ *
+ * The remaining 8 helpers have no archivist counterpart at all.
+ *
+ * Phase 6+ rule (also encoded by phase5-da memo §"Capability-adapter
+ * recursion rule"): any new capability-adapter wiring MUST audit the backing
+ * helper and exclude it from any future cli-to-archivist flip scope.
+ *
+ * Council reference: docs/council/ADR-0181-phase-5-da-memo.md row #5
+ * (W-agentdb-orch verdict).
  */
 
 // ---------------------------------------------------------------------------
