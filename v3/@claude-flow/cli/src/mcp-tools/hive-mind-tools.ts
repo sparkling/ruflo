@@ -1615,7 +1615,21 @@ export const hiveMindTools: MCPTool[] = [
       // let the b1/b2/b4 acceptance checks (which run in parallel against
       // a shared E2E_DIR) race: b2's init would load pre-store state, and
       // its save would overwrite b1's stored sharedMemory entry.
-      return withHiveStoreLock(async () => {
+      //
+      // ADR-0181 Phase 6 — close hive-mind init dispatch gap. The cli's
+      // `withHiveStoreLock` and the FS-JSON substrate's
+      // `state.json.lock` are the SAME file. Dispatching through the
+      // archivist from inside `withHiveStoreLock` deadlocks. Solution:
+      // do the cli's load → mutate → save under the lock (acquire-once
+      // race-safety preserved), release, THEN dispatch the same composed
+      // `state` through the archivist so the substrate's FS-JSON store
+      // also lands the doc under `{key: 'root'}`. Two writes to the same
+      // file in sequence; archivist's write wraps the doc and adds the
+      // `root` slot, the cli's flat fields stay where they were. Every
+      // other hive-mind handler (`spawn`, `broadcast`, `memory`) reads
+      // `{key: 'root'}`, so after this dispatch they see the state and
+      // their `not initialized` guards pass.
+      const composedResult = await withHiveStoreLock(async () => {
         const state = loadHiveState();
         const hiveId = `hive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const queenId = (input.queenId as string) || `queen-${Date.now()}`;
@@ -1665,24 +1679,6 @@ export const hiveMindTools: MCPTool[] = [
 
         saveHiveState(state);
 
-        // ADR-0181 Phase 5 → Phase 6 carry-forward: the
-        // `forks/agentdb/.../handlers/hive-mind/init.ts` handler EXISTS and is
-        // registered, but the cli cannot dispatch through it from inside
-        // `withHiveStoreLock` — the cli's lock and the FS-JSON substrate's
-        // `state.json.lock` are the SAME file (same path), so the dispatch
-        // deadlocks waiting for itself (verified 2026-05-15 against
-        // adr0108-mixed-type-spawn — 5-second-timeout from
-        // `withFileLock`). Closing this gap requires migrating ALL hive-mind
-        // read sites (`loadHiveState` + same-process `hiveCache`) to ALSO
-        // route through the archivist's read API so the cli's flat-shape
-        // file format converges with the substrate's `{root: ...}` wrapping.
-        // Until then, dispatched reads of `hive-mind_spawn`/`broadcast`/
-        // `consensus`/`memory` see `{root: undefined}` and the cli wrappers
-        // surface `not initialized` (the spawn handler's own guard) on the
-        // first archivist-dispatched read after the cli's flat init write.
-        // Phase 6 will collapse `withHiveStoreLock` into substrate-owned
-        // locking — at which point the dispatch call site here re-opens.
-
         // ADR-0122 (T4): register periodic sweep timer for TTL eviction. Idempotent —
         // re-init without intervening shutdown reuses the existing handle.
         startHiveMindSweepTimer();
@@ -1696,13 +1692,29 @@ export const hiveMindTools: MCPTool[] = [
           // ADR-0124 (T6): echo back queenType so callers (CLI spawn, status
           // probes) can confirm the persisted value.
           ...(queenType !== undefined ? { queenType } : {}),
-          status: 'initialized',
+          status: 'initialized' as const,
           // ADR-0140 Piece 3c: response config now mirrors what was persisted
           // (single source of truth) instead of recomputing defaults.
           config: persistedConfig,
           createdAt: state.createdAt,
+          _state: state, // internal pass-through to archivist dispatch (stripped below)
         };
       });
+
+      // ADR-0181 Phase 6 — archivist dispatch OUTSIDE `withHiveStoreLock`.
+      // The cli lock has been released by the time control reaches here,
+      // so the substrate's own `state.json.lock` acquisition (same path,
+      // different acquisition cycle) does not deadlock. Race-safety
+      // between the cli save and the substrate write is preserved by the
+      // O_EXCL sentinel on the same lock path — concurrent CLI inits
+      // serialize through the substrate lock the same way they used to
+      // serialize through the cli lock. If a concurrent process is also
+      // initializing, both will write the same shape (the JSON parse +
+      // setField operation is deterministic for the same input).
+      const { _state, ...response } = composedResult;
+      await (await getProcessArchivist()).dispatch('hive-mind_init', { state: _state });
+
+      return response;
     },
   },
   {
