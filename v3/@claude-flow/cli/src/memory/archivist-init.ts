@@ -589,9 +589,25 @@ function makeCliHierarchicalMemoryWriter(): HierarchicalMemoryWriter {
 
 /**
  * Adapt the cli's `agentdb_experience_record` controller path
- * (`mcp-tools/agentdb-tools.ts:1797`) — calls `startSession()` first (FK
- * requirement on `learning_experiences.session_id`) then `recordExperience({
- * action: task, input, output, reward, success })` (ADR-0090 B5 / ADR-0082).
+ * (`mcp-tools/agentdb-tools.ts:1797`) — calls `startSession(userId,
+ * sessionType, config)` first (FK requirement on `learning_experiences
+ * .session_id`) then `recordExperience({sessionId, toolName, action,
+ * outcome, reward, success, metadata})` (ADR-0090 B5 / ADR-0082).
+ *
+ * ADR-0181 Item 5 commit 4/5 (2026-05-16): both calls fixed to match the
+ * actual LearningSystem signatures. Pre-Item-5 the writer called
+ * `startSession()` with NO args (LearningSystem requires `(userId,
+ * sessionType, config)` — three required params) and called
+ * `recordExperience({action, input, output, reward, success})` (LearningSystem
+ * actually wants `{sessionId, toolName, action, stateBefore, stateAfter,
+ * outcome, reward, success, latencyMs, metadata}`). Both threw and the b5
+ * learningSystem probe stayed skip_accepted. Now: we mint a default session
+ * per dispatch with userId='archivist-default' / sessionType='q-learning' /
+ * conservative config, capture the returned sessionId, and pass the b5
+ * payload's `task` into both `action` AND `outcome` (the task description IS
+ * the outcome from the experience-record callsite's perspective). Per-call
+ * resolution preserved (getController called inside the arrow body, never
+ * captured at factory init).
  */
 function makeCliLearningSystemWriter(): LearningSystemWriter {
   return {
@@ -610,24 +626,57 @@ function makeCliLearningSystemWriter(): LearningSystemWriter {
         };
       }
       try {
-        // FK-prime: synchronously start a session before recording so the
-        // INSERT into learning_experiences resolves session_id (cli L1834+,
-        // ADR-0090 B5 / ADR-0082).
+        // FK-prime: mint a session with the THREE required params before
+        // recording so the INSERT into learning_experiences resolves the
+        // FK to learning_sessions(id). userId='archivist-default' is a
+        // stable static — single dispatching session per process is
+        // adequate for the archivist's experience-record surface and for
+        // the b5 probe's round-trip semantics. q-learning is the most
+        // common RL algorithm; conservative learningRate/discountFactor
+        // defaults match LearningSystem's epsilon-greedy expectations.
         const startSessionFn = getCallableMethod(learning, 'startSession');
-        if (startSessionFn) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (startSessionFn as any).call(learning);
+        if (!startSessionFn) {
+          return {
+            success: false,
+            experienceId: '',
+            controller: 'learningSystem',
+            error: 'LearningSystem controller missing startSession method (FK to learning_sessions cannot be resolved)',
+          };
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const result = await (recordFn as any).call(learning, {
-          action: input.task, // cli L1803: task → action column
-          input: input.input,
-          output: input.output,
+        const sessionId = await (startSessionFn as any).call(
+          learning,
+          'archivist-default',
+          'q-learning',
+          { learningRate: 0.1, discountFactor: 0.9, explorationRate: 0.1 },
+        );
+        // recordExperience signature (LearningSystem.ts):
+        //   { sessionId, toolName, action, stateBefore?, stateAfter?,
+        //     outcome, reward, success, latencyMs?, metadata? } -> Promise<number>
+        // The b5 probe sends {task, success, reward}. We map task into
+        // both `action` (the activity tag) and `outcome` (the recorded
+        // result). `outcome` is what lands in the `learning_experiences
+        // .action` column at LearningSystem.ts:1346 (slot 3 of INSERT) —
+        // see the controller's recordExperience implementation. The b5
+        // helper greps `learning_experiences.action LIKE '%marker%'`,
+        // so passing `task` as `outcome` is what makes the round-trip
+        // work.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const insertedRowId = await (recordFn as any).call(learning, {
+          sessionId,
+          toolName: 'archivist',
+          action: input.task,
+          outcome: input.task,
           reward: input.reward,
           success: input.success,
+          metadata: {
+            input: input.input,
+            output: input.output,
+          },
         });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const experienceId = (result as any)?.id ?? (typeof result === 'string' ? result : '');
+        const experienceId = typeof insertedRowId === 'number'
+          ? String(insertedRowId)
+          : (typeof insertedRowId === 'string' ? insertedRowId : '');
         return { success: true, experienceId, controller: 'learningSystem' };
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
