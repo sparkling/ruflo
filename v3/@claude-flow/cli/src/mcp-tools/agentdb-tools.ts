@@ -549,14 +549,19 @@ export const agentdbHierarchicalRecall: MCPTool = {
       if (tier && !['working', 'episodic', 'semantic'].includes(tier)) {
         return { success: false, results: [], error: `Invalid tier: ${tier}. Must be working, episodic, or semantic` };
       }
-      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
-      // `handlers/agentdb/hierarchical-recall.ts` runs the RVF-family
-      // similarity-search read; gate behind ensureRvfWired() (memoized cold
-      // start: ensureRouter + MemoryRvfAdapter). Returns
-      // RankedResults<HierarchicalRecallHit> — narrow to legacy `{results}`
-      // envelope via field-pick (`includeProvenance` branching deferred per
-      // ADR-0180 Phase 6).
-      await ensureRvfWired();
+      // ADR-0181 Phase 7: agentdb_hierarchical_recall classifies to the
+      // SQLite carve-out (substrate-registry.ts). The handler at
+      // `handlers/agentdb/hierarchical-recall.ts` runs
+      // `SELECT FROM hierarchical_memory ORDER BY importance DESC LIMIT topK`
+      // against the shared `.swarm/memory.db` handle — same handle the
+      // ControllerRegistry-owned AgentDB wires for the WRITE side at L516.
+      // Gate behind ensureSqliteWired(); ensureRvfWired() would leave the
+      // SQLite handle unset and ctx.substrate.query would throw / return
+      // empty (the symptom that pre-r3 surfaced as adr0112-27-4-rt-hierarchical
+      // failing). Returns RankedResults<HierarchicalRecallHit> — narrow to
+      // legacy `{results}` envelope via field-pick (`includeProvenance`
+      // branching deferred per ADR-0180 Phase 6).
+      await ensureSqliteWired();
       const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_hierarchical_recall', {
         query,
         tier: tier as 'working' | 'episodic' | 'semantic' | undefined,
