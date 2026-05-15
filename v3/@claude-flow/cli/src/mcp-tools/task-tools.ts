@@ -116,15 +116,18 @@ export const taskTools: MCPTool[] = [
       required: ['type', 'description'],
     },
     handler: async (input) => {
-      // Snapshot pre-dispatch taskIds so we can recover the archivist-minted
-      // taskId from the post-dispatch store diff. The handler mints the id
-      // (`task-${Date.now()}-${random}`) inside its `withWrite` scope; the cli
-      // has no way to predict it. A one-record diff is unambiguous because the
-      // FS-JSON substrate's O_EXCL lock serializes the create with any
-      // concurrent task_create.
-      const preIds = new Set(Object.keys(loadTaskStore().tasks));
+      // Pre-compute the taskId and pass it through the dispatch payload so
+      // the handler honours it instead of minting its own. The prior pre/post
+      // ids-diff approach was racy under parallel test execution (cap=12) —
+      // the FS-JSON O_EXCL lock serializes writes, but the cli's pre-snapshot
+      // captured before dispatch may already include a sibling task_create's
+      // row, surfacing as "expected exactly 1 new task, found 2". Pre-mint
+      // sidesteps the diff entirely. Non-cli callers can still omit `taskId`
+      // and let the handler mint (back-compat).
+      const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       await (await getProcessArchivist()).dispatch('task_create', {
+        taskId,
         type: input.type as string,
         description: input.description as string,
         priority: input.priority as TaskRecord['priority'] | undefined,
@@ -132,15 +135,17 @@ export const taskTools: MCPTool[] = [
         tags: input.tags as ReadonlyArray<string> | undefined,
       });
 
-      const post = loadTaskStore();
-      const newIds = Object.keys(post.tasks).filter((id) => !preIds.has(id));
-      if (newIds.length !== 1) {
+      // Direct lookup by the pre-computed id — no diff. The handler is
+      // fail-loud (per ADR-0181 §Architecture, no try/catch fallback wraps
+      // the dispatch); if dispatch returned without throwing, the task is
+      // in the store.
+      const task = loadTaskStore().tasks[taskId];
+      if (!task) {
         throw new Error(
-          `task_create: expected exactly 1 new task in store after dispatch, found ${newIds.length}. ` +
-            `Concurrent create races are serialized by the substrate lock — this indicates an audit-chain bug.`,
+          `task_create: dispatched task ${taskId} not present in store after dispatch — ` +
+            `archivist returned successfully but the substrate write is missing.`,
         );
       }
-      const task = post.tasks[newIds[0]];
 
       return {
         taskId: task.taskId,
