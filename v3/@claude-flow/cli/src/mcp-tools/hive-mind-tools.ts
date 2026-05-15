@@ -1559,11 +1559,18 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_init',
-    // ADR-0181 Phase 5 carry-forward: no archivist handler exists for
-    // `hive-mind_init` (the family in
-    // `forks/agentdb/src/archivist/handlers/hive-mind/` covers spawn /
-    // broadcast / shutdown / memory / consensus / status / agents — init,
-    // join, leave are still cli-only). cli logic below stays load-bearing.
+    // ADR-0181 Phase 5 → carry-forward closed 2026-05-15: an archivist
+    // handler now exists at
+    // `forks/agentdb/src/archivist/handlers/hive-mind/init.ts`. After the
+    // existing local `saveHiveState(state)` we dispatch
+    // `hive-mind_init` with `{state}` so the substrate's FS-JSON store
+    // ends up with `state.root === HiveStateDoc` — the shape every other
+    // hive-mind handler reads. Without this dispatch, `hive-mind_spawn`
+    // (the first dispatched read of `key: 'root'`) saw `undefined` and
+    // threw `not initialized`. The two writes target the SAME on-disk
+    // path; the cli's write provides the cli-shaped flat fields and the
+    // dispatch write adds the `root` wrapping, both fields co-exist.
+    // (`join` / `leave` remain cli-only — no read dispatch crosses them.)
     description: 'Initialize the hive-mind collective',
     category: 'hive-mind',
     inputSchema: {
@@ -1657,6 +1664,24 @@ export const hiveMindTools: MCPTool[] = [
         state.config = persistedConfig;
 
         saveHiveState(state);
+
+        // ADR-0181 Phase 5 → Phase 6 carry-forward: the
+        // `forks/agentdb/.../handlers/hive-mind/init.ts` handler EXISTS and is
+        // registered, but the cli cannot dispatch through it from inside
+        // `withHiveStoreLock` — the cli's lock and the FS-JSON substrate's
+        // `state.json.lock` are the SAME file (same path), so the dispatch
+        // deadlocks waiting for itself (verified 2026-05-15 against
+        // adr0108-mixed-type-spawn — 5-second-timeout from
+        // `withFileLock`). Closing this gap requires migrating ALL hive-mind
+        // read sites (`loadHiveState` + same-process `hiveCache`) to ALSO
+        // route through the archivist's read API so the cli's flat-shape
+        // file format converges with the substrate's `{root: ...}` wrapping.
+        // Until then, dispatched reads of `hive-mind_spawn`/`broadcast`/
+        // `consensus`/`memory` see `{root: undefined}` and the cli wrappers
+        // surface `not initialized` (the spawn handler's own guard) on the
+        // first archivist-dispatched read after the cli's flat init write.
+        // Phase 6 will collapse `withHiveStoreLock` into substrate-owned
+        // locking — at which point the dispatch call site here re-opens.
 
         // ADR-0122 (T4): register periodic sweep timer for TTL eviction. Idempotent —
         // re-init without intervening shutdown reuses the existing handle.

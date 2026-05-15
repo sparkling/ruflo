@@ -433,6 +433,21 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   // publish-verdaccio installs `@sparkleideas/agentdb`).
   const { Archivist, setAuditLogPath } = await import('agentdb/archivist');
 
+  // Side-effect import: each handler module performs a top-level
+  // `registerMutationHandler` / `registerReadHandler` call. The registry is
+  // populated by IMPORTING the modules — no consumer in the cli's startup
+  // path does so otherwise, so `archivist.dispatch(...)` would throw
+  // `archivist: no handler registered for tool '<name>'`. Must happen AFTER
+  // `agentdb/archivist` is fully loaded — the handler modules import
+  // `registerReadHandler` from the archivist root barrel, and if the
+  // handler tree loaded as a side-effect of `agentdb/archivist`'s own
+  // top-level imports it would re-enter that barrel mid-load and trip
+  // a TDZ on `readRegistry`. Two separate dynamic imports avoid the
+  // circular import, since the second import resumes against a fully
+  // initialised `agentdb/archivist` namespace. (ADR-0181 Phase 5 gap —
+  // surfaced 2026-05-15.)
+  await import('agentdb/archivist/handlers');
+
   // Bootstrap: cannot call the guarded `getProcessArchivist()` here — the guard
   // throws if `!initialized`, and `initialized` does not flip until the end of
   // this function. Mint / fetch the singleton directly. After this function
