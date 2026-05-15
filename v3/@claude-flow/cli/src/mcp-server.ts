@@ -80,6 +80,121 @@ const DEFAULT_OPTIONS: Required<MCPServerOptions> = {
 };
 
 /**
+ * ADR-0181 Phase 5 DA-memo CF#1 — bounded retry-with-backoff wrapper for
+ * the cold-start RVF warm-up at MCP server startup.
+ *
+ * Invariants:
+ *   - On RECOVERABLE errors (FS contention codes), retries up to MAX_ATTEMPTS
+ *     with linear backoff. Last attempt's error rethrows and aborts startup.
+ *   - On NON-RECOVERABLE errors (anything not in the recoverable set), the
+ *     FIRST attempt's error rethrows and aborts startup — no spinning on a
+ *     genuinely broken environment.
+ *   - All exits go through `process.exit(1)` after a structured FATAL log so
+ *     the user sees the cause clearly. No silent fallbacks.
+ *
+ * Recoverable codes captured from the prior in-flight comments + the FS
+ * lock-contention shape: EBUSY, EAGAIN, EBUSYISH (from RVF's own retry
+ * layer), EMFILE (FD pressure under load).
+ */
+export const RVF_WARMUP_MAX_ATTEMPTS = 4;
+export const RVF_WARMUP_BACKOFF_MS = 250;
+export const RECOVERABLE_RVF_WARMUP_CODES: ReadonlySet<string> = new Set([
+  'EBUSY',
+  'EAGAIN',
+  'EBUSYISH',
+  'EMFILE',
+]);
+
+export function isRecoverableRvfWarmupError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === 'string' && RECOVERABLE_RVF_WARMUP_CODES.has(code)) return true;
+  // Some errors expose the EBUSY-ish shape in `.message` rather than `.code`
+  // (e.g. wrapped from a child layer). Conservative substring check on the
+  // canonical error text — kept specific to avoid catching an unrelated
+  // 'busy' substring.
+  const msg = (err as { message?: unknown }).message;
+  if (typeof msg === 'string') {
+    if (/\bEBUSY\b|\bEAGAIN\b|resource temporarily unavailable/i.test(msg)) return true;
+  }
+  return false;
+}
+
+export interface RvfWarmUpRetryOpts {
+  /** Override max attempts (test seam). Defaults to RVF_WARMUP_MAX_ATTEMPTS. */
+  readonly maxAttempts?: number;
+  /** Override base backoff (test seam). Defaults to RVF_WARMUP_BACKOFF_MS. */
+  readonly backoffMs?: number;
+  /** Sleep override for tests so they don't actually wait. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /** Log sink override for tests. Defaults to console.error. */
+  readonly log?: (line: string) => void;
+}
+
+/**
+ * Bounded retry-with-backoff for `ensureRvfWired()`. Throws on terminal
+ * failure (recoverable budget exhausted OR non-recoverable error on any
+ * attempt) — the caller is responsible for `process.exit(1)`. Throwing
+ * (rather than exit-from-here) keeps the function unit-testable.
+ *
+ * Returns void on first or eventual success. Throws the LAST observed error
+ * on terminal failure — the message embeds attempt count so the caller's
+ * FATAL log preserves the diagnosis.
+ */
+export async function warmUpRvfWithRetry(
+  sessionId: string,
+  ensureRvfWired: () => Promise<void>,
+  opts: RvfWarmUpRetryOpts = {},
+): Promise<void> {
+  const maxAttempts = opts.maxAttempts ?? RVF_WARMUP_MAX_ATTEMPTS;
+  const backoffMs = opts.backoffMs ?? RVF_WARMUP_BACKOFF_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const log = opts.log ?? ((line: string) => console.error(line));
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await ensureRvfWired();
+      return;
+    } catch (err) {
+      const recoverable = isRecoverableRvfWarmupError(err);
+      const isFinalAttempt = attempt === maxAttempts;
+      const cause = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err);
+
+      if (!recoverable) {
+        // Non-recoverable: structural fault, abort immediately. Do not pretend
+        // a corrupt-file error is transient — `feedback-best-effort-must-
+        // rethrow-fatals`.
+        log(
+          `[${new Date().toISOString()}] FATAL [ruflo-mcp] (${sessionId}) RVF substrate warm-up failed at server startup ` +
+            `with NON-RECOVERABLE error (attempt ${attempt}/${maxAttempts}) — aborting (ADR-0181 Phase 5 DA-L2 fatal-on-cold-start policy). ` +
+            `Cause: ${cause}`,
+        );
+        throw err;
+      }
+
+      if (isFinalAttempt) {
+        // Recoverable but exhausted retries — abort with a message that
+        // names the retry budget so the operator can tell this from a
+        // first-attempt fatal.
+        log(
+          `[${new Date().toISOString()}] FATAL [ruflo-mcp] (${sessionId}) RVF substrate warm-up failed after ` +
+            `${maxAttempts} attempts (recoverable error did not clear) — aborting. ` +
+            `Cause: ${cause}`,
+        );
+        throw err;
+      }
+
+      const delayMs = backoffMs * attempt;
+      log(
+        `[${new Date().toISOString()}] WARN [ruflo-mcp] (${sessionId}) RVF substrate warm-up attempt ${attempt}/${maxAttempts} ` +
+          `hit recoverable error, retrying in ${delayMs}ms. Cause: ${cause}`,
+      );
+      await sleep(delayMs);
+    }
+  }
+}
+
+/**
  * MCP Server Manager
  *
  * Manages the lifecycle of the MCP server process
@@ -363,7 +478,8 @@ export class MCPServerManager extends EventEmitter {
     const { initProcessArchivist, ensureRvfWired } = await import('./memory/archivist-init.js');
     await initProcessArchivist();
 
-    // ADR-0181 Phase 5 DA-L2: eager RVF warm-up at MCP server startup.
+    // ADR-0181 Phase 5 DA-L2 + Phase 6 CF#1: eager RVF warm-up at MCP server
+    // startup with bounded retry-with-backoff.
     //
     // Two-part rationale:
     //   1. Structural faults (corrupt `.rvf`, missing memory-router module)
@@ -372,23 +488,24 @@ export class MCPServerManager extends EventEmitter {
     //      this eager call, the first MCP tool dispatch that needs RVF
     //      would surface the fault, but the server would already be live
     //      and the user has to dig through tool-call logs to find it.
-    //   2. Transient FS errors (EBUSY, temporarily-locked file) cleared
-    //      by the L2 memo-only-success policy still work for runtime
-    //      dispatches — they retry against a cleared memo. This wrapper
-    //      catches the cold-start permanent-fault case; later dispatch
-    //      retries handle the transient case.
+    //   2. Transient FS errors (EBUSY, EAGAIN, temporarily-locked file)
+    //      should NOT kill the long-lived MCP server. The L2 memo-only-
+    //      success policy clears `rvfWirePromise` on rejection so each
+    //      retry hits a fresh attempt. CF#1 closes the gap by retrying
+    //      here at startup as well — without retry the very first attempt
+    //      could lose to a brief lock and the server dies before the
+    //      runtime memo-clear policy ever gets a chance to help.
     //
-    // Fail-loud (`feedback-no-fallbacks`): bare `process.exit(1)` matches
-    // the existing posture for `initProcessArchivist()` — startup faults
-    // abort, they do not degrade.
+    // Discrimination posture (per `feedback-best-effort-must-rethrow-fatals`):
+    // recoverable error codes (EBUSY/EAGAIN/EBUSYISH) get bounded retries
+    // with linear backoff; everything else (corrupt-file errors, missing
+    // module, type errors) re-throws on first attempt and aborts startup.
+    // We never silently swallow a non-recoverable fatal as if it were
+    // recoverable.
     try {
-      await ensureRvfWired();
-    } catch (rvfErr) {
-      console.error(
-        `[${new Date().toISOString()}] FATAL [ruflo-mcp] (${sessionId}) RVF substrate warm-up failed at server startup — ` +
-          `aborting (ADR-0181 Phase 5 DA-L2 fatal-on-cold-start policy). ` +
-          `Cause: ${rvfErr instanceof Error ? `${rvfErr.message}\n${rvfErr.stack ?? ''}` : String(rvfErr)}`,
-      );
+      await warmUpRvfWithRetry(sessionId, ensureRvfWired);
+    } catch {
+      // FATAL diagnosis already emitted by warmUpRvfWithRetry's log sink.
       process.exit(1);
     }
 
