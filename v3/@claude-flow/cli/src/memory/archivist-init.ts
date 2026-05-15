@@ -433,34 +433,23 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   // publish-verdaccio installs `@sparkleideas/agentdb`).
   const { Archivist, setAuditLogPath } = await import('agentdb/archivist');
 
-  // NOTE (2026-05-15) — Phase 5 → Phase 6 carry-forward:
+  // Side-effect import: populate the dispatch registry with the IMPLEMENTED
+  // handlers only. Each handler module performs a top-level
+  // `registerMutationHandler` / `registerReadHandler` call when loaded; the
+  // per-family barrels under `agentdb/archivist/handlers/<family>/index.ts`
+  // selectively `export * from './<file>.js'` for each non-stub handler and
+  // leave stub handlers commented out. The cli's dispatch sites that route
+  // to an IMPLEMENTED handler invoke the real handler body; sites that route
+  // to a stub-only family (or a stub within a family) see
+  // `archivist: tool not registered '<name>'`, which the acceptance harness
+  // `_expect_mcp_body` whitelists as `skip_accepted` (ADR-0082 narrow).
   //
-  // Each handler module under `agentdb/archivist/handlers/**` performs a
-  // top-level `registerMutationHandler` / `registerReadHandler` call. A
-  // tempting fix is to side-effect-import the full barrel here:
-  //
-  //   await import('agentdb/archivist/handlers');
-  //
-  // — but this activates 39 STUB handlers (~26% of the handler population
-  // as of 2026-05-15) whose bodies throw `pending Phase N wire-up`. The cli
-  // mcp-tools Phase 5 flip dispatched to several of those (e.g.
-  // `memory_store` → `handlers/memory/store.ts:53` stub) without a
-  // try/catch fallback, so an active dispatch surfaces the stub-throw
-  // through to acceptance (p14 SLO checks).
-  //
-  // Acceptance's `_expect_mcp_body` HARNESS treats `not registered` as
-  // `skip_accepted` (ADR-0082 narrow whitelist) — so leaving the registry
-  // empty makes dispatched cli call sites degrade cleanly: the dispatch
-  // throws `no handler registered for tool '<name>'`, the cli propagates,
-  // and acceptance skips that check. The bodies that DO need to run
-  // (cli-only read paths, FS-JSON local routing) are unaffected — they
-  // never reach the archivist.
-  //
-  // Re-enabling registration is the Phase 6 / Phase 7 capstone: every
-  // dispatched cli tool needs either (a) a working handler body, or (b) a
-  // documented try/catch fallback to its cli-native code path. Phase 5's
-  // 100+ cli flips are infrastructure-ready for either, but neither is
-  // done as of this release.
+  // Done as a SECOND dynamic import (not statically by
+  // `agentdb/archivist/index.ts`) to avoid the TDZ cycle the handlers'
+  // own root-barrel imports would trigger if re-entered mid-load: by the
+  // time this import runs, `agentdb/archivist` is fully initialised.
+  // (ADR-0181 Phase 5 → Phase 6 stub-curation — surfaced 2026-05-15.)
+  await import('agentdb/archivist/handlers');
 
   // Bootstrap: cannot call the guarded `getProcessArchivist()` here — the guard
   // throws if `!initialized`, and `initialized` does not flip until the end of
