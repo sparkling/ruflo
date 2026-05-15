@@ -1831,6 +1831,18 @@ export const agentdbLearnerRun: MCPTool = {
   },
   handler: async () => {
     try {
+      // ADR-0181 Item 4 (2026-05-16) — pre-warm the SQLite carve-out
+      // substrate before invoking the controller. NightlyLearner's
+      // F4-2 substrate-seam wraps (NightlyLearner.ts call sites at L313
+      // / L435 / L529 / L579 / L614) need
+      // `getControllerRegistryAgentDb()` resolved so a future caller
+      // that mints a MutationContext finds an initialized substrate
+      // for `agentdb_causal_edge` / `agentdb_causal_experiment`. Forward-
+      // defensive: today the cli passes no ctx so the wraps stay dead,
+      // but pre-positioning the handle costs nothing and matches the
+      // L516/L1103/L1733 pattern. NOT mirrored at memory-router.ts:1958
+      // because that branch is dead per task #88's misnamed-method bug.
+      await ensureSqliteWired();
       const learner = await getController<any>('nightlyLearner');
       if (!learner) return { success: false, error: 'NightlyLearner controller not available' };
       const timeoutPromise = new Promise<never>((_, reject) =>
