@@ -262,13 +262,48 @@ function generateStatusLineConfig(_options: InitOptions): object {
   // Claude Code pipes JSON session data to the script via stdin.
   // Valid fields: type, command, padding (optional).
   // The script runs after each assistant message (debounced 300ms).
-  // NOTE: statusline must NOT use `cmd /c` — Claude Code manages its stdin
-  // directly for statusline commands, and `cmd /c` blocks stdin forwarding.
   //
-  // Same project-local / $HOME fallback as `hookCmd()` (see #1943): the
-  // earlier `${CLAUDE_PROJECT_DIR:-.}` form broke statusline for any
-  // global-install user. Probe project-local first, fall back to $HOME.
+  // ruflo#1948 + #1973: the previous `sh -c 'D="${CLAUDE_PROJECT_DIR:-.}"; …'`
+  // form requires a POSIX shell on PATH. On native Windows (no
+  // Git-Bash / WSL), `sh` either isn't found or its quoting gets
+  // mangled, producing weird artifacts like files named `0)` or
+  // `toastr.error('ESD...` from misparsed tokens leaking back into
+  // the file system. NEVER use `cmd /c` for statusline — Claude Code
+  // manages stdin directly for statusline commands and `cmd /c`
+  // blocks the stdin forwarding.
+  //
+  // Solution: emit a platform-appropriate command at init time.
+  //   POSIX:   `sh -c 'D="…"; … exec node "$D/<script>"'` (existing)
+  //   Windows: a Node.js one-liner that resolves the path internally
+  //            using `process.env.CLAUDE_PROJECT_DIR` with a HOME
+  //            fallback — no shell-quoting hazards because the
+  //            resolution happens inside node, not in the shell.
   const script = '.claude/helpers/statusline.cjs';
+
+  if (process.platform === 'win32') {
+    // The Node CLI's `-e` flag avoids all shell-quoting pitfalls.
+    // We write the path resolution in JS:
+    //   const fs = require('fs'); const p = require('path');
+    //   const d = process.env.CLAUDE_PROJECT_DIR || '.';
+    //   const f = p.join(d, '.claude/helpers/statusline.cjs');
+    //   const home = process.env.USERPROFILE || process.env.HOME || '.';
+    //   const h = p.join(home, '.claude/helpers/statusline.cjs');
+    //   require(fs.existsSync(f) ? f : h);
+    // …compressed onto one line. Double-quotes around the -e arg are
+    // safe on cmd.exe; the inner JS uses single-quotes for strings.
+    const js =
+      "const fs=require('fs'),p=require('path');" +
+      `const d=process.env.CLAUDE_PROJECT_DIR||'.';` +
+      `const f=p.join(d,'${script}');` +
+      `const h=p.join(process.env.USERPROFILE||process.env.HOME||'.', '${script}');` +
+      'require(fs.existsSync(f)?f:h);';
+    return {
+      type: 'command',
+      command: `node -e "${js}"`,
+    };
+  }
+
+  // Same project-local / $HOME fallback as `hookCmd()` (see #1943).
   // eslint-disable-next-line no-template-curly-in-string
   const projVar = '${CLAUDE_PROJECT_DIR:-.}';
   // eslint-disable-next-line no-template-curly-in-string
