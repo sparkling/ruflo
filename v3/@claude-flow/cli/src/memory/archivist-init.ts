@@ -36,14 +36,19 @@
  *      (memory-router is eager-WAL async-only); `flush` / `save` / `load` are
  *      no-ops because every write is already persisted on return.
  *   2. **`sqliteDb`** — a fresh `better-sqlite3.Database` opened on
- *      `<projectRoot>/.claude-flow/archivist.db` (a SEPARATE file from
- *      agentdb.db). SQLite's native file lock (`O_EXCLUSIVE` write transactions,
- *      WAL shm/wal sidecars) makes cross-process AND cross-handle access safe;
- *      the daemon's own Phase 1 handle (worker-daemon.ts) and the cli handle
- *      coexist on the same file via the lock. We open a fresh handle here
- *      rather than reusing `agentdb.database` because the latter is typed
- *      `IDatabaseConnection` (agentdb's better-sqlite3-or-WASM-SQLite
- *      abstraction) — not `BetterSqlite3.Database`.
+ *      `<projectRoot>/.swarm/memory.db` — the SAME file the cli's AgentDB
+ *      controllers (ReflexionMemory, SkillLibrary, HierarchicalMemory) write
+ *      to. ADR-0181 Phase 7 repointed this away from a separate
+ *      `.claude-flow/archivist.db` file, which was empty (no schemas) and
+ *      caused dispatched reads to return zero rows while writes landed in
+ *      `.swarm/memory.db` via the controllers' own initialization. SQLite's
+ *      native file lock (`O_EXCLUSIVE` write transactions, WAL shm/wal
+ *      sidecars) makes cross-handle access safe; the controller-side handle
+ *      and the archivist handle coexist on the same file via the lock. We
+ *      open a fresh handle here rather than reusing `agentdb.database`
+ *      because the latter is typed `IDatabaseConnection` (agentdb's
+ *      better-sqlite3-or-WASM-SQLite abstraction) — not
+ *      `BetterSqlite3.Database`.
  *   3. **`taskRouterFactory`** — adapts the cli's `routeTask(...)`
  *      (`mcp-tools/agentdb-orchestration.ts:227` — SemanticRouter `.route()` →
  *      LearningSystem `recommendAlgorithm` fallback) down to the narrow
@@ -115,7 +120,7 @@
  */
 
 import { join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync } from 'fs';
 // `better-sqlite3` is an OPTIONAL dependency (ADR-0086 — placed in
 // `optionalDependencies` so the WASM-only path stays functional without the
 // native build toolchain). A STATIC value import would make every `import` of
@@ -1101,23 +1106,34 @@ export async function ensureRvfWired(): Promise<void> {
  * archivist.
  *
  * Lazy + memoized: the first call rechecks the project-marker invariant at
- * the pinned `resolvedProjectRoot`, opens `<root>/.claude-flow/archivist.db`
- * via `better-sqlite3`, and threads the handle into the archivist via
+ * the pinned `resolvedProjectRoot`, opens `<root>/.swarm/memory.db` via
+ * `better-sqlite3`, and threads the handle into the archivist via
  * `setSqliteDb()`. The promise is cached and shared by concurrent callers.
  *
- * Fail-loud (per team-lead ruling): if the marker check fails, this throws —
- * the delegation worker should NOT have dispatched a SQLite-carve-out tool
- * from a markerless cwd in the first place. Silently omitting the wire-up
- * would let `getSubstrate()` throw deeper in the dispatch with a less
- * actionable message ("no SQLite backend supplied"). Surfacing the
- * marker-check failure HERE points at the actual root cause.
+ * ── ADR-0181 Phase 7: repoint from `.claude-flow/archivist.db` to `.swarm/memory.db` ──
  *
- * `mkdirSync({ recursive: true })` on `.claude-flow/` is safe because the
- * marker check has confirmed we are inside a real project — Bug #3 only
- * fires when we mkdir in arbitrary cwds. `<root>/.claude-flow/archivist.db`
- * is a separate file from `agentdb.db` (archivist mutation-audit trail does
- * not share a transaction surface with controller writes — same rationale
- * as the prior `buildArchivistConfig` doc-block).
+ * Pre-Phase-7 this opened a SEPARATE empty file at `.claude-flow/archivist.db`.
+ * That file had no schemas — the cli's AgentDB controllers (ReflexionMemory,
+ * SkillLibrary, HierarchicalMemory) write to `<root>/.swarm/memory.db` via
+ * `agentdb.initialize() → loadSchemas()` from controller-registry. Reads
+ * dispatched through the archivist therefore queried an empty handle while
+ * writes landed in a separate file. Phase 7 collapses this split — the
+ * archivist's SQLite handle now points at the SAME file the controllers
+ * already opened.
+ *
+ * Fail-loud invariants (per team-lead ruling, `feedback-no-fallbacks`):
+ *  - Marker-gate failure → throw (markerless cwd should not have dispatched
+ *    a SQLite-carve-out tool in the first place).
+ *  - `.swarm/memory.db` MUST exist before `ensureSqliteWired` runs — it is
+ *    created + schema-installed by AgentDB's `loadSchemas()` during
+ *    `agentdb.initialize()` from the controller-registry startup path. If
+ *    it's missing, throw loud rather than `mkdirSync` + auto-create — that
+ *    would mask a controller-startup-ordering bug.
+ *  - On open, run a one-time probe listing the visible carve-out tables
+ *    (`episodes`, `skills`, `skill_embeddings`, `hierarchical_memory`) and
+ *    write the result to `process.stderr`. Queen's empirical falsifier: if
+ *    the warn shows zero of these tables in test env, the controllers did
+ *    not initialize against this file and the diagnosis is wrong.
  *
  * L2 memo-only-success (ADR-0181 Phase 5 team-lead ruling): on rejection
  * (transient EBUSY on SQLite open, intermediate FS state), the memo clears
@@ -1151,21 +1167,61 @@ export async function ensureSqliteWired(): Promise<void> {
     if (!isRealProjectRoot(root)) {
       throw new Error(
         `archivist-init: ensureSqliteWired — '${root}' is not a real ruflo project ` +
-          `(no .ruflo-project, no CLAUDE.md+.claude/, no .git/). Refusing to create ` +
-          `.claude-flow/archivist.db in a markerless cwd (ADR-0069 Bug #3 invariant). ` +
+          `(no .ruflo-project, no CLAUDE.md+.claude/, no .git/). Refusing to open ` +
+          `.swarm/memory.db in a markerless cwd (ADR-0069 Bug #3 invariant). ` +
           `The dispatching call site should not have routed a SQLite-carve-out tool ` +
           `(ADR-0166) here — if you are seeing this from an MCP tool, fix the call ` +
           `site, not this gate.`,
       );
     }
-    const claudeFlowDir = join(root, '.claude-flow');
-    mkdirSync(claudeFlowDir, { recursive: true });
+    // ADR-0181 Phase 7: open the SAME SQLite file the cli's AgentDB
+    // controllers (ReflexionMemory, SkillLibrary, HierarchicalMemory) write
+    // to. AgentDB's `initialize()` (called from controller-registry during
+    // cli startup) runs `loadSchemas()` on this file and creates `.swarm/`
+    // + `memory.db` itself. We do NOT `mkdirSync` and do NOT auto-create —
+    // missing file means controller-registry init has not run, which is a
+    // startup-ordering bug, not a recoverable condition (`feedback-no-fallbacks`).
+    const swarmDbPath = join(root, '.swarm', 'memory.db');
+    if (!existsSync(swarmDbPath)) {
+      throw new Error(
+        `archivist-init: ensureSqliteWired — '${swarmDbPath}' does not exist. ` +
+          `AgentDB's controller-registry init (which runs loadSchemas() and creates ` +
+          `this file) must complete before any SQLite-carve-out dispatch reaches ` +
+          `the archivist. Refusing to auto-create — that would mask a startup-ordering ` +
+          `bug. (ADR-0181 Phase 7 / feedback-no-fallbacks).`,
+      );
+    }
     // Deferred dynamic import — see file header note next to the
     // commented-out static import. Keeps `archivist-init.ts` importable in
     // environments that don't have the native `better-sqlite3` build (the
     // optional-dependency contract from ADR-0086).
     const { default: BetterSqlite3 } = await import('better-sqlite3');
-    const sqliteDb = new BetterSqlite3(join(claudeFlowDir, 'archivist.db'));
+    const sqliteDb = new BetterSqlite3(swarmDbPath);
+    // Queen's empirical falsifier (ADR-0181 Phase 7): list visible
+    // carve-out tables on first open, written to stderr so it shows in the
+    // release log. If this prints zero of the expected names in the test
+    // env, the controllers did not initialize against this file and the
+    // Phase 7 diagnosis is wrong.
+    try {
+      const rows = sqliteDb
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' " +
+            "AND name IN ('episodes','skills','skill_embeddings','hierarchical_memory')",
+        )
+        .all() as ReadonlyArray<{ name: string }>;
+      const tableNames = rows.map((r) => r.name).sort().join(',') || '(none)';
+      process.stderr.write(
+        `archivist-init: ensureSqliteWired opened ${swarmDbPath} ` +
+          `[carve-out tables visible: ${tableNames}]\n`,
+      );
+    } catch (probeErr) {
+      // Probe is diagnostic only — don't fail the wire-up if SELECT itself
+      // throws (e.g. corrupt sqlite_master). The handle is still installed.
+      process.stderr.write(
+        `archivist-init: ensureSqliteWired opened ${swarmDbPath} ` +
+          `[carve-out probe failed: ${(probeErr as Error).message}]\n`,
+      );
+    }
     const archivist = await getProcessArchivist();
     archivist.setSqliteDb(sqliteDb);
   })();
