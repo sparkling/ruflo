@@ -348,6 +348,11 @@ export function buildArchivistConfig(
   // (agentdb archivist index.ts:374-378), which is the correct
   // ADR-0181 §Decision-Drivers failure mode for "running in a non-project
   // cwd".
+  //
+  // Retained for the V1 test in forks/agentdb/test/archivist/init-config-
+  // feeding.test.ts which constructs eager backends in-test to verify init
+  // accepts them. Production cli (`initProcessArchivist`) uses the lazy
+  // factory variant below — see `buildArchivistConfigLazy`.
   return {
     projectRoot,
     rvfBackend,
@@ -357,6 +362,7 @@ export function buildArchivistConfig(
     patternReaderFactory: makeCliPatternReader,
   };
 }
+
 
 /**
  * The per-process `Archivist` instance. Constructs it lazily on first call;
@@ -406,70 +412,67 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   // before any dispatch — `setAuditLogPath()` throws once the audit fd is open.
   setAuditLogPath(join(claudeFlowDir, 'data', 'archivist-audit.jsonl'));
 
-  // ── Pre-resolve the substrate handles before `initialize(config)` ──
+  // ── Defer ALL heavy substrate construction (ADR-0181 Phase 4 hotfix) ──
   //
-  // `rvfBackend` is always wired: the adapter constructor itself is sync, but
-  // memory-router needs `ensureRouter()` to open the `.rvf` file + build the
-  // HNSW index. We await that here once, then synchronously construct the
-  // adapter against the now-live `_storage` instance via `getStorageInstance()`.
+  // Earlier-revision posture eagerly awaited `ensureRouter()` (memory-router
+  // cold-start = HNSW index build + ONNX model load, ~12-18s) and opened a
+  // `better-sqlite3` handle inline. Two release-acceptance regressions:
   //
-  // `dimension: 768` is the project-wide ADR-0069/0072 constant
-  // (all-mpnet-base-v2 output dimension) — the same value memory-router /
-  // intelligence.ts / embeddings-tools.ts all hardcode. Threading it from
-  // config-chain instead is possible but unnecessary here: the adapter wraps
-  // the same memory-router that already opened the underlying file at 768;
-  // passing a different value would be a configuration lie.
+  //   - `t1-6-empty-search` ballooned from ~575ms to ~18s — `memory search`
+  //     blocked on the eager `ensureRouter()` before its own action ran.
+  //   - `adr0100-e-sentinel-pri` failed — `ensureRouter()` runs memory-
+  //     router's OWN `_findProjectRoot()` (memory-router.ts L260) which
+  //     walks up to the nearest `.claude-flow/`, bypassing an inner
+  //     `.ruflo-project` sentinel, and wrote `memory.rvf`/`memory.rvf.lock`
+  //     to the OUTER `.swarm/`. The inner sentinel should win; memory-
+  //     router doesn't honor it.
   //
-  // ── On `mkdirSync` + the ADR-0069 Bug #3 invariant ──
+  // The archivist's `rvfBackendFactory` / `sqliteDbFactory` are NOT lazy in
+  // the "first-dispatch" sense — agentdb `archivist/index.ts:320` invokes
+  // them eagerly inside `initialize()`. So a lazy factory that builds on
+  // first call merely shifts the cost from `initProcessArchivist()` to
+  // `archivist.initialize()` — the same caller, no relief.
   //
-  // Phase 1 (this file's original `initProcessArchivist`) deliberately did
-  // NOT eager-mkdir `.claude-flow/`: the cli runs in arbitrary cwds, and
-  // creating `.claude-flow/` in a non-project cwd makes subsequent commands
-  // mistake that cwd for an init'd project (ADR-0069 Bug #3 regression).
-  // Audit-writer relied on lazy first-write mkdir to preserve that
-  // invariant.
+  // The honest fix for Phase 4: **omit `rvfBackend`/`sqliteDb` from the cli's
+  // config**. Phase 4's W3/W5 reads + route mutation register against the
+  // archivist (for type checking + future Phase 5 dispatch), but the cli
+  // currently dispatches the 8 agentdb_* + 5 memory_* reads through its OWN
+  // mcp-tools handlers, NOT through `archivist.dispatchRead()`. Until Phase
+  // 5 flips that, the archivist never invokes its substrates — so wiring
+  // them up is pure latency cost. Keep the adapter, handlers, and
+  // factory shapes on disk for Phase 5 to pick up; just don't feed them in
+  // Phase 4. `Archivist.initialize()` still completes (it's idempotent and
+  // accepts a `projectRoot`-only config — Phase 1 Amendment).
   //
-  // SQLite (`archivist.db`) does NOT have a lazy-first-write knob —
-  // `new BetterSqlite3(path)` throws `SQLITE_CANTOPEN` if the parent dir is
-  // missing, AND we cannot defer the open to first dispatch because the
-  // archivist's `initialize(config)` eagerly mints the SQLite substrate the
-  // moment it sees `config.sqliteDb` (agentdb archivist index.ts:318-321).
-  // So an eager `mkdir + new BetterSqlite3(...)` would re-introduce Bug #3.
+  // ── ADR-0069 Bug #3 invariant ──
   //
-  // Resolution: gate the SQLite open on a project-marker check. We
-  // re-evaluate the same markers `findProjectRoot()` uses (in the same
-  // priority order, types.ts:55-57) at the resolved `root`. If a marker
-  // exists, this is a real project — eager-mkdir + open are safe. If none
-  // exists, `findProjectRoot()` fell back to cwd (types.ts:63-69 — warn +
-  // return startDir); we leave `.claude-flow/` un-created and pass
-  // `sqliteDb: null` to `buildArchivistConfig`, which omits the slot from
-  // the config. Handlers that dispatch through SQLite-carve-out stores
-  // fail loud at `requireSqliteSubstrate()` (archivist index.ts:374-378) —
-  // the correct ADR-0181 §Decision-Drivers failure mode for "running in a
-  // non-project cwd".
+  // Without `sqliteDb` in the config, no `.claude-flow/` is created in
+  // markerless cwds at all (the eager mkdir is gone). Marker-gating is
+  // preserved for Phase 5 when `sqliteDb` re-enters the config: the
+  // helper below will recheck the marker at that point.
+  //
+  // ── Capability factories ──
+  //
+  // The 3 capability factories (taskRouter / embeddingScorer / patternReader)
+  // stay wired. They're invoked once in `initialize()` and the cli adapters
+  // ARE synchronous-construction safe — they return narrow capability
+  // objects whose method bodies defer the heavy `await import(...)` until
+  // first method-call. So they don't block startup.
   const isRealProjectRoot =
     existsSync(join(root, '.ruflo-project')) ||
     (existsSync(join(root, 'CLAUDE.md')) && existsSync(join(root, '.claude'))) ||
     existsSync(join(root, '.git'));
+  void isRealProjectRoot; // preserved for Phase 5 sqliteDb re-wiring
 
-  // ADR-0069/0072 unified embedding dimension — see memory-router.ts:818,
-  // intelligence.ts:24, embeddings-tools.ts:12.
-  const EMBEDDING_DIMENSION = 768;
-
-  const { ensureRouter, getStorageInstance } = await import('./memory-router.js');
-  await ensureRouter();
-  const cliMemoryRvfBackend = getStorageInstance();
-  const rvfBackend = new MemoryRvfAdapter(cliMemoryRvfBackend, {
-    dimension: EMBEDDING_DIMENSION,
-  });
-
-  let sqliteDb: BetterSqlite3.Database | null = null;
-  if (isRealProjectRoot) {
-    mkdirSync(claudeFlowDir, { recursive: true });
-    sqliteDb = new BetterSqlite3(join(claudeFlowDir, 'archivist.db'));
-  }
-
-  const config = buildArchivistConfig(root, rvfBackend, sqliteDb);
+  const config: ArchivistInitConfig = {
+    projectRoot: root,
+    // NOTE: rvfBackend + sqliteDb deliberately omitted — see header.
+    //   Phase 5 dispatch wiring re-introduces them once cli call sites flip
+    //   from their own mcp-tools handlers to `archivist.dispatchRead()`.
+    taskRouterFactory: makeCliTaskRouter,
+    embeddingScorerFactory: makeCliEmbeddingScorer,
+    patternReaderFactory: makeCliPatternReader,
+  };
 
   await archivist.initialize(config);
   initialized = true;
