@@ -1131,7 +1131,24 @@ export function loadHiveState(): HiveState {
     // default state — that path silently destroyed a corrupt-but-recoverable
     // hive (next saveHiveState would overwrite the corrupt file with the
     // default).
-    const parsed = JSON.parse(data) as HiveState;
+    const parsedDoc = JSON.parse(data) as Record<string, unknown>;
+    // ADR-0181 Phase 6: prefer the substrate's `{root: state}` wrapping over
+    // the cli's legacy flat top-level shape. After Phase 5 dispatches land,
+    // the archivist substrate writes the HiveState under `key: 'root'` (FS-JSON
+    // convention shared by every hive-mind handler) while the cli's
+    // `saveHiveState` continues to write the flat shape for backward compat.
+    // `hive-mind_init` writes both. Subsequent writes by dispatched handlers
+    // (`spawn`, `memory`, etc.) update ONLY `.root`. Without this preference
+    // the cli's loadHiveState would return the stale flat fields after a
+    // dispatched write, and post-dispatch reads would see pre-dispatch state.
+    // Phase 7 collapses the dual write when the cli's read sites also dispatch
+    // through the archivist.
+    const rootField = parsedDoc.root;
+    const parsed = (
+      rootField !== undefined && rootField !== null && typeof rootField === 'object'
+        ? rootField
+        : parsedDoc
+    ) as HiveState;
     migrateSharedMemoryShape(parsed);
     hiveCache.set(HIVE_STATE_DOC_KEY, parsed);
     return parsed;
