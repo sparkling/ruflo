@@ -33,7 +33,7 @@
  *     `handle.rvf.searchAsync()` call (`feedback-no-fallbacks`).
  *   - `ArchivistInitConfig.sqliteDb` wants a `better-sqlite3` `Database`. The
  *     cli's only SQLite handle is `agentdb.database`, typed `IDatabaseConnection`
- *     (agentdb's better-sqlite3-OR-sql.js abstraction) — again not that type.
+ *     (agentdb's better-sqlite3-or-WASM-SQLite abstraction) — again not that type.
  *   - Constructing a *fresh* agentdb `RvfBackend` for the same `.rvf` path the
  *     memory-router already owns would be a double-open: two native handles +
  *     two HNSW indices on one file = split-brain writes
@@ -52,7 +52,6 @@
  * a cast-lie or a double-open.
  */
 
-import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { Archivist, setAuditLogPath, type ArchivistInitConfig } from 'agentdb/archivist';
 import { findProjectRoot } from '../mcp-tools/types.js';
@@ -124,12 +123,11 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   const config = buildArchivistConfig(projectRoot);
   const root = config.projectRoot as string;
 
-  // Ensure the audit-log directory exists. `audit-writer.ts` self-mkdirs on its
-  // first write, but establishing it here means the dir is present even in a
-  // process that never dispatches (Phase 1: no handler dispatches yet), and it
-  // satisfies the ADR-0181 Phase 1 exit-gate expectation that `.claude-flow/data/`
-  // exists for `archivist-audit.jsonl`.
-  mkdirSync(join(root, '.claude-flow', 'data'), { recursive: true });
+  // No eager mkdir of `.claude-flow/data/` here: audit-writer.ts creates it
+  // lazily on its first write (`ensureFdOpen`). Doing it eagerly would create
+  // `.claude-flow/` in whatever cwd the cli runs in — and the cli runs in
+  // arbitrary directories — which makes commands like `memory store` mistake a
+  // non-project cwd for a project (ADR-0069 Bug #3 regression).
 
   // Point the audit writer at the SAME resolved root the archivist's FS-JSON
   // stores use. audit-writer's default is `process.cwd()`-relative; if we leave

@@ -15,7 +15,6 @@
 
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { mkdir } from 'fs/promises';
 import { DaemonManager, HooksLearningDaemon, MetricsDaemon } from '../dist/daemons/index.js';
 import { Archivist } from 'agentdb/archivist';
 
@@ -60,11 +59,8 @@ const STATE_FILE = join(PROJECT_ROOT, '.claude-flow', 'hooks-daemon.json');
  * that throws fails loud and aborts daemon startup.
  */
 async function initArchivist() {
-  // audit-writer's DEFAULT_AUDIT_LOG is `<projectRoot>/.claude-flow/data/
-  // archivist-audit.jsonl`; ensure the dir exists now so Phase 5's first
-  // dispatched mutation cannot ENOENT before audit-writer's own lazy mkdir.
-  await mkdir(join(PROJECT_ROOT, '.claude-flow', 'data'), { recursive: true });
-
+  // No eager mkdir of `.claude-flow/data/` — audit-writer.ts creates it lazily
+  // on its first write (`ensureFdOpen`).
   const archivist = new Archivist();
   await archivist.initialize({ projectRoot: PROJECT_ROOT });
   return archivist;

@@ -938,11 +938,10 @@ export class WorkerDaemon extends EventEmitter {
    * when it does not.
    */
   private async initializeArchivist(): Promise<void> {
-    // Ensure the audit-log directory exists before audit-writer's first write,
-    // then anchor the process-global audit log at this daemon's projectRoot —
-    // keeps the audit chain and the Archivist's FS-JSON stores under one
-    // `.claude-flow/`. Consistent with the cli/hook wiring.
-    mkdirSync(join(this.projectRoot, '.claude-flow', 'data'), { recursive: true });
+    // Anchor the process-global audit log at this daemon's projectRoot — keeps
+    // the audit chain and the Archivist's FS-JSON stores under one
+    // `.claude-flow/`. The `.claude-flow/data/` dir is created lazily by
+    // audit-writer.ts on its first write; no eager mkdir here.
     setAuditLogPath(join(this.projectRoot, '.claude-flow', 'data', 'archivist-audit.jsonl'));
 
     const config: ArchivistInitConfig = {
