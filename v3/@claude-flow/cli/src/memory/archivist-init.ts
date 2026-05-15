@@ -781,3 +781,27 @@ export async function ensureSqliteWired(): Promise<void> {
 export async function ensureArchivistInitialized(): Promise<void> {
   await initProcessArchivist();
 }
+
+/**
+ * Test-only reset. Drops the per-process archivist singleton + lazy substrate
+ * wiring memos so the next `initProcessArchivist()` call re-pins to whatever
+ * `findProjectRoot()` resolves at that point.
+ *
+ * Use case: unit tests that `chdir` into a fresh sandbox per test and call
+ * `mcpTools[*].handler(...)` repeatedly. Without a reset, the archivist
+ * stays pinned to the first sandbox (idempotency guard) and dispatched
+ * writes land in the wrong tree — the test's post-dispatch reads return
+ * empty.
+ *
+ * NOT for production: this drops the archivist mid-process, abandoning
+ * in-flight audit chain state. The cli's mcp-server / daemon / hooks never
+ * shift cwd within a single process, so this function should never be
+ * called from runtime paths.
+ */
+export function __resetProcessArchivistForTests(): void {
+  processArchivist = null;
+  initialized = false;
+  resolvedProjectRoot = null;
+  rvfWirePromise = null;
+  sqliteWirePromise = null;
+}
