@@ -116,7 +116,20 @@
 
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import BetterSqlite3 from 'better-sqlite3';
+// `better-sqlite3` is an OPTIONAL dependency (ADR-0086 — placed in
+// `optionalDependencies` so the WASM-only path stays functional without the
+// native build toolchain). A STATIC value import would make every `import` of
+// `archivist-init.ts` — including from unit-test modules that never touch the
+// SQLite-carve-out substrate — hard-fail with `ERR_MODULE_NOT_FOUND` when
+// `better-sqlite3` is absent. The deferred dynamic `import('better-sqlite3')`
+// in `ensureSqliteWired()` (the ONLY call site) is the file-architecture
+// already mandated by the deferred-imports header at line ~180.
+//
+// The `import type` form below is erased at TS-emit and produces NO runtime
+// import — it only exists so the `BetterSqlite3.Database` type reference in
+// the public `buildArchivistConfig` signature can still resolve at
+// type-check time.
+import type BetterSqlite3 from 'better-sqlite3';
 import {
   Archivist,
   setAuditLogPath,
@@ -704,6 +717,11 @@ export async function ensureSqliteWired(): Promise<void> {
     }
     const claudeFlowDir = join(root, '.claude-flow');
     mkdirSync(claudeFlowDir, { recursive: true });
+    // Deferred dynamic import — see file header note next to the
+    // commented-out static import. Keeps `archivist-init.ts` importable in
+    // environments that don't have the native `better-sqlite3` build (the
+    // optional-dependency contract from ADR-0086).
+    const { default: BetterSqlite3 } = await import('better-sqlite3');
     const sqliteDb = new BetterSqlite3(join(claudeFlowDir, 'archivist.db'));
     const archivist = await getProcessArchivist();
     archivist.setSqliteDb(sqliteDb);
