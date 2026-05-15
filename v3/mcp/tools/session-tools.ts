@@ -7,6 +7,28 @@
  * - session/list - List available sessions
  *
  * Implements ADR-005: MCP-First API Design
+ *
+ * ADR-0181 Phase 5 DA-memo CF#7 — DUAL-FILE STATUS:
+ * Two `session-tools.ts` files coexist on disk:
+ *   1. THIS file (`v3/mcp/tools/session-tools.ts`) — slashed-name
+ *      tools (`session/save`), Zod schemas, `ToolContext` from `../types.js`.
+ *      Belongs to the standalone `v3/mcp/` server (`v3/mcp/server.ts` +
+ *      `server-entry.ts`) — NOT included in any TypeScript project
+ *      reference (`v3/tsconfig.json:include = []`) and NOT copied by
+ *      `ruflo-patch/scripts/copy-source.sh` into the published bundle.
+ *      The standalone `v3/mcp/` server is unreferenced design-time
+ *      scaffolding from the V3 architecture work; this file is preserved
+ *      for parity but does not run in the shipped product today.
+ *
+ *   2. `v3/@claude-flow/cli/src/mcp-tools/session-tools.ts` — underscored
+ *      tools (`session_save`), the CANONICAL runtime path that the cli's
+ *      `mcp-client.ts` actually mounts and the harness exercises.
+ *
+ * If the standalone `v3/mcp/` server is ever revived, the two surfaces
+ * MUST converge on a single naming convention before mounting both — the
+ * mismatch (slashed vs underscored) will not cause a runtime collision
+ * today only because (1) is dead. See CF#7 in
+ * docs/council/ADR-0181-phase-5-da-memo.md.
  */
 
 import { z } from 'zod';
