@@ -63,6 +63,7 @@
     "@claude-flow/memory": "3.0.0-alpha.15-patch.89",
     "@claude-flow/neural": "3.0.0-alpha.8-patch.89",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.484",
+    "agentdb": "3.0.0-alpha.14-patch.101",
     "zod": "^3.23.0"
   },
   "optionalDependencies": {

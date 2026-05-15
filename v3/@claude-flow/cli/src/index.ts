@@ -22,6 +22,7 @@ import { OutputFormatter, output } from './output.js';
 import { commands, commandsByCategory, commandRegistry, getCommand, getCommandAsync, getCommandNames, hasCommand } from './commands/index.js';
 import { suggestCommand } from './suggest.js';
 import { runStartupUpdateCheck } from './update/index.js';
+import { initProcessArchivist } from './memory/archivist-init.js';
 
 /**
  * ADR-0094 Sprint 1.4 (d6): lazy import of the memory-router shutdown so
@@ -269,6 +270,16 @@ export class CLI {
         cwd: process.cwd(),
         interactive: this.interactive && !flags.quiet
       };
+
+      // ADR-0181 Phase 1: feed the cli process's per-process Memory Archivist
+      // before the command's action runs. Eager + awaited + before-dispatch:
+      // `Archivist.dispatch()` self-inits with an empty config if it runs first,
+      // and `initialize()` is idempotent (first call wins) — so the real
+      // `projectRoot` config must be installed before any command that could
+      // dispatch through the archivist. No try/catch: a failure here aborts the
+      // command loudly (it surfaces through `CLI.run()`'s catch → `handleError`
+      // → non-zero exit), never degrades silently (`feedback-no-fallbacks`).
+      await initProcessArchivist();
 
       // Execute command
       if (targetCommand.action) {

@@ -102,6 +102,7 @@
     "@claude-flow/neural": "3.0.0-alpha.8-patch.89",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.484",
     "@noble/ed25519": "^2.1.0",
+    "agentdb": "3.0.0-alpha.14-patch.101",
     "semver": "^7.6.0"
   },
   "optionalDependencies": {
@@ -121,7 +122,6 @@
     "@ruvector/ruvllm-wasm": "^2.0.2",
     "@ruvector/rvagent-wasm": "0.2.1-patch.87",
     "@ruvector/sona": "0.1.6-patch.65",
-    "agentdb": "3.0.0-alpha.14-patch.101",
     "agentic-flow": "2.0.2-alpha-patch.637",
     "better-sqlite3": "^12.9.0"
   },

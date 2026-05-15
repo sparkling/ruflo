@@ -347,6 +347,22 @@ export class MCPServerManager extends EventEmitter {
         `[${new Date().toISOString()}] WARN [ruflo-mcp] (${sessionId}) Memory auto-init failed (tools will retry on first call): ${memInitError instanceof Error ? memInitError.message : String(memInitError)}`
       );
     }
+
+    // ADR-0181 Phase 1: feed the cli process's per-process Memory Archivist
+    // before the MCP server goes live. This is a bare `await` — NOT inside the
+    // memory-router `try/catch` above. That block is memory-router's deliberate
+    // graceful-degradation seam; the archivist init must NOT inherit that
+    // leniency (`feedback-no-fallbacks`): an Archivist that cannot stand up
+    // aborts MCP-server startup loudly. Sequenced here — after memory-router
+    // init, before the `server.initialized` notification AND before the
+    // `process.stdin.on('data')` listener below — so it completes before any
+    // tool-call path (the only route to `archivist.dispatch()`) can run.
+    // `dispatch()` self-inits with an empty config if it wins the race;
+    // `initialize()` is idempotent (first call wins), so the eager awaited init
+    // here installs the real `projectRoot` config deterministically.
+    const { initProcessArchivist } = await import('./memory/archivist-init.js');
+    await initProcessArchivist();
+
     console.error(JSON.stringify({
       arch: process.arch,
       mode: 'mcp-stdio',

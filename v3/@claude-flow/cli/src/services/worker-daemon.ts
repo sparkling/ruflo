@@ -23,6 +23,7 @@ import {
   type HeadlessExecutionResult,
 } from './headless-worker-executor.js';
 import { DaemonIPCServer, getDaemonSocketPath } from './daemon-ipc.js';
+import { Archivist, type ArchivistInitConfig, setAuditLogPath } from 'agentdb/archivist';
 
 // Worker types matching hooks-tools.ts
 export type WorkerType =
@@ -156,6 +157,18 @@ export class WorkerDaemon extends EventEmitter {
 
   // ADR-0088: IPC server kept for future non-memory RPC; memory handlers removed.
   private ipcServer: DaemonIPCServer | null = null;
+
+  // ADR-0181 Phase 1: per-process Memory Archivist. Each host process (cli,
+  // ruflo daemon, hook-handler) constructs its OWN Archivist — not a global
+  // singleton, not shared with the cli process. Phase 1 feeds a projectRoot-only
+  // ArchivistInitConfig (the uniform bar across all three host processes): every
+  // storeId the daemon dispatches today classifies as FS-JSON, and FS-JSON
+  // substrates are lazily minted per path from projectRoot inside getSubstrate()
+  // — they need no rvfBackend or sqliteDb. Wiring a real RVF/SQLite backend the
+  // daemon does not yet dispatch through would be speculative dead wiring.
+  // TODO(F4-3-callsite): wire the daemon's SQLite carve-out backend if/when the
+  // daemon dispatches through SQLite-carve-out stores (ADR-0181 Phase 3/4).
+  private archivist: Archivist | null = null;
 
   // ADR-0088: capability detection — 'headless' if `claude` CLI is on PATH
   // (9 of 12 workers can invoke Claude Code for real AI analysis), otherwise
@@ -887,10 +900,59 @@ export class WorkerDaemon extends EventEmitter {
       this.queuePollTimer.unref();
     }
 
+    // ADR-0181 Phase 1: feed the per-process Archivist's initialize(config).
+    // Fails loud (feedback-no-fallbacks) — a daemon that cannot stand up its
+    // Archivist must not silently proceed as if it had one.
+    await this.initializeArchivist();
+
     // Save state
     this.saveState();
 
     this.log('info', `Daemon started (PID: ${process.pid}, CPUs: ${cpus().length}, workers: ${this.config.workers.filter(w => w.enabled).length}, maxCpuLoad: ${this.config.resourceThresholds.maxCpuLoad}, minFreeMemoryPercent: ${this.config.resourceThresholds.minFreeMemoryPercent}%)`);
+  }
+
+  /**
+   * ADR-0181 Phase 1: construct + initialize this daemon process's own
+   * Memory Archivist (ADR-0180). Runs once during start(), in the foreground
+   * daemon process — startCommand's action runs in BOTH the launching process
+   * and the spawned daemon process, so WorkerDaemon.start() is the correct
+   * per-daemon-process hook.
+   *
+   * Config is projectRoot-only — the uniform Phase 1 bar across cli, daemon,
+   * and hook-handler. Every storeId the daemon dispatches today classifies as
+   * FS-JSON; FS-JSON substrates are lazily minted per path from projectRoot
+   * inside getSubstrate(), needing no rvfBackend or sqliteDb. Passing a backend
+   * the daemon never dispatches through would be speculative dead wiring; the
+   * SQLite carve-out backend is deferred to the phase that un-stubs
+   * SQLite-carve-out handlers (TODO(F4-3-callsite), ADR-0181 Phase 3/4).
+   *
+   * Audit-log path anchoring: audit-writer.ts keeps `auditPath` as a
+   * process-global defaulting to `<process.cwd()>/.claude-flow/data/...`.
+   * setAuditLogPath() anchors it explicitly to the same projectRoot passed in
+   * ArchivistInitConfig, so audit entries and the Archivist's FS-JSON stores
+   * never diverge. Called before initialize() (and well before any dispatch),
+   * so the auditFd-already-open guard in setAuditLogPath() never trips.
+   *
+   * Fail-loud (feedback-no-fallbacks): no try/catch. If initialize() throws,
+   * the daemon fails to start — it must not proceed as if it had an Archivist
+   * when it does not.
+   */
+  private async initializeArchivist(): Promise<void> {
+    // Ensure the audit-log directory exists before audit-writer's first write,
+    // then anchor the process-global audit log at this daemon's projectRoot —
+    // keeps the audit chain and the Archivist's FS-JSON stores under one
+    // `.claude-flow/`. Consistent with the cli/hook wiring.
+    mkdirSync(join(this.projectRoot, '.claude-flow', 'data'), { recursive: true });
+    setAuditLogPath(join(this.projectRoot, '.claude-flow', 'data', 'archivist-audit.jsonl'));
+
+    const config: ArchivistInitConfig = {
+      projectRoot: this.projectRoot,
+    };
+    const archivist = new Archivist();
+    await archivist.initialize(config);
+
+    this.archivist = archivist;
+    this.log('info', `Memory Archivist initialized (ADR-0181 Phase 1, projectRoot-only at ${this.projectRoot})`);
   }
 
   /**
@@ -983,6 +1045,13 @@ export class WorkerDaemon extends EventEmitter {
       const router = await import('../memory/memory-router.js');
       if (router.shutdownRouter) await router.shutdownRouter();
     } catch { /* router may not be loaded */ }
+
+    // ADR-0181 Phase 1: drop the per-process Archivist reference. With a
+    // projectRoot-only config the Archivist holds no closeable handle of its
+    // own (it does not own substrate backends — ADR-0180 §Architecture), so
+    // dropping the reference is enough.
+    this.archivist = null;
+
     this.removePidFile();
     this.saveState();
     this.emit('stopped', { stoppedAt: new Date() });
