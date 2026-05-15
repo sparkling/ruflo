@@ -1363,7 +1363,21 @@ async function loadAgentStore(): Promise<{ agents: Record<string, unknown> }> {
     const storePath = getAgentStorePath();
     try {
       if (agentStoreExists(storePath)) {
-        return JSON.parse(readAgentStore(storePath, 'utf-8'));
+        const parsedDoc = JSON.parse(readAgentStore(storePath, 'utf-8')) as Record<string, unknown>;
+        // ADR-0181 Phase 6: prefer the substrate's `{root: store}` wrapping
+        // over the cli's legacy flat top-level shape. Mirrors the
+        // loadHiveState fix above — archivist substrate writes the store
+        // under `key: 'root'`, while the cli still writes flat. Without
+        // the unwrap, `loadAgentStore().agents` would be undefined after a
+        // dispatched write that updated the substrate.
+        const rootField = parsedDoc.root;
+        if (
+          rootField !== undefined && rootField !== null && typeof rootField === 'object' &&
+          'agents' in (rootField as object)
+        ) {
+          return rootField as { agents: Record<string, unknown> };
+        }
+        return parsedDoc as unknown as { agents: Record<string, unknown> };
       }
     } catch { /* ignore */ }
     return { agents: {} };
