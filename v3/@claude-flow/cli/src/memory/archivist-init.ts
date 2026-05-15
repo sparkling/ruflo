@@ -798,10 +798,15 @@ export async function ensureArchivistInitialized(): Promise<void> {
  * shift cwd within a single process, so this function should never be
  * called from runtime paths.
  */
-export function __resetProcessArchivistForTests(): void {
+export async function __resetProcessArchivistForTests(): Promise<void> {
   processArchivist = null;
   initialized = false;
   resolvedProjectRoot = null;
   rvfWirePromise = null;
   sqliteWirePromise = null;
+  // Also drop the audit-writer's process singleton so a subsequent
+  // `setAuditLogPath()` (called by `initProcessArchivist()`) doesn't throw
+  // `audit fd already open`.
+  const { __resetAuditWriterForTests } = await import('agentdb/archivist');
+  await __resetAuditWriterForTests();
 }
