@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/neural",
-  "version": "3.0.0-alpha.8-patch.113",
+  "version": "3.0.0-alpha.8-patch.114",
   "type": "module",
   "description": "Self-Optimizing Neural Architecture (SONA) for Claude Flow — adaptive learning, trajectory tracking, pattern reuse, 7 RL algorithms (PPO/A2C/DQN/Q-Learning/SARSA/Decision Transformer/Curiosity), Flash Attention, MoE routing, LoRA, EWC++ for continual learning. Reproducible via seedable PRNG; persistence via serialize/deserialize.",
   "main": "dist/index.js",
@@ -121,11 +121,11 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.113",
-    "@ruvector/sona": "0.1.6-patch.89"
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.114",
+    "@ruvector/sona": "0.1.6-patch.90"
   },
   "optionalDependencies": {
-    "agentdb": "3.0.0-alpha.14-patch.125"
+    "agentdb": "3.0.0-alpha.14-patch.126"
   },
   "publishConfig": {
     "access": "public",
