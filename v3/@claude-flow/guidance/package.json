@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/guidance",
-  "version": "3.0.0-alpha.3-patch.89",
+  "version": "3.0.0-alpha.3-patch.90",
   "description": "Guidance Control Plane - Compiles, retrieves, enforces, and evolves guidance rules for Claude Code sessions",
   "type": "module",
   "main": "./dist/index.js",
@@ -140,9 +140,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claude-flow/hooks": "3.0.0-alpha.7-patch.616",
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.89",
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.484"
+    "@claude-flow/hooks": "3.0.0-alpha.7-patch.617",
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.90",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.485"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
