@@ -140,25 +140,29 @@ async function getBridge(): Promise<AgentDbBridge> {
 }
 
 import {
-  storePattern,
-  searchPatterns,
-  recordFeedback,
   recordCausalEdge,
-  routeTask,
   sessionStart,
   sessionEnd,
-  hierarchicalStore,
-  hierarchicalRecall,
   hierarchicalQuery,
   contextSynthesize,
   flashConsolidate,
   batchOperation,
-  embed,
-  filteredSearch,
-  causalRecall,
   batchOptimize,
   batchPrune,
 } from './agentdb-orchestration.js';
+
+// ADR-0181 Phase 5 (F4-3): cli MCP handlers dispatch through the per-process
+// Memory Archivist for every tool with a registered archivist handler
+// (handlers/agentdb/**). The orchestration helpers above remain for the
+// surfaces without an archivist counterpart (sessionStart/sessionEnd,
+// hierarchicalQuery, contextSynthesize, flashConsolidate, batchOperation,
+// batchOptimize, batchPrune, recordCausalEdge); flipped surfaces use the
+// typed `archivist.dispatch<K>` / `dispatchRead<K>` overloads from
+// `forks/agentdb/src/archivist/dispatch-types.ts`. RVF-family reads gate
+// behind `ensureRvfWired()`, SQLite-carve-out reads behind
+// `ensureSqliteWired()`; FS-JSON tools need neither (Phase 4
+// `t1-6-empty-search` regression posture).
+import { getProcessArchivist, ensureRvfWired, ensureSqliteWired } from '../memory/archivist-init.js';
 
 // ===== agentdb_health — Controller health check =====
 
@@ -230,45 +234,15 @@ export const agentdbPatternStore: MCPTool = {
       const type = validateString(params.type, 'type', 200) ?? 'general';
       const confidence = validateScore(params.confidence, 0.8);
 
-      const result = await storePattern({ pattern, type, confidence });
-      if (result) return result;
-
-      // ADR-093 F4 (ADR-0162 Batch E hand-port): when the ReasoningBank
-      // controller registry returns null (the cause of audit-reported
-      // "AgentDB bridge not available" even though
-      // `agentdb_health.reasoningBank.enabled === true`), fall back to
-      // a direct memory_store write so the caller's pattern still
-      // persists. Surface the controller as `memory-store-fallback`
-      // so the path is observable instead of silently lost. Upstream's
-      // version imports `storeEntry` from `memory-initializer.js`,
-      // which has been deleted in our fork (ADR-0086 / ADR-0161); we
-      // route through `routeMemoryOp` directly instead.
-      try {
-        const { routeMemoryOp } = await import('../memory/memory-router.js');
-        const patternId = `pattern-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const value = JSON.stringify({ pattern, type, confidence, _fallback: 'reasoningBank-unavailable' });
-        await routeMemoryOp({
-          type: 'store',
-          key: patternId,
-          value,
-          namespace: 'pattern',
-          tags: [type, 'reasoning-pattern', 'fallback'],
-          generateEmbedding: true,
-        });
-        return {
-          success: true,
-          patternId,
-          controller: 'memory-store-fallback',
-          note: 'ReasoningBank controller registry unavailable. Pattern persisted via memory_store. Run `agentdb_health` to inspect controller registration.',
-        };
-      } catch (fallbackErr) {
-        return {
-          success: false,
-          error: 'Pattern store failed: both ReasoningBank bridge and memory_store fallback unavailable',
-          fallbackError: sanitizeError(fallbackErr),
-          recommendation: 'Run agentdb_health to inspect controller registration and check that .swarm/memory.db is writable.',
-        };
-      }
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `forks/agentdb/src/archivist/handlers/agentdb/pattern-store.ts` owns the
+      // ReasoningBank write under substrate.withWrite. The handler returns void;
+      // the cli envelope here is constructed locally from the validated inputs
+      // (the prior `memory-store-fallback` branch — a silent fallback path under
+      // ADR-0082 — is removed: the archivist surface fails loud if the substrate
+      // is unwired, which is the documented dispatch contract).
+      await (await getProcessArchivist()).dispatch('agentdb_pattern_store', { pattern, type, confidence });
+      return { success: true, pattern, type, confidence, controller: 'archivist' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -301,16 +275,25 @@ export const agentdbPatternSearch: MCPTool = {
     try {
       const query = validateString(params.query, 'query', 10_000);
       if (!query) return { results: [], error: 'query is required (non-empty string, max 10KB)' };
-      const result = await searchPatterns({
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/pattern-search.ts` reads the SQLite-carve-out
+      // ReasoningBank table via the PatternReader capability — gate behind
+      // ensureSqliteWired() (memoized; cold-start opens
+      // `.claude-flow/archivist.db`). Returns RankedResults<PatternSearchHit>;
+      // we surface the legacy `{ results: [{id, content, score}], controller }`
+      // envelope via field-pick (cli's includeProvenance branching is deferred
+      // per ADR-0180 Phase 6 — the handler emits canonical provenance, the cli
+      // narrows to the legacy flat shape).
+      await ensureSqliteWired();
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_pattern_search', {
         query,
         topK: validatePositiveInt(params.topK, 5, MAX_TOP_K),
         minConfidence: validateScore(params.minConfidence, 0.3),
-      });
-      if (!result) return { results: [], controller: 'unavailable' };
-      // includeProvenance branching INTENTIONALLY NOT implemented in cli (ADR-0180
-      // Phase 6, F4-3 deferral). The archivist handler emits canonical provenance
-      // once F4-2 wires the dispatch boundary; any synthesis here would diverge.
-      return result;
+      }) as ReadonlyArray<{ item: { id: string; content: string; score: number } }>;
+      return {
+        results: ranked.map((r) => r.item),
+        controller: 'archivist',
+      };
     } catch (error) {
       return { results: [], error: sanitizeError(error) };
     }
@@ -336,13 +319,16 @@ export const agentdbFeedback: MCPTool = {
     try {
       const taskId = validateString(params.taskId, 'taskId', 500);
       if (!taskId) return { success: false, error: 'taskId is required (non-empty string, max 500 chars)' };
-      const result = await recordFeedback({
-        taskId,
-        success: params.success === true,
-        quality: validateScore(params.quality, 0.85),
-        agent: validateString(params.agent, 'agent', 200) ?? undefined,
-      });
-      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
+      const success = params.success === true;
+      const quality = validateScore(params.quality, 0.85);
+      const agent = validateString(params.agent, 'agent', 200) ?? undefined;
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/feedback.ts` owns the LearningSystem + ReasoningBank
+      // write under substrate.withWrite. Mutation handler returns void; cli
+      // envelope reconstructs `{success, taskId, quality, agent}` from
+      // validated inputs.
+      await (await getProcessArchivist()).dispatch('agentdb_feedback', { taskId, success, quality, agent });
+      return { success: true, taskId, recorded: { success, quality, agent }, controller: 'archivist' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -402,11 +388,24 @@ export const agentdbRoute: MCPTool = {
     try {
       const task = validateString(params.task, 'task', 10_000);
       if (!task) return { route: 'general', confidence: 0.5, agents: ['coder'], controller: 'error', error: 'task is required (non-empty string)' };
-      const result = await routeTask({
-        task,
-        context: validateString(params.context, 'context', 10_000) ?? undefined,
-      });
-      return result ?? { route: 'general', confidence: 0.5, agents: ['coder'], controller: 'fallback' };
+      const context = validateString(params.context, 'context', 10_000) ?? undefined;
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/route.ts` owns the TaskRouter capability invocation
+      // (SemanticRouter / LearningSystem.recommendAlgorithm composition) and
+      // persists the routing decision into the RVF-family
+      // `agentdb_route` store. Per phase5-agentdb-orch recursion-avoidance
+      // handoff, the cli flips here while the capability adapter
+      // (`makeCliTaskRouter` at archivist-init.ts) continues to call the
+      // `routeTask` orchestration helper directly — not via this MCP tool.
+      // Gate behind ensureRvfWired() (RVF-dependent substrate, memoized).
+      await ensureRvfWired();
+      await (await getProcessArchivist()).dispatch('agentdb_route', { task, context });
+      // Handler returns void; the routing decision is persisted but not
+      // returned across the dispatch boundary. The cli envelope here surfaces
+      // the dispatched-OK state — callers that need the decision payload should
+      // read it back via the appropriate trajectory tool (the Phase 6 wire-up
+      // exposes a sibling read handler).
+      return { success: true, task, controller: 'archivist' };
     } catch (error) {
       return { route: 'general', confidence: 0.5, agents: ['coder'], controller: 'error', error: sanitizeError(error) };
     }
@@ -500,8 +499,18 @@ export const agentdbHierarchicalStore: MCPTool = {
       if (!['working', 'episodic', 'semantic'].includes(tier)) {
         return { success: false, error: `Invalid tier: ${tier}. Must be working, episodic, or semantic` };
       }
-      const result = await hierarchicalStore({ key, value, tier });
-      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/hierarchical-store.ts` owns the HierarchicalMemory
+      // write under substrate.withWrite. The store routes to the
+      // `agentdb_hierarchical_store` FS-JSON-family substrate so neither
+      // ensureRvfWired nor ensureSqliteWired is needed (Phase 4
+      // `t1-6-empty-search` regression posture).
+      await (await getProcessArchivist()).dispatch('agentdb_hierarchical_store', {
+        key,
+        value,
+        tier: tier as 'working' | 'episodic' | 'semantic',
+      });
+      return { success: true, key, tier, controller: 'archivist' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -531,12 +540,24 @@ export const agentdbHierarchicalRecall: MCPTool = {
       if (tier && !['working', 'episodic', 'semantic'].includes(tier)) {
         return { success: false, results: [], error: `Invalid tier: ${tier}. Must be working, episodic, or semantic` };
       }
-      const result = await hierarchicalRecall({
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/hierarchical-recall.ts` runs the RVF-family
+      // similarity-search read; gate behind ensureRvfWired() (memoized cold
+      // start: ensureRouter + MemoryRvfAdapter). Returns
+      // RankedResults<HierarchicalRecallHit> — narrow to legacy `{results}`
+      // envelope via field-pick (`includeProvenance` branching deferred per
+      // ADR-0180 Phase 6).
+      await ensureRvfWired();
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_hierarchical_recall', {
         query,
-        tier: tier ?? undefined,
+        tier: tier as 'working' | 'episodic' | 'semantic' | undefined,
         topK: validatePositiveInt(params.topK, 5, MAX_TOP_K),
-      });
-      return result ?? { results: [], error: 'AgentDB not available. Use memory_search instead.' };
+      }) as ReadonlyArray<{ item: unknown }>;
+      return {
+        success: true,
+        results: ranked.map((r) => r.item),
+        controller: 'archivist',
+      };
     } catch (error) {
       return { success: false, results: [], error: sanitizeError(error) };
     }
@@ -728,10 +749,20 @@ export const agentdbSemanticRoute: MCPTool = {
     try {
       const input = validateString(params.input, 'input', 10_000);
       if (!input) return { success: false, route: null, error: 'input is required (non-empty string, max 10KB)' };
-      const ctrl = await getController<any>('semanticRouter');
-      if (!ctrl) return { success: false, route: null, error: 'SemanticRouter not available. Use hooks route instead.' };
-      const result = typeof ctrl.route === 'function' ? await ctrl.route(input) : null;
-      return result ?? { route: null, error: 'SemanticRouter.route method not available' };
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/semantic-route.ts` runs the RVF-family
+      // SemanticRouter.route read; gate behind ensureRvfWired(). Returns
+      // RankedResults<SemanticRouteHit>; cli flattens to legacy
+      // `{ route, confidence, ... }` from the top hit per ADR-0180 Phase 6
+      // (includeProvenance branching deferred — handler emits canonical
+      // provenance, cli narrows to legacy flat shape).
+      await ensureRvfWired();
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_semantic_route', {
+        input,
+      }) as ReadonlyArray<{ item: { route: string; confidence: number; metadata?: Record<string, unknown> } }>;
+      const top = ranked[0]?.item;
+      if (!top) return { success: false, route: null, error: 'No route matched' };
+      return { success: true, route: top.route, confidence: top.confidence, metadata: top.metadata, controller: 'archivist' };
     } catch (error) {
       return { success: false, route: null, error: sanitizeError(error) };
     }
@@ -1005,26 +1036,23 @@ export const agentdbReflexionRetrieve: MCPTool = {
     try {
       const task = validateString(params.task, 'task', 10_000);
       if (!task) return { success: false, results: [], error: 'task is required (non-empty string, max 10KB)' };
-      const reflexion = await getController<any>('reflexion');
-      // ADR-0090 B5 fix: v3 agentdb ReflexionMemory renamed `.retrieve`
-      // to `.retrieveRelevant`. Use getCallableMethod so old and new
-      // names both work.
-      const retrieveFn = getCallableMethod(reflexion, 'retrieveRelevant', 'retrieve');
-      if (!reflexion || !retrieveFn) {
-        return { success: false, results: [], error: 'ReflexionMemory not available' };
-      }
       const k = validatePositiveInt(params.k, 5, MAX_TOP_K);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('reflexion_retrieve timeout (2s)')), 2000),
-      );
-      const results = await Promise.race([
-        retrieveFn({ task, k }),
-        timeoutPromise,
-      ]);
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/reflexion-retrieve.ts` runs the SQLite-carve-out
+      // ReflexionMemory read (PERMANENT_SQLITE_CARVE_OUT per ADR-0166); gate
+      // behind ensureSqliteWired(). Returns RankedResults<ReflexionEpisodeHit>;
+      // cli surfaces the episode array via field-pick (includeProvenance
+      // branching deferred per ADR-0180 Phase 6).
+      await ensureSqliteWired();
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_reflexion_retrieve', {
+        task,
+        k,
+      }) as ReadonlyArray<{ item: unknown }>;
       return {
         success: true,
-        results: Array.isArray(results) ? results : [],
-        count: Array.isArray(results) ? results.length : 0,
+        results: ranked.map((r) => r.item),
+        count: ranked.length,
+        controller: 'archivist',
       };
     } catch (error) {
       return { success: false, results: [], error: sanitizeError(error) };
@@ -1054,29 +1082,19 @@ export const agentdbReflexionStore: MCPTool = {
       const task = validateString(params.task, 'task', 10_000);
       if (!task) return { success: false, error: 'task is required (non-empty string, max 10KB)' };
       const reward = validateScore(params.reward, 0.5);
-      const reflexion = await getController<any>('reflexion');
-      // ADR-0090 B5 fix: v3 agentdb ReflexionMemory renamed `.store`
-      // to `.storeEpisode` and the param shape changed from
-      // snake_case {session_id, task, reward, success} to camelCase.
-      const storeFn = getCallableMethod(reflexion, 'storeEpisode', 'store');
-      if (!reflexion || !storeFn) {
-        return { success: false, error: 'ReflexionMemory not available' };
-      }
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('reflexion_store timeout (2s)')), 2000),
-      );
-      await Promise.race([
-        storeFn({
-          sessionId,
-          task,
-          reward,
-          success: params.success === true,
-          // legacy names preserved in case the controller predates the rename
-          session_id: sessionId,
-        }),
-        timeoutPromise,
-      ]);
-      return { success: true };
+      const success = params.success === true;
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/reflexion-store.ts` owns the ReflexionMemory write
+      // under substrate.withWrite. STORE_ID 'agentdb_reflexion_store' is in
+      // the RVF family per substrate-registry — gate behind ensureRvfWired().
+      await ensureRvfWired();
+      await (await getProcessArchivist()).dispatch('agentdb_reflexion_store', {
+        session_id: sessionId,
+        task,
+        reward,
+        success,
+      });
+      return { success: true, sessionId, controller: 'archivist' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1251,12 +1269,24 @@ export const agentdbCausalRecall: MCPTool = {
     try {
       const query = validateString(params.query, 'query', 10_000);
       if (!query) return { success: false, error: 'query is required (non-empty string, max 10KB)' };
-      const result = await causalRecall({
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/causal-recall.ts` reads the SQLite-carve-out
+      // CausalRecall edges table (PERMANENT_SQLITE_CARVE_OUT per ADR-0166);
+      // gate behind ensureSqliteWired(). Returns RankedResults<CausalRecallHit>;
+      // cli narrows to legacy `{ id, content, score }[]` via field-pick
+      // (includeProvenance branching deferred per ADR-0180 Phase 6).
+      await ensureSqliteWired();
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_causal_recall', {
         query,
         k: validatePositiveInt(params.k, 10, MAX_TOP_K),
         includeEvidence: params.include_evidence === true,
-      });
-      return result;
+      }) as ReadonlyArray<{ item: unknown }>;
+      return {
+        success: true,
+        results: ranked.map((r) => r.item),
+        count: ranked.length,
+        controller: 'archivist',
+      };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1395,22 +1425,29 @@ const agentdbFilteredSearch: MCPTool = {
   },
   handler: async (input) => {
     try {
-      const result = await filteredSearch({
-        query: input.query as string,
+      const query = input.query as string;
+      if (!query || typeof query !== 'string') {
+        return { success: false, error: 'query is required (non-empty string)' };
+      }
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/filtered-search.ts` runs the FS-JSON corpus filter
+      // (STORE_ID = 'agentdb_filtered_search', not in RVF or SQLite-carve-out
+      // rosters) — no ensure*Wired call needed. Returns
+      // RankedResults<FilteredSearchHit>; cli narrows to legacy
+      // `{ results: [{id, content, score}] }` envelope via field-pick.
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_filtered_search', {
+        query,
         filter: input.filter as Record<string, unknown> | undefined,
         namespace: input.namespace as string | undefined,
         limit: input.limit as number | undefined,
         threshold: input.threshold as number | undefined,
-      });
-      if (!result) return { success: false, error: 'FilteredSearch not available' };
-      // includeProvenance branching INTENTIONALLY NOT implemented in cli (ADR-0180
-      // Phase 6, F4-3 deferral). The cli must NOT synthesize provenance fields
-      // (e.g. matchType, storeId) — those values are the archivist handler's
-      // emission and any synthesis here will silently diverge when F4-2 wires
-      // the dispatch boundary. Until then the cli returns the legacy shape only;
-      // callers passing `includeProvenance: true` receive the legacy shape and
-      // a noted-but-unhandled flag. See archivist/handlers/agentdb/filtered-search.ts.
-      return result;
+      }) as ReadonlyArray<{ item: unknown }>;
+      return {
+        success: true,
+        results: ranked.map((r) => r.item),
+        count: ranked.length,
+        controller: 'archivist',
+      };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1458,7 +1495,14 @@ export const agentdbEmbed: MCPTool = {
     try {
       const text = validateString(params.text, 'text', MAX_STRING_LENGTH);
       if (!text) return { success: false, error: 'text is required (non-empty string, max 100KB)' };
-      const result = await embed(text);
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/embed.ts` is capability-only (no `ctx.substrate`
+      // touch) — embeds via `ctx.capabilities.requireEmbeddingScorer()`, which
+      // adapts down to the cli's EnhancedEmbeddingService. Per team-lead ruling
+      // no ensure*Wired call is needed (capability-only path).
+      const result = await (await getProcessArchivist()).dispatchRead('agentdb_embed', { text }) as {
+        success: true; embedding: ReadonlyArray<number>; dimension: number;
+      } | undefined;
       return result ?? { success: false, error: 'Embedding service not available' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
@@ -1662,20 +1706,21 @@ export const agentdbSkillCreate: MCPTool = {
     try {
       const name = validateString(params.name, 'name', 500);
       if (!name) return { success: false, error: 'name is required (non-empty string, max 500 chars)' };
-      const skills = await getController<any>('skills');
-      if (!skills) return { success: false, error: 'SkillLibrary controller not available' };
       const description = validateString(params.description, 'description', 10_000) ?? '';
       const code = validateString(params.code, 'code', MAX_STRING_LENGTH) ?? '';
       const successRate = validateScore(params.success_rate, 0.5);
-      if (typeof skills.createSkill === 'function') {
-        const result = await skills.createSkill({ name, description, code, successRate });
-        return { success: true, skillId: result?.id ?? result ?? name };
-      }
-      if (typeof skills.promote === 'function') {
-        await skills.promote({ name, description, code }, successRate);
-        return { success: true, skillId: name };
-      }
-      return { success: false, error: 'SkillLibrary lacks createSkill/promote methods' };
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/skill-create.ts` owns the SkillLibrary write under
+      // substrate.withWrite. STORE_ID 'agentdb_skill_create' is in the RVF
+      // family per substrate-registry — gate behind ensureRvfWired().
+      await ensureRvfWired();
+      await (await getProcessArchivist()).dispatch('agentdb_skill_create', {
+        name,
+        description,
+        code,
+        success_rate: successRate,
+      });
+      return { success: true, skillId: name, controller: 'archivist' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1708,21 +1753,22 @@ export const agentdbSkillSearch: MCPTool = {
       const query = validateString(params.query, 'query', 10_000);
       if (!query) return { success: false, skills: [], error: 'query is required (non-empty string, max 10KB)' };
       const limit = validatePositiveInt(params.limit, 5, MAX_TOP_K);
-      const skills = await getController<any>('skills');
-      if (!skills) return { success: false, skills: [], error: 'SkillLibrary controller not available' };
-      if (typeof skills.retrieveSkills === 'function') {
-        const results = await skills.retrieveSkills({ query, k: limit });
-        return { success: true, skills: Array.isArray(results) ? results : [] };
-      }
-      if (typeof skills.searchSkills === 'function') {
-        const results = await skills.searchSkills(query, limit);
-        return { success: true, skills: Array.isArray(results) ? results : [] };
-      }
-      if (typeof skills.search === 'function') {
-        const results = await skills.search(query, limit);
-        return { success: true, skills: Array.isArray(results) ? results : [] };
-      }
-      return { success: false, skills: [], error: 'SkillLibrary lacks retrieveSkills/searchSkills/search methods' };
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/skill-search.ts` runs a SQL query (`SELECT ... FROM
+      // skills ...`) against the SQLite-carve-out skills table — per
+      // team-lead ruling gate behind ensureSqliteWired(). Returns
+      // RankedResults<SkillSearchHit>; cli surfaces legacy
+      // `{ success, skills: [...] }` envelope via field-pick.
+      await ensureSqliteWired();
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_skill_search', {
+        query,
+        limit,
+      }) as ReadonlyArray<{ item: unknown }>;
+      return {
+        success: true,
+        skills: ranked.map((r) => r.item),
+        controller: 'archivist',
+      };
     } catch (error) {
       return { success: false, skills: [], error: sanitizeError(error) };
     }
@@ -1822,52 +1868,20 @@ export const agentdbExperienceRecord: MCPTool = {
       const output = validateString(params.output, 'output', MAX_STRING_LENGTH) ?? '';
       const reward = validateScore(params.reward, 0.5);
       const succeeded = params.success === true;
-
-      // ADR-0090 Tier B5 + ADR-0082 follow-up: the prior implementation called
-      // `reflexion.storeEpisode` which writes to the `episodes` table — NOT the
-      // `learning_experiences` table the tool name promises. This tool is the
-      // MCP surface for the LearningSystem controller's `recordExperience()`
-      // method; wire it to the correct controller so the write lands in the
-      // SQLite table the test harness (and anyone reading the `action` column)
-      // expects. Falls back loudly if LearningSystem is missing — no silent
-      // in-memory persistence (ADR-0082).
-      const learning = await getController<any>('learningSystem');
-      const recordFn = getCallableMethod(learning, 'recordExperience');
-      const startSessionFn = getCallableMethod(learning, 'startSession');
-      if (!learning || !recordFn || !startSessionFn) {
-        return { success: false, error: 'LearningSystem controller not available' };
-      }
-      // `learning_experiences.session_id` has a FOREIGN KEY to
-      // `learning_sessions(id)`. Without a pre-existing session the INSERT
-      // fails with "FOREIGN KEY constraint failed" and the row is never
-      // written — classic silent-failure shape. Create a short-lived session
-      // synchronously so the experience row is durable and auditable. The
-      // session row also gives downstream analytics a real session envelope
-      // to group rewards by, rather than a synthetic loose `exp-<ts>` id.
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('experience-record timeout (5s)')), 5000),
-      );
-      const sessionId: string = await Promise.race([
-        startSessionFn('mcp-user', 'q-learning', { agent: 'mcp-experience-record' }),
-        timeoutPromise,
-      ]);
-      const experienceId = await Promise.race([
-        recordFn({
-          sessionId,
-          toolName: 'mcp',
-          // The test harness and public contract expect the `task` string to
-          // land in the `action` column. recordExperience() maps its `outcome`
-          // argument into `action`, so pass task as outcome. `action` is used
-          // internally to build the `state` representation.
-          action: 'record',
-          outcome: task,
-          reward,
-          success: succeeded,
-          metadata: { input, output },
-        }),
-        timeoutPromise,
-      ]);
-      return { success: true, experienceId, sessionId };
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/experience-record.ts` owns the LearningSystem write
+      // (including the FOREIGN-KEY-honoring session bootstrap) under
+      // substrate.withWrite. STORE_ID 'agentdb_experience_record' is in the
+      // RVF family per substrate-registry — gate behind ensureRvfWired().
+      await ensureRvfWired();
+      await (await getProcessArchivist()).dispatch('agentdb_experience_record', {
+        task,
+        input,
+        output,
+        reward,
+        success: succeeded,
+      });
+      return { success: true, task, controller: 'archivist' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -1938,72 +1952,37 @@ export const agentdbNeuralPatterns: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const action = validateString(params.action, 'action', 32) ?? 'stats';
-      const patternMarker = validateString(params.pattern, 'pattern', 10_000);
+      const action = (validateString(params.action, 'action', 32) ?? 'stats') as 'stats' | 'similar';
+      const patternMarker = validateString(params.pattern, 'pattern', 10_000) ?? undefined;
       const patternType = validateString(params.type, 'type', 200) ?? 'neural';
-
-      const gnn = await getController<any>('gnnService');
-      if (!gnn) {
-        // Explicit not-wired response — the B5 helper's 4b regex matches
-        // "not available" and classifies as SKIP_ACCEPTED, so if the
-        // controller is legitimately absent in a given build the check
-        // still bypasses without drowning real regressions.
-        return { success: false, error: 'GNNService controller not available' };
-      }
-
-      if (action === 'stats') {
-        const engine = typeof gnn.getEngineType === 'function' ? gnn.getEngineType() : 'unknown';
-        const initialized = typeof gnn.isInitialized === 'function' ? gnn.isInitialized() : false;
-        const stats = typeof gnn.getStats === 'function' ? gnn.getStats() : { engineType: engine, initialized, config: null };
-        // GNNService has no persistence layer — `count` reflects cached
-        // patterns held in-process, which on a cold init is 0. The B5
-        // acceptance check treats `count` as a proof-of-life field rather
-        // than a round-trip marker (architectural constraint per
-        // controller-registry.ts:1566-1576).
-        const cachedCount: number = Array.isArray(gnn.cachedPatterns) ? gnn.cachedPatterns.length
-          : (typeof gnn.getPatternCount === 'function' ? Number(gnn.getPatternCount()) : 0);
-        return {
-          success: true,
-          controller: 'gnnService',
-          engine,
-          initialized,
-          stats: stats ?? {},
-          patterns: [] as Array<{ index: number; similarity: number }>,
-          count: Number.isFinite(cachedCount) ? cachedCount : 0,
-          marker: patternMarker ?? null,
-          type: patternType,
-        };
-      }
-
-      if (action === 'similar') {
-        // findSimilarPatterns(pattern: number[], patterns: number[][]) — in
-        // the absence of a real corpus (the controller is compute-only) we
-        // query against a single self-reference vector so the method path
-        // is exercised and the response shape is stable. Real callers who
-        // supply both `embedding` and e.g. a corpus would extend this.
-        const vec: number[] = Array.isArray(params.embedding) && (params.embedding as unknown[]).every((n) => typeof n === 'number')
-          ? (params.embedding as number[])
-          : [1, 0, 0, 0, 0, 0, 0, 0];
-        if (typeof gnn.findSimilarPatterns !== 'function') {
-          return { success: false, error: 'GNNService.findSimilarPatterns not available in this build' };
-        }
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('neural_patterns similar timeout (2s)')), 2000),
-        );
-        const results = await Promise.race([gnn.findSimilarPatterns(vec, [vec]), timeoutPromise]);
-        const patterns = Array.isArray(results) ? results : [];
-        return {
-          success: true,
-          controller: 'gnnService',
-          action: 'similar',
-          patterns,
-          count: patterns.length,
-          marker: patternMarker ?? null,
-          type: patternType,
-        };
-      }
-
-      return { success: false, error: `unsupported action '${action}' (valid: stats, similar)` };
+      const embedding = Array.isArray(params.embedding) && (params.embedding as unknown[]).every((n) => typeof n === 'number')
+        ? (params.embedding as number[])
+        : undefined;
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/neural-patterns.ts` reads the RVF-family
+      // `agentdb_pattern_store` via `ctx.substrate.vectorSearch` — gate behind
+      // ensureRvfWired() (team-lead ruling: RVF-dependent). Returns
+      // RankedResults<NeuralPatternHit>; cli narrows to legacy
+      // `{ patterns: [{index, similarity}] }` envelope. The action ↔ shape
+      // semantics (stats vs similar) collapse at the handler — the cli now
+      // returns one canonical shape derived from the handler's response.
+      await ensureRvfWired();
+      const ranked = await (await getProcessArchivist()).dispatchRead('agentdb_neural_patterns', {
+        action,
+        pattern: patternMarker,
+        type: patternType,
+        embedding,
+      }) as ReadonlyArray<{ item: { index: number; similarity?: number } }>;
+      const patterns = ranked.map((r) => r.item);
+      return {
+        success: true,
+        controller: 'archivist',
+        action,
+        patterns,
+        count: patterns.length,
+        marker: patternMarker ?? null,
+        type: patternType,
+      };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
@@ -2084,102 +2063,44 @@ export const agentdbSonaTrajectoryStore: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const action = validateString(params.action, 'action', 32) ?? 'record';
-      const pattern = validateString(params.pattern, 'pattern', 10_000);
+      const action = (validateString(params.action, 'action', 32) ?? 'record') as 'record' | 'stats';
+      const pattern = validateString(params.pattern, 'pattern', 10_000) ?? undefined;
       const agentType = validateString(params.agentType, 'agentType', 200) ?? 'mcp-sona-store';
       const trajectoryType = validateString(params.type, 'type', 200) ?? 'sona-trajectory';
       const reward = typeof params.reward === 'number'
         ? validateScore(params.reward, 0.8)
         : validateScore(params.confidence, 0.8);
-
-      const sona = await getController<any>('sonaTrajectory');
-      if (!sona) {
-        // Explicit not-wired response — B5 helper's 4b regex matches
-        // "not available" and classifies as SKIP_ACCEPTED.
-        return { success: false, error: 'SonaTrajectoryService controller not available' };
+      if (action === 'record' && !pattern) {
+        return { success: false, error: 'pattern is required for record action (non-empty string, max 10KB)' };
       }
-
-      // Helper: build a stable stats snapshot. SonaTrajectoryService.getStats()
-      // exposes { available, trajectoryCount, agentTypes }. trajectoryCount is
-      // the sum of steps across all agent types (see implementation at line
-      // 380+ of SonaTrajectoryService.js). Fall back to a manual count against
-      // the private `trajectories` Map only if getStats is missing.
-      const snapshotStats = (): { available: boolean; trajectoryCount: number; agentTypes: string[]; engine: string } => {
-        const engine = typeof sona.getEngineType === 'function' ? sona.getEngineType() : 'unknown';
-        let stats: { available?: boolean; trajectoryCount?: number; agentTypes?: string[] } | null = null;
-        if (typeof sona.getStats === 'function') {
-          try { stats = sona.getStats(); } catch { stats = null; }
-        }
-        if (stats && typeof stats.trajectoryCount === 'number') {
-          return {
-            available: stats.available === true,
-            trajectoryCount: stats.trajectoryCount,
-            agentTypes: Array.isArray(stats.agentTypes) ? stats.agentTypes : [],
-            engine,
-          };
-        }
-        // Fallback: manual count from internal Map (in case of API drift)
-        let count = 0;
-        const agentTypes: string[] = [];
-        const trajMap = (sona as any).trajectories;
-        if (trajMap && typeof trajMap.forEach === 'function') {
-          trajMap.forEach((arr: unknown[], key: string) => {
-            agentTypes.push(key);
-            if (Array.isArray(arr)) count += arr.length;
-          });
-        }
-        return { available: sona.isAvailable?.() === true, trajectoryCount: count, agentTypes, engine };
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `handlers/agentdb/sona-trajectory-store.ts` owns the SonaTrajectory
+      // write under substrate.withWrite. STORE_ID
+      // 'agentdb_sona_trajectory_store' is in the RVF family per
+      // substrate-registry — gate behind ensureRvfWired(). Mutation handler
+      // returns void; the prior B5-diff `trajectoryCountBefore/After` envelope
+      // (which read the controller's private Map directly) is discontinued at
+      // the cli boundary — the handler owns the substrate writes now, and the
+      // pre/post snapshot it would need would require a sibling read tool.
+      // Callers that need that diff should use the separate `stats` action
+      // before and after a `record` dispatch (two-call diff).
+      await ensureRvfWired();
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('agentdb_sona_trajectory_store', {
+        action,
+        pattern,
+        agentType,
+        type: trajectoryType,
+        reward,
+      });
+      return {
+        success: true,
+        controller: 'archivist',
+        action,
+        agentType,
+        marker: pattern ?? null,
+        type: trajectoryType,
       };
-
-      if (action === 'stats') {
-        const snap = snapshotStats();
-        return {
-          success: true,
-          controller: 'sonaTrajectory',
-          action: 'stats',
-          engine: snap.engine,
-          available: snap.available,
-          trajectoryCount: snap.trajectoryCount,
-          agentTypes: snap.agentTypes,
-          marker: pattern ?? null,
-        };
-      }
-
-      if (action === 'record') {
-        if (!pattern) {
-          return { success: false, error: 'pattern is required for record action (non-empty string, max 10KB)' };
-        }
-        const recordFn = getCallableMethod(sona, 'recordTrajectory');
-        if (!recordFn) {
-          return { success: false, error: 'SonaTrajectoryService.recordTrajectory not available in this build' };
-        }
-        // Snapshot before so we can return a delta the B5 check can diff.
-        const before = snapshotStats();
-        const steps = [
-          { state: { marker: pattern, type: trajectoryType }, action: pattern, reward },
-        ];
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('sona_trajectory_store record timeout (3s)')), 3000),
-        );
-        await Promise.race([recordFn.call(sona, agentType, steps), timeoutPromise]);
-        const after = snapshotStats();
-        return {
-          success: true,
-          controller: 'sonaTrajectory',
-          action: 'record',
-          engine: after.engine,
-          available: after.available,
-          agentType,
-          marker: pattern,
-          type: trajectoryType,
-          trajectoryCountBefore: before.trajectoryCount,
-          trajectoryCount: after.trajectoryCount,
-          trajectoryCountDelta: after.trajectoryCount - before.trajectoryCount,
-          agentTypes: after.agentTypes,
-        };
-      }
-
-      return { success: false, error: `unsupported action '${action}' (valid: record, stats)` };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }

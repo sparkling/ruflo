@@ -4,17 +4,32 @@
  * Implements MCP tools for ADR-016: Collaborative Issue Claims
  * Provides programmatic access to claim operations for MCP clients.
  *
+ * ADR-0181 Phase 5 (F4-3 cli delegation): the 8 mutating claims_* tools
+ * (claims_claim, claims_release, claims_handoff, claims_accept-handoff,
+ * claims_status, claims_mark-stealable, claims_steal, claims_rebalance)
+ * dispatch through `archivist.dispatch()` for the authoritative
+ * `.claude-flow/claims/claims.json` mutation. The substrate's `withWrite`
+ * subsumes the prior `withClaimsLock` (POSIX O_EXCL lockfile) so cross-process
+ * mutual exclusion comes from the substrate seam rather than the cli. The
+ * post-dispatch `loadClaims()` re-read composes the cli envelope from
+ * authoritative persisted state.
+ *
+ * Read-only tools (claims_list, claims_stealable, claims_load, claims_board)
+ * have no archivist read-handler counterpart yet — they stay on the cli's
+ * direct `loadClaims()` path per the team-lead consolidated ruling. See the
+ * Phase 6+ comment on each read handler.
+ *
+ * Path alignment: substrate-registry.ts entry
+ * `['claims', 'claims/claims.json']` keeps the substrate's resolved path in
+ * sync with this file's `.claude-flow/claims/claims.json` layout, so the
+ * 4 cli-native read tools observe the substrate's writes immediately.
+ *
  * @module @claude-flow/cli/mcp-tools/claims
  */
 
 import type { MCPTool } from './types.js';
 import { validateIdentifier, validateText } from './validate-input.js';
-// ADR-0180 F4-3 (deferred): mutating claims_* handlers will route through
-// `archivist.dispatch('claims_<action>', payload)` once the substrate seam
-// wire-up at `Archivist.initialize()` lands (F4-2). Handler files already
-// exist at `forks/agentdb/src/archivist/handlers/claims/**` (Phase 5
-// deliverable); cli boundary crossing is the F4-3 follow-up. Until then,
-// the cli stays authoritative via `withClaimsLock` + `loadClaims` / `saveClaims`.
+import { getProcessArchivist } from '../memory/archivist-init.js';
 
 // Inline claim service since we can't import external modules
 interface Claimant {
@@ -48,8 +63,8 @@ interface ClaimsStore {
   contests: Record<string, { originalClaimant: Claimant; contestedAt: string; reason: string }>;
 }
 
-// File-based persistence
-import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync } from 'fs';
+// File-based persistence (read-side for cli envelope + the 4 read-only tools)
+import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 
 const CLAIMS_DIR = '.claude-flow/claims';
@@ -57,13 +72,6 @@ const CLAIMS_FILE = 'claims.json';
 
 function getClaimsPath(): string {
   return resolve(join(CLAIMS_DIR, CLAIMS_FILE));
-}
-
-function ensureClaimsDir(): void {
-  const dir = resolve(CLAIMS_DIR);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
 }
 
 function loadClaims(): ClaimsStore {
@@ -76,45 +84,6 @@ function loadClaims(): ClaimsStore {
     // Return empty store on error
   }
   return { claims: {}, stealable: {}, contests: {} };
-}
-
-function saveClaims(store: ClaimsStore): void {
-  ensureClaimsDir();
-  writeFileSync(getClaimsPath(), JSON.stringify(store, null, 2), 'utf-8');
-}
-
-// ADR-0094 P9: cross-process mutual exclusion for read-modify-write
-// sequences (claim, release, handoff). Without this, 6 parallel
-// `claims_claim` processes all read an empty store, all write their claim,
-// and all return success=true — violating the "exactly one winner" invariant.
-// Uses O_EXCL lockfile (POSIX-portable atomic test-and-set). Spins with
-// bounded retry; loud failure on lock-acquisition timeout.
-function withClaimsLock<T>(fn: () => T): T {
-  ensureClaimsDir();
-  const lockPath = getClaimsPath() + '.lock';
-  const deadline = Date.now() + 5000; // 5s ceiling
-  let fd: number | undefined;
-  for (;;) {
-    try {
-      fd = openSync(lockPath, 'wx'); // O_WRONLY|O_CREAT|O_EXCL
-      break;
-    } catch (e: any) {
-      if (e?.code !== 'EEXIST') throw e;
-      if (Date.now() >= deadline) {
-        // Stale lock: a previous process crashed without releasing. Steal.
-        try { unlinkSync(lockPath); } catch { /* race lost; retry */ }
-        continue;
-      }
-      // Brief busy-wait — retries are cheap; lock holds are sub-ms.
-      const t = Date.now() + 1; while (Date.now() < t) { /* spin */ }
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    try { unlinkSync(lockPath); } catch { /* already removed */ }
-  }
 }
 
 function formatClaimant(claimant: Claimant): string {
@@ -190,44 +159,45 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format. Use "human:userId:name" or "agent:agentId:agentType"' };
       }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_claim') after
-      // substrate-seam lands (F4-2). Handler at
-      // `forks/agentdb/src/archivist/handlers/claims/claim.ts`.
-      //
-      // ADR-0094 P9: read-check-write under file lock so 6 parallel
-      // `claims_claim` against the same issue produce exactly one winner.
-      return withClaimsLock(() => {
-        const store = loadClaims();
-
-        if (store.claims[issueId]) {
-          const existing = store.claims[issueId];
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `forks/agentdb/src/archivist/handlers/claims/claim.ts` owns the
+      // load → check-not-claimed → mutate → save under substrate.withWrite
+      // (which subsumes the prior `withClaimsLock` O_EXCL lockfile for
+      // cross-process mutual exclusion — ADR-0094 P9). The handler throws on
+      // "already claimed", which we map back to the cli envelope shape.
+      try {
+        const archivist = await getProcessArchivist();
+        await archivist.dispatch('claims_claim', {
+          issueId,
+          claimant,
+          context,
+        });
+      } catch (err) {
+        const msg = (err as { message?: string }).message ?? String(err);
+        if (msg.includes('already claimed')) {
+          const existing = loadClaims().claims[issueId];
           return {
             success: false,
-            error: `Issue already claimed by ${formatClaimant(existing.claimant)}`,
+            error: existing ? `Issue already claimed by ${formatClaimant(existing.claimant)}` : `Issue '${issueId}' already claimed`,
             existingClaim: existing,
           };
         }
+        throw err;
+      }
 
-        const now = new Date().toISOString();
-        const claim: IssueClaim = {
-          issueId,
-          claimant,
-          claimedAt: now,
-          status: 'active',
-          statusChangedAt: now,
-          progress: 0,
-          context,
-        };
+      const postStore = loadClaims();
+      const claim = postStore.claims[issueId];
+      if (!claim) {
+        throw new Error(
+          `claims_claim: issue '${issueId}' missing from store after successful dispatch — concurrent mutation suspected`,
+        );
+      }
 
-        store.claims[issueId] = claim;
-        saveClaims(store);
-
-        return {
-          success: true,
-          claim,
-          message: `Issue ${issueId} claimed by ${formatClaimant(claimant)}`,
-        };
-      });
+      return {
+        success: true,
+        claim,
+        message: `Issue ${issueId} claimed by ${formatClaimant(claimant)}`,
+      };
     },
   },
 
@@ -267,29 +237,34 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_release') after
-      // substrate-seam lands. Handler at handlers/claims/release.ts.
-      const store = loadClaims();
-      const claim = store.claims[issueId];
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `.../archivist/handlers/claims/release.ts` owns the load → ownership
+      // check → delete → save under substrate.withWrite. Pre-read so the cli
+      // envelope can return the previousClaim shape the caller depends on, and
+      // so the "not claimed" / "wrong claimant" branches preserve their
+      // {success:false, error} contract (handler throws on both — we map back).
+      const preStore = loadClaims();
+      const preClaim = preStore.claims[issueId];
 
-      if (!claim) {
+      if (!preClaim) {
         return { success: false, error: 'Issue is not claimed' };
       }
-
-      // Verify ownership
-      if (formatClaimant(claim.claimant) !== formatClaimant(claimant)) {
+      if (formatClaimant(preClaim.claimant) !== formatClaimant(claimant)) {
         return { success: false, error: 'Only the current claimant can release' };
       }
 
-      delete store.claims[issueId];
-      delete store.stealable[issueId];
-      saveClaims(store);
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('claims_release', {
+        issueId,
+        claimant,
+        reason,
+      });
 
       return {
         success: true,
         message: `Issue ${issueId} released`,
         reason,
-        previousClaim: claim,
+        previousClaim: preClaim,
       };
     },
   },
@@ -343,28 +318,37 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_handoff') after
-      // substrate-seam lands. Handler at handlers/claims/handoff.ts.
-      const store = loadClaims();
-      const claim = store.claims[issueId];
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `.../archivist/handlers/claims/handoff.ts` owns the load → ownership
+      // check → status='handoff-pending' transition → save under
+      // substrate.withWrite. Pre-read mirrors release.ts to preserve the cli
+      // {success:false, error} envelope shape for not-claimed / wrong-claimant.
+      const preStore = loadClaims();
+      const preClaim = preStore.claims[issueId];
 
-      if (!claim) {
+      if (!preClaim) {
         return { success: false, error: 'Issue is not claimed' };
       }
-
-      if (formatClaimant(claim.claimant) !== formatClaimant(from)) {
+      if (formatClaimant(preClaim.claimant) !== formatClaimant(from)) {
         return { success: false, error: 'Only the current claimant can request handoff' };
       }
 
-      const now = new Date().toISOString();
-      claim.status = 'handoff-pending';
-      claim.statusChangedAt = now;
-      claim.handoffTo = to;
-      claim.handoffReason = reason;
-      claim.progress = progress;
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('claims_handoff', {
+        issueId,
+        from,
+        to,
+        reason,
+        progress,
+      });
 
-      store.claims[issueId] = claim;
-      saveClaims(store);
+      const postStore = loadClaims();
+      const claim = postStore.claims[issueId];
+      if (!claim) {
+        throw new Error(
+          `claims_handoff: issue '${issueId}' missing from store after successful dispatch — concurrent mutation suspected`,
+        );
+      }
 
       return {
         success: true,
@@ -404,34 +388,39 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_accept-handoff')
-      // after substrate-seam lands. Handler at handlers/claims/accept-handoff.ts.
-      const store = loadClaims();
-      const claim = store.claims[issueId];
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `.../archivist/handlers/claims/accept-handoff.ts` owns the load →
+      // pending-handoff check → target check → transfer → save under
+      // substrate.withWrite. Pre-read preserves both the {success:false,error}
+      // envelope branches AND the `previousOwner` field the cli surface emits.
+      const preStore = loadClaims();
+      const preClaim = preStore.claims[issueId];
 
-      if (!claim) {
+      if (!preClaim) {
         return { success: false, error: 'Issue is not claimed' };
       }
-
-      if (claim.status !== 'handoff-pending') {
+      if (preClaim.status !== 'handoff-pending') {
         return { success: false, error: 'No pending handoff for this issue' };
       }
-
-      if (!claim.handoffTo || formatClaimant(claim.handoffTo) !== formatClaimant(claimant)) {
+      if (!preClaim.handoffTo || formatClaimant(preClaim.handoffTo) !== formatClaimant(claimant)) {
         return { success: false, error: 'You are not the target of this handoff' };
       }
 
-      const previousOwner = claim.claimant;
-      const now = new Date().toISOString();
+      const previousOwner = preClaim.claimant;
 
-      claim.claimant = claimant;
-      claim.status = 'active';
-      claim.statusChangedAt = now;
-      claim.handoffTo = undefined;
-      claim.handoffReason = undefined;
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('claims_accept-handoff', {
+        issueId,
+        claimant,
+      });
 
-      store.claims[issueId] = claim;
-      saveClaims(store);
+      const postStore = loadClaims();
+      const claim = postStore.claims[issueId];
+      if (!claim) {
+        throw new Error(
+          `claims_accept-handoff: issue '${issueId}' missing from store after successful dispatch — concurrent mutation suspected`,
+        );
+      }
 
       return {
         success: true,
@@ -478,27 +467,31 @@ export const claimsTools: MCPTool[] = [
       { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
       if (note) { const v = validateText(note, 'note'); if (!v.valid) return { success: false, error: v.error }; }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_status') after
-      // substrate-seam lands. Handler at handlers/claims/status.ts.
-      const store = loadClaims();
-      const claim = store.claims[issueId];
-
-      if (!claim) {
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `.../archivist/handlers/claims/status.ts` owns the load → status flip
+      // → save under substrate.withWrite. Pre-read so the "not claimed"
+      // envelope branch stays {success:false, error} rather than propagating
+      // the handler's throw.
+      const preStore = loadClaims();
+      if (!preStore.claims[issueId]) {
         return { success: false, error: 'Issue is not claimed' };
       }
 
-      const now = new Date().toISOString();
-      claim.status = status;
-      claim.statusChangedAt = now;
-      if (status === 'blocked') {
-        claim.blockReason = note;
-      }
-      if (progress !== undefined) {
-        claim.progress = Math.min(100, Math.max(0, progress));
-      }
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('claims_status', {
+        issueId,
+        status,
+        note,
+        progress,
+      });
 
-      store.claims[issueId] = claim;
-      saveClaims(store);
+      const postStore = loadClaims();
+      const claim = postStore.claims[issueId];
+      if (!claim) {
+        throw new Error(
+          `claims_status: issue '${issueId}' missing from store after successful dispatch — concurrent mutation suspected`,
+        );
+      }
 
       return {
         success: true,
@@ -530,6 +523,9 @@ export const claimsTools: MCPTool[] = [
         },
       },
     },
+    // PHASE 6+: routeRead via archivist when claims_list/stealable/load/board
+    // register as registerReadHandler. No archivist read-handler counterpart
+    // exists today — staying cli-native per team-lead consolidated ruling.
     handler: async (input) => {
       const status = input.status as string | undefined;
       const claimantFilter = input.claimant as string | undefined;
@@ -601,34 +597,36 @@ export const claimsTools: MCPTool[] = [
       { const v = validateIdentifier(issueId, 'issueId'); if (!v.valid) return { success: false, error: v.error }; }
       if (context) { const v = validateText(context, 'context'); if (!v.valid) return { success: false, error: v.error }; }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_mark-stealable')
-      // after substrate-seam lands. Handler at handlers/claims/mark-stealable.ts.
-      const store = loadClaims();
-      const claim = store.claims[issueId];
-
-      if (!claim) {
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `.../archivist/handlers/claims/mark-stealable.ts` owns the load →
+      // status='stealable' + stealable[issueId] writes (both atomic in one
+      // substrate.withWrite). Pre-read preserves the "not claimed"
+      // {success:false, error} envelope branch.
+      const preStore = loadClaims();
+      if (!preStore.claims[issueId]) {
         return { success: false, error: 'Issue is not claimed' };
       }
 
-      const now = new Date().toISOString();
-      claim.status = 'stealable';
-      claim.statusChangedAt = now;
-
-      store.stealable[issueId] = {
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('claims_mark-stealable', {
+        issueId,
         reason,
-        stealableAt: now,
         preferredTypes,
-        progress: claim.progress,
         context,
-      };
+      });
 
-      store.claims[issueId] = claim;
-      saveClaims(store);
+      const postStore = loadClaims();
+      const claim = postStore.claims[issueId];
+      if (!claim) {
+        throw new Error(
+          `claims_mark-stealable: issue '${issueId}' missing from store after successful dispatch — concurrent mutation suspected`,
+        );
+      }
 
       return {
         success: true,
         claim,
-        stealableInfo: store.stealable[issueId],
+        stealableInfo: postStore.stealable[issueId],
         message: `Issue ${issueId} marked as stealable (${reason})`,
       };
     },
@@ -664,21 +662,24 @@ export const claimsTools: MCPTool[] = [
         return { success: false, error: 'Invalid claimant format' };
       }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_steal') after
-      // substrate-seam lands. Handler at handlers/claims/steal.ts.
-      const store = loadClaims();
-      const claim = store.claims[issueId];
-      const stealableInfo = store.stealable[issueId];
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
+      // `.../archivist/handlers/claims/steal.ts` owns the load → claimed +
+      // stealable + preferredTypes checks → ownership transfer → save under
+      // substrate.withWrite (which gives "exactly one of N parallel steals
+      // wins" semantics — ADR-0094 P9). Pre-read preserves three
+      // {success:false, error} envelope branches the cli surface emits
+      // (not-claimed / not-stealable / preferredTypes mismatch) AND the
+      // `previousOwner` + `stealableInfo` fields in the success response.
+      const preStore = loadClaims();
+      const preClaim = preStore.claims[issueId];
+      const stealableInfo = preStore.stealable[issueId];
 
-      if (!claim) {
+      if (!preClaim) {
         return { success: false, error: 'Issue is not claimed' };
       }
-
       if (!stealableInfo) {
         return { success: false, error: 'Issue is not stealable' };
       }
-
-      // Check preferred types
       if (stealableInfo.preferredTypes && stealableInfo.preferredTypes.length > 0) {
         if (stealer.type === 'agent' && !stealableInfo.preferredTypes.includes(stealer.agentType!)) {
           return {
@@ -688,17 +689,21 @@ export const claimsTools: MCPTool[] = [
         }
       }
 
-      const previousOwner = claim.claimant;
-      const now = new Date().toISOString();
+      const previousOwner = preClaim.claimant;
 
-      claim.claimant = stealer;
-      claim.status = 'active';
-      claim.statusChangedAt = now;
-      claim.context = stealableInfo.context;
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('claims_steal', {
+        issueId,
+        stealer,
+      });
 
-      delete store.stealable[issueId];
-      store.claims[issueId] = claim;
-      saveClaims(store);
+      const postStore = loadClaims();
+      const claim = postStore.claims[issueId];
+      if (!claim) {
+        throw new Error(
+          `claims_steal: issue '${issueId}' missing from store after successful dispatch — concurrent mutation suspected`,
+        );
+      }
 
       return {
         success: true,
@@ -723,6 +728,9 @@ export const claimsTools: MCPTool[] = [
         },
       },
     },
+    // PHASE 6+: routeRead via archivist when claims_list/stealable/load/board
+    // register as registerReadHandler. No archivist read-handler counterpart
+    // exists today — staying cli-native per team-lead consolidated ruling.
     handler: async (input) => {
       const agentType = input.agentType as string | undefined;
 
@@ -766,6 +774,9 @@ export const claimsTools: MCPTool[] = [
         },
       },
     },
+    // PHASE 6+: routeRead via archivist when claims_list/stealable/load/board
+    // register as registerReadHandler. No archivist read-handler counterpart
+    // exists today — staying cli-native per team-lead consolidated ruling.
     handler: async (input) => {
       const agentId = input.agentId as string | undefined;
       const agentType = input.agentType as string | undefined;
@@ -848,6 +859,9 @@ export const claimsTools: MCPTool[] = [
       type: 'object',
       properties: {},
     },
+    // PHASE 6+: routeRead via archivist when claims_list/stealable/load/board
+    // register as registerReadHandler. No archivist read-handler counterpart
+    // exists today — staying cli-native per team-lead consolidated ruling.
     handler: async () => {
       const store = loadClaims();
       const claims = Object.values(store.claims);
@@ -917,10 +931,14 @@ export const claimsTools: MCPTool[] = [
       const dryRun = input.dryRun !== false;
       const targetUtilization = (input.targetUtilization as number) || 0.7;
 
-      const store = loadClaims();
-      const claims = Object.values(store.claims);
+      // Compute suggestions + metrics at the cli boundary; the archivist
+      // handler at `.../archivist/handlers/claims/rebalance.ts` returns void
+      // (per Phase 5 mutation-handler contract) and only mutates when
+      // dryRun=false. The cli surface keeps the suggestions/metrics return
+      // shape so callers can review proposed moves before applying.
+      const preStore = loadClaims();
+      const claims = Object.values(preStore.claims);
 
-      // Group by agent
       const agentLoads = new Map<string, { agentId: string; agentType: string; claims: IssueClaim[] }>();
 
       for (const claim of claims) {
@@ -945,7 +963,6 @@ export const claimsTools: MCPTool[] = [
       const suggestions: Array<{ issueId: string; from: string; to: string; reason: string }> = [];
 
       for (const over of overloaded) {
-        // Find low-progress claims to redistribute
         const movable = over.claims
           .filter(c => c.progress < 25 && c.status === 'active')
           .slice(0, over.claims.length - Math.ceil(maxClaims * targetUtilization));
@@ -963,24 +980,16 @@ export const claimsTools: MCPTool[] = [
         }
       }
 
-      // TODO(ADR-0180 F4-3): wire archivist.dispatch('claims_rebalance')
-      // after substrate-seam lands. Handler at handlers/claims/rebalance.ts.
-      //
-      // When not a dry run, execute the suggested moves
-      if (!dryRun) {
-        for (const suggestion of suggestions) {
-          const claim = store.claims[suggestion.issueId];
-          if (claim) {
-            const newOwner = parseClaimant(suggestion.to);
-            if (newOwner) {
-              claim.claimant = newOwner;
-              claim.statusChangedAt = new Date().toISOString();
-              store.claims[suggestion.issueId] = claim;
-            }
-          }
-        }
-        saveClaims(store);
-      }
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist for the apply
+      // path. The handler short-circuits when dryRun=true (returns void without
+      // mutating); when dryRun=false it recomputes the same moves under
+      // substrate.withWrite — which is the correct lock scope, and is what
+      // guarantees rebalance + concurrent steal don't race the same claim.
+      const archivist = await getProcessArchivist();
+      await archivist.dispatch('claims_rebalance', {
+        dryRun,
+        targetUtilization,
+      });
 
       return {
         success: true,

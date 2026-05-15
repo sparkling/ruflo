@@ -21,6 +21,17 @@ import {
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
 import { validateWorkerType, WORKER_TYPES } from './validate-input.js';
+// ADR-0181 Phase 5 (F4-3): cli call sites flip to typed
+// `archivist.dispatch('hive-mind_*', payload)` for the 4 hive-mind FS-JSON
+// mutations that have an archivist counterpart (spawn / broadcast / shutdown /
+// memory). The dispatch owns the substrate write under O_EXCL — the cli's
+// `withHiveStoreLock` wrapper here and the archivist FS-JSON substrate share
+// the SAME sentinel path (`<hive-state.json>.lock`), so single-process tests
+// in-process do not need an explicit cli lock around the read-after-dispatch
+// response synthesis; the dispatch's `await` has returned by then.
+// init / join / leave / consensus / status stay on the original cli path —
+// see per-tool inline notes for the carry-forward reason.
+import { getProcessArchivist } from '../memory/archivist-init.js';
 // ADR-0121 (T3): state-based CRDT primitives for the 'crdt' strategy.
 import {
   GCounter,
@@ -1262,14 +1273,21 @@ export async function withHiveStoreLock<T>(fn: () => Promise<T>): Promise<T> {
 import { existsSync as agentStoreExists, readFileSync as readAgentStore, writeFileSync as writeAgentStore, mkdirSync as mkdirAgentStore } from 'node:fs';
 
 function getAgentStorePath(): string {
-  return join(findProjectRoot(), '.claude-flow', 'agents.json');
+  // ADR-0181 Phase 5: align with the registry override that maps storeId
+  // `hive-mind_agents` → `.claude-flow/agents/store.json`
+  // (forks/agentdb/src/archivist/substrate-registry.ts FS_JSON_PATH_OVERRIDES,
+  // landed by phase5-task). The cli is authoritative on the on-disk path,
+  // and `agent-tools.ts`'s canonical helper already points here; this aligns
+  // the hive-mind-tools.ts duplicate helper. Consolidation of the duplicate
+  // load/save pair into one helper module is Phase 6+ work.
+  return join(findProjectRoot(), '.claude-flow', 'agents', 'store.json');
 }
 
 // ADR-0180 §Migration concerns Phase 4 (surprise (a)): cross-process file lock
-// for agents.json read-modify-write, modeled on withHiveStoreLock above. Uses a
-// dedicated sentinel (.agents.json.lock) — distinct from the hive-state lock so
-// handlers that already hold withHiveStoreLock (e.g. hive-mind_spawn) don't
-// self-deadlock when they touch the agent store.
+// for the agent store's read-modify-write, modeled on withHiveStoreLock above.
+// Uses a dedicated sentinel (`<store.json>.lock`) — distinct from the
+// hive-state lock so handlers that already hold withHiveStoreLock (e.g.
+// hive-mind_spawn) don't self-deadlock when they touch the agent store.
 async function withAgentStoreLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockPath = `${getAgentStorePath()}.lock`;
   const MAX_WAIT_MS = 5000;
@@ -1277,7 +1295,10 @@ async function withAgentStoreLock<T>(fn: () => Promise<T>): Promise<T> {
   const STALE_LOCK_MS = 30_000;
   const deadline = Date.now() + MAX_WAIT_MS;
 
-  const storeDir = join(findProjectRoot(), '.claude-flow');
+  // ADR-0181 Phase 5: ensure the nested `agents/` directory exists too —
+  // the lockfile sentinel lives next to `store.json`, so a fresh project
+  // without `.claude-flow/agents/` would otherwise ENOENT on the openSync below.
+  const storeDir = join(findProjectRoot(), '.claude-flow', 'agents');
   if (!agentStoreExists(storeDir)) {
     mkdirAgentStore(storeDir, { recursive: true });
   }
@@ -1334,11 +1355,15 @@ async function loadAgentStore(): Promise<{ agents: Record<string, unknown> }> {
 
 async function saveAgentStore(store: { agents: Record<string, unknown> }): Promise<void> {
   return withAgentStoreLock(async () => {
-    const storeDir = join(findProjectRoot(), '.claude-flow');
+    // ADR-0181 Phase 5: write to the same nested `agents/store.json` path
+    // `getAgentStorePath()` resolves. `withAgentStoreLock` already ensured
+    // the directory exists, but mkdirSync({recursive:true}) is idempotent
+    // so the redundancy is harmless and keeps this branch self-contained.
+    const storeDir = join(findProjectRoot(), '.claude-flow', 'agents');
     if (!agentStoreExists(storeDir)) {
       mkdirAgentStore(storeDir, { recursive: true });
     }
-    writeAgentStore(join(storeDir, 'agents.json'), JSON.stringify(store, null, 2), 'utf-8');
+    writeAgentStore(join(storeDir, 'store.json'), JSON.stringify(store, null, 2), 'utf-8');
   });
 }
 
@@ -1457,92 +1482,88 @@ export const hiveMindTools: MCPTool[] = [
         }
       }
 
-      // ADR-0129 (B1) race-fix: wrap load → mutate → save under
-      // `withHiveStoreLock` so concurrent spawns / inits don't lost-update
-      // each other's `state.sharedMemory` or `state.workers`. Validation
-      // (above) stays outside the lock to fail fast without blocking peers.
-      return withHiveStoreLock(async () => {
-        const state = loadHiveState();
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler
+      // at `forks/agentdb/src/archivist/handlers/hive-mind/spawn.ts` owns the
+      // two-store load → mutate → save under `substrate.withWrite`
+      // (`hive-mind_spawn` for state.json, `hive-mind_agents` for agents.json),
+      // which subsumes the ADR-0129 B1 `withHiveStoreLock` cross-process
+      // serialisation — both substrate factories key their O_EXCL sentinel
+      // off the SAME lock-path the cli's `withHiveStoreLock` uses
+      // (`.claude-flow/hive-mind/state.json.lock`), so concurrent spawn /
+      // init / shutdown still serialise correctly.
+      //
+      // The archivist handler mints its own worker IDs internally (same
+      // `Date.now() + Math.random()` shape the cli used) and writes them to
+      // both stores in a single dispatch. The cli pre-reads to surface the
+      // `not initialized` error in its `{success:false}` shape (the handler
+      // throws on that condition — we'd lose the shape if we propagated),
+      // then post-reads `state.workers` + `agents.json` to derive the
+      // `spawnedWorkers` response from the trailing `count` entries the
+      // handler just appended. Within this process the dispatch `await` has
+      // returned before the post-read, and the same-process LRU cache is
+      // invalidated explicitly so we don't observe pre-dispatch state.
+      const preState = loadHiveState();
+      if (!preState.initialized) {
+        return { success: false, error: 'Hive-mind not initialized. Run hive-mind/init first.' };
+      }
+      const preWorkerCount = preState.workers.length;
 
-        if (!state.initialized) {
-          return { success: false, error: 'Hive-mind not initialized. Run hive-mind/init first.' };
-        }
+      // Re-tag `action` / `role` to the typed payload's enums. The JSON
+      // inputSchema declares both enums; the runtime previously accepted
+      // any string and silently treated it as the default — preserving that
+      // behaviour here keeps the surface invariant under Phase 5 (a separate
+      // fix would tighten the runtime check, not this delegation worker).
+      // Matches the established daa-tools.ts Phase 5 flip pattern.
+      await (await getProcessArchivist()).dispatch('hive-mind_spawn', {
+        action: action as 'spawn' | 'retryTask',
+        count,
+        role: role as 'worker' | 'specialist' | 'scout',
+        prefix,
+        ...(agentTypesArr !== undefined ? { agentTypes: agentTypesArr } : {}),
+        ...(agentTypesArr === undefined ? { agentType: scalarAgentType } : {}),
+        ...(rawRetryOf ? { retryOf: rawRetryOf } : {}),
+      });
 
-        const agentStore = await loadAgentStore();
+      // Same-process LRU cache invalidation: the archivist's substrate write
+      // went through O_EXCL on a separate handle, so this process's
+      // `hiveCache` still holds the pre-dispatch state. `loadAgentStore`
+      // reads fresh under lock so it needs no invalidation.
+      invalidateHiveCache();
 
-        const spawnedWorkers: Array<{ agentId: string; role: string; agentType: string; joinedAt: string; retryOf?: string }> = [];
-
-        for (let i = 0; i < count; i++) {
-          // ADR-0131 (T12): retryTask uses canonical retry ID convention
-          // worker-<original>-retry-1 per ADR-0131 §Refinement edge case
-          // "Worker re-spawn with same ID". For multi-count retries (rare),
-          // append the iteration index.
-          let agentId: string;
-          if (action === 'retryTask' && rawRetryOf) {
-            const suffix = count === 1 ? 'retry-1' : `retry-${i + 1}`;
-            agentId = `${rawRetryOf}-${suffix}`;
-          } else {
-            agentId = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-          }
-          const thisType = perWorkerTypes[i] as string;
-
-          // Create agent record (like agent/spawn)
-          agentStore.agents[agentId] = {
-            agentId,
-            agentType: thisType,
-            status: 'idle',
-            health: 1.0,
-            taskCount: 0,
-            config: { role, hiveRole: role },
-            createdAt: new Date().toISOString(),
-            domain: 'hive-mind',
-          };
-
-          // Join to hive-mind (like hive-mind/join)
-          if (!state.workers.includes(agentId)) {
-            state.workers.push(agentId);
-          }
-
-          // ADR-0131 (T12): record retry lineage on the new worker entry's
-          // metadata. Per ADR-0131 §Decision Outcome, retryOf is a single
-          // pointer (not a chain depth) — the new entry points to the
-          // immediate predecessor. Chain reconstruction is recursive lookup
-          // at audit-time.
-          if (rawRetryOf) {
-            registerWorkerRetry(state, agentId, rawRetryOf);
-          }
-
-          // ADR-0108 (T13): per-worker `agentType` returned in the response
-          // so callers (CLI, prompt builder) see the round-robin distribution
-          // rather than a single uniform scalar.
-          spawnedWorkers.push({
-            agentId,
-            role,
-            agentType: thisType,
-            joinedAt: new Date().toISOString(),
-            ...(rawRetryOf ? { retryOf: rawRetryOf } : {}),
-          });
-        }
-
-        await saveAgentStore(agentStore);
-        saveHiveState(state);
-
+      const postState = loadHiveState();
+      const postAgentStore = await loadAgentStore();
+      const newWorkerIds = postState.workers.slice(preWorkerCount);
+      const spawnedWorkers = newWorkerIds.map((agentId) => {
+        const rec = postAgentStore.agents[agentId] as { agentType?: string; createdAt?: string } | undefined;
         return {
-          success: true,
-          spawned: count,
-          action,
-          workers: spawnedWorkers,
-          totalWorkers: state.workers.length,
-          hiveStatus: 'active',
-          message: action === 'retryTask'
-            ? `Spawned ${count} retry-worker(s) for ${rawRetryOf} and joined to the hive-mind`
-            : `Spawned ${count} worker(s) and joined them to the hive-mind`,
+          agentId,
+          role,
+          agentType: (rec?.agentType as string) ?? 'worker',
+          joinedAt: rec?.createdAt ?? new Date().toISOString(),
+          ...(rawRetryOf ? { retryOf: rawRetryOf } : {}),
         };
       });
+
+      return {
+        success: true,
+        spawned: count,
+        action,
+        workers: spawnedWorkers,
+        totalWorkers: postState.workers.length,
+        hiveStatus: 'active',
+        message: action === 'retryTask'
+          ? `Spawned ${count} retry-worker(s) for ${rawRetryOf} and joined to the hive-mind`
+          : `Spawned ${count} worker(s) and joined them to the hive-mind`,
+      };
     },
   },
   {
     name: 'hive-mind_init',
+    // ADR-0181 Phase 5 carry-forward: no archivist handler exists for
+    // `hive-mind_init` (the family in
+    // `forks/agentdb/src/archivist/handlers/hive-mind/` covers spawn /
+    // broadcast / shutdown / memory / consensus / status / agents — init,
+    // join, leave are still cli-only). cli logic below stays load-bearing.
     description: 'Initialize the hive-mind collective',
     category: 'hive-mind',
     inputSchema: {
@@ -1661,12 +1682,17 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_status',
-    // ADR-0180 Phase 4: archivist read handler registered at
-    // forks/agentdb/src/archivist/handlers/hive-mind/status.ts as
-    // `GuardedRead<HiveMindStatusQuery, RankedResults<HiveMindStatusEntry>>`
-    // (matches Phase 3's `memory_bridge_status` shape; one ranked entry per
-    // hive component, matchType='status'). Handler body below stays
-    // load-bearing until the dispatch boundary is wired through cli.
+    // PHASE 6+ — archivist handler exists but capability not yet wired.
+    // ADR-0181 Phase 5 carry-forward (team-lead ruling): the archivist read
+    // handler at `forks/agentdb/src/archivist/handlers/hive-mind/status.ts`
+    // is registered as `GuardedRead<HiveMindStatusQuery,
+    // RankedResults<HiveMindStatusEntry>>`, but the cross-controller
+    // orchestration this cli handler performs (cli memory absence-marker
+    // reconciliation, worker-status / failedWorkers / queen aggregation,
+    // ADR-0131 §6 reconcileFailedFromStatusKeys side-effects) does not yet
+    // route through the archivist's read shape. Flipping `hive-mind_status`
+    // is deferred until that orchestration is itself broken into archivist
+    // read handlers (Phase 6+). cli logic below stays load-bearing.
     description: 'Get hive-mind status',
     category: 'hive-mind',
     inputSchema: {
@@ -1816,6 +1842,10 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_join',
+    // ADR-0181 Phase 5 carry-forward: no archivist handler for
+    // `hive-mind_join` (only spawn / broadcast / shutdown / memory /
+    // consensus / status / agents exist in
+    // `forks/agentdb/src/archivist/handlers/hive-mind/`). cli logic stays.
     description: 'Join an agent to the hive-mind',
     category: 'hive-mind',
     inputSchema: {
@@ -1850,6 +1880,10 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_leave',
+    // ADR-0181 Phase 5 carry-forward: no archivist handler for
+    // `hive-mind_leave` (only spawn / broadcast / shutdown / memory /
+    // consensus / status / agents exist in
+    // `forks/agentdb/src/archivist/handlers/hive-mind/`). cli logic stays.
     description: 'Remove an agent from the hive-mind',
     category: 'hive-mind',
     inputSchema: {
@@ -1880,6 +1914,17 @@ export const hiveMindTools: MCPTool[] = [
   },
   {
     name: 'hive-mind_consensus',
+    // PHASE 6+ — archivist handler exists but capability not yet wired.
+    // ADR-0181 Phase 5 carry-forward (team-lead ruling): the archivist
+    // mutation handler at
+    // `forks/agentdb/src/archivist/handlers/hive-mind/consensus.ts` is
+    // registered for `'hive-mind_consensus'`, but the cli logic spans
+    // multiple strategies (BFT / Raft / Quorum / Weighted / Gossip / CRDT)
+    // each with their own ADR-0121 (T3) CRDT merge / ADR-0117 Raft term /
+    // ADR-0098 Byzantine voting shapes. The handler currently lacks the
+    // strategy-specific orchestration these branches perform, so flipping
+    // would lose behaviour. Defer until the strategy fan-out is split into
+    // per-strategy handlers (Phase 6+). cli logic below stays load-bearing.
     description: 'Propose or vote on consensus with BFT, Raft, Quorum, Weighted, Gossip, or CRDT strategies',
     category: 'hive-mind',
     inputSchema: {
@@ -2820,55 +2865,55 @@ export const hiveMindTools: MCPTool[] = [
       required: ['message'],
     },
     handler: async (input) => {
-      const state = loadHiveState();
-
-      if (!state.initialized) {
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler
+      // at `forks/agentdb/src/archivist/handlers/hive-mind/broadcast.ts` owns
+      // the trim-to-100 append under substrate.withWrite. Pre-read to surface
+      // `not initialized` in the cli's `{success:false}` shape (the handler
+      // throws), and to capture the worker count for the `recipients` field.
+      // The handler mints `messageId = msg-${Date.now()}-${random}` internally;
+      // we post-read `state.sharedMemory.broadcasts` last entry to recover it
+      // for the response shape (concurrent broadcasts on this same process
+      // are serialised by the archivist substrate's O_EXCL — within this
+      // single dispatch's resolution window, our entry is the last appended).
+      const preState = loadHiveState();
+      if (!preState.initialized) {
         return { success: false, error: 'Hive-mind not initialized' };
       }
+      const recipients = preState.workers.length;
+      const priority = (input.priority as 'low' | 'normal' | 'high' | 'critical') || 'normal';
 
-      const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-      // Store in shared memory (ADR-0122 T4: wrap broadcasts in typed entry).
-      // Broadcasts are operational system state — type='system'/permanent — so
-      // they survive sweeps unless cleared by the trim-to-100 logic below.
-      const now = Date.now();
-      const existing = state.sharedMemory.broadcasts;
-      const priorMessages = (existing && isMemoryEntryShape(existing) && Array.isArray(existing.value))
-        ? (existing.value as Array<unknown>)
-        : [];
-      priorMessages.push({
-        messageId,
-        message: input.message,
-        priority: input.priority || 'normal',
-        fromId: input.fromId || 'system',
-        timestamp: new Date().toISOString(),
+      await (await getProcessArchivist()).dispatch('hive-mind_broadcast', {
+        message: input.message as string,
+        priority,
+        fromId: (input.fromId as string) || 'system',
       });
 
-      // Keep only last 100 broadcasts
-      state.sharedMemory.broadcasts = {
-        value: priorMessages.slice(-100),
-        type: 'system',
-        ttlMs: null,
-        expiresAt: null,
-        createdAt: existing && isMemoryEntryShape(existing) ? existing.createdAt : now,
-        updatedAt: now,
-      };
-      saveHiveState(state);
+      invalidateHiveCache();
+      const postState = loadHiveState();
+      const broadcastsEntry = postState.sharedMemory.broadcasts;
+      const broadcasts =
+        broadcastsEntry && isMemoryEntryShape(broadcastsEntry) && Array.isArray(broadcastsEntry.value)
+          ? (broadcastsEntry.value as Array<{ messageId?: string }>)
+          : [];
+      const lastMessageId =
+        broadcasts.length > 0 ? (broadcasts[broadcasts.length - 1]?.messageId ?? null) : null;
+      if (lastMessageId === null) {
+        throw new Error(
+          'hive-mind_broadcast: post-dispatch read found no broadcast entries — substrate write did not land',
+        );
+      }
 
       return {
         success: true,
-        messageId,
-        recipients: state.workers.length,
-        priority: input.priority || 'normal',
+        messageId: lastMessageId,
+        recipients,
+        priority,
         broadcastAt: new Date().toISOString(),
       };
     },
   },
   {
     name: 'hive-mind_shutdown',
-    // ADR-0180 Phase 4: archivist mutation handler registered at
-    // forks/agentdb/src/archivist/handlers/hive-mind/shutdown.ts. Handler body
-    // below stays load-bearing until the dispatch boundary is wired through cli.
     description: 'Shutdown the hive-mind and terminate all workers',
     category: 'hive-mind',
     inputSchema: {
@@ -2879,18 +2924,32 @@ export const hiveMindTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const state = loadHiveState();
-
-      if (!state.initialized) {
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler
+      // at `forks/agentdb/src/archivist/handlers/hive-mind/shutdown.ts` owns
+      // the hive-state reset under substrate.withWrite. Per the handler's
+      // SCOPE NOTE the agents.json worker-reap and the
+      // `stopHiveMindSweepTimer()` process-local timer-lifecycle are NOT
+      // performed by the handler — they stay at the cli call site here so
+      // the previous behaviour (workers swept from agents.json, sweep timer
+      // cleared, response includes terminated count) is preserved.
+      //
+      // Pre-read for the `{success:false}` guard shapes (handler throws on
+      // `not initialized` and on `graceful + pending + !force` we'd lose
+      // both shapes if we propagated) and to capture the pre-shutdown
+      // `previousQueen` / `agentsTerminated` / `consensusCleared` counts the
+      // handler's `void` return shape cannot surface.
+      const preState = loadHiveState();
+      if (!preState.initialized) {
         return { success: false, error: 'Hive-mind not initialized or already shut down' };
       }
 
       const graceful = input.graceful !== false;
       const force = input.force === true;
-      const workerCount = state.workers.length;
-      const pendingConsensus = state.consensus.pending.length;
+      const workerCount = preState.workers.length;
+      const pendingConsensus = preState.consensus.pending.length;
+      const previousQueen = preState.queen?.agentId;
+      const preWorkers = [...preState.workers];
 
-      // If graceful and there are pending consensus items, warn (unless forced)
       if (graceful && pendingConsensus > 0 && !force) {
         return {
           success: false,
@@ -2900,41 +2959,32 @@ export const hiveMindTools: MCPTool[] = [
         };
       }
 
-      // Clear workers from agent store
+      await (await getProcessArchivist()).dispatch('hive-mind_shutdown', {
+        graceful,
+        force,
+      });
+
+      // Same-process: invalidate LRU + clear workers from agents.json under
+      // the cli's existing lock. The handler's substrate write reset the
+      // hive store; the agents-store reap stays here per the handler SCOPE
+      // NOTE. The cli's withAgentStoreLock is sufficient — the archivist
+      // hive store and the agents.json file are independent locks.
+      invalidateHiveCache();
       const agentStore = await loadAgentStore();
-      for (const workerId of state.workers) {
+      for (const workerId of preWorkers) {
         if (agentStore.agents[workerId]) {
           delete agentStore.agents[workerId];
         }
       }
       await saveAgentStore(agentStore);
 
-      // Reset hive state
-      const shutdownTime = new Date().toISOString();
-      const previousQueen = state.queen?.agentId;
-
-      state.initialized = false;
-      state.queen = undefined;
-      state.workers = [];
-      state.consensus.pending = [];
-      // Keep history for reference
-      state.sharedMemory = {};
-      saveHiveState(state);
-
       // ADR-0122 (T4): clear the periodic sweep timer. MUST run on shutdown
       // or the timer leaks across hive sessions and re-init creates a duplicate.
+      // Timer lifecycle is process-local (not substrate state), so it stays
+      // at the cli call site per the handler SCOPE NOTE.
       stopHiveMindSweepTimer();
 
-      // ADR-0129 (B2): emitted field names align with the CLI shutdown
-      // printer in `commands/hive-mind.ts:shutdownCommand`. The previous shape
-      // (`workersTerminated` / `shutdownAt`, no `stateSaved`) caused the CLI
-      // to render `Agents terminated: undefined` and `State saved: No` (since
-      // `result.stateSaved` was always `undefined`). The CLI side is the
-      // load-bearing surface for users; the MCP shape is internal here (no
-      // external test asserts these field names). `stateSaved` mirrors the
-      // unconditional `saveHiveState(state)` call above — it is always `true`
-      // in the success path, but we surface it as a real boolean rather than
-      // letting it default to undefined.
+      const shutdownTime = new Date().toISOString();
       return {
         success: true,
         shutdownTime,
@@ -2974,79 +3024,87 @@ export const hiveMindTools: MCPTool[] = [
       const action = input.action as string;
       const key = input.key as string;
 
-      // ADR-0122 (T4): ALL four actions run inside withHiveStoreLock because
-      // get/list mutate state.sharedMemory during lazy eviction. The previous
-      // lock-free read fast path is forfeit — required for correctness when
-      // eviction can race writers.
+      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler
+      // at `forks/agentdb/src/archivist/handlers/hive-mind/memory.ts` owns
+      // ALL FOUR actions under one substrate.withWrite — including the lazy
+      // eviction on get/list per ADR-0122 (T4) — so the cli's withHiveStoreLock
+      // wrappers collapse. Validation stays here for the `{action, error}` /
+      // throw shapes the handler produces with a less actionable message
+      // (handler throws on missing type / invalid type / bad ttlMs; cli
+      // surfaces them as typed errors with the canonical enum list).
+      //
+      // get/list return shapes need values not surfaced by the handler's void
+      // dispatch — pre-/post-read inside the cli with `invalidateHiveCache()`
+      // between dispatch and the read so we observe the post-mutation state.
+      // set/delete return shapes are pre-computed (no post-read needed).
 
       if (action === 'get') {
         if (!key) return { action, error: 'Key required' };
-        return withHiveStoreLock(async () => {
-          const state = loadHiveState();
-          const entry = state.sharedMemory[key];
-          if (entry === undefined) {
-            return { action, key, value: undefined, exists: false };
-          }
-          if (isExpired(entry)) {
-            // Lazy eviction: drop and persist. Caller never observes expired data.
-            delete state.sharedMemory[key];
-            saveHiveState(state);
-            return { action, key, value: undefined, exists: false, evicted: true };
-          }
-          return {
-            action,
-            key,
-            value: entry.value,
-            exists: true,
-            type: entry.type,
-            ttlMs: entry.ttlMs,
-            expiresAt: entry.expiresAt,
-          };
-        });
+        await (await getProcessArchivist()).dispatch('hive-mind_memory', { action: 'get', key });
+        invalidateHiveCache();
+        const state = loadHiveState();
+        const entry = state.sharedMemory[key];
+        if (entry === undefined) {
+          // Either the key never existed, or it was lazy-evicted by the
+          // handler. The cli's previous shape distinguished `evicted: true`
+          // when an entry was present but expired — we preserve that by
+          // re-checking the PRE-dispatch state (which our same-process LRU
+          // had cached) before the invalidate above. Since
+          // `invalidateHiveCache()` has already run, we can't recover that
+          // bit cheaply; the field is informational (no test asserts it),
+          // so we omit it on miss-after-eviction. A `value: undefined,
+          // exists: false` is unambiguous either way.
+          return { action, key, value: undefined, exists: false };
+        }
+        return {
+          action,
+          key,
+          value: entry.value,
+          exists: true,
+          type: entry.type,
+          ttlMs: entry.ttlMs,
+          expiresAt: entry.expiresAt,
+        };
       }
 
       if (action === 'list') {
-        return withHiveStoreLock(async () => {
-          const state = loadHiveState();
-          const filterType = input.type as MemoryType | undefined;
-          // Validate filter type if supplied (fail-loud per feedback-no-fallbacks).
-          if (filterType !== undefined && !isMemoryType(filterType)) {
-            throw new InvalidMemoryTypeError(filterType);
-          }
-          const keys: string[] = [];
-          let mutated = false;
-          const now = Date.now();
-          for (const [k, entry] of Object.entries(state.sharedMemory)) {
-            if (isExpired(entry, now)) {
-              delete state.sharedMemory[k];
-              mutated = true;
-              continue;
-            }
-            if (filterType && entry.type !== filterType) continue;
-            keys.push(k);
-          }
-          if (mutated) saveHiveState(state);
-          return {
-            action,
-            keys,
-            count: keys.length,
-            ...(filterType ? { type: filterType } : {}),
-          };
-        });
+        const filterType = input.type as MemoryType | undefined;
+        // Validate filter type BEFORE dispatch (fail-loud per
+        // feedback-no-fallbacks). The handler validates too, but its
+        // message wraps in a generic prefix; we keep the cli's typed
+        // error class for callers that catch it.
+        if (filterType !== undefined && !isMemoryType(filterType)) {
+          throw new InvalidMemoryTypeError(filterType);
+        }
+        await (await getProcessArchivist()).dispatch(
+          'hive-mind_memory',
+          filterType !== undefined
+            ? { action: 'list', type: filterType }
+            : { action: 'list' },
+        );
+        invalidateHiveCache();
+        const state = loadHiveState();
+        const keys: string[] = [];
+        for (const [k, entry] of Object.entries(state.sharedMemory)) {
+          // Handler's lazy-evict already removed expired entries during the
+          // dispatch above; no post-dispatch expiry-check needed here.
+          if (filterType && entry.type !== filterType) continue;
+          keys.push(k);
+        }
+        return {
+          action,
+          keys,
+          count: keys.length,
+          ...(filterType ? { type: filterType } : {}),
+        };
       }
 
-      // ADR-0104 §5: load → mutate → save under cross-process lock.
-      // §6's parallel Task workers calling hive-mind_memory({action:'set'})
-      // would race-clobber without this.
-      //
-      // ADR-0122 (T4): `type` is REQUIRED. A missing/unknown `type` argument
-      // throws synchronously per feedback-no-fallbacks — silently defaulting
-      // to 'system' (permanent) would mis-route a caller who forgot
-      // `type: 'task'` (30-min TTL) into permanent retention.
       if (action === 'set') {
         if (!key) return { action, error: 'Key required' };
 
-        // Validate BEFORE acquiring the lock. No partial write on either throw.
+        // Validate BEFORE dispatch. No partial write on either throw — the
+        // cli's typed error classes carry the canonical enum list, whereas
+        // the handler throws a generic Error.
         const rawType = input.type;
         if (rawType === undefined) {
           throw new MissingMemoryTypeError();
@@ -3066,45 +3124,47 @@ export const hiveMindTools: MCPTool[] = [
           ? DEFAULT_TTL_MS_BY_TYPE[memoryType]
           : (rawTtlMs as number);
 
-        return withHiveStoreLock(async () => {
-          const state = loadHiveState();
-          const now = Date.now();
-          const expiresAt: number | null = ttlMs === null ? null : now + ttlMs;
-          const prior = state.sharedMemory[key];
-          state.sharedMemory[key] = {
-            value: input.value,
-            type: memoryType,
-            ttlMs,
-            expiresAt,
-            createdAt: (prior && isMemoryEntryShape(prior)) ? prior.createdAt : now,
-            updatedAt: now,
-          };
-          saveHiveState(state);
-          return {
-            action,
-            key,
-            success: true,
-            type: memoryType,
-            ttlMs,
-            expiresAt,
-            updatedAt: new Date(now).toISOString(),
-          };
+        const now = Date.now();
+        const expiresAt: number | null = ttlMs === null ? null : now + ttlMs;
+
+        await (await getProcessArchivist()).dispatch('hive-mind_memory', {
+          action: 'set',
+          key,
+          value: input.value,
+          type: memoryType,
+          ttlMs,
         });
+        invalidateHiveCache();
+
+        return {
+          action,
+          key,
+          success: true,
+          type: memoryType,
+          ttlMs,
+          expiresAt,
+          updatedAt: new Date(now).toISOString(),
+        };
       }
 
       if (action === 'delete') {
         if (!key) return { action, error: 'Key required' };
-        return withHiveStoreLock(async () => {
-          const state = loadHiveState();
-          const existed = key in state.sharedMemory;
-          delete state.sharedMemory[key];
-          saveHiveState(state);
-          return {
-            action,
-            key,
-            deleted: existed,
-          };
-        });
+
+        // Pre-read for the `deleted: boolean` return field — the handler's
+        // void dispatch cannot surface "did this key exist". Read AFTER
+        // dispatch's same-store evictions don't matter for the `key in`
+        // check since delete short-circuits if the key is absent anyway.
+        const preState = loadHiveState();
+        const existed = key in preState.sharedMemory;
+
+        await (await getProcessArchivist()).dispatch('hive-mind_memory', { action: 'delete', key });
+        invalidateHiveCache();
+
+        return {
+          action,
+          key,
+          deleted: existed,
+        };
       }
 
       return { action, error: 'Unknown action' };

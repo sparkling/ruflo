@@ -360,8 +360,37 @@ export class MCPServerManager extends EventEmitter {
     // `dispatch()` self-inits with an empty config if it wins the race;
     // `initialize()` is idempotent (first call wins), so the eager awaited init
     // here installs the real `projectRoot` config deterministically.
-    const { initProcessArchivist } = await import('./memory/archivist-init.js');
+    const { initProcessArchivist, ensureRvfWired } = await import('./memory/archivist-init.js');
     await initProcessArchivist();
+
+    // ADR-0181 Phase 5 DA-L2: eager RVF warm-up at MCP server startup.
+    //
+    // Two-part rationale:
+    //   1. Structural faults (corrupt `.rvf`, missing memory-router module)
+    //      should abort server startup loudly — the user gets a clear error
+    //      at launch, not a deferred per-tool failure hours later. Without
+    //      this eager call, the first MCP tool dispatch that needs RVF
+    //      would surface the fault, but the server would already be live
+    //      and the user has to dig through tool-call logs to find it.
+    //   2. Transient FS errors (EBUSY, temporarily-locked file) cleared
+    //      by the L2 memo-only-success policy still work for runtime
+    //      dispatches — they retry against a cleared memo. This wrapper
+    //      catches the cold-start permanent-fault case; later dispatch
+    //      retries handle the transient case.
+    //
+    // Fail-loud (`feedback-no-fallbacks`): bare `process.exit(1)` matches
+    // the existing posture for `initProcessArchivist()` — startup faults
+    // abort, they do not degrade.
+    try {
+      await ensureRvfWired();
+    } catch (rvfErr) {
+      console.error(
+        `[${new Date().toISOString()}] FATAL [ruflo-mcp] (${sessionId}) RVF substrate warm-up failed at server startup — ` +
+          `aborting (ADR-0181 Phase 5 DA-L2 fatal-on-cold-start policy). ` +
+          `Cause: ${rvfErr instanceof Error ? `${rvfErr.message}\n${rvfErr.stack ?? ''}` : String(rvfErr)}`,
+      );
+      process.exit(1);
+    }
 
     console.error(JSON.stringify({
       arch: process.arch,

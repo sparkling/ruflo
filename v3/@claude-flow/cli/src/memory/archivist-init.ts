@@ -365,15 +365,36 @@ export function buildArchivistConfig(
 
 
 /**
- * The per-process `Archivist` instance. Constructs it lazily on first call;
- * does NOT call `initialize()` — that is `initProcessArchivist()`'s job. Phase 5
- * call-site delegation reaches the archivist through this accessor.
+ * The per-process `Archivist` instance (ADR-0181 Phase 5 DA-L1 revised — async).
+ *
+ * Async by construction so call sites cannot accidentally dispatch before
+ * `initProcessArchivist()` has completed. The body folds in
+ * `initProcessArchivist()` so the FIRST awaited call from anywhere in the
+ * process completes startup wiring (setAuditLogPath, projectRoot,
+ * capability factories) before returning the archivist. Subsequent calls
+ * short-circuit on the `initialized` flag — `initProcessArchivist()` is
+ * idempotent (line 425-432) so the fast path is a cheap no-op `await`.
+ *
+ * The structurally-impossible-to-misuse property is the key win: no call
+ * site can write `getProcessArchivist().dispatch(...)` synchronously
+ * anymore — TypeScript rejects it because the return type is now
+ * `Promise<Archivist>`. The 13 delegation workers all write:
+ *
+ *     const archivist = await getProcessArchivist();
+ *     await archivist.dispatch('tool_name', payload);
+ *
+ * Defense in depth: the agentdb-side `Archivist.hasRealConfig` throw
+ * (forks/agentdb/src/archivist/index.ts) catches any hypothetical Phase 6+
+ * consumer that constructs an `Archivist` directly (bypassing
+ * `getProcessArchivist`); fail-loud at the first `dispatch` / `dispatchRead`
+ * if `initialize(config)` was never called with a real `projectRoot`.
  */
-export function getProcessArchivist(): Archivist {
-  if (processArchivist === null) {
-    processArchivist = new Archivist();
-  }
-  return processArchivist;
+export async function getProcessArchivist(): Promise<Archivist> {
+  await initProcessArchivist();
+  // `initProcessArchivist()` either returned the already-initialized
+  // archivist or just finished initializing one — either way
+  // `processArchivist` is non-null and `initialized` is true.
+  return processArchivist!;
 }
 
 /**
@@ -398,7 +419,14 @@ export function getProcessArchivist(): Archivist {
  * invoked on the first call (it throws if called after the audit fd is open).
  */
 export async function initProcessArchivist(projectRoot?: string): Promise<Archivist> {
-  const archivist = getProcessArchivist();
+  // Bootstrap: cannot call the guarded `getProcessArchivist()` here — the guard
+  // throws if `!initialized`, and `initialized` does not flip until the end of
+  // this function. Mint / fetch the singleton directly. After this function
+  // completes, all downstream call sites must use `getProcessArchivist()`.
+  if (processArchivist === null) {
+    processArchivist = new Archivist();
+  }
+  const archivist = processArchivist;
   if (initialized) return archivist;
 
   const root = projectRoot ?? findProjectRoot();
@@ -458,23 +486,257 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   // ARE synchronous-construction safe — they return narrow capability
   // objects whose method bodies defer the heavy `await import(...)` until
   // first method-call. So they don't block startup.
-  const isRealProjectRoot =
-    existsSync(join(root, '.ruflo-project')) ||
-    (existsSync(join(root, 'CLAUDE.md')) && existsSync(join(root, '.claude'))) ||
-    existsSync(join(root, '.git'));
-  void isRealProjectRoot; // preserved for Phase 5 sqliteDb re-wiring
+  //
+  // The ADR-0069 Bug #3 marker check ran here in Phase 4 (eager `sqliteDb`
+  // open). Phase 5 moves that check to `ensureSqliteWired()` — it has to live
+  // beside the `mkdirSync` + `new BetterSqlite3` it gates, not at startup.
 
   const config: ArchivistInitConfig = {
     projectRoot: root,
     // NOTE: rvfBackend + sqliteDb deliberately omitted — see header.
-    //   Phase 5 dispatch wiring re-introduces them once cli call sites flip
-    //   from their own mcp-tools handlers to `archivist.dispatchRead()`.
+    //   Phase 5 dispatch wiring re-introduces them via the post-initialize
+    //   `ensureRvfWired()` / `ensureSqliteWired()` helpers below, which call
+    //   `archivist.setRvfBackend(...)` / `setSqliteDb(...)` on first dispatch
+    //   that needs the corresponding substrate.
     taskRouterFactory: makeCliTaskRouter,
     embeddingScorerFactory: makeCliEmbeddingScorer,
     patternReaderFactory: makeCliPatternReader,
   };
 
+  // Remember the resolved root so `ensureSqliteWired()` agrees with
+  // `initProcessArchivist()` on which directory holds `.claude-flow/`.
+  // `findProjectRoot()` is cheap but not pure — the `ensure*` helpers can be
+  // entered from many call sites, and re-resolving in each would let a
+  // mid-process `cwd` shift split the substrate root from the audit-log
+  // root. We pin it here.
+  resolvedProjectRoot = root;
+
   await archivist.initialize(config);
   initialized = true;
   return archivist;
+}
+
+// ─── Phase 5 lazy substrate wiring ───────────────────────────────────────────
+//
+// `initProcessArchivist()` deliberately runs `Archivist.initialize()` with NO
+// substrate (the Phase 4 hotfix — eager wiring regressed `t1-6-empty-search`
+// 33× and broke `adr0100-e-sentinel-pri`). Phase 5 flips cli call sites from
+// their own mcp-tools handlers to `archivist.dispatchRead()` / `.dispatch()`,
+// which means a handler eventually reaches `ctx.substrate.{read,vectorSearch,
+// query}` and `getSubstrate()` throws fail-loud for any storeId in a family
+// whose backend was not wired.
+//
+// The cli-side delegation worker calls the appropriate `ensure*Wired()`
+// helper BEFORE dispatching when its tool touches RVF / SQLite substrates.
+// Tools that need neither (pure FS-JSON or routing-only) pay no cost — the
+// helper is not called.
+//
+// Memoization is on the PROMISE, not the resolved result: two concurrent
+// dispatches that both reach `ensureRvfWired()` must serialize on a single
+// installer (memory-router open + adapter construct + `setRvfBackend`),
+// otherwise `setRvfBackend` would throw on the second caller. Storing the
+// in-flight promise (`Promise<void>`) and `await`ing it everywhere gives us
+// that — `await` on a settled promise is cheap, and a `.catch(() => undefined)`
+// would only mask a fail-loud propagation, which we explicitly do not want.
+
+/** The resolved project root pinned at `initProcessArchivist()` time. */
+let resolvedProjectRoot: string | null = null;
+
+/**
+ * Marker-gate (ADR-0069 Bug #3 invariant) — duplicated from the original
+ * `initProcessArchivist` inline check so `ensureSqliteWired()` and any future
+ * pre-flight diagnostics share one canonical predicate. A `.ruflo-project`,
+ * `CLAUDE.md`+`.claude/`, or `.git/` at the root marks a real project; only
+ * then is creating `.claude-flow/` + opening `archivist.db` permitted.
+ */
+function isRealProjectRoot(root: string): boolean {
+  return (
+    existsSync(join(root, '.ruflo-project')) ||
+    (existsSync(join(root, 'CLAUDE.md')) && existsSync(join(root, '.claude'))) ||
+    existsSync(join(root, '.git'))
+  );
+}
+
+/** Memoized installer promise — RVF substrate; set on first call, awaited by all subsequent ones. */
+let rvfWirePromise: Promise<void> | null = null;
+/** Memoized installer promise — SQLite carve-out substrate. */
+let sqliteWirePromise: Promise<void> | null = null;
+
+/**
+ * Resolve + install the cli's RVF substrate on the per-process archivist.
+ *
+ * Lazy + memoized: the first call awaits `memory-router.ensureRouter()`
+ * (memory-router cold-start: open `.rvf`, build HNSW index, load ONNX
+ * embedder), constructs a `MemoryRvfAdapter` against the live
+ * `getStorageInstance()`, and threads it into the archivist via
+ * `setRvfBackend()`. The resulting promise is cached; subsequent calls await
+ * the same promise. Concurrent callers serialize on one installer — exactly
+ * what `Archivist.setRvfBackend`'s no-double-install contract requires.
+ *
+ * Fail-loud on the failing attempt (`feedback-no-fallbacks`): if
+ * `ensureRouter()` or the adapter construction throws, the rejection
+ * propagates to the caller — the dispatch that triggered the wire fails
+ * loudly with the actual error. The memoized promise is then CLEARED so a
+ * subsequent dispatch can retry. Rationale (ADR-0181 Phase 5 DA-L2,
+ * team-lead ruling): for the long-lived MCP server, a transient EBUSY on
+ * the `.rvf` open should not permanently brick the process — the user
+ * shouldn't have to restart the server to recover. The dispatch site still
+ * observes the throw on the failing attempt, so structural faults
+ * (corrupt `.rvf`, missing module) surface every time they're dispatched;
+ * only the in-process state is allowed to retry.
+ *
+ * Cross-substrate dispatch (MG1, theoretical): no Phase 4 handler needs
+ * both RVF and SQLite at once, but a hypothetical future handler would
+ * call `await Promise.all([ensureRvfWired(), ensureSqliteWired()])` — both
+ * memos are independent and the `setRvfBackend`/`setSqliteDb` idempotency
+ * guards on the agentdb side make ordering irrelevant.
+ *
+ * `initProcessArchivist()` must have run first — call sites that reach this
+ * helper are downstream of cli startup, which already calls
+ * `initProcessArchivist()` from `src/index.ts` / `src/mcp-server.ts`. Workers
+ * that want belt-and-suspenders can `await ensureArchivistInitialized()`
+ * before reaching for this helper.
+ */
+export async function ensureRvfWired(): Promise<void> {
+  if (!initialized) {
+    throw new Error(
+      'archivist-init: ensureRvfWired called before initProcessArchivist — call ' +
+        'initProcessArchivist() (or ensureArchivistInitialized()) from the cli startup ' +
+        'path before dispatching any archivist tool that needs the RVF substrate.',
+    );
+  }
+  if (rvfWirePromise) return rvfWirePromise;
+
+  const attempt = (async (): Promise<void> => {
+    const { ensureRouter, getStorageInstance } = await import('./memory-router.js');
+    await ensureRouter();
+    const cliMemoryRvfBackend = getStorageInstance();
+    // ADR-0069/0072 unified embedding dimension — same value memory-router /
+    // intelligence.ts / embeddings-tools.ts use. The adapter wraps the same
+    // backend memory-router already opened at 768, so this is not a config
+    // duplication — it is the dimension hint the adapter surfaces for
+    // empty-store `VectorStats`.
+    const EMBEDDING_DIMENSION = 768;
+    const rvfBackend = new MemoryRvfAdapter(cliMemoryRvfBackend, {
+      dimension: EMBEDDING_DIMENSION,
+    });
+    const archivist = await getProcessArchivist();
+    archivist.setRvfBackend(rvfBackend);
+  })();
+
+  // L2 memo-only-success: store the in-flight promise so concurrent
+  // dispatches share one installer, but clear it on rejection so a later
+  // dispatch can retry (e.g. transient EBUSY recovers, or a corrupt-file
+  // condition was repaired out-of-band). The rejection still propagates to
+  // the current caller — the failure is loud at the dispatch site that
+  // triggered it.
+  rvfWirePromise = attempt;
+  attempt.catch(() => {
+    if (rvfWirePromise === attempt) {
+      rvfWirePromise = null;
+    }
+  });
+
+  return attempt;
+}
+
+/**
+ * Resolve + install the cli's SQLite-carve-out substrate on the per-process
+ * archivist.
+ *
+ * Lazy + memoized: the first call rechecks the project-marker invariant at
+ * the pinned `resolvedProjectRoot`, opens `<root>/.claude-flow/archivist.db`
+ * via `better-sqlite3`, and threads the handle into the archivist via
+ * `setSqliteDb()`. The promise is cached and shared by concurrent callers.
+ *
+ * Fail-loud (per team-lead ruling): if the marker check fails, this throws —
+ * the delegation worker should NOT have dispatched a SQLite-carve-out tool
+ * from a markerless cwd in the first place. Silently omitting the wire-up
+ * would let `getSubstrate()` throw deeper in the dispatch with a less
+ * actionable message ("no SQLite backend supplied"). Surfacing the
+ * marker-check failure HERE points at the actual root cause.
+ *
+ * `mkdirSync({ recursive: true })` on `.claude-flow/` is safe because the
+ * marker check has confirmed we are inside a real project — Bug #3 only
+ * fires when we mkdir in arbitrary cwds. `<root>/.claude-flow/archivist.db`
+ * is a separate file from `agentdb.db` (archivist mutation-audit trail does
+ * not share a transaction surface with controller writes — same rationale
+ * as the prior `buildArchivistConfig` doc-block).
+ *
+ * L2 memo-only-success (ADR-0181 Phase 5 team-lead ruling): on rejection
+ * (transient EBUSY on SQLite open, intermediate FS state), the memo clears
+ * and a subsequent dispatch retries. The current caller still observes the
+ * throw — same fail-loud-at-dispatch posture as `ensureRvfWired`.
+ *
+ * Cross-substrate dispatch (MG1, theoretical): a hypothetical handler that
+ * needs both RVF and SQLite should `await Promise.all([ensureRvfWired(),
+ * ensureSqliteWired()])` — the memos are independent and the
+ * `setRvfBackend`/`setSqliteDb` idempotency guards on the agentdb side make
+ * ordering irrelevant.
+ */
+export async function ensureSqliteWired(): Promise<void> {
+  if (!initialized) {
+    throw new Error(
+      'archivist-init: ensureSqliteWired called before initProcessArchivist — call ' +
+        'initProcessArchivist() (or ensureArchivistInitialized()) from the cli startup ' +
+        'path before dispatching any archivist tool that needs the SQLite carve-out substrate.',
+    );
+  }
+  if (sqliteWirePromise) return sqliteWirePromise;
+
+  const attempt = (async (): Promise<void> => {
+    if (resolvedProjectRoot === null) {
+      throw new Error(
+        'archivist-init: ensureSqliteWired — resolvedProjectRoot was not set by ' +
+          'initProcessArchivist. This is a wiring bug, not a marker-gate failure.',
+      );
+    }
+    const root = resolvedProjectRoot;
+    if (!isRealProjectRoot(root)) {
+      throw new Error(
+        `archivist-init: ensureSqliteWired — '${root}' is not a real ruflo project ` +
+          `(no .ruflo-project, no CLAUDE.md+.claude/, no .git/). Refusing to create ` +
+          `.claude-flow/archivist.db in a markerless cwd (ADR-0069 Bug #3 invariant). ` +
+          `The dispatching call site should not have routed a SQLite-carve-out tool ` +
+          `(ADR-0166) here — if you are seeing this from an MCP tool, fix the call ` +
+          `site, not this gate.`,
+      );
+    }
+    const claudeFlowDir = join(root, '.claude-flow');
+    mkdirSync(claudeFlowDir, { recursive: true });
+    const sqliteDb = new BetterSqlite3(join(claudeFlowDir, 'archivist.db'));
+    const archivist = await getProcessArchivist();
+    archivist.setSqliteDb(sqliteDb);
+  })();
+
+  // L2 memo-only-success: store the promise but clear it on rejection so
+  // transient failures (EBUSY on mkdir / SQLite open) can retry without
+  // process restart. Marker-gate violations also clear — the gate will fail
+  // identically on the next attempt unless the user fixes their cwd.
+  sqliteWirePromise = attempt;
+  attempt.catch(() => {
+    if (sqliteWirePromise === attempt) {
+      sqliteWirePromise = null;
+    }
+  });
+
+  return attempt;
+}
+
+/**
+ * Idempotent host-process bootstrap helper (ADR-0181 Phase 5 DA-L1).
+ *
+ * Mostly redundant since the L1-revised `getProcessArchivist()` is itself
+ * async + folds in `initProcessArchivist()`. Kept as an intent marker for
+ * call sites that want to bootstrap WITHOUT fetching the archivist handle
+ * — e.g. a startup probe that just wants to confirm the per-process
+ * archivist can stand up, or the mcp-server's first-touch wrapper that
+ * runs `ensureRvfWired()` eagerly post-init.
+ *
+ * Equivalent to `await getProcessArchivist().then(() => undefined)`; both
+ * are no-ops after the first call thanks to `initProcessArchivist`'s
+ * idempotency guard (line 425-432).
+ */
+export async function ensureArchivistInitialized(): Promise<void> {
+  await initProcessArchivist();
 }

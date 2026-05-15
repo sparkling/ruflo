@@ -3,6 +3,33 @@
  *
  * Tool definitions for swarm coordination with file-based state persistence.
  * Replaces previous stub implementations with real state tracking.
+ *
+ * ── ADR-0181 Phase 5 F4-3 cli delegation ─────────────────────────────────────
+ *
+ * `swarm_init` and `swarm_shutdown` flip to `archivist.dispatch(...)` so every
+ * swarm coordination mutation flows through the ADR-0180 audit chain. The
+ * archivist handlers (`agentdb/src/archivist/handlers/swarm/{init,shutdown}.ts`)
+ * own the substrate write — they reach the SAME `.swarm/swarm-state.json` file
+ * via the substrate-registry's sibling-rooted FS-JSON store (Phase 2 Option A;
+ * substrate-registry.ts:247-248). The handlers register as `Promise<void>`, so
+ * the cli MCP tool re-reads the persisted store after dispatch to derive the
+ * legacy structured response envelope (queen ruling 2026-05-15: dispatch then
+ * read-shape for server-minted IDs — `before/after diff` for swarm_init's
+ * internally-minted `swarmId`).
+ *
+ * `swarm_status` and `swarm_health` are NOT in `ToolPayloadMap` (the archivist
+ * has no read handler counterpart) and stay cli-authoritative — they continue
+ * to read `.swarm/swarm-state.json` directly via `loadSwarmStore()`. Note
+ * `loadSwarmStore` retains its reconciliation-persist side effect via
+ * `saveSwarmStore` (a pre-existing reap-on-read pattern) — the audit-chain
+ * hygiene rule (ONE dispatch per mutation) covers the swarm_init / swarm_shutdown
+ * call sites; the on-read orphan reconciliation is intentionally not under the
+ * audit chain (it's a bookkeeping side effect of read, not a user-intent
+ * mutation — same posture as the cli's pre-Phase-5 behavior). The `O_EXCL`
+ * sentinel lock helper (`withSwarmStoreLock`) was removed alongside the flips:
+ * the substrate-registry routes archivist swarm_* writes through `makeFsJsonSubstrate`,
+ * whose own O_EXCL sentinel subsumes the legacy lock, and the cli no longer
+ * holds a direct mutation path through this file.
  */
 
 import {
@@ -11,15 +38,23 @@ import {
   readFileSync,
   writeFileSync,
   renameSync,
-  openSync,
-  closeSync,
-  writeSync,
-  unlinkSync,
-  statSync,
-  constants as fsConstants,
 } from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
+import { getProcessArchivist } from '../memory/archivist-init.js';
+import type { ToolPayloadMap } from 'agentdb/archivist';
+
+// Sub-types from the typed dispatch surface. ADR-0181 Phase 5 chose to re-
+// export only `ToolPayloadMap` / `ToolName` from `agentdb/archivist`
+// (archivist/index.ts:137); the per-tool payload interfaces and their literal
+// unions (`SwarmTopology`, `SwarmStrategy`) are intentionally NOT public. The
+// indexed access types below let the cli call site narrow `topology` /
+// `strategy` strings to the handler's literal-union shape without naming the
+// underlying interface — which keeps the typed dispatch overload as the SINGLE
+// import surface, per the ToolPayloadMap rationale at dispatch-types.ts:4-25.
+type SwarmInitDispatchPayload = ToolPayloadMap['swarm_init'];
+type SwarmTopology = NonNullable<SwarmInitDispatchPayload['topology']>;
+type SwarmStrategy = NonNullable<SwarmInitDispatchPayload['strategy']>;
 
 // Swarm state persistence
 // ADR-0069 A4: standardized on .swarm (was .claude-flow/swarm)
@@ -152,63 +187,40 @@ function saveSwarmStore(store: SwarmStore): void {
   renameSync(tmp, path);
 }
 
-// ADR-0098: cross-process file lock for swarm-state.json read-modify-write.
-// Uses O_EXCL sentinel with stale-lock recovery (no external dep).
-async function withSwarmStoreLock<T>(fn: () => Promise<T>): Promise<T> {
-  const lockPath = `${getSwarmStatePath()}.lock`;
-  const MAX_WAIT_MS = 5000;
-  const POLL_MS = 50;
-  const STALE_LOCK_MS = 30_000;
-  const deadline = Date.now() + MAX_WAIT_MS;
-
-  ensureSwarmDir();
-
-  // Acquire
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    try {
-      const fd = openSync(
-        lockPath,
-        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
-        0o600,
-      );
-      writeSync(fd, `${process.pid}\n${Date.now()}\n`);
-      closeSync(fd);
-      break;
-    } catch (err) {
-      const code = (err as { code?: string }).code;
-      if (code === 'EEXIST') {
-        try {
-          const stat = statSync(lockPath);
-          if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
-            try { unlinkSync(lockPath); } catch { /* ignore */ }
-            continue;
-          }
-        } catch { /* lockfile vanished between check and stat — retry */ }
-        if (Date.now() > deadline) {
-          throw new Error(`Timeout waiting for swarm-state lock after ${MAX_WAIT_MS}ms`);
-        }
-        await new Promise(r => setTimeout(r, POLL_MS));
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    try { unlinkSync(lockPath); } catch { /* already removed */ }
-  }
-}
-
-// Input validation
-const VALID_TOPOLOGIES = new Set([
+// Input validation — mirrors handler's allow-list (handlers/swarm/init.ts:66-74).
+// The cli boundary uses this for fast-fail before dispatching so the existing
+// `{success: false, error}` envelope is preserved on invalid input AND so the
+// `string`-to-literal-union cast at the dispatch call site is honest (the
+// handler's `SwarmTopology` / `SwarmStrategy` are closed unions — passing an
+// unvalidated `string` through `as` would be a cast-lie).
+//
+// ADR-0181 Phase 5: `withSwarmStoreLock` was removed alongside the swarm_init /
+// swarm_shutdown call-site flips — the archivist substrate-registry routes
+// these writes through `makeFsJsonSubstrate`, whose O_EXCL sentinel subsumes
+// the legacy lock. `SWARM_REUSE_TTL_MS` moved with the dedupe logic into
+// `handlers/swarm/init.ts:77`. Local read paths (`swarm_status`, `swarm_health`)
+// read through `loadSwarmStore()` directly — no lock-coordination is required
+// because reads tolerate the atomic-rename snapshot semantics.
+const VALID_TOPOLOGIES: ReadonlySet<string> = new Set<string>([
   'hierarchical', 'mesh', 'hierarchical-mesh', 'ring', 'star', 'hybrid', 'adaptive',
 ]);
-
-// ADR-0098: dedupe TTL — only reuse running swarms updated within this window
-const SWARM_REUSE_TTL_MS = 7 * 24 * 3600 * 1000;
+function isValidTopology(s: string): s is SwarmTopology {
+  return VALID_TOPOLOGIES.has(s);
+}
+// Strategy allow-list — mirrors the handler's `SwarmStrategy` closed union
+// (handlers/swarm/init.ts:45). Pre-Phase-5 cli did NOT validate strategy
+// (input.strategy was passed through as `string` and stored verbatim in
+// config.strategy). Phase 5 cli boundary validation is honest about the
+// dispatch payload's literal-union shape — unknown strategies fast-fail with
+// the same `{success: false, error}` envelope rather than silently widening
+// into config and breaking dedupe equality (init.ts:147 compares strategy
+// strictly).
+const VALID_STRATEGIES: ReadonlySet<string> = new Set<string>([
+  'specialized', 'balanced', 'adaptive',
+]);
+function isValidStrategy(s: string): s is SwarmStrategy {
+  return VALID_STRATEGIES.has(s);
+}
 
 export const swarmTools: MCPTool[] = [
   {
@@ -234,123 +246,121 @@ export const swarmTools: MCPTool[] = [
       const force = input.force === true;
       const reason = input.reason as string | undefined;
 
-      if (!VALID_TOPOLOGIES.has(topology)) {
+      // Cli-side fast-fail on invalid topology / strategy so the existing MCP
+      // `{success: false, error}` envelope is preserved without paying for a
+      // dispatch round-trip. The archivist handler ALSO validates topology
+      // (init.ts:97-102) — that throw is the audit-chain backstop for non-cli
+      // callers; this check is the cli boundary's user-facing error shape.
+      // Strategy validation is new at this boundary (handler doesn't validate
+      // strategy strings) — see VALID_STRATEGIES rationale at its declaration.
+      if (!isValidTopology(topology)) {
         return {
           success: false,
           error: `Invalid topology: ${topology}. Valid: ${[...VALID_TOPOLOGIES].join(', ')}`,
         };
       }
+      if (!isValidStrategy(strategy)) {
+        return {
+          success: false,
+          error: `Invalid strategy: ${strategy}. Valid: ${[...VALID_STRATEGIES].join(', ')}`,
+        };
+      }
 
       if (force && !reason) {
-        // Advisory warning — ADR-0098 Flaw 4 mitigation: force=true without reason is a drift smell
+        // Advisory warning — ADR-0098 Flaw 4 mitigation: force=true without
+        // reason is a drift smell. Emitted at the cli boundary so MCP-tool
+        // callers see it on stderr; the archivist handler also emits this
+        // warning for non-cli dispatch paths.
         process.stderr.write(
           '[WARN] swarm_init called with force=true but no reason — ' +
           'prefer passing reason="..." to document why a fresh swarm is required\n',
         );
       }
 
-      return withSwarmStoreLock(async () => {
-        const store = loadSwarmStore();
-        const now = new Date().toISOString();
-        const nowMs = Date.now();
+      // ADR-0181 Phase 5 F4-3: dispatch through archivist (audit chain + guards
+      // + invariants), then re-read `.swarm/swarm-state.json` to derive the
+      // legacy MCP response envelope. The handler MINTS swarmId internally
+      // (handlers/swarm/init.ts:165) so the cli does a before/after diff to
+      // identify which entry was created or reused (queen ruling 2026-05-15).
+      //
+      // Snapshot pre-dispatch state. `loadSwarmStore()` performs reconciliation
+      // and persists it eagerly; the snapshot captures the post-reconcile +
+      // pre-mutation state, which is the correct baseline for the diff. The
+      // archivist handler runs its own reconciliation under withWrite — that
+      // re-reconciles an already-reconciled store (idempotent) and is the
+      // expected double-pass for the migration period.
+      const before = loadSwarmStore();
+      const beforeIds = new Set(Object.keys(before.swarms));
+      const beforeUpdatedAt: Record<string, string> = {};
+      for (const [id, s] of Object.entries(before.swarms)) {
+        beforeUpdatedAt[id] = s.updatedAt;
+      }
 
-        // ADR-0098: config-fingerprint dedupe.
-        // Find the most-recently-updated swarm matching {topology, maxAgents, strategy}
-        // within the TTL window. Skipped entirely when force=true.
-        //
-        // Reuse pool spans 'running' AND host-exited 'terminated' entries: a CLI-
-        // invoked `swarm init` always exits, so #1799 reconciliation marks the
-        // prior swarm 'terminated' before the next call's dedupe filter runs.
-        // Without this, three back-to-back `swarm init` invocations mint three
-        // records (regression caught by acceptance check adr0098-b-dedupe).
-        // Termination reasons unrelated to host-exit (manual shutdown, TTL stale)
-        // remain ineligible — those swarms are intentionally retired.
-        const isReusable = (s: SwarmState): boolean => {
-          if (s.status === 'running') return true;
-          if (
-            s.status === 'terminated' &&
-            typeof s.terminationReason === 'string' &&
-            /^host process \d+ exited$/.test(s.terminationReason)
-          ) return true;
-          return false;
-        };
-        if (!force) {
-          const candidates = Object.values(store.swarms)
-            .filter(s =>
-              isReusable(s) &&
-              s.topology === topology &&
-              s.maxAgents === maxAgents &&
-              (s.config as { strategy?: string }).strategy === strategy &&
-              (nowMs - new Date(s.updatedAt).getTime()) < SWARM_REUSE_TTL_MS,
-            )
-            .sort(
-              (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-            );
+      // No cast at the call site — `isValidTopology` / `isValidStrategy` above
+      // are type predicates that narrow `topology` / `strategy` to the
+      // handler's literal-union shape (`SwarmTopology` / `SwarmStrategy`).
+      // TypeScript's flow analysis carries the narrowing into this dispatch
+      // payload (no `as` lie, no double-validation).
+      await (await getProcessArchivist()).dispatch('swarm_init', {
+        topology,
+        maxAgents,
+        strategy,
+        config,
+        force,
+        ...(reason !== undefined ? { reason } : {}),
+      });
 
-          if (candidates.length > 0) {
-            const existing = candidates[0];
-            existing.updatedAt = now;
-            // Revive a host-exited entry so subsequent loads don't re-reconcile it.
-            existing.status = 'running';
-            existing.pid = process.pid;
-            delete existing.terminationReason;
-            store.swarms[existing.swarmId] = existing;
-            saveSwarmStore(store);
-            return {
-              success: true,
-              swarmId: existing.swarmId,
-              topology: existing.topology,
-              strategy: (existing.config as { strategy?: string }).strategy ?? strategy,
-              maxAgents: existing.maxAgents,
-              initializedAt: existing.createdAt,
-              config: existing.config,
-              persisted: true,
-              reused: true,
-            };
+      // Re-read the persisted store and locate the mutation's result. Two cases:
+      //   1. Reuse — an existing swarmId's `updatedAt` advanced (the handler
+      //      bumped it; init.ts:154). Pick the entry whose updatedAt changed.
+      //   2. Mint — a swarmId appears that wasn't in `beforeIds`. Pick that.
+      // Both cases are well-defined under the substrate's per-write atomic
+      // rename (substrates/fs-json-store.ts) + the archivist's withWrite
+      // serialization. A concurrent third party writing during dispatch is out
+      // of scope for Phase 5 (no concurrent swarm-state writers in the cli's
+      // own surfaces; the archivist's O_EXCL lock blocks external writers).
+      const after = loadSwarmStore();
+      let result: SwarmState | null = null;
+      let reused = false;
+      for (const [id, s] of Object.entries(after.swarms)) {
+        if (!beforeIds.has(id)) {
+          result = s;
+          reused = false;
+          break;
+        }
+      }
+      if (result === null) {
+        for (const [id, s] of Object.entries(after.swarms)) {
+          if (beforeUpdatedAt[id] !== undefined && beforeUpdatedAt[id] !== s.updatedAt) {
+            result = s;
+            reused = true;
+            break;
           }
         }
+      }
+      if (result === null) {
+        // Fail loud — the dispatch returned without throwing, so the handler
+        // must have produced an observable mutation. A null result here means
+        // the substrate write didn't land or the diff logic is wrong; either
+        // way it's a bug to surface, not to mask (feedback-no-fallbacks).
+        throw new Error(
+          'archivist: swarm_init dispatched without throwing but no swarm record was ' +
+          'created or updated in .swarm/swarm-state.json. The archivist handler and the ' +
+          'cli response-shaping have diverged — fix the diff, do not paper over it.',
+        );
+      }
 
-        // No reuse candidate (or force=true): mint a new swarm.
-        const swarmId = `swarm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const swarmState: SwarmState = {
-          swarmId,
-          topology,
-          maxAgents,
-          status: 'running',
-          agents: [],
-          tasks: [],
-          config: {
-            topology,
-            maxAgents,
-            strategy,
-            communicationProtocol: (config.communicationProtocol as string) || 'message-bus',
-            autoScaling: (config.autoScaling as boolean) ?? true,
-            consensusMechanism: (config.consensusMechanism as string) || 'majority',
-          },
-          createdAt: now,
-          updatedAt: now,
-          // #1799 (ADR-0162 Batch E) — record host PID so subsequent loads
-          // can detect orphans when this process exits without a graceful
-          // swarm_shutdown. Optional in SwarmState for back-compat with
-          // pre-#1799 store files.
-          pid: process.pid,
-        };
-
-        store.swarms[swarmId] = swarmState;
-        saveSwarmStore(store);
-
-        return {
-          success: true,
-          swarmId,
-          topology,
-          strategy,
-          maxAgents,
-          initializedAt: now,
-          config: swarmState.config,
-          persisted: true,
-          reused: false,
-        };
-      });
+      return {
+        success: true,
+        swarmId: result.swarmId,
+        topology: result.topology,
+        strategy: (result.config as { strategy?: string }).strategy ?? strategy,
+        maxAgents: result.maxAgents,
+        initializedAt: result.createdAt,
+        config: result.config,
+        persisted: true,
+        reused,
+      };
     },
   },
   {
@@ -422,47 +432,92 @@ export const swarmTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadSwarmStore();
-      const swarmId = input.swarmId as string;
+      const swarmId = input.swarmId as string | undefined;
+      const graceful = (input.graceful as boolean) ?? true;
 
-      // Find the swarm
-      let target: SwarmState | undefined;
-      if (swarmId && store.swarms[swarmId]) {
-        target = store.swarms[swarmId];
-      } else {
-        // Shutdown most recent running swarm
-        const running = Object.values(store.swarms)
-          .filter(s => s.status === 'running')
+      // ADR-0181 Phase 5 F4-3: dispatch through archivist. The handler's target-
+      // resolution logic (handlers/swarm/shutdown.ts:85-94) mirrors the cli's
+      // own (explicit swarmId else most-recently-updated running). To project
+      // the legacy response envelope after a Promise<void> dispatch, the cli
+      // pre-resolves the same target under the same rules, then re-reads the
+      // store after dispatch and confirms the terminated state.
+      //
+      // The handler throws on "not found" / "already terminated" / "no running
+      // swarms" — these are the SAME conditions the legacy cli surfaced as
+      // `{success: false, error}`. We translate those known throws back to the
+      // legacy envelope (boundary contract preservation); any other throw
+      // propagates (e.g. substrate I/O failure, guard veto, invariant
+      // violation).
+      const beforeStore = loadSwarmStore();
+      let preTarget: SwarmState | undefined;
+      if (swarmId && beforeStore.swarms[swarmId]) {
+        preTarget = beforeStore.swarms[swarmId];
+      } else if (!swarmId) {
+        const running = Object.values(beforeStore.swarms)
+          .filter((s) => s.status === 'running')
           .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-        target = running[0];
+        preTarget = running[0];
       }
 
-      if (!target) {
-        return {
-          success: false,
-          error: swarmId ? `Swarm ${swarmId} not found` : 'No running swarms to shutdown',
-        };
+      try {
+        await (await getProcessArchivist()).dispatch('swarm_shutdown', {
+          ...(swarmId !== undefined ? { swarmId } : {}),
+          graceful,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Translate the handler's known business-logic throws back to the
+        // legacy cli error envelope. The exact prefixes are stable (see
+        // handlers/swarm/shutdown.ts:100-112). Anything else (audit-write
+        // failure, guard veto, substrate I/O fault) rethrows — feedback-no-
+        // fallbacks: don't paper over unexpected faults at the MCP boundary.
+        if (msg.includes('archivist: swarm_shutdown — swarm not found')) {
+          return { success: false, error: `Swarm ${swarmId} not found` };
+        }
+        if (msg.includes('archivist: swarm_shutdown — no running swarms')) {
+          return { success: false, error: 'No running swarms to shutdown' };
+        }
+        if (msg.includes('archivist: swarm_shutdown — swarm already terminated')) {
+          return {
+            success: false,
+            swarmId: preTarget?.swarmId,
+            error: 'Swarm already terminated',
+          };
+        }
+        throw err;
       }
 
-      if (target.status === 'terminated') {
-        return {
-          success: false,
-          swarmId: target.swarmId,
-          error: 'Swarm already terminated',
-        };
+      // Dispatch succeeded; re-read the store to project the response. The
+      // target's identity is fixed pre-dispatch under the handler's same
+      // selection rule — we look it up post-write to get the canonical
+      // terminated `updatedAt` timestamp the handler stamped.
+      if (!preTarget) {
+        // Should be unreachable — dispatch would have thrown "no running
+        // swarms" or "swarm not found" before reaching here. Fail loud rather
+        // than fabricate.
+        throw new Error(
+          'archivist: swarm_shutdown succeeded but the cli could not resolve a target ' +
+          'pre-dispatch. The handler\'s target-resolution and the cli\'s pre-resolution ' +
+          'have diverged — fix the rule, do not paper over it.',
+        );
       }
-
-      target.status = 'terminated';
-      target.updatedAt = new Date().toISOString();
-      saveSwarmStore(store);
+      const afterStore = loadSwarmStore();
+      const terminated = afterStore.swarms[preTarget.swarmId];
+      if (!terminated) {
+        throw new Error(
+          `archivist: swarm_shutdown succeeded but swarm '${preTarget.swarmId}' is no ` +
+          'longer present in .swarm/swarm-state.json. The substrate write semantics or ' +
+          'cli response-shaping have diverged — fix the path, do not paper over it.',
+        );
+      }
 
       return {
         success: true,
-        swarmId: target.swarmId,
+        swarmId: terminated.swarmId,
         terminated: true,
-        graceful: (input.graceful as boolean) ?? true,
-        agentsTerminated: target.agents.length,
-        terminatedAt: target.updatedAt,
+        graceful,
+        agentsTerminated: terminated.agents.length,
+        terminatedAt: terminated.updatedAt,
       };
     },
   },

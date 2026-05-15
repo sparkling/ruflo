@@ -1,12 +1,37 @@
 /**
  * Task MCP Tools for CLI
  *
- * Tool definitions for task management with file persistence.
+ * ADR-0181 Phase 5 (F4-3) — every `task_*` MCP tool now dispatches its mutation
+ * through the per-process Memory Archivist (`getProcessArchivist().dispatch(...)`).
+ * The legacy unlocked `loadTaskStore`/`saveTaskStore` pair (which still exists
+ * below, but only for envelope-construction read-back) is no longer the write
+ * path — the archivist's substrate seam owns durability + isolation via the
+ * `tasks` FS-JSON store's O_EXCL lock, and `task_complete` / `task_assign`
+ * additionally route the cross-store `hive-mind_agents` write through the
+ * archivist instead of the cli's prior best-effort try/catch.
+ *
+ * The handlers under `agentdb/src/archivist/handlers/tasks/**` return
+ * `Promise<void>`; the cli envelope shape (the MCP response payload — varies
+ * per tool, some with `success`, some without) is constructed here by
+ * re-reading the post-dispatch store snapshot. The handler is the single
+ * authoritative writer; the cli is the single authoritative envelope-shaper.
+ * No `try/catch` wraps the dispatch with a legacy-path fallback — per
+ * `feedback-no-fallbacks` + ADR-0181 §Architecture ("The original path is
+ * deleted only once the delegation is release-verified — never both live at
+ * once"), dispatch throws propagate.
+ *
+ * All seven `task_*` tools route to FS-JSON-family stores (`tasks` and, for
+ * `task_complete` / `task_assign`, `hive-mind_agents`). No `ensureRvfWired()`
+ * / `ensureSqliteWired()` calls — those helpers are reserved for tools that
+ * touch RVF / SQLite-carve-out substrates. The Phase 4 hotfix posture
+ * (`t1-6-empty-search` 33× regression from gratuitous `ensureRouter()`) is
+ * preserved by NOT calling those helpers here.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
+import { getProcessArchivist } from '../memory/archivist-init.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -66,6 +91,14 @@ function saveTaskStore(store: TaskStore): void {
   writeFileSync(getTaskPath(), JSON.stringify(store, null, 2), 'utf-8');
 }
 
+// Phase 5: the archivist owns the write path. `saveTaskStore` is preserved
+// only for any non-flipped legacy reader; it is intentionally unreferenced by
+// the post-Phase-5 handler bodies below. `ensureTaskDir` likewise stays
+// callable but unused — the archivist's substrate factory creates the parent
+// directory itself.
+void saveTaskStore;
+void ensureTaskDir;
+
 export const taskTools: MCPTool[] = [
   {
     name: 'task_create',
@@ -83,28 +116,34 @@ export const taskTools: MCPTool[] = [
       required: ['type', 'description'],
     },
     handler: async (input) => {
-      const store = loadTaskStore();
-      const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // Snapshot pre-dispatch taskIds so we can recover the archivist-minted
+      // taskId from the post-dispatch store diff. The handler mints the id
+      // (`task-${Date.now()}-${random}`) inside its `withWrite` scope; the cli
+      // has no way to predict it. A one-record diff is unambiguous because the
+      // FS-JSON substrate's O_EXCL lock serializes the create with any
+      // concurrent task_create.
+      const preIds = new Set(Object.keys(loadTaskStore().tasks));
 
-      const task: TaskRecord = {
-        taskId,
+      await (await getProcessArchivist()).dispatch('task_create', {
         type: input.type as string,
         description: input.description as string,
-        priority: (input.priority as TaskRecord['priority']) || 'normal',
-        status: 'pending',
-        progress: 0,
-        assignedTo: (input.assignTo as string[]) || [],
-        tags: (input.tags as string[]) || [],
-        createdAt: new Date().toISOString(),
-        startedAt: null,
-        completedAt: null,
-      };
+        priority: input.priority as TaskRecord['priority'] | undefined,
+        assignTo: input.assignTo as ReadonlyArray<string> | undefined,
+        tags: input.tags as ReadonlyArray<string> | undefined,
+      });
 
-      store.tasks[taskId] = task;
-      saveTaskStore(store);
+      const post = loadTaskStore();
+      const newIds = Object.keys(post.tasks).filter((id) => !preIds.has(id));
+      if (newIds.length !== 1) {
+        throw new Error(
+          `task_create: expected exactly 1 new task in store after dispatch, found ${newIds.length}. ` +
+            `Concurrent create races are serialized by the substrate lock — this indicates an audit-chain bug.`,
+        );
+      }
+      const task = post.tasks[newIds[0]];
 
       return {
-        taskId,
+        taskId: task.taskId,
         type: task.type,
         description: task.description,
         priority: task.priority,
@@ -127,10 +166,11 @@ export const taskTools: MCPTool[] = [
       required: ['taskId'],
     },
     handler: async (input) => {
-      const store = loadTaskStore();
       const taskId = input.taskId as string;
-      const task = store.tasks[taskId];
 
+      await (await getProcessArchivist()).dispatch('task_status', { taskId });
+
+      const task = loadTaskStore().tasks[taskId];
       if (task) {
         return {
           taskId: task.taskId,
@@ -170,8 +210,22 @@ export const taskTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadTaskStore();
-      let tasks = Object.values(store.tasks);
+      // The archivist handler runs the read under the substrate's withWrite
+      // scope so the snapshot participates in the audit chain + lock order
+      // against concurrent task_create / task_update / task_complete writers
+      // (per handlers/tasks/list.ts header). Filter/sort/limit construction
+      // stays cli-side per the same handler's "filter chain moves to the
+      // wire-up callsite" rationale — the handler intentionally surfaces only
+      // the consistent snapshot.
+      await (await getProcessArchivist()).dispatch('task_list', {
+        status: input.status as string | undefined,
+        type: input.type as string | undefined,
+        assignedTo: input.assignedTo as string | undefined,
+        priority: input.priority as TaskRecord['priority'] | undefined,
+        limit: input.limit as number | undefined,
+      });
+
+      let tasks = Object.values(loadTaskStore().tasks);
 
       // Apply filters
       if (input.status) {
@@ -230,39 +284,22 @@ export const taskTools: MCPTool[] = [
       required: ['taskId'],
     },
     handler: async (input) => {
-      const store = loadTaskStore();
       const taskId = input.taskId as string;
-      const task = store.tasks[taskId];
 
+      // Handler routes BOTH stores: the task record's status/progress/
+      // completedAt/result fields AND the hive-mind_agents records for each
+      // `assignedTo` agent (status → idle, currentTask → null, taskCount++).
+      // The prior cli implementation wrapped the agent-sync in a best-effort
+      // try/catch; the archivist surface (handlers/tasks/complete.ts header)
+      // RE-THROWS fatals per feedback-best-effort-must-rethrow-fatals. The
+      // post-flip behavior change is documented and intentional.
+      await (await getProcessArchivist()).dispatch('task_complete', {
+        taskId,
+        result: input.result as Record<string, unknown> | undefined,
+      });
+
+      const task = loadTaskStore().tasks[taskId];
       if (task) {
-        task.status = 'completed';
-        task.progress = 100;
-        task.completedAt = new Date().toISOString();
-        task.result = (input.result as Record<string, unknown>) || {};
-        saveTaskStore(store);
-
-        // Sync assigned agents back to idle and increment taskCount
-        if (task.assignedTo.length > 0) {
-          const agentStorePath = join(findProjectRoot(), STORAGE_DIR, 'agents', 'store.json');
-          try {
-            let agentStore: { agents: Record<string, Record<string, unknown>> } = { agents: {} };
-            if (existsSync(agentStorePath)) {
-              agentStore = JSON.parse(readFileSync(agentStorePath, 'utf-8'));
-            }
-            for (const agentId of task.assignedTo) {
-              if (agentStore.agents[agentId]) {
-                agentStore.agents[agentId].status = 'idle';
-                agentStore.agents[agentId].currentTask = null;
-                agentStore.agents[agentId].taskCount =
-                  ((agentStore.agents[agentId].taskCount as number) || 0) + 1;
-              }
-            }
-            writeFileSync(agentStorePath, JSON.stringify(agentStore, null, 2), 'utf-8');
-          } catch {
-            // Best-effort agent sync
-          }
-        }
-
         return {
           taskId: task.taskId,
           status: task.status,
@@ -293,39 +330,36 @@ export const taskTools: MCPTool[] = [
       required: ['taskId'],
     },
     handler: async (input) => {
-      const store = loadTaskStore();
       const taskId = input.taskId as string;
-      const task = store.tasks[taskId];
 
-      if (task) {
-        if (input.status) {
-          const newStatus = input.status as TaskRecord['status'];
-          task.status = newStatus;
-          if (newStatus === 'in_progress' && !task.startedAt) {
-            task.startedAt = new Date().toISOString();
-          }
-        }
-        if (typeof input.progress === 'number') {
-          task.progress = Math.min(100, Math.max(0, input.progress as number));
-        }
-        if (input.assignTo) {
-          task.assignedTo = input.assignTo as string[];
-        }
-        saveTaskStore(store);
+      // Snapshot pre-dispatch state so the cli envelope can distinguish
+      // success (task existed and was updated) from not-found (no task
+      // record). The handler returns void either way; the cli's
+      // `success: true/false` envelope is reconstructed from the pre-state.
+      const preTask = loadTaskStore().tasks[taskId];
 
+      await (await getProcessArchivist()).dispatch('task_update', {
+        taskId,
+        status: input.status as TaskRecord['status'] | undefined,
+        progress: typeof input.progress === 'number' ? (input.progress as number) : undefined,
+        assignTo: input.assignTo as ReadonlyArray<string> | undefined,
+      });
+
+      const task = loadTaskStore().tasks[taskId];
+      if (!preTask || !task) {
         return {
-          success: true,
-          taskId: task.taskId,
-          status: task.status,
-          progress: task.progress,
-          assignedTo: task.assignedTo,
+          success: false,
+          taskId,
+          error: 'Task not found',
         };
       }
 
       return {
-        success: false,
-        taskId,
-        error: 'Task not found',
+        success: true,
+        taskId: task.taskId,
+        status: task.status,
+        progress: task.progress,
+        assignedTo: task.assignedTo,
       };
     },
   },
@@ -343,67 +377,39 @@ export const taskTools: MCPTool[] = [
       required: ['taskId'],
     },
     handler: async (input) => {
-      const store = loadTaskStore();
       const taskId = input.taskId as string;
-      const task = store.tasks[taskId];
 
-      if (!task) {
+      // Snapshot the pre-dispatch assignment so the cli envelope can return
+      // `previouslyAssigned` (the original cli surface contract — used by
+      // callers to compute the assignment delta without re-reading state).
+      // The handler also reads this internally, but it does not surface it;
+      // the cli is the envelope author per Phase 5 §wire-up rationale.
+      const preTask = loadTaskStore().tasks[taskId];
+      if (!preTask) {
         return { taskId, error: 'Task not found' };
       }
+      const previouslyAssigned = [...preTask.assignedTo];
 
-      const previouslyAssigned = [...task.assignedTo];
+      // Handler routes BOTH stores: task.assignedTo + hive-mind_agents
+      // status/currentTask updates (assign → active, unassign/replaced →
+      // idle) plus the auto-transition from `pending` → `in_progress` when
+      // a previously-pending task gets agents assigned. The prior cli's
+      // best-effort try/catch around agent-store I/O is gone — the
+      // archivist substrate seam owns durability + isolation for both
+      // stores via their respective O_EXCL locks.
+      await (await getProcessArchivist()).dispatch('task_assign', {
+        taskId,
+        agentIds: input.agentIds as ReadonlyArray<string> | undefined,
+        unassign: input.unassign as boolean | undefined,
+      });
 
-      // Load agent store to sync worker state
-      const agentStorePath = join(findProjectRoot(), STORAGE_DIR, 'agents', 'store.json');
-      let agentStore: { agents: Record<string, Record<string, unknown>> } = { agents: {} };
-      try {
-        if (existsSync(agentStorePath)) {
-          agentStore = JSON.parse(readFileSync(agentStorePath, 'utf-8'));
-        }
-      } catch { /* ignore */ }
-
-      if (input.unassign) {
-        // Revert previously assigned agents to idle
-        for (const agentId of previouslyAssigned) {
-          if (agentStore.agents[agentId]) {
-            agentStore.agents[agentId].status = 'idle';
-            agentStore.agents[agentId].currentTask = null;
-          }
-        }
-        task.assignedTo = [];
-      } else {
-        const agentIds = (input.agentIds as string[]) || [];
-        // Revert old agents to idle
-        for (const agentId of previouslyAssigned) {
-          if (!agentIds.includes(agentId) && agentStore.agents[agentId]) {
-            agentStore.agents[agentId].status = 'idle';
-            agentStore.agents[agentId].currentTask = null;
-          }
-        }
-        // Set new agents to active
-        for (const agentId of agentIds) {
-          if (agentStore.agents[agentId]) {
-            agentStore.agents[agentId].status = 'active';
-            agentStore.agents[agentId].currentTask = taskId;
-          }
-        }
-        task.assignedTo = agentIds;
-        // Auto-transition task to in_progress if pending
-        if (task.status === 'pending' && agentIds.length > 0) {
-          task.status = 'in_progress';
-          if (!task.startedAt) {
-            task.startedAt = new Date().toISOString();
-          }
-        }
+      const task = loadTaskStore().tasks[taskId];
+      if (!task) {
+        // Task disappeared between pre-read and post-read — shouldn't happen
+        // since task_assign doesn't delete records, but surface as not-found
+        // rather than throwing.
+        return { taskId, error: 'Task not found' };
       }
-
-      saveTaskStore(store);
-      // Save agent store
-      const agentDir = join(findProjectRoot(), STORAGE_DIR, 'agents');
-      if (!existsSync(agentDir)) {
-        mkdirSync(agentDir, { recursive: true });
-      }
-      writeFileSync(agentStorePath, JSON.stringify(agentStore, null, 2), 'utf-8');
 
       return {
         taskId: task.taskId,
@@ -426,28 +432,32 @@ export const taskTools: MCPTool[] = [
       required: ['taskId'],
     },
     handler: async (input) => {
-      const store = loadTaskStore();
       const taskId = input.taskId as string;
-      const task = store.tasks[taskId];
 
-      if (task) {
-        task.status = 'cancelled';
-        task.completedAt = new Date().toISOString();
-        task.result = { cancelReason: input.reason || 'Cancelled by user' };
-        saveTaskStore(store);
+      // Pre-state snapshot drives the `success: true/false` envelope (same
+      // pattern as task_update). The handler returns void; not-found is
+      // surfaced by absence of pre-task.
+      const preTask = loadTaskStore().tasks[taskId];
 
+      await (await getProcessArchivist()).dispatch('task_cancel', {
+        taskId,
+        reason: input.reason as string | undefined,
+      });
+
+      const task = loadTaskStore().tasks[taskId];
+      if (!preTask || !task) {
         return {
-          success: true,
-          taskId: task.taskId,
-          status: task.status,
-          cancelledAt: task.completedAt,
+          success: false,
+          taskId,
+          error: 'Task not found',
         };
       }
 
       return {
-        success: false,
-        taskId,
-        error: 'Task not found',
+        success: true,
+        taskId: task.taskId,
+        status: task.status,
+        cancelledAt: task.completedAt,
       };
     },
   },

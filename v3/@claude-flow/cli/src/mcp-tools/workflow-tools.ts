@@ -2,11 +2,35 @@
  * Workflow MCP Tools for CLI
  *
  * Tool definitions for workflow automation and orchestration.
+ *
+ * ADR-0181 Phase 5 (F4-3): all eight workflow_* mutation tools delegate to the
+ * Memory Archivist via `getProcessArchivist().dispatch('workflow_*', payload)`.
+ * The archivist handlers at `agentdb/src/archivist/handlers/workflow/` own the
+ * substrate-locked load→mutate→save cycle (FS-JSON, `.claude-flow/workflows/store.json`)
+ * and emit audit-chain entries. Handler signatures are `GuardedWrite<T>:
+ * Promise<void>` — they DO NOT return data — so the cli re-reads the same
+ * `store.json` after each successful dispatch to project the response envelope
+ * callers depend on (notably `workflowId`, which the handler mints internally).
+ *
+ * workflow_status and workflow_list stay cli-authoritative for this phase:
+ * their handlers are deferred to a sibling Phase 5+ task and are not yet
+ * registered as `registerReadHandler<...>`. See TODOs at each site.
  */
 
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
+// Phase 5: only the read path remains in the cli — the archivist owns
+// mutations via `withWrite` (lock, atomic write, audit emission). The cli
+// reads the same `.claude-flow/workflows/store.json` to project response
+// envelopes (`workflowId`, status, etc.) after a successful dispatch.
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
+import { getProcessArchivist } from '../memory/archivist-init.js';
+// `ToolPayloadMap` keeps the dispatch payloads structurally checked at
+// compile time (literal tool-name → payload type). Each call site closes
+// the object with `satisfies ToolPayloadMap['workflow_*']` rather than an
+// `as` cast — see DA worker check #2 (typed-payload fidelity) and the
+// canonical pattern at `daa-tools.ts:205, 268, 337, 395, 456, 591`.
+import type { ToolPayloadMap } from 'agentdb/archivist';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -52,13 +76,10 @@ function getWorkflowPath(): string {
   return join(getWorkflowDir(), WORKFLOW_FILE);
 }
 
-function ensureWorkflowDir(): void {
-  const dir = getWorkflowDir();
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-}
-
+// Read-only projection helper. Survives the Phase 5 flip because (a)
+// workflow_status / workflow_list have no archivist handler yet and
+// (b) every dispatch site re-reads via this to project `workflowId` /
+// status / etc. back to MCP callers (handlers are `Promise<void>`).
 function loadWorkflowStore(): WorkflowStore {
   try {
     const path = getWorkflowPath();
@@ -70,78 +91,6 @@ function loadWorkflowStore(): WorkflowStore {
     // Return default store on error
   }
   return { workflows: {}, templates: {}, version: '3.0.0' };
-}
-
-function saveWorkflowStore(store: WorkflowStore): void {
-  ensureWorkflowDir();
-  // Atomic write: tmp + rename so a crashed writer can't leave truncated JSON.
-  const target = getWorkflowPath();
-  const tmp = `${target}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
-  writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf-8');
-  renameSync(tmp, target);
-}
-
-/**
- * Run cb under exclusive advisory-lock on the workflow store's sibling .lock
- * file. Without this, parallel `workflow_create` calls race the load→mutate→
- * save sequence: all callers read the same pre-image, each appends its own
- * workflow, and the last writer's rename clobbers the rest — the "lost
- * update" class (ADR-0094 P9). atomic rename protects per-write but not
- * against concurrent read-modify-write.
- *
- * Same advisory-lock pattern as rvf-backend's acquireLock (ADR-0095) and
- * wasm-agent-tools' withStoreLock. PID is recorded in the lock file so a
- * crashed writer's stale lock can be detected + force-unlocked. 5s budget,
- * exponential backoff with jitter, fails loudly on timeout.
- */
-function withWorkflowLock<T>(cb: () => T): T {
-  ensureWorkflowDir();
-  const lockPath = getWorkflowPath() + '.lock';
-  const budgetMs = 5000;
-  const deadline = Date.now() + budgetMs;
-  let waitMs = 10;
-  while (true) {
-    let fd: number | undefined;
-    try {
-      fd = openSync(lockPath, 'wx'); // O_CREAT|O_EXCL — atomic
-      writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-      closeSync(fd); fd = undefined;
-      try {
-        return cb();
-      } finally {
-        try { unlinkSync(lockPath); } catch { /* already gone */ }
-      }
-    } catch (err: any) {
-      if (fd !== undefined) {
-        try { closeSync(fd); } catch {}
-      }
-      if (err?.code !== 'EEXIST') throw err;
-      // Someone else holds the lock. Detect stale (dead PID) and force.
-      let stale = false;
-      try {
-        const existing = JSON.parse(readFileSync(lockPath, 'utf-8'));
-        if (typeof existing?.pid === 'number' && existing.pid !== process.pid) {
-          try { process.kill(existing.pid, 0); } catch { stale = true; }
-        }
-      } catch { stale = true; }
-      if (stale) {
-        try { unlinkSync(lockPath); } catch {}
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `[workflow-tools] store lock contention: could not acquire ${lockPath} within ${budgetMs}ms`
-        );
-      }
-      // Backoff with small jitter. Bounded by deadline.
-      const jitter = Math.floor(Math.random() * waitMs);
-      const sleepMs = Math.min(waitMs + jitter, Math.max(1, deadline - Date.now()));
-      const end = Date.now() + sleepMs;
-      // Busy-wait (no async await path available for this sync API).
-      while (Date.now() < end) { /* noop */ }
-      waitMs = Math.min(waitMs * 2, 400);
-    }
-  }
 }
 
 export const workflowTools: MCPTool[] = [
@@ -168,17 +117,19 @@ export const workflowTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_run` handler.
+      // The handler at `archivist/handlers/workflow/run.ts` owns substrate
+      // `withWrite` + audit emission and mints `workflowId` internally. The
+      // cli pre-computes `stages` (response shape only — handler does not
+      // emit them) and post-reads the store by `name` to surface the
+      // minted workflowId. `dryRun=true` short-circuits before dispatch —
+      // the handler is also short-circuited (returns void) but skipping
+      // dispatch avoids an empty audit-chain entry for a validate-only call.
       const template = input.template as string | undefined;
       const task = input.task as string | undefined;
       const options = (input.options as Record<string, unknown>) || {};
       const dryRun = options.dryRun as boolean | undefined;
 
-      // Build workflow from template or inline
-      const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const stages: Array<{ name: string; status: string; agents: string[]; duration?: number }> = [];
-
-      // Generate stages based on template
       const templateName = template || 'custom';
       const stageNames: string[] = (() => {
         switch (templateName) {
@@ -195,44 +146,55 @@ export const workflowTools: MCPTool[] = [
         }
       })();
 
-      for (const name of stageNames) {
-        stages.push({
+      const stages: Array<{ name: string; status: string; agents: string[]; duration?: number }> =
+        stageNames.map((name) => ({
           name,
           status: dryRun ? 'validated' : 'pending',
           agents: [],
-        });
-      }
-
-      if (!dryRun) {
-        // Create and save the workflow
-        const steps: WorkflowStep[] = stageNames.map((name, i) => ({
-          stepId: `step-${i + 1}`,
-          name,
-          type: 'task' as const,
-          config: { task: task || name },
-          status: 'pending' as const,
         }));
 
-        const workflow: WorkflowRecord = {
-          workflowId,
-          name: task || `${templateName} workflow`,
-          description: task,
-          steps,
-          status: 'running',
-          currentStep: 0,
-          variables: { template: templateName, ...options },
-          createdAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
+      if (dryRun) {
+        // Validate-only path: no dispatch, no workflowId minted, no audit entry.
+        return {
+          workflowId: '',
+          template: templateName,
+          status: 'validated',
+          stages,
+          metrics: {
+            totalStages: stages.length,
+            completedStages: 0,
+            agentsSpawned: 0,
+            estimatedDuration: `${stages.length * 30}s`,
+          },
         };
-
-        store.workflows[workflowId] = workflow;
-        saveWorkflowStore(store);
       }
 
+      await (await getProcessArchivist()).dispatch('workflow_run', {
+        template,
+        file: input.file as string | undefined,
+        task,
+        options,
+      } satisfies ToolPayloadMap['workflow_run']);
+
+      // Post-dispatch projection: handler mints workflowId internally; recover
+      // it via the same name the handler used: `task || '${templateName} workflow'`.
+      // Race note (PHASE 6+): two parallel `workflow_run` calls with the
+      // same task land two entries with the same `name` — find-by-name picks
+      // the most-recent by `createdAt`. Acceptance is sequential per workflow;
+      // widening MutationHandlerFn to `Promise<R>` removes the race.
+      const expectedName = task || `${templateName} workflow`;
+      const store = loadWorkflowStore();
+      const matches = Object.values(store.workflows).filter((w) => w.name === expectedName);
+      const minted = matches.length
+        ? matches.reduce((a, b) =>
+            new Date(a.createdAt).getTime() >= new Date(b.createdAt).getTime() ? a : b,
+          )
+        : undefined;
+
       return {
-        workflowId,
+        workflowId: minted?.workflowId ?? '',
         template: templateName,
-        status: dryRun ? 'validated' : 'running',
+        status: 'running',
         stages,
         metrics: {
           totalStages: stages.length,
@@ -270,9 +232,11 @@ export const workflowTools: MCPTool[] = [
     },
     handler: async (input) => {
       // ──────────────────────────────────────────────────────────────
-      // Validate FIRST — fail fast without taking the lock (ADR-0094
-      // P11/P12). Every error names the offending field AND carries a
-      // structural hint word so `_p12_expect_named_error` accepts it.
+      // P11/P12 validation stays cli-side (named-error shapes for
+      // `_p12_expect_named_error` acceptance). The archivist handler
+      // ALSO validates (throw shape) — defense in depth — but the cli's
+      // structured return shape is what acceptance probes assert on, so
+      // we MUST reject pre-dispatch to preserve the contract.
       // ──────────────────────────────────────────────────────────────
       if (typeof input.name !== 'string') {
         return {
@@ -310,72 +274,57 @@ export const workflowTools: MCPTool[] = [
         };
       }
 
-      // ──────────────────────────────────────────────────────────────
-      // Validation passed — take the lock and do read-modify-write as a
-      // single critical section. Prevents the concurrent-writer race
-      // where all N callers read the same pre-image and the last rename
-      // silently wins (ADR-0094 P9).
-      //
-      // Idempotency-by-name (ADR-0094 P9 exactly-one-winner): N parallel
-      // workflow_create calls with the same `name` must converge to a
-      // single stored workflow, not N distinct entries that happen to
-      // share a name. We do the name lookup INSIDE the critical section
-      // so a losing racer observes the winner's insert and returns the
-      // winner's workflowId instead of writing its own.
-      // ──────────────────────────────────────────────────────────────
-      const steps: WorkflowStep[] = (input.steps as Array<{name?: string; type?: string; config?: Record<string, unknown>}>).map((s, i) => ({
-        stepId: `step-${i + 1}`,
-        name: s.name || `Step ${i + 1}`,
-        type: (s.type as WorkflowStep['type']) || 'task',
-        config: s.config || {} as Record<string, unknown>,
-        status: 'pending' as const,
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_create`
+      // handler. The handler at `archivist/handlers/workflow/create.ts` owns
+      // substrate `withWrite` (subsumes the cli's prior `withWorkflowLock`,
+      // ADR-0094 P9 exactly-one-winner) and the name-based idempotency check
+      // is INSIDE the handler's write critical section. Pre-dispatch we
+      // probe for an existing winner so the cli's response can set
+      // `reused: true` without re-inferring it from a post-dispatch state.
+      const name = input.name as string;
+      const preStore = loadWorkflowStore();
+      const preExisting = Object.values(preStore.workflows).find((w) => w.name === name);
+
+      // Stage steps through a per-element map so the payload structurally
+      // matches `WorkflowCreateStep` instead of being a full-array cast.
+      // The closing `satisfies ToolPayloadMap['workflow_create']` keeps the
+      // typed-overload payload check live (DA worker check #2).
+      const stepsIn = input.steps as ReadonlyArray<Record<string, unknown>>;
+      const steps = stepsIn.map((s) => ({
+        name: s.name as string | undefined,
+        type: s.type as 'task' | 'condition' | 'parallel' | 'loop' | 'wait' | undefined,
+        config: s.config as Record<string, unknown> | undefined,
       }));
 
-      const result = withWorkflowLock(() => {
-        const store = loadWorkflowStore();
+      await (await getProcessArchivist()).dispatch('workflow_create', {
+        name,
+        description: input.description as string | undefined,
+        steps,
+        variables: input.variables as Record<string, unknown> | undefined,
+      } satisfies ToolPayloadMap['workflow_create']);
 
-        // Name-based idempotency check. If another racer already inserted
-        // a workflow with the same name, return that one unchanged.
-        const existing = Object.values(store.workflows).find(
-          w => w.name === (input.name as string),
+      // Post-dispatch projection: find the (possibly newly-minted, possibly
+      // pre-existing) workflow by name. The handler's idempotency-check
+      // (ADR-0094 P9) guarantees exactly one winner per name; we resolve to
+      // that winner regardless of who minted it.
+      const store = loadWorkflowStore();
+      const workflow = Object.values(store.workflows).find((w) => w.name === name);
+      if (!workflow) {
+        // Handler returned without inserting — unrecoverable. Per
+        // feedback-no-fallbacks: fail loud rather than fabricate.
+        throw new Error(
+          `archivist: workflow_create dispatched without inserting a record (name='${name}')`,
         );
-        if (existing) {
-          return {
-            workflowId: existing.workflowId,
-            name: existing.name,
-            status: existing.status,
-            stepCount: existing.steps.length,
-            createdAt: existing.createdAt,
-            reused: true,
-          };
-        }
+      }
 
-        const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const workflow: WorkflowRecord = {
-          workflowId,
-          name: input.name as string,
-          description: input.description as string,
-          steps,
-          status: steps.length > 0 ? 'ready' : 'draft',
-          currentStep: 0,
-          variables: (input.variables as Record<string, unknown>) || {},
-          createdAt: new Date().toISOString(),
-        };
-
-        store.workflows[workflowId] = workflow;
-        saveWorkflowStore(store);
-
-        return {
-          workflowId,
-          name: workflow.name,
-          status: workflow.status,
-          stepCount: steps.length,
-          createdAt: workflow.createdAt,
-          reused: false,
-        };
-      });
-
-      return result;
+      return {
+        workflowId: workflow.workflowId,
+        name: workflow.name,
+        status: workflow.status,
+        stepCount: workflow.steps.length,
+        createdAt: workflow.createdAt,
+        reused: preExisting !== undefined && preExisting.workflowId === workflow.workflowId,
+      };
     },
   },
   {
@@ -392,41 +341,46 @@ export const workflowTools: MCPTool[] = [
       required: ['workflowId'],
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_execute`
+      // handler. Pre-read for the missing-record / already-running guards so
+      // the cli preserves its `{ workflowId, error: '...' }` shape (the
+      // handler throws on these, which would propagate as an Error and lose
+      // the structured shape probes depend on). Post-dispatch we re-read to
+      // project the running-state response with per-step `results[]`.
       const workflowId = input.workflowId as string;
-      const workflow = store.workflows[workflowId];
 
-      if (!workflow) {
+      const preStore = loadWorkflowStore();
+      const preWorkflow = preStore.workflows[workflowId];
+      if (!preWorkflow) {
         return { workflowId, error: 'Workflow not found' };
       }
-
-      if (workflow.status === 'running') {
+      if (preWorkflow.status === 'running') {
         return { workflowId, error: 'Workflow already running' };
       }
 
-      // Inject runtime variables
-      if (input.variables) {
-        workflow.variables = { ...workflow.variables, ...(input.variables as Record<string, unknown>) };
+      await (await getProcessArchivist()).dispatch('workflow_execute', {
+        workflowId,
+        variables: input.variables as Record<string, unknown> | undefined,
+        startFromStep: input.startFromStep as number | undefined,
+      } satisfies ToolPayloadMap['workflow_execute']);
+
+      const store = loadWorkflowStore();
+      const workflow = store.workflows[workflowId];
+      if (!workflow) {
+        throw new Error(
+          `archivist: workflow_execute dispatched but workflow vanished (workflowId='${workflowId}')`,
+        );
       }
 
-      workflow.status = 'running';
-      workflow.startedAt = new Date().toISOString();
-      workflow.currentStep = (input.startFromStep as number) || 0;
-
-      // Set steps to pending — actual execution requires agent assignment via task tools
       const results: Array<{ stepId: string; status: string; _note: string }> = [];
       for (let i = workflow.currentStep; i < workflow.steps.length; i++) {
         const step = workflow.steps[i];
-        step.status = 'pending';
-
         results.push({
           stepId: step.stepId,
           status: step.status,
           _note: 'Workflow execution tracks state. Actual step execution requires agent assignment via task tools.',
         });
       }
-
-      saveWorkflowStore(store);
 
       return {
         workflowId,
@@ -451,6 +405,9 @@ export const workflowTools: MCPTool[] = [
       required: ['workflowId'],
     },
     handler: async (input) => {
+      // TODO(ADR-0181 Phase 5+): dispatchRead when workflow_status is
+      // registered as `registerReadHandler<...>` in the archivist (sibling
+      // task per recon-map-and-rulings). Stays cli-authoritative for Phase 5.
       const store = loadWorkflowStore();
       const workflowId = input.workflowId as string;
       const workflow = store.workflows[workflowId];
@@ -507,6 +464,9 @@ export const workflowTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
+      // TODO(ADR-0181 Phase 5+): dispatchRead when workflow_list is
+      // registered as `registerReadHandler<...>` in the archivist (sibling
+      // task per recon-map-and-rulings). Stays cli-authoritative for Phase 5.
       const store = loadWorkflowStore();
       let workflows = Object.values(store.workflows);
 
@@ -548,20 +508,32 @@ export const workflowTools: MCPTool[] = [
       required: ['workflowId'],
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_pause` handler.
+      // Pre-read for missing-record / not-running guards (preserve cli's
+      // `{ error: '...' }` envelope), then dispatch + re-read for the response.
       const workflowId = input.workflowId as string;
-      const workflow = store.workflows[workflowId];
 
-      if (!workflow) {
+      const preStore = loadWorkflowStore();
+      const preWorkflow = preStore.workflows[workflowId];
+      if (!preWorkflow) {
         return { workflowId, error: 'Workflow not found' };
       }
-
-      if (workflow.status !== 'running') {
+      if (preWorkflow.status !== 'running') {
         return { workflowId, error: 'Workflow not running' };
       }
 
-      workflow.status = 'paused';
-      saveWorkflowStore(store);
+      await (await getProcessArchivist()).dispatch(
+        'workflow_pause',
+        { workflowId } satisfies ToolPayloadMap['workflow_pause'],
+      );
+
+      const store = loadWorkflowStore();
+      const workflow = store.workflows[workflowId];
+      if (!workflow) {
+        throw new Error(
+          `archivist: workflow_pause dispatched but workflow vanished (workflowId='${workflowId}')`,
+        );
+      }
 
       return {
         workflowId,
@@ -583,20 +555,32 @@ export const workflowTools: MCPTool[] = [
       required: ['workflowId'],
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_resume` handler.
+      // Pre-read for missing-record / not-paused guards (preserve cli's
+      // `{ error: '...' }` envelope), then dispatch + re-read for the response.
       const workflowId = input.workflowId as string;
-      const workflow = store.workflows[workflowId];
 
-      if (!workflow) {
+      const preStore = loadWorkflowStore();
+      const preWorkflow = preStore.workflows[workflowId];
+      if (!preWorkflow) {
         return { workflowId, error: 'Workflow not found' };
       }
-
-      if (workflow.status !== 'paused') {
+      if (preWorkflow.status !== 'paused') {
         return { workflowId, error: 'Workflow not paused' };
       }
 
-      workflow.status = 'running';
-      saveWorkflowStore(store);
+      await (await getProcessArchivist()).dispatch(
+        'workflow_resume',
+        { workflowId } satisfies ToolPayloadMap['workflow_resume'],
+      );
+
+      const store = loadWorkflowStore();
+      const workflow = store.workflows[workflowId];
+      if (!workflow) {
+        throw new Error(
+          `archivist: workflow_resume dispatched but workflow vanished (workflowId='${workflowId}')`,
+        );
+      }
 
       // Report current step states — do not auto-complete them
       const stepStates = workflow.steps.map(step => ({
@@ -631,28 +615,36 @@ export const workflowTools: MCPTool[] = [
       required: ['workflowId'],
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_cancel` handler.
+      // Pre-read for missing-record / already-finished guards (preserve cli's
+      // `{ error: '...' }` envelope), then dispatch + re-read for the response.
       const workflowId = input.workflowId as string;
-      const workflow = store.workflows[workflowId];
+      const reason = input.reason as string | undefined;
 
-      if (!workflow) {
+      const preStore = loadWorkflowStore();
+      const preWorkflow = preStore.workflows[workflowId];
+      if (!preWorkflow) {
         return { workflowId, error: 'Workflow not found' };
       }
-
-      if (workflow.status === 'completed' || workflow.status === 'failed') {
+      if (preWorkflow.status === 'completed' || preWorkflow.status === 'failed') {
         return { workflowId, error: 'Workflow already finished' };
       }
+      // Capture pre-cancel currentStep — the handler does not advance it, so
+      // `skippedSteps = steps.length - currentStep` is identical pre/post,
+      // but reading from the post-state keeps the projection self-consistent.
 
-      workflow.status = 'failed';
-      workflow.error = (input.reason as string) || 'Cancelled by user';
-      workflow.completedAt = new Date().toISOString();
+      await (await getProcessArchivist()).dispatch('workflow_cancel', {
+        workflowId,
+        reason,
+      } satisfies ToolPayloadMap['workflow_cancel']);
 
-      // Mark remaining steps as skipped
-      for (let i = workflow.currentStep; i < workflow.steps.length; i++) {
-        workflow.steps[i].status = 'skipped';
+      const store = loadWorkflowStore();
+      const workflow = store.workflows[workflowId];
+      if (!workflow) {
+        throw new Error(
+          `archivist: workflow_cancel dispatched but workflow vanished (workflowId='${workflowId}')`,
+        );
       }
-
-      saveWorkflowStore(store);
 
       return {
         workflowId,
@@ -675,20 +667,26 @@ export const workflowTools: MCPTool[] = [
       required: ['workflowId'],
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_delete` handler.
+      // Pre-read for missing-record / running-workflow guards (preserve cli's
+      // `{ error: '...' }` envelope), then dispatch. No post-dispatch read is
+      // strictly needed — the response shape is static — but we keep the call
+      // pattern uniform with the rest of the family for verifier audit clarity.
       const workflowId = input.workflowId as string;
 
-      if (!store.workflows[workflowId]) {
+      const preStore = loadWorkflowStore();
+      const preWorkflow = preStore.workflows[workflowId];
+      if (!preWorkflow) {
         return { workflowId, error: 'Workflow not found' };
       }
-
-      const workflow = store.workflows[workflowId];
-      if (workflow.status === 'running') {
+      if (preWorkflow.status === 'running') {
         return { workflowId, error: 'Cannot delete running workflow' };
       }
 
-      delete store.workflows[workflowId];
-      saveWorkflowStore(store);
+      await (await getProcessArchivist()).dispatch(
+        'workflow_delete',
+        { workflowId } satisfies ToolPayloadMap['workflow_delete'],
+      );
 
       return {
         workflowId,
@@ -713,75 +711,96 @@ export const workflowTools: MCPTool[] = [
       required: ['action'],
     },
     handler: async (input) => {
-      const store = loadWorkflowStore();
-      const action = input.action as string;
+      // ADR-0181 Phase 5 (F4-3): delegate to archivist `workflow_template`
+      // handler. The handler discriminates on `payload.action` ('save' |
+      // 'create' | 'list') under one `withWrite` scope:
+      //   - 'save'   mints a templateId, clones the workflow into store.templates
+      //   - 'create' mints a workflowId, clones the template into store.workflows
+      //   - 'list'   is a read no-op inside the write scope (will migrate to a
+      //              sibling GuardedRead in a Phase 5+ task per recon)
+      //
+      // Pre-existence guards stay cli-side (preserve `{ action, error: '...' }`
+      // envelope). Server-minted IDs are recovered via before/after key-diff —
+      // race-prone for two concurrent save/create calls cloning the SAME source
+      // workflow/template (same generated name fallback), but the handler's
+      // `withWrite` lock keeps the diff consistent within a single call.
+      // PHASE 6+: widen MutationHandlerFn to `Promise<R>` so the handler
+      // returns the minted ID and the diff dance can be retired.
+      const action = input.action as 'save' | 'create' | 'list';
 
       if (action === 'save') {
-        const workflow = store.workflows[input.workflowId as string];
-        if (!workflow) {
+        const sourceWorkflowId = input.workflowId as string;
+        const preStore = loadWorkflowStore();
+        if (!preStore.workflows[sourceWorkflowId]) {
           return { action, error: 'Workflow not found' };
         }
 
-        const templateId = `template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const template: WorkflowRecord = {
-          ...workflow,
-          workflowId: templateId,
-          name: (input.templateName as string) || `${workflow.name} Template`,
-          status: 'draft',
-          currentStep: 0,
-          createdAt: new Date().toISOString(),
-          startedAt: undefined,
-          completedAt: undefined,
-        };
+        const beforeTemplateKeys = new Set(Object.keys(preStore.templates));
 
-        // Reset step statuses
-        template.steps = template.steps.map(s => ({
-          ...s,
-          status: 'pending',
-          result: undefined,
-          startedAt: undefined,
-          completedAt: undefined,
-        }));
+        await (await getProcessArchivist()).dispatch('workflow_template', {
+          action: 'save',
+          workflowId: sourceWorkflowId,
+          templateName: input.templateName as string | undefined,
+        } satisfies ToolPayloadMap['workflow_template']);
 
-        store.templates[templateId] = template;
-        saveWorkflowStore(store);
+        const store = loadWorkflowStore();
+        const newTemplateKey = Object.keys(store.templates).find((k) => !beforeTemplateKeys.has(k));
+        if (!newTemplateKey) {
+          throw new Error(
+            `archivist: workflow_template save dispatched without inserting a template (workflowId='${sourceWorkflowId}')`,
+          );
+        }
+        const template = store.templates[newTemplateKey];
 
         return {
           action,
-          templateId,
+          templateId: newTemplateKey,
           name: template.name,
           savedAt: new Date().toISOString(),
         };
       }
 
       if (action === 'create') {
-        const template = store.templates[input.templateId as string];
-        if (!template) {
+        const sourceTemplateId = input.templateId as string;
+        const preStore = loadWorkflowStore();
+        if (!preStore.templates[sourceTemplateId]) {
           return { action, error: 'Template not found' };
         }
 
-        const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const workflow: WorkflowRecord = {
-          ...template,
-          workflowId,
-          name: (input.newName as string) || template.name.replace(' Template', ''),
-          status: 'ready',
-          createdAt: new Date().toISOString(),
-        };
+        const beforeWorkflowKeys = new Set(Object.keys(preStore.workflows));
 
-        store.workflows[workflowId] = workflow;
-        saveWorkflowStore(store);
+        await (await getProcessArchivist()).dispatch('workflow_template', {
+          action: 'create',
+          templateId: sourceTemplateId,
+          newName: input.newName as string | undefined,
+        } satisfies ToolPayloadMap['workflow_template']);
+
+        const store = loadWorkflowStore();
+        const newWorkflowKey = Object.keys(store.workflows).find((k) => !beforeWorkflowKeys.has(k));
+        if (!newWorkflowKey) {
+          throw new Error(
+            `archivist: workflow_template create dispatched without inserting a workflow (templateId='${sourceTemplateId}')`,
+          );
+        }
+        const workflow = store.workflows[newWorkflowKey];
 
         return {
           action,
-          workflowId,
+          workflowId: newWorkflowKey,
           name: workflow.name,
-          fromTemplate: input.templateId,
+          fromTemplate: sourceTemplateId,
           createdAt: workflow.createdAt,
         };
       }
 
       if (action === 'list') {
+        // Dispatching `action: 'list'` is a no-op write under the handler's
+        // current shape — it still takes the substrate write scope (emits an
+        // audit entry for a pure read). Phase 5+ migrates 'list' to a
+        // sibling GuardedRead; until then we project from a direct
+        // loadWorkflowStore() to keep the audit chain clean of read-only
+        // entries. Stays cli-authoritative for this action only.
+        const store = loadWorkflowStore();
         return {
           action,
           templates: Object.values(store.templates).map(t => ({

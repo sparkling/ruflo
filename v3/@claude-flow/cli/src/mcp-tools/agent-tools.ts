@@ -3,6 +3,28 @@
  *
  * Tool definitions for agent lifecycle management with file persistence.
  * Includes model routing integration for intelligent model selection.
+ *
+ * ADR-0181 Phase 5 (F4-3) — the four mutating agent_* tools (spawn, terminate,
+ * pool, update) dispatch their FS-JSON mutation through the per-process Memory
+ * Archivist (`getProcessArchivist().dispatch(...)`). The legacy unlocked
+ * `loadAgentStore` / `saveAgentStore` pair stays below for envelope construction
+ * (post-dispatch read-back), but is no longer the write path — the archivist's
+ * substrate seam owns durability + isolation via the `agent_spawn` FS-JSON
+ * store's O_EXCL lock. No `ensureRvfWired()` / `ensureSqliteWired()` calls —
+ * agent_* routes to FS-JSON only.
+ *
+ * `agent_execute` is NOT flipped here. Its persistence runs inside
+ * `executeAgentTask` (agent-execute-core.ts), which is shared with the
+ * workflow runtime (G3) and does three writes: status='busy' pre-LLM,
+ * status='idle'+lastResult post-LLM (success or error). Re-routing those
+ * through the archivist requires either (a) refactoring agent-execute-core
+ * to dispatch its own writes (out of W-agent scope; affects workflow
+ * runtime), or (b) duplicating the writes here (double-write, ADR-0082
+ * violation). Carried forward pending team-lead ruling.
+ *
+ * `agent_list` / `agent_status` / `agent_health` have no archivist counterpart
+ * (no `handlers/agents/list.ts` etc.; not in `ToolPayloadMap`) and remain pure
+ * cli reads of `.claude-flow/agents/store.json`.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -10,6 +32,8 @@ import { join } from 'node:path';
 import { type MCPTool, findProjectRoot } from './types.js';
 import { validateIdentifier, validateText, validateAgentSpawn } from './validate-input.js';
 import { executeAgentTask } from './agent-execute-core.js';
+import { getProcessArchivist } from '../memory/archivist-init.js';
+import type { ToolPayloadMap } from 'agentdb/archivist';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -70,6 +94,14 @@ function saveAgentStore(store: AgentStore): void {
   ensureAgentDir();
   writeFileSync(getAgentPath(), JSON.stringify(store, null, 2), 'utf-8');
 }
+
+// Phase 5: the archivist owns the write path. `saveAgentStore` is preserved
+// only for any non-flipped legacy reader; it is intentionally unreferenced by
+// the post-Phase-5 handler bodies below. `ensureAgentDir` likewise stays
+// callable but unused — the archivist's substrate factory creates the parent
+// directory itself.
+void saveAgentStore;
+void ensureAgentDir;
 
 // Default model mappings for agent types (can be overridden)
 const AGENT_TYPE_MODEL_DEFAULTS: Record<string, ClaudeModel> = {
@@ -213,7 +245,6 @@ export const agentTools: MCPTool[] = [
         return { success: false, error: "'agentType' must be no more than 128 characters (invalid length: " + input.agentType.length + ")" };
       }
 
-      const store = loadAgentStore();
       const agentId = (input.agentId as string) || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const agentType = input.agentType as string;
       const config = (input.config as Record<string, unknown>) || {};
@@ -226,7 +257,9 @@ export const agentTools: MCPTool[] = [
       // Get task from either top-level or config (CLI passes it in config.task)
       const task = (input.task as string) || (config.task as string) || undefined;
 
-      // Determine model using ADR-026 3-tier routing logic
+      // Determine model using ADR-026 3-tier routing logic (pure compute, not
+      // substrate state — handlers/agents/spawn.ts header §"ADR-026 3-tier
+      // model routing" says routing stays in cli pre-dispatch).
       const routingResult = await determineAgentModel(
         agentType,
         config,
@@ -246,8 +279,8 @@ export const agentTools: MCPTool[] = [
         modelRoutedBy: routingResult.routedBy,
       };
 
-      store.agents[agentId] = agent;
-      saveAgentStore(store);
+      const spawnPayload = { agent } satisfies ToolPayloadMap['agent_spawn'];
+      await (await getProcessArchivist()).dispatch('agent_spawn', spawnPayload);
 
       // Include Agent Booster routing info if applicable
       const response: Record<string, unknown> = {
@@ -330,24 +363,32 @@ export const agentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (input) => {
-      const store = loadAgentStore();
       const agentId = input.agentId as string;
 
-      if (store.agents[agentId]) {
-        store.agents[agentId].status = 'terminated';
-        saveAgentStore(store);
+      // Pre-check existence so the cli envelope can return the legacy
+      // `{success: false, error: 'Agent not found'}` shape rather than
+      // letting the handler throw (handlers/agents/terminate.ts:55-57).
+      // The task_assign callsite uses this same shape (task-tools.ts:387-390).
+      const pre = loadAgentStore();
+      if (!pre.agents[agentId]) {
         return {
-          success: true,
+          success: false,
           agentId,
-          terminated: true,
-          terminatedAt: new Date().toISOString(),
+          error: 'Agent not found',
         };
       }
 
-      return {
-        success: false,
+      const terminatePayload = {
         agentId,
-        error: 'Agent not found',
+        force: input.force as boolean | undefined,
+      } satisfies ToolPayloadMap['agent_terminate'];
+      await (await getProcessArchivist()).dispatch('agent_terminate', terminatePayload);
+
+      return {
+        success: true,
+        agentId,
+        terminated: true,
+        terminatedAt: new Date().toISOString(),
       };
     },
   },
@@ -448,18 +489,21 @@ export const agentTools: MCPTool[] = [
       required: ['action'],
     },
     handler: async (input) => {
-      const store = loadAgentStore();
-      const agents = Object.values(store.agents).filter(a => a.status !== 'terminated');
       const action = (input.action as string) || 'status';  // Default to status
 
       if (action === 'status') {
+        // Read-only — handler explicitly throws on 'status' action
+        // (handlers/agents/pool.ts:132-135). Routing through dispatchRead is
+        // the right shape but no read handler is registered yet; stay
+        // cli-authoritative until the read handler lands.
+        const store = loadAgentStore();
+        const agents = Object.values(store.agents).filter(a => a.status !== 'terminated');
         const byType: Record<string, number> = {};
         const byStatus: Record<string, number> = {};
         for (const agent of agents) {
           byType[agent.agentType] = (byType[agent.agentType] || 0) + 1;
           byStatus[agent.status] = (byStatus[agent.status] || 0) + 1;
         }
-        const idleAgents = agents.filter(a => a.status === 'idle').length;
         const busyAgents = agents.filter(a => a.status === 'busy').length;
         const utilization = agents.length > 0 ? busyAgents / agents.length : 0;
         return {
@@ -489,62 +533,69 @@ export const agentTools: MCPTool[] = [
       if (action === 'scale') {
         const targetSize = (input.targetSize as number) || 5;
         const agentType = (input.agentType as string) || 'worker';
-        const currentSize = agents.filter(a => a.agentType === agentType).length;
-        const delta = targetSize - currentSize;
+
+        // Pre-snapshot drives the cli envelope's `previousSize` + the
+        // `added` / `removed` diff. The handler mints its own agent IDs
+        // inside withWrite (handlers/agents/pool.ts:62-65) so cli cannot
+        // predict them — diff is the only way to recover them.
+        const pre = loadAgentStore();
+        const preIds = new Set(
+          Object.values(pre.agents)
+            .filter(a => a.status !== 'terminated' && a.agentType === agentType)
+            .map(a => a.agentId),
+        );
+        const preActiveOfType = preIds.size;
+
+        const scalePayload = {
+          action: 'scale' as const,
+          targetSize,
+          agentType,
+        } satisfies ToolPayloadMap['agent_pool'];
+        await (await getProcessArchivist()).dispatch('agent_pool', scalePayload);
+
+        const post = loadAgentStore();
+        const postActiveIds = new Set(
+          Object.values(post.agents)
+            .filter(a => a.status !== 'terminated' && a.agentType === agentType)
+            .map(a => a.agentId),
+        );
         const added: string[] = [];
+        for (const id of postActiveIds) if (!preIds.has(id)) added.push(id);
         const removed: string[] = [];
+        for (const id of preIds) if (!postActiveIds.has(id)) removed.push(id);
 
-        if (delta > 0) {
-          for (let i = 0; i < delta; i++) {
-            const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            store.agents[agentId] = {
-              agentId,
-              agentType,
-              status: 'idle',
-              health: 1.0,
-              taskCount: 0,
-              config: {},
-              createdAt: new Date().toISOString(),
-            };
-            added.push(agentId);
-          }
-        } else if (delta < 0) {
-          const toRemove = agents.filter(a => a.agentType === agentType && a.status === 'idle').slice(0, -delta);
-          for (const agent of toRemove) {
-            store.agents[agent.agentId].status = 'terminated';
-            removed.push(agent.agentId);
-          }
-        }
-
-        saveAgentStore(store);
         return {
           action,
           agentType,
-          previousSize: currentSize,
+          previousSize: preActiveOfType,
           targetSize,
-          newSize: currentSize + delta,
+          newSize: postActiveIds.size,
           added,
           removed,
         };
       }
 
       if (action === 'drain') {
-        const agentType = input.agentType as string;
-        let drained = 0;
-        for (const agent of agents) {
-          if (!agentType || agent.agentType === agentType) {
-            if (agent.status === 'idle') {
-              store.agents[agent.agentId].status = 'terminated';
-              drained++;
-            }
-          }
-        }
-        saveAgentStore(store);
+        const agentType = input.agentType as string | undefined;
+
+        const pre = loadAgentStore();
+        const preActive = Object.values(pre.agents).filter(a => a.status !== 'terminated');
+
+        const drainPayload = {
+          action: 'drain' as const,
+          agentType,
+        } satisfies ToolPayloadMap['agent_pool'];
+        await (await getProcessArchivist()).dispatch('agent_pool', drainPayload);
+
+        const post = loadAgentStore();
+        const postActive = Object.values(post.agents).filter(a => a.status !== 'terminated');
+        const drained = preActive.length - postActive.length;
+
         return {
           action,
           agentType: agentType || 'all',
           drained,
-          remaining: agents.length - drained,
+          remaining: postActive.length,
         };
       }
 
@@ -640,36 +691,42 @@ export const agentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (input) => {
-      const store = loadAgentStore();
       const agentId = input.agentId as string;
-      const agent = store.agents[agentId];
 
-      if (agent) {
-        if (input.status) agent.status = input.status as AgentRecord['status'];
-        if (typeof input.health === 'number') agent.health = input.health as number;
-        if (typeof input.taskCount === 'number') agent.taskCount = input.taskCount as number;
-        if (input.config) {
-          agent.config = { ...agent.config, ...(input.config as Record<string, unknown>) };
-        }
-        saveAgentStore(store);
-
+      // Pre-check existence so the cli envelope returns
+      // `{success: false, error: 'Agent not found'}` instead of letting
+      // the handler throw (handlers/agents/update.ts:59-61).
+      const pre = loadAgentStore();
+      if (!pre.agents[agentId]) {
         return {
-          success: true,
+          success: false,
           agentId,
-          updated: true,
-          agent: {
-            agentId: agent.agentId,
-            status: agent.status,
-            health: agent.health,
-            taskCount: agent.taskCount,
-          },
+          error: 'Agent not found',
         };
       }
 
-      return {
-        success: false,
+      const updatePayload = {
         agentId,
-        error: 'Agent not found',
+        status: input.status as AgentRecord['status'] | undefined,
+        health: typeof input.health === 'number' ? (input.health as number) : undefined,
+        taskCount: typeof input.taskCount === 'number' ? (input.taskCount as number) : undefined,
+        config: input.config as Record<string, unknown> | undefined,
+      } satisfies ToolPayloadMap['agent_update'];
+      await (await getProcessArchivist()).dispatch('agent_update', updatePayload);
+
+      const post = loadAgentStore();
+      const agent = post.agents[agentId];
+
+      return {
+        success: true,
+        agentId,
+        updated: true,
+        agent: {
+          agentId: agent.agentId,
+          status: agent.status,
+          health: agent.health,
+          taskCount: agent.taskCount,
+        },
       };
     },
   },

@@ -1,11 +1,50 @@
 /**
- * Memory MCP Tools for CLI - V3 with SQLite/HNSW Backend
+ * Memory MCP Tools for CLI - V3 with SQLite/HNSW Backend.
  *
- * UPGRADED: Now uses the advanced SQLite + HNSW backend for:
- * - 150x-12,500x faster semantic search
- * - Vector embeddings with cosine similarity
- * - Persistent SQLite storage (WASM)
- * - Backward compatible with legacy JSON storage (auto-migrates)
+ * Backed by an SQLite + HNSW pipeline (150x-12,500x faster semantic search;
+ * ONNX cosine similarity; auto-migration from legacy JSON storage).
+ *
+ * ── ADR-0181 Phase 5 (F4-3) state, 2026-05-15 ────────────────────────────────
+ *
+ * Routed through the per-process Memory Archivist (typed `archivist.dispatch<K>`
+ * overload from `agentdb/archivist/dispatch-types.ts`):
+ *
+ *   - `memory_store` (mutation, RVF-dependent) — `await ensureRvfWired()` then
+ *     `archivist.dispatch('memory_store', payload)`. The handler at
+ *     `handlers/memory/store.ts` writes through the cli's live RVF substrate
+ *     via `MemoryRvfAdapter` (wired by Phase 4 / W-lazy). Mutation handler
+ *     returns void; the cli re-reads via `routeMemoryOp({type:'get'})` to
+ *     populate `hasEmbedding` / `embeddingDimensions` / `storedAt` for the
+ *     response envelope (one extra fs read per write — team-lead ruling).
+ *     This is the only memory tool where dispatch makes data flow today.
+ *
+ * Kept cli-native with PHASE 6+ markers (5 tools — release-acceptance gate):
+ *
+ *   The four read tools (`memory_search`, `memory_retrieve`, `memory_list`,
+ *   `memory_search_unified`) have archivist counterparts, but those handlers
+ *   register `STORE_ID = 'memory_search_index'` — a Phase 3 FS-JSON placeholder
+ *   that NOTHING currently populates (see handler comments at
+ *   `handlers/memory/search.ts` lines 32-38 / `retrieve.ts` lines 26-31 /
+ *   `list.ts` lines 24-29 / `search-unified.ts` lines 24-30, all explicitly
+ *   declaring "this handler returns an empty RankedResults for every dispatched
+ *   read"). Dispatching now would regress production behavior. Each tool
+ *   carries an inline `// PHASE 6+: route through archivist when
+ *   memory_search_index→memory_store collapse lands` marker. Resolution
+ *   requires ONE of: (a) cli-side writer populating `memory_search_index` from
+ *   live RVF, (b) substrate-seam expansion (`getByKey` + `list` on
+ *   `ReadOnlySubstrateHandle`) + per-handler STORE_ID flip to `memory_store`,
+ *   (c) per-handler routing decisions at the cli edge — all deferred to
+ *   Phase 6+.
+ *
+ *   `memory_bridge_status` is also cli-native: the archivist handler can only
+ *   emit the `claude-code` leg live; agentdb/intelligence/bridge legs depend
+ *   on `ctx.capabilities.*` deferred by the ADR-0180 F4-2 Phase C → Phase 1
+ *   Amendment chain. PHASE 6+: route when capabilities are wired.
+ *
+ * Untouched (no archivist counterparts):
+ *
+ *   `memory_delete`, `memory_stats`, `memory_migrate`, `memory_import_claude` —
+ *   stay on `routeMemoryOp` / `getMemoryFunctions()`.
  *
  * @module v3/cli/mcp-tools/memory-tools
  */
@@ -18,19 +57,19 @@ import type { MCPTool } from './types.js';
 import { findProjectRoot } from './types.js';
 import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
 import { validateIdentifier } from './validate-input.js';
+import { getProcessArchivist, ensureRvfWired } from '../memory/archivist-init.js';
 
-// ADR-0180 Phase 3: the archivist read-handler for memory_search registers at
-// `@sparkleideas/agentdb/src/archivist/handlers/memory/search.ts` and returns
-// `RankedResults<MemoryRecord>` (each candidate carries provenance per
-// §Architecture · Read-path return shape). The mutation handler for
-// memory_store registers at `.../handlers/memory/store.ts` as
-// `GuardedWrite<MemoryStorePayload>`. The cli handler below still drives
-// `routeMemoryOp` directly because `@sparkleideas/agentdb/archivist` lacks a
-// public `dispatch` export (`dispatchMutation`/`dispatchRead` are deliberately
-// NOT re-exported from `forks/agentdb/src/archivist/index.ts`, and the
-// `./archivist` subpath is not listed in `forks/agentdb/package.json` exports).
-// Once both land, the body collapses to a single
-// `dispatch('memory_store', payload)` / `dispatch('memory_search', query)` call.
+// ADR-0181 Phase 5 (F4-3) cli delegation summary (full rationale in the file
+// header @module docblock):
+//   FLIPPED: memory_store (mutation, RVF — `await ensureRvfWired()` then
+//            `archivist.dispatch('memory_store', payload)`; cli re-reads via
+//            `routeMemoryOp({type:'get'})` for response envelope fields).
+//   PHASE 6+ markers (5 tools stay cli-native to avoid release regression
+//            from the empty `memory_search_index` placeholder substrate):
+//            memory_search, memory_retrieve, memory_list,
+//            memory_search_unified, memory_bridge_status.
+//   UNTOUCHED (no archivist counterpart): memory_delete, memory_stats,
+//            memory_migrate, memory_import_claude.
 
 // ADR-0162 Batch C+D hand-port: upstream's memory-bridge.ts (deleted in our
 // fork per ADR-0086 / ADR-0161) housed `getMigrationMarkerPath`,
@@ -238,11 +277,20 @@ export const memoryTools: MCPTool[] = [
       const startTime = performance.now();
 
       try {
-        const result = await routeMemoryOp({
-          type: 'store',
-          key,
-          value,
+        // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler
+        // at `handlers/memory/store.ts` owns the RVF-substrate write under
+        // `substrate.withWrite({ storeId: 'memory_store' })`. Gate behind
+        // `ensureRvfWired()` — RVF substrate (memory-router cold-start opens
+        // .rvf + builds HNSW + loads ONNX embedder). Mutation handler returns
+        // void; re-read the stored entry to populate `hasEmbedding` /
+        // `embeddingDimensions` (one extra fs read per write — team-lead
+        // ruling 2026-05-15).
+        await ensureRvfWired();
+        const archivist = await getProcessArchivist();
+        await archivist.dispatch('memory_store', {
           namespace,
+          key,
+          content: value,
           tags,
           ttl,
           upsert,
@@ -251,29 +299,49 @@ export const memoryTools: MCPTool[] = [
 
         const duration = performance.now() - startTime;
 
-        // WM-105a: Register node in MemoryGraph for importance scoring
-        if (result.success) {
-          try {
-            const mg = await getController('memoryGraph');
-            if (mg && typeof (mg as Record<string, unknown>).addNode === 'function') {
-              (mg as { addNode: (key: string, meta: Record<string, unknown>) => void }).addNode(key, { namespace, value, tags });
-            }
-          } catch {
-            // MemoryGraph enrichment is non-fatal -- continue with successful result
+        // Re-read to surface embedding metadata in the response envelope.
+        // `routeMemoryOp({type:'get'})` returns `{success, found, entry}` where
+        // entry carries `hasEmbedding` / `embeddingDimensions` (memory-router
+        // case 'get' at line 1223). The dispatch above is the authoritative
+        // write — this read is purely for response-shape parity.
+        let hasEmbedding = false;
+        let embeddingDimensions: number | null = null;
+        let storedAt: string | undefined;
+        try {
+          const getResult = await routeMemoryOp({ type: 'get', key, namespace });
+          if (getResult.found && getResult.entry) {
+            const entry = getResult.entry as Record<string, unknown>;
+            hasEmbedding = !!entry.hasEmbedding;
+            embeddingDimensions = (entry.embeddingDimensions as number | null) ?? null;
+            storedAt = entry.createdAt as string | undefined;
           }
+        } catch {
+          // Re-read is non-fatal — the dispatch above already succeeded; the
+          // response envelope just won't carry the embedding-metadata fields.
+        }
+
+        // WM-105a: Register node in MemoryGraph for importance scoring. Side-
+        // effect on the cli-side controller — the archivist handler does the
+        // substrate write; MemoryGraph indexing stays cli-local.
+        try {
+          const mg = await getController('memoryGraph');
+          if (mg && typeof (mg as Record<string, unknown>).addNode === 'function') {
+            (mg as { addNode: (key: string, meta: Record<string, unknown>) => void }).addNode(key, { namespace, value, tags });
+          }
+        } catch {
+          // MemoryGraph enrichment is non-fatal -- continue with successful result
         }
 
         return {
-          success: result.success,
+          success: true,
           key,
           namespace,
-          stored: result.success,
-          storedAt: result.storedAt as string || new Date().toISOString(),
-          hasEmbedding: !!result.hasEmbedding,
-          embeddingDimensions: (result.embeddingDimensions as number | null) || null,
-          backend: 'SQLite + HNSW',
+          stored: true,
+          storedAt: storedAt || new Date().toISOString(),
+          hasEmbedding,
+          embeddingDimensions,
+          backend: 'archivist (RVF + HNSW)',
           storeTime: `${duration.toFixed(2)}ms`,
-          error: result.error,
         };
       } catch (error) {
         return {
@@ -313,6 +381,15 @@ export const memoryTools: MCPTool[] = [
       validateMemoryInput(key);
 
       try {
+        // PHASE 6+: route through archivist when memory_search_index→memory_store
+        // collapse lands. The archivist handler at `handlers/memory/retrieve.ts`
+        // reads from the FS-JSON `memory_search_index` placeholder store that
+        // nothing currently writes to (Phase 3 carry-forward — see
+        // `archivist-init.ts` header lines 75-92 + `handlers/memory/retrieve.ts`
+        // lines 26-31). Dispatching now would return `found: false` for every
+        // entry — a release-acceptance regression. Stay on `routeMemoryOp('get')`
+        // until the substrate-seam expansion (or cli-side index populator)
+        // lands.
         const result = await routeMemoryOp({ type: 'get', key, namespace });
 
         if (result.found && result.entry) {
@@ -420,6 +497,16 @@ export const memoryTools: MCPTool[] = [
       const startTime = performance.now();
 
       try {
+        // PHASE 6+: route through archivist when memory_search_index→memory_store
+        // collapse lands. The archivist handler at `handlers/memory/search.ts`
+        // reads from the FS-JSON `memory_search_index` placeholder store that
+        // nothing currently writes to (Phase 3 carry-forward — see
+        // `archivist-init.ts` header lines 75-92 + `handlers/memory/search.ts`
+        // lines 32-38). Dispatching now would return an empty RankedResults
+        // for every query — a release-acceptance regression. Stay on
+        // `routeMemoryOp('search')` (RVF-backed BM25/ONNX/hash-fusion + MMR
+        // diversity + AttentionService boost) until the substrate-seam
+        // expansion (or cli-side index populator) lands.
         const result = await routeMemoryOp({
           type: 'search',
           query,
@@ -660,6 +747,16 @@ export const memoryTools: MCPTool[] = [
       const includeProvenance = input.includeProvenance === true;
 
       try {
+        // PHASE 6+: route through archivist when memory_search_index→memory_store
+        // collapse lands. The archivist handler at `handlers/memory/list.ts`
+        // reads from the FS-JSON `memory_search_index` enumeration store that
+        // nothing currently writes to (Phase 3 carry-forward — see
+        // `archivist-init.ts` header lines 75-92 + `handlers/memory/list.ts`
+        // lines 24-29). Dispatching now would return an empty enumeration for
+        // every call — a release-acceptance regression. Stay on
+        // `routeMemoryOp('list')` (RVF `storage.query` with offset/limit)
+        // until the substrate-seam expansion (or cli-side index populator)
+        // lands.
         const result = await routeMemoryOp({
           type: 'list',
           namespace,
@@ -946,6 +1043,21 @@ export const memoryTools: MCPTool[] = [
       await ensureInitialized();
       const includeProvenance = (input as Record<string, unknown> | undefined)?.includeProvenance === true;
 
+      // ADR-0181 Phase 5 (F4-3): memory_bridge_status is INTENTIONALLY NOT
+      // routed through `archivist.dispatchRead('memory_bridge_status', ...)`.
+      // The archivist handler at `handlers/memory/bridge-status.ts` can only
+      // emit the `claude-code` leg live; the agentdb / intelligence / bridge
+      // legs depend on cli-internal capabilities (listEntries probe,
+      // ../memory/intelligence.getIntelligenceStats) that cannot cross the
+      // ADR-0161 agentdb-cannot-import-forks/ruflo boundary. Until
+      // `ctx.capabilities.{listEntries, intelligence}` are wired (deferred
+      // by ADR-0180 F4-2 Phase C, then by the Phase 1 Amendment), flipping
+      // here would regress the legacy non-provenance shape from 4 live legs
+      // to 1 live + 3 `degraded` stubs.
+      //
+      // PHASE 6+: route through archivist when capabilities are wired.
+      // Team-lead ruling, 2026-05-15. Keep cli's 4-leg local assembly.
+
       // Count Claude memory files
       const claudeProjectsDir = join(homedir(), '.claude', 'projects');
       let claudeFiles = 0;
@@ -1064,6 +1176,16 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async (input) => {
       await ensureInitialized();
+      // PHASE 6+: route through archivist when memory_search_index→memory_store
+      // collapse lands. The archivist handler at
+      // `handlers/memory/search-unified.ts` does cross-store sort+dedup against
+      // the FS-JSON `memory_search_index` candidate store that nothing
+      // currently writes to (Phase 3 carry-forward — see `archivist-init.ts`
+      // header lines 75-92 + `handlers/memory/search-unified.ts` lines 24-30).
+      // Dispatching now would return an empty RankedResults for every query —
+      // a release-acceptance regression. Stay on per-namespace `searchEntries`
+      // (cli-side cross-namespace assembly) until the substrate-seam expansion
+      // (or cli-side index populator) lands.
       const { searchEntries } = await getMemoryFunctions();
       validateMemoryInput(undefined, undefined, input.query as string);
 

@@ -7,11 +7,38 @@
  * - Topology/consensus state is tracked locally
  * - No actual distributed coordination
  * - Useful for single-machine workflow orchestration
+ *
+ * ADR-0181 Phase 5 (W-coord) — call-site delegation. The six mutation
+ * surfaces — `coordination_topology` (set), `coordination_load_balance`
+ * (set / distribute), `coordination_sync` (trigger / resolve),
+ * `coordination_node` (add / remove / heartbeat), `coordination_consensus`
+ * (propose / vote), `coordination_orchestrate` — delegate to
+ * `archivist.dispatch<'coordination_*'>(payload satisfies ToolPayloadMap[…])`.
+ * The dispatch IS the write: it runs the guard chain, opens the audit
+ * intent → applied transition, and performs the `withWrite` against
+ * `.claude-flow/coordination/store.json` (all six storeIds route to the same
+ * path via `fsJsonPathFor` overrides in `archivist/substrate-registry.ts`,
+ * so the cli's existing `loadCoordStore()` sees archivist-applied state).
+ * The cli no longer calls `saveCoordStore()`; it re-reads with
+ * `loadCoordStore()` AFTER a successful dispatch to project the structured
+ * response envelope. Pure-read actions (`get`/`status`/`info`/`list`/
+ * `optimize`/`commit`) stay cli-side reads — no dispatch — per the
+ * consolidated team-lead ruling: one dispatch per cli invocation, no
+ * dispatch for non-mutating actions. `coordination_metrics` has no archivist
+ * counterpart in `ToolPayloadMap` and remains cli-authoritative.
+ *
+ * Server-minted IDs (`orchestrationId`, `proposalId`) are recovered via a
+ * before/after diff against the relevant array on the re-read store — the
+ * archivist's `withWrite` lock + the cli's single-flight callsite make the
+ * diff deterministic. See `coordination_orchestrate` and
+ * `coordination_consensus propose` below.
  */
 
 import { type MCPTool, findProjectRoot } from './types.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getProcessArchivist } from '../memory/archivist-init.js';
+import type { ToolPayloadMap } from 'agentdb/archivist';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
@@ -67,6 +94,16 @@ interface CoordConsensusState {
   history: CoordConsensusResult[];
 }
 
+interface CoordOrchestration {
+  id: string;
+  task: string;
+  strategy: string;
+  agents: ReadonlyArray<string>;
+  status: 'scheduled';
+  scheduledAt: string;
+  topology: string;
+}
+
 interface CoordinationStore {
   topology: TopologyConfig;
   loadBalance: LoadBalanceConfig;
@@ -74,21 +111,16 @@ interface CoordinationStore {
   nodes: Record<string, { id: string; status: string; load: number; lastHeartbeat: string }>;
   version: string;
   consensus?: CoordConsensusState;
-}
-
-function getCoordDir(): string {
-  return join(findProjectRoot(), STORAGE_DIR, COORD_DIR);
+  // Mirrors the archivist's canonical CoordinationStore shape (handlers/
+  // coordination/shared.ts). The cli previously typed this via an inline
+  // intersection cast (`store as CoordStoreShape`); the field is now part of
+  // the cli's own interface so both `coordination_orchestrate` and any future
+  // listing handler can read it without a cast.
+  orchestrations?: CoordOrchestration[];
 }
 
 function getCoordPath(): string {
-  return join(getCoordDir(), COORD_FILE);
-}
-
-function ensureCoordDir(): void {
-  const dir = getCoordDir();
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+  return join(findProjectRoot(), STORAGE_DIR, COORD_DIR, COORD_FILE);
 }
 
 function loadCoordStore(): CoordinationStore {
@@ -123,11 +155,6 @@ function loadCoordStore(): CoordinationStore {
   };
 }
 
-function saveCoordStore(store: CoordinationStore): void {
-  ensureCoordDir();
-  writeFileSync(getCoordPath(), JSON.stringify(store, null, 2), 'utf-8');
-}
-
 export const coordinationTools: MCPTool[] = [
   {
     name: 'coordination_topology',
@@ -144,10 +171,10 @@ export const coordinationTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadCoordStore();
       const action = (input.action as string) || 'get';
 
       if (action === 'get') {
+        const store = loadCoordStore();
         return {
           success: true,
           topology: store.topology,
@@ -157,13 +184,17 @@ export const coordinationTools: MCPTool[] = [
       }
 
       if (action === 'set') {
-        if (input.type) store.topology.type = input.type as TopologyConfig['type'];
-        if (input.maxNodes) store.topology.maxNodes = input.maxNodes as number;
-        if (input.redundancy) store.topology.redundancy = input.redundancy as number;
-        if (input.consensusAlgorithm) store.topology.consensusAlgorithm = input.consensusAlgorithm as string;
-
-        saveCoordStore(store);
-
+        const payload = {
+          action: 'set',
+          type: input.type as ToolPayloadMap['coordination_topology']['type'],
+          maxNodes: input.maxNodes as number | undefined,
+          redundancy: input.redundancy as number | undefined,
+          consensusAlgorithm: input.consensusAlgorithm as
+            | ToolPayloadMap['coordination_topology']['consensusAlgorithm']
+            | undefined,
+        } satisfies ToolPayloadMap['coordination_topology'];
+        await (await getProcessArchivist()).dispatch('coordination_topology', payload);
+        const store = loadCoordStore();
         return {
           success: true,
           action: 'updated',
@@ -172,6 +203,7 @@ export const coordinationTools: MCPTool[] = [
       }
 
       if (action === 'optimize') {
+        const store = loadCoordStore();
         // Analyze current state and suggest optimal topology
         const nodeCount = Object.keys(store.nodes).length;
         let recommended: TopologyConfig['type'] = 'hierarchical';
@@ -214,10 +246,10 @@ export const coordinationTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadCoordStore();
       const action = (input.action as string) || 'get';
 
       if (action === 'get') {
+        const store = loadCoordStore();
         const nodes = Object.values(store.nodes);
         const avgLoad = nodes.length > 0
           ? nodes.reduce((sum, n) => sum + n.load, 0) / nodes.length
@@ -236,11 +268,15 @@ export const coordinationTools: MCPTool[] = [
       }
 
       if (action === 'set') {
-        if (input.algorithm) store.loadBalance.algorithm = input.algorithm as LoadBalanceConfig['algorithm'];
-        if (input.weights) store.loadBalance.weights = input.weights as Record<string, number>;
-
-        saveCoordStore(store);
-
+        const payload = {
+          action: 'set',
+          algorithm: input.algorithm as
+            | ToolPayloadMap['coordination_load_balance']['algorithm']
+            | undefined,
+          weights: input.weights as Record<string, number> | undefined,
+        } satisfies ToolPayloadMap['coordination_load_balance'];
+        await (await getProcessArchivist()).dispatch('coordination_load_balance', payload);
+        const store = loadCoordStore();
         return {
           success: true,
           action: 'updated',
@@ -250,37 +286,40 @@ export const coordinationTools: MCPTool[] = [
 
       if (action === 'distribute') {
         const task = input.task as string;
-        const nodes = Object.values(store.nodes).filter(n => n.status === 'active');
-
-        if (nodes.length === 0) {
+        // Pre-dispatch read: archivist `distribute` mints the picked node + load
+        // counter internally; mirroring the pick here would diverge from the
+        // handler's algorithm. Instead we dispatch and recover the result via a
+        // before/after diff on `nodes[id].load` against the re-read store.
+        const before = loadCoordStore();
+        const beforeActive = Object.values(before.nodes).filter(n => n.status === 'active');
+        if (beforeActive.length === 0) {
           return { success: false, error: 'No active nodes available' };
         }
+        const beforeLoads = new Map(beforeActive.map(n => [n.id, n.load] as const));
 
-        // Select node based on algorithm
-        let selectedNode: typeof nodes[0];
-        const algorithm = store.loadBalance.algorithm;
+        const payload = {
+          action: 'distribute',
+          task,
+        } satisfies ToolPayloadMap['coordination_load_balance'];
+        await (await getProcessArchivist()).dispatch('coordination_load_balance', payload);
 
-        if (algorithm === 'least-connections' || algorithm === 'adaptive') {
-          selectedNode = nodes.reduce((min, n) => n.load < min.load ? n : min);
-        } else if (algorithm === 'weighted') {
-          const weights = store.loadBalance.weights;
-          selectedNode = nodes.reduce((max, n) => (weights[n.id] || 1) > (weights[max.id] || 1) ? n : max);
-        } else {
-          // Round robin - just pick first active
-          selectedNode = nodes[0];
+        const after = loadCoordStore();
+        const incremented = Object.values(after.nodes).find(
+          n => n.status === 'active' && (beforeLoads.get(n.id) ?? n.load) < n.load,
+        );
+        if (!incremented) {
+          throw new Error(
+            'coordination_load_balance distribute: post-dispatch store shows no node-load increment; ' +
+              'archivist dispatch returned without mutating store.nodes (no concurrent writer expected).',
+          );
         }
-
-        // Update load
-        selectedNode.load += 1;
-        saveCoordStore(store);
-
         return {
           success: true,
           action: 'distributed',
           task,
-          assignedTo: selectedNode.id,
-          algorithm,
-          nodeLoad: selectedNode.load,
+          assignedTo: incremented.id,
+          algorithm: after.loadBalance.algorithm,
+          nodeLoad: incremented.load,
         };
       }
 
@@ -300,10 +339,10 @@ export const coordinationTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadCoordStore();
       const action = (input.action as string) || 'status';
 
       if (action === 'status') {
+        const store = loadCoordStore();
         const timeSinceSync = Date.now() - new Date(store.sync.lastSync).getTime();
 
         return {
@@ -315,15 +354,12 @@ export const coordinationTools: MCPTool[] = [
       }
 
       if (action === 'trigger') {
-        store.sync.syncCount++;
-        store.sync.lastSync = new Date().toISOString();
-        store.sync.pendingChanges = 0;
-
-        // Simulate sync
-        await new Promise(resolve => setTimeout(resolve, 50));
-
-        saveCoordStore(store);
-
+        const payload = {
+          action: 'trigger',
+          force: input.force as boolean | undefined,
+        } satisfies ToolPayloadMap['coordination_sync'];
+        await (await getProcessArchivist()).dispatch('coordination_sync', payload);
+        const store = loadCoordStore();
         return {
           success: true,
           action: 'synchronized',
@@ -335,20 +371,25 @@ export const coordinationTools: MCPTool[] = [
 
       if (action === 'resolve') {
         const strategy = (input.conflictResolution as string) || 'latest';
+        const before = loadCoordStore();
+        const conflictsBefore = before.sync.conflicts;
 
-        if (store.sync.conflicts > 0) {
-          const resolved = store.sync.conflicts;
-          store.sync.conflicts = 0;
-          saveCoordStore(store);
+        const payload = {
+          action: 'resolve',
+          conflictResolution: input.conflictResolution as
+            | ToolPayloadMap['coordination_sync']['conflictResolution']
+            | undefined,
+        } satisfies ToolPayloadMap['coordination_sync'];
+        await (await getProcessArchivist()).dispatch('coordination_sync', payload);
 
+        if (conflictsBefore > 0) {
           return {
             success: true,
             action: 'resolved',
             strategy,
-            conflictsResolved: resolved,
+            conflictsResolved: conflictsBefore,
           };
         }
-
         return {
           success: true,
           action: 'resolve',
@@ -372,12 +413,12 @@ export const coordinationTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadCoordStore();
       const action = (input.action as string) || 'list';
 
       // `status` / `info` — return aggregate coordination-node health.
       // Accepts optional `nodeId` to return a single node's state.
       if (action === 'status' || action === 'info') {
+        const store = loadCoordStore();
         const nodes = Object.values(store.nodes);
         const nodeId = input.nodeId as string | undefined;
 
@@ -417,6 +458,7 @@ export const coordinationTools: MCPTool[] = [
       }
 
       if (action === 'list') {
+        const store = loadCoordStore();
         const nodes = Object.values(store.nodes);
 
         return {
@@ -433,17 +475,16 @@ export const coordinationTools: MCPTool[] = [
       }
 
       if (action === 'add') {
+        // Mirror the archivist handler's nodeId default (`node-${Date.now()}`)
+        // so we know which key to surface back; passing it explicitly also
+        // makes the audit entry payload-hash deterministic for the same call.
         const nodeId = (input.nodeId as string) || `node-${Date.now()}`;
-
-        store.nodes[nodeId] = {
-          id: nodeId,
-          status: 'active',
-          load: 0,
-          lastHeartbeat: new Date().toISOString(),
-        };
-
-        saveCoordStore(store);
-
+        const payload = {
+          action: 'add',
+          nodeId,
+        } satisfies ToolPayloadMap['coordination_node'];
+        await (await getProcessArchivist()).dispatch('coordination_node', payload);
+        const store = loadCoordStore();
         return {
           success: true,
           action: 'added',
@@ -454,14 +495,20 @@ export const coordinationTools: MCPTool[] = [
 
       if (action === 'remove') {
         const nodeId = input.nodeId as string;
-
-        if (!store.nodes[nodeId]) {
-          return { success: false, error: 'Node not found' };
+        // Archivist handler throws on unknown nodeId (`feedback-no-fallbacks`
+        // divergence from cli's prior `success: false` short-circuit). Catch
+        // the throw and surface as the same `success: false` envelope so
+        // existing callers' branching is preserved.
+        const payload = {
+          action: 'remove',
+          nodeId,
+        } satisfies ToolPayloadMap['coordination_node'];
+        try {
+          await (await getProcessArchivist()).dispatch('coordination_node', payload);
+        } catch (err) {
+          return { success: false, error: (err as Error).message };
         }
-
-        delete store.nodes[nodeId];
-        saveCoordStore(store);
-
+        const store = loadCoordStore();
         return {
           success: true,
           action: 'removed',
@@ -472,13 +519,19 @@ export const coordinationTools: MCPTool[] = [
 
       if (action === 'heartbeat') {
         const nodeId = input.nodeId as string;
-
-        if (store.nodes[nodeId]) {
-          store.nodes[nodeId].lastHeartbeat = new Date().toISOString();
-          store.nodes[nodeId].status = 'active';
-          saveCoordStore(store);
+        // Archivist handler throws on unknown nodeId (the cli's prior silent
+        // no-op masked caller bugs — `feedback-no-fallbacks` divergence). Catch
+        // + surface as `success: false` envelope so the wire response shape
+        // stays `{success, action, nodeId, timestamp}` for the known-node case.
+        const payload = {
+          action: 'heartbeat',
+          nodeId,
+        } satisfies ToolPayloadMap['coordination_node'];
+        try {
+          await (await getProcessArchivist()).dispatch('coordination_node', payload);
+        } catch (err) {
+          return { success: false, error: (err as Error).message, nodeId };
         }
-
         return {
           success: true,
           action: 'heartbeat',
@@ -508,16 +561,8 @@ export const coordinationTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadCoordStore();
       const action = (input.action as string) || 'status';
       const strategy = (input.strategy as string) || 'raft';
-      const nodeCount = Object.keys(store.nodes).length || 1;
-
-      // Initialize consensus storage in the coordination store if missing
-      if (!store.consensus) {
-        store.consensus = { pending: [], history: [] };
-      }
-      const consensus = store.consensus;
 
       function calcRequired(strat: string, total: number, preset?: string): number {
         if (total <= 0) return 1;
@@ -529,7 +574,24 @@ export const coordinationTools: MCPTool[] = [
         return Math.floor(total / 2) + 1;
       }
 
+      function readConsensus(): {
+        store: CoordinationStore;
+        consensus: CoordConsensusState;
+        nodeCount: number;
+      } {
+        const store = loadCoordStore();
+        if (!store.consensus) {
+          store.consensus = { pending: [], history: [] };
+        }
+        return {
+          store,
+          consensus: store.consensus,
+          nodeCount: Object.keys(store.nodes).length || 1,
+        };
+      }
+
       if (action === 'status') {
+        const { store, consensus, nodeCount } = readConsensus();
         if (input.proposalId) {
           // Status for specific proposal
           const p = consensus.pending.find(x => x.proposalId === input.proposalId);
@@ -567,14 +629,23 @@ export const coordinationTools: MCPTool[] = [
       }
 
       if (action === 'propose') {
-        const proposalId = `proposal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // Pre-dispatch snapshot — the archivist mints the proposalId
+        // server-side (`proposal-${Date.now()}-${random}`); we recover it via
+        // before/after diff on `consensus.pending`.
+        const before = readConsensus();
+        const beforeIds = new Set(before.consensus.pending.map(p => p.proposalId));
         const quorumPreset = (input.quorumPreset as string) || 'majority';
         const term = (input.term as number) || 1;
-        const required = calcRequired(strategy, nodeCount, quorumPreset);
+        const required = calcRequired(strategy, before.nodeCount, quorumPreset);
 
-        // Raft: one pending proposal per term
+        // Raft one-pending-per-term: the archivist handler throws on conflict
+        // (`feedback-no-fallbacks`); catch + map to the cli's `success: false`
+        // envelope so existing callers (CLI scripts, tests) see the
+        // pre-flip wire shape (`existingProposalId` field preserved).
         if (strategy === 'raft') {
-          const existing = consensus.pending.find(p => p.strategy === 'raft' && p.term === term);
+          const existing = before.consensus.pending.find(
+            p => p.strategy === 'raft' && p.term === term,
+          );
           if (existing) {
             return {
               success: false,
@@ -584,137 +655,132 @@ export const coordinationTools: MCPTool[] = [
           }
         }
 
-        consensus.pending.push({
-          proposalId,
-          type: 'coordination',
+        const payload = {
+          action: 'propose',
           proposal: input.proposal,
-          proposedBy: (input.voterId as string) || 'system',
-          proposedAt: new Date().toISOString(),
-          votes: {},
-          status: 'pending',
-          strategy,
-          term: strategy === 'raft' ? term : undefined,
-          quorumPreset: strategy === 'quorum' ? quorumPreset : undefined,
-          byzantineVoters: strategy === 'bft' ? [] : undefined,
-        });
+          voterId: input.voterId as string | undefined,
+          strategy: strategy as ToolPayloadMap['coordination_consensus']['strategy'],
+          quorumPreset: quorumPreset as ToolPayloadMap['coordination_consensus']['quorumPreset'],
+          term,
+        } satisfies ToolPayloadMap['coordination_consensus'];
+        await (await getProcessArchivist()).dispatch('coordination_consensus', payload);
 
-        saveCoordStore(store);
-
+        const after = readConsensus();
+        const newProposal = after.consensus.pending.find(p => !beforeIds.has(p.proposalId));
+        if (!newProposal) {
+          throw new Error(
+            'coordination_consensus propose: post-dispatch store shows no new pending proposal; ' +
+              'archivist dispatch returned without appending to consensus.pending (no concurrent writer expected).',
+          );
+        }
         return {
           success: true,
           action: 'proposed',
-          proposalId,
+          proposalId: newProposal.proposalId,
           proposal: input.proposal,
           strategy,
           status: 'pending',
           required,
-          totalNodes: nodeCount,
+          totalNodes: after.nodeCount,
           term: strategy === 'raft' ? term : undefined,
         };
       }
 
       if (action === 'vote') {
-        const p = consensus.pending.find(x => x.proposalId === input.proposalId);
-        if (!p) return { success: false, error: 'Proposal not found or already resolved' };
-
+        // Pre-dispatch snapshot — needed both to fail-fast on missing
+        // proposal/voterId (the archivist throws — we catch and translate to
+        // the pre-flip `success: false` wire shape) AND to compute `required`
+        // / detect byzantine outcomes from the post-dispatch state diff.
+        const before = readConsensus();
+        const pBefore = before.consensus.pending.find(x => x.proposalId === input.proposalId);
+        if (!pBefore) return { success: false, error: 'Proposal not found or already resolved' };
         const voterId = input.voterId as string;
         if (!voterId) return { success: false, error: 'voterId is required' };
 
-        const voteValue = input.vote === 'accept';
-        const pStrategy = p.strategy || 'raft';
-        const required = calcRequired(pStrategy, nodeCount, p.quorumPreset);
+        const pStrategy = pBefore.strategy || 'raft';
+        const required = calcRequired(pStrategy, before.nodeCount, pBefore.quorumPreset);
 
-        // Double-vote prevention
-        if (voterId in p.votes) {
-          if (pStrategy === 'bft' && p.votes[voterId] !== voteValue) {
-            if (!p.byzantineVoters) p.byzantineVoters = [];
-            if (!p.byzantineVoters.includes(voterId)) p.byzantineVoters.push(voterId);
-            delete p.votes[voterId];
-            saveCoordStore(store);
+        const payload = {
+          action: 'vote',
+          proposalId: input.proposalId as string,
+          vote: input.vote as ToolPayloadMap['coordination_consensus']['vote'],
+          voterId,
+          strategy: pStrategy as ToolPayloadMap['coordination_consensus']['strategy'],
+        } satisfies ToolPayloadMap['coordination_consensus'];
+        try {
+          await (await getProcessArchivist()).dispatch('coordination_consensus', payload);
+        } catch (err) {
+          // The archivist handler signals four refusal modes via thrown
+          // errors (the pre-flip cli used `success: false` envelopes):
+          //   1. "Byzantine behaviour — voter ... attempted a conflicting
+          //      vote on the same proposal" — same-proposal conflict; record
+          //      persisted before the throw.
+          //   2. "Byzantine behaviour — voter ... cast conflicting votes
+          //      across proposals" — cross-proposal conflict; same.
+          //   3. "voter '...' has already voted on this proposal" —
+          //      non-byzantine double vote; no write.
+          //   4. catch-all for proposal/voter input validation.
+          // Translate (1) and (2) back to the byzantineDetected envelope by
+          // re-reading the persisted byzantineVoters list; everything else
+          // surfaces as the generic error envelope.
+          const msg = (err as Error).message;
+          if (msg.includes('Byzantine behaviour')) {
+            const after = readConsensus();
+            const pAfter = after.consensus.pending.find(x => x.proposalId === input.proposalId);
+            const byzantineVoters = pAfter?.byzantineVoters ?? [];
             return {
               success: false,
               byzantineDetected: true,
-              message: `Byzantine behavior: voter ${voterId} attempted conflicting vote. Vote invalidated.`,
-              byzantineVoters: p.byzantineVoters,
+              message: msg,
+              byzantineVoters,
             };
           }
-          return { success: false, error: `Voter ${voterId} has already voted on this proposal` };
+          return { success: false, error: msg };
         }
 
-        // BFT cross-proposal conflict check
-        if (pStrategy === 'bft') {
-          for (const other of consensus.pending) {
-            if (other.proposalId === p.proposalId) continue;
-            if (voterId in other.votes && other.votes[voterId] !== voteValue) {
-              if (!p.byzantineVoters) p.byzantineVoters = [];
-              if (!p.byzantineVoters.includes(voterId)) p.byzantineVoters.push(voterId);
-              saveCoordStore(store);
-              return {
-                success: false,
-                byzantineDetected: true,
-                message: `Byzantine behavior: voter ${voterId} cast conflicting votes across proposals.`,
-                byzantineVoters: p.byzantineVoters,
-              };
-            }
-          }
-        }
-
-        p.votes[voterId] = voteValue;
-
-        const votesFor = Object.values(p.votes).filter(v => v).length;
-        const votesAgainst = Object.values(p.votes).filter(v => !v).length;
-
-        // Resolution check
-        let resolved = false;
-        let result: string | undefined;
-
-        if (votesFor >= required) {
-          resolved = true;
-          result = 'approved';
-        } else if (votesAgainst >= required) {
-          resolved = true;
-          result = 'rejected';
-        } else if (pStrategy === 'quorum' && p.quorumPreset === 'unanimous' && votesAgainst > 0) {
-          resolved = true;
-          result = 'rejected';
-        }
-
-        if (resolved && result) {
-          p.status = result;
-          consensus.history.push({
-            proposalId: p.proposalId,
-            result,
-            votes: { for: votesFor, against: votesAgainst },
-            decidedAt: new Date().toISOString(),
-            strategy: pStrategy,
-            term: p.term,
-            byzantineDetected: p.byzantineVoters?.length ? p.byzantineVoters : undefined,
-          });
-          consensus.pending = consensus.pending.filter(x => x.proposalId !== p.proposalId);
-        }
-
-        saveCoordStore(store);
+        // Successful vote: re-read to compute the response envelope. The
+        // archivist may have moved the proposal to history (resolution); the
+        // `status` field comes from whichever list it lands on.
+        const after = readConsensus();
+        const pAfterPending = after.consensus.pending.find(x => x.proposalId === input.proposalId);
+        const pAfterHistory = after.consensus.history.find(
+          x => x.proposalId === input.proposalId,
+        );
+        const resolved = pAfterHistory !== undefined;
+        const result = resolved ? pAfterHistory.result : undefined;
+        const votesFor = pAfterPending
+          ? Object.values(pAfterPending.votes).filter(v => v).length
+          : pAfterHistory?.votes.for ?? 0;
+        const votesAgainst = pAfterPending
+          ? Object.values(pAfterPending.votes).filter(v => !v).length
+          : pAfterHistory?.votes.against ?? 0;
+        const status = pAfterPending?.status ?? pAfterHistory?.result ?? 'pending';
 
         return {
           success: true,
           action: 'voted',
-          proposalId: p.proposalId,
+          proposalId: input.proposalId,
           voterId,
           vote: input.vote,
           strategy: pStrategy,
           votesFor,
           votesAgainst,
           required,
-          totalNodes: nodeCount,
+          totalNodes: after.nodeCount,
           resolved,
-          result: resolved ? result : undefined,
-          status: p.status,
+          result,
+          status,
         };
       }
 
       if (action === 'commit') {
-        // Commit is a no-op confirmation for already-resolved proposals
+        // Commit is a no-op confirmation for already-resolved proposals —
+        // pure read (no dispatch needed). The archivist's commit action is
+        // also a read shape; aligning behaviour without re-dispatching keeps
+        // ONE-dispatch-per-cli-invocation hygiene (no audit entries for
+        // pure-read confirmation calls).
         if (input.proposalId) {
+          const { consensus } = readConsensus();
           const h = consensus.history.find(x => x.proposalId === input.proposalId);
           if (h) {
             return {
@@ -748,48 +814,41 @@ export const coordinationTools: MCPTool[] = [
       required: ['task'],
     },
     handler: async (input) => {
-      const store = loadCoordStore();
-      const task = input.task as string;
-      const agents = (input.agents as string[]) || Object.keys(store.nodes);
-      const strategy = (input.strategy as string) || 'parallel';
-
-      const orchestrationId = `orch-${Date.now()}`;
-
       // ADR-093 F7: this tool only schedules an orchestration record — it
-      // does not actually execute. Previously it returned a hardcoded
-      // `estimatedCompletion: "50ms"` which was misleading. Now we return
-      // an honest stub-status with a note pointing callers at agent_spawn
-      // / Task tool / hive-mind tools for real orchestration. Persist the
-      // record so callers can list/inspect what was scheduled.
-      const orchestration = {
-        id: orchestrationId,
+      // does not actually execute. The archivist handler mints the
+      // orchestrationId server-side (`orch-${Date.now()}`); we recover it via
+      // before/after diff on `store.orchestrations[]`.
+      const task = input.task as string;
+      const before = loadCoordStore();
+      const agents = (input.agents as string[]) || Object.keys(before.nodes);
+      const strategy = (input.strategy as string) || 'parallel';
+      const beforeIds = new Set((before.orchestrations ?? []).map(o => o.id));
+
+      const payload = {
         task,
-        strategy,
         agents,
-        status: 'scheduled' as const,
-        scheduledAt: new Date().toISOString(),
-        topology: store.topology.type,
-      };
-      // Best-effort persist — keep last 100 scheduled orchestrations.
-      type CoordStoreShape = ReturnType<typeof loadCoordStore> & {
-        orchestrations?: Array<typeof orchestration>;
-      };
-      const orchStore = store as CoordStoreShape;
-      if (!Array.isArray(orchStore.orchestrations)) orchStore.orchestrations = [];
-      orchStore.orchestrations.push(orchestration);
-      if (orchStore.orchestrations.length > 100) {
-        orchStore.orchestrations = orchStore.orchestrations.slice(-100);
+        strategy: strategy as ToolPayloadMap['coordination_orchestrate']['strategy'],
+        timeout: input.timeout as number | undefined,
+      } satisfies ToolPayloadMap['coordination_orchestrate'];
+      await (await getProcessArchivist()).dispatch('coordination_orchestrate', payload);
+
+      const after = loadCoordStore();
+      const newOrch = (after.orchestrations ?? []).find(o => !beforeIds.has(o.id));
+      if (!newOrch) {
+        throw new Error(
+          'coordination_orchestrate: post-dispatch store shows no new orchestration record; ' +
+            'archivist dispatch returned without appending to store.orchestrations (no concurrent writer expected).',
+        );
       }
-      saveCoordStore(orchStore);
 
       return {
         success: true,
-        orchestrationId,
+        orchestrationId: newOrch.id,
         task,
         strategy,
-        agents,
+        agents: newOrch.agents,
         status: 'scheduled',
-        topology: store.topology.type,
+        topology: after.topology.type,
         // Honest stub: no executor wired up yet. Don't lie about completion time.
         executor: 'none',
         _note: 'coordination_orchestrate currently records the orchestration request but does not execute it. For real multi-agent execution use agent_spawn + the Task tool, or hive-mind_spawn for queen-led coordination.',
