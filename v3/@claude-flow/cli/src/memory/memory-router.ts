@@ -2419,3 +2419,27 @@ export function getActiveSiblingPaths(): string[] {
   if (!_databasePath || _databasePath === ':memory:') return [];
   return RVF_CANONICAL_EXTENSIONS.map((ext) => _databasePath + ext);
 }
+
+/**
+ * ADR-0181 Phase 4: read access to the active RVF storage instance, for the
+ * cli archivist init path's `MemoryRvfAdapter` construction
+ * (`memory/archivist-init.ts`). At runtime `_storage` is the
+ * `@claude-flow/memory` `RvfBackend` that the adapter's `IMemoryRvfBackend`
+ * surface is structurally typed against — the cli's archivist `rvfBackend`
+ * slot is wired by passing this instance directly into the adapter
+ * constructor (no cast-lie, no double-open of the underlying `.rvf` file).
+ *
+ * Throws if called before `ensureRouter()` has completed — the caller
+ * (`initProcessArchivist`) is responsible for awaiting `ensureRouter()`
+ * first; an undefined-storage state here is a contract violation, not a
+ * fallback case (`feedback-no-fallbacks`).
+ */
+export function getStorageInstance(): IStorageContract {
+  if (!_storage) {
+    throw new Error(
+      'memory-router: getStorageInstance() called before ensureRouter() ' +
+        'completed (storage is null). Await ensureRouter() first.',
+    );
+  }
+  return _storage;
+}

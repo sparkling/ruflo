@@ -926,6 +926,17 @@ export class WorkerDaemon extends EventEmitter {
    * SQLite carve-out backend is deferred to the phase that un-stubs
    * SQLite-carve-out handlers (TODO(F4-3-callsite), ADR-0181 Phase 3/4).
    *
+   * ADR-0181 Phase 4 re-confirms this stance: even though the cli process now
+   * wires `rvfBackend` + `sqliteDb` + the three capability factories (see
+   * `memory/archivist-init.ts`), the daemon's dispatch surface is unchanged —
+   * `archivist.dispatch(...)` is called nowhere in this file. Adding the cli's
+   * substrate handles here would mean either reusing them across processes
+   * (the W1 RVF adapter wraps memory-router's `_storage`, which is per-cli;
+   * the daemon has no memory-router) or opening a second `archivist.db`
+   * handle the daemon never reads from. Both are dead wiring. The daemon
+   * stays projectRoot-only until it gains a dispatched store needing RVF or
+   * SQLite carve-out.
+   *
    * Audit-log path anchoring: audit-writer.ts keeps `auditPath` as a
    * process-global defaulting to `<process.cwd()>/.claude-flow/data/...`.
    * setAuditLogPath() anchors it explicitly to the same projectRoot passed in

@@ -1,5 +1,5 @@
 /**
- * ADR-0181 Phase 1 — cli-process Memory Archivist `initialize(config)` feeding.
+ * ADR-0181 Phase 1 / Phase 4 — cli-process Memory Archivist `initialize(config)` feeding.
  *
  * The Memory Archivist (ADR-0180, `agentdb/archivist`) is scaffolded but not yet
  * live on any write path. ADR-0181 Phase 1 makes each host process (cli, ruflo
@@ -10,51 +10,148 @@
  *   - `src/index.ts` (`CLI.run()` — the one-shot command path), and
  *   - `src/mcp-server.ts` (`startStdioServer()` — the long-lived MCP server path).
  *
- * ── What this config carries, and what it deliberately does not ──────────────
+ * ── Phase 1 → Phase 4 progression ────────────────────────────────────────────
  *
- * Phase 1's `ArchivistInitConfig` for the cli process is `{ projectRoot }`.
- * `projectRoot` is a real `ArchivistInitConfig` field — it resolves the FS-JSON
- * store family's on-disk paths and is threaded onto every `MutationContext` /
- * `ReadContext` — so this is a genuine config, not an empty `{}`.
+ * Phase 1 wired `projectRoot` only — `rvfBackend` / `sqliteDb` and the three
+ * capability factories were deferred because the cli's RVF handle
+ * (`memory-router.ts` `_storage`, `@claude-flow/memory`'s `RvfBackend` shape)
+ * did not present agentdb's `VectorBackendAsync` interface, AND a *fresh*
+ * agentdb `RvfBackend` on the same `.rvf` path would double-open (two native
+ * handles + two HNSW indices on one file = split-brain writes,
+ * `feedback-data-loss-zero-tolerance`). Phase 4's adapter-and-widening
+ * combination resolves both — see item 1 below.
  *
- * It does NOT pass `rvfBackend` / `sqliteDb` (nor their factory forms). This is
- * a deliberate, verified decision, NOT an oversight:
+ * Phase 4 closes those gaps:
  *
- *   - `ArchivistInitConfig.rvfBackend` is typed against the *concrete class*
- *     `agentdb/src/backends/rvf/RvfBackend` (`implements VectorBackendAsync`).
- *     The cli process's RVF handle is `memory-router.ts`'s `_storage`, which is
- *     `@claude-flow/memory`'s `RvfBackend` — a *different class in a different
- *     package* (`implements IMemoryBackend`). TypeScript types a class with
- *     `private` members nominally: the two are not assignable, and no agentdb
- *     `RvfBackend` instance exists anywhere in the cli process to borrow
- *     (`createBackend('auto')` returns `RuVectorBackend` / `SelfLearningRvfBackend`
- *     / `SqlJsRvfBackend`, never the bare `RvfBackend`). Passing `_storage` would
- *     require an `as unknown as` cast — a cast-lie that throws at the first
- *     `handle.rvf.searchAsync()` call (`feedback-no-fallbacks`).
- *   - `ArchivistInitConfig.sqliteDb` wants a `better-sqlite3` `Database`. The
- *     cli's only SQLite handle is `agentdb.database`, typed `IDatabaseConnection`
- *     (agentdb's better-sqlite3-or-WASM-SQLite abstraction) — again not that type.
- *   - Constructing a *fresh* agentdb `RvfBackend` for the same `.rvf` path the
- *     memory-router already owns would be a double-open: two native handles +
- *     two HNSW indices on one file = split-brain writes
- *     (`feedback-data-loss-zero-tolerance`).
+ *   1. **`rvfBackend`** — the W1 `MemoryRvfAdapter` (lives in agentdb at
+ *      `agentdb/src/adapters/memory-rvf-adapter.ts`, imported here via the
+ *      `agentdb/adapters/memory-rvf-adapter` subpath export) wraps
+ *      memory-router's `_storage` (the `@claude-flow/memory`-shaped
+ *      `RvfBackend`) and presents agentdb's `VectorBackendAsync` surface. The
+ *      adapter typing is duck-typed (`IMemoryRvfBackend`) — no `as unknown as`
+ *      cast-lie at the boundary, and no `@claude-flow/memory` package
+ *      dependency in the adapter module. The adapter holds the SAME native
+ *      handle the cli already uses, so no double-open; split-brain is avoided
+ *      by construction. Sync `insert`/`search`/etc. throw fail-loud
+ *      (memory-router is eager-WAL async-only); `flush` / `save` / `load` are
+ *      no-ops because every write is already persisted on return.
+ *   2. **`sqliteDb`** — a fresh `better-sqlite3.Database` opened on
+ *      `<projectRoot>/.claude-flow/archivist.db` (a SEPARATE file from
+ *      agentdb.db). SQLite's native file lock (`O_EXCLUSIVE` write transactions,
+ *      WAL shm/wal sidecars) makes cross-process AND cross-handle access safe;
+ *      the daemon's own Phase 1 handle (worker-daemon.ts) and the cli handle
+ *      coexist on the same file via the lock. We open a fresh handle here
+ *      rather than reusing `agentdb.database` because the latter is typed
+ *      `IDatabaseConnection` (agentdb's better-sqlite3-or-WASM-SQLite
+ *      abstraction) — not `BetterSqlite3.Database`.
+ *   3. **`taskRouterFactory`** — adapts the cli's `routeTask(...)`
+ *      (`mcp-tools/agentdb-orchestration.ts:227` — SemanticRouter `.route()` →
+ *      LearningSystem `recommendAlgorithm` fallback) down to the narrow
+ *      `TaskRouter` surface (`capabilities.ts`). Closes `handlers/agentdb/route.ts`
+ *      `TODO(F4-2-config) #1`.
+ *   4. **`embeddingScorerFactory`** — adapts the cli's `generateEmbedding(...)`
+ *      (re-exported from `mcp-tools/embeddings-tools.ts:117` via
+ *      `memory-router.ts:2335`) down to the narrow `EmbeddingScorer` surface
+ *      (`embed` + `cosineSimilarity`). Closes `route.ts` `#2`,
+ *      `reflexion-retrieve.ts`, and `skill-search.ts`'s `TODO(F4-2-config)`.
+ *   5. **`patternReaderFactory`** — adapts the cli's `searchPatterns(...)`
+ *      (`mcp-tools/agentdb-orchestration.ts:49` — `routePatternOp` →
+ *      ReasoningBank BM25+semantic+RRF fusion) down to the narrow read-only
+ *      `PatternReader` surface. Closes `handlers/agentdb/pattern-search.ts`
+ *      `TODO(F4-2-config)`.
  *
- * TODO(F4-3-callsite): wiring a real `rvfBackend` / `sqliteDb` (and the
- * `taskRouter` / `embeddingScorer` / `patternReader` capability factories) for
- * the cli process needs a typed adapter from `@claude-flow/memory`'s
- * `IMemoryBackend`-shaped `RvfBackend` to agentdb's `VectorBackendAsync`-shaped
- * `RvfBackend` — net-new code whose method semantics do not map 1:1
- * (`IMemoryBackend` is key/value + vector; `VectorBackendAsync` is pure-vector
- * `insert` / `searchAsync` / `ingestBatch`). That adapter is ADR-0181 Phase 4/5
- * work (where the `TODO(F4-3-callsite)` markers in `archivist/index.ts` L195 /
- * L216 already live), not Phase 1. Phase 1 wires `projectRoot` honestly and
- * leaves the substrate-backend holders for the phase that can fill them without
- * a cast-lie or a double-open.
+ * ── On the `memory_search_index` Phase 3 indirection ──────────────────────────
+ *
+ * Phase 3 stood up the 4 `memory_*` read handlers (`handlers/memory/{search,
+ * retrieve,list,search-unified}.ts`) against a placeholder FS-JSON store
+ * `memory_search_index` that nothing populates — each handler returns an empty
+ * result for every dispatched read. The handler-side comments (e.g.
+ * `handlers/memory/search.ts` line 12-14) explicitly call out Phase 4 as the
+ * point where the cli→agentdb RVF adapter collapses this two-store shape back
+ * to a single `ctx.substrate.vectorSearch` against the proper `memory_store`
+ * RVF storeId.
+ *
+ * ADR-0181 lines 155 + 166 explicitly list "Delete `memory_search_index`
+ * FS-JSON storeId + the indirection (Phase 3 carry-forward collapse)" as
+ * Phase 4 scope item #5. With `rvfBackend` now wired here (item 1 above),
+ * this wiring change removes the substrate gap that forced the placeholder.
+ *
+ * BUT — the per-handler rewrite (flipping `STORE_ID = 'memory_search_index'`
+ * → `'memory_store'` in the 4 `handlers/memory/*.ts` files, plus deleting
+ * the placeholder `MemorySearchStore` interfaces) is **Phase 5
+ * carry-forward** per team-lead ruling (DA-acknowledged). The reason it
+ * cannot collapse in Phase 4: the archivist's substrate seam currently
+ * exposes only `vectorSearch` against RVF — it does NOT expose key-based
+ * lookup or `list` operations against the RVF substrate. A coherent
+ * collapse needs either substrate-seam expansion (`getByKey` / `list`) OR
+ * per-handler routing decisions at the cli call-site-delegation boundary,
+ * both of which are Phase 5 work. The 5 memory_* handlers stay on
+ * `memory_search_index` in Phase 4; no behavior change from Phase 3. W2's
+ * `rvfBackend` wiring removes the substrate gap that *will* enable the
+ * collapse once the seam-expansion / call-site-delegation lands — Phase 4
+ * scope item #5 is therefore "enable, do not ship the collapse itself".
+ *
+ * ── Eager-vs-lazy resolution ──────────────────────────────────────────────────
+ *
+ * The three capability wirings use the lazy factory form (`*Factory: () => T`)
+ * so the cli process pays for them only on first dispatch through the
+ * corresponding handler. The two substrate slots are resolved as follows:
+ *
+ *   - `rvfBackend` — always wired. The adapter constructor itself is sync,
+ *     but the underlying memory-router needs `ensureRouter()` to open the
+ *     `.rvf` file + build the HNSW index. We await that once on startup,
+ *     then synchronously construct the adapter against `getStorageInstance()`.
+ *     This avoids any race between archivist `initialize()` and
+ *     memory-router's lazy open.
+ *   - `sqliteDb` — conditionally wired, gated on a project-marker check at
+ *     the resolved `projectRoot`. When `findProjectRoot()` falls back to
+ *     cwd (no `.ruflo-project` / `CLAUDE.md`+`.claude/` / `.git/` marker),
+ *     we skip the `mkdirSync(.claude-flow/)` + `new BetterSqlite3(...)`
+ *     entirely and omit `sqliteDb` from the config. This preserves the
+ *     ADR-0069 Bug #3 invariant (no `.claude-flow/` creation in arbitrary
+ *     cwds). Handlers that dispatch through SQLite-carve-out stores in a
+ *     markerless cwd fail loud at `requireSqliteSubstrate()` — the correct
+ *     ADR-0181 §Decision-Drivers failure mode.
  */
 
 import { join } from 'path';
-import { Archivist, setAuditLogPath, type ArchivistInitConfig } from 'agentdb/archivist';
+import { existsSync, mkdirSync } from 'fs';
+import BetterSqlite3 from 'better-sqlite3';
+import {
+  Archivist,
+  setAuditLogPath,
+  type ArchivistInitConfig,
+  type EmbeddingScorer,
+  type PatternHit,
+  type PatternReader,
+  type RouteDecision,
+  type TaskRouter,
+} from 'agentdb/archivist';
+// `VectorBackendAsync` is the contract `ArchivistInitConfig.rvfBackend`
+// (agentdb archivist/index.ts:195) is typed against. The interface lives at
+// `agentdb/src/backends/VectorBackend.ts` but only `agentdb/wasm` re-exports
+// it (`agentdb/backends` barrel re-exports the *base* `VectorBackend`, not
+// the async variant). Importing from `agentdb/wasm` here is a minor naming
+// awkwardness; the alternative — typing `buildArchivistConfig` against the
+// concrete `MemoryRvfAdapter` class — over-constrains the parameter for no
+// gain. Keep the interface contract at the boundary.
+import type { VectorBackendAsync } from 'agentdb/wasm';
 import { findProjectRoot } from '../mcp-tools/types.js';
+// W1 adapter (ADR-0181 Phase 4): structurally types the cli's
+// `@claude-flow/memory` `RvfBackend` as `IMemoryRvfBackend` and presents
+// agentdb's `VectorBackendAsync` surface. No package dependency on
+// `@claude-flow/memory` — duck-typing keeps the fork boundary clean.
+// Sync `insert`/`search`/etc. throw fail-loud (the cli's memory-router is
+// eager-WAL async-only); `flush` / `save` / `load` are no-ops.
+//
+// The adapter lives in `agentdb/src/adapters/memory-rvf-adapter.ts`
+// (co-located with `agentdb/backends/rvf/*` so the `VectorBackendAsync`
+// contract owner stays in the same package). It reaches us via the
+// `./adapters/memory-rvf-adapter` subpath in agentdb's `exports` map.
+// `ArchivistInitConfig.rvfBackend` is typed against the `VectorBackendAsync`
+// interface (not the concrete `RvfBackend` class), so this adapter assigns
+// without any cast.
+import { MemoryRvfAdapter } from 'agentdb/adapters/memory-rvf-adapter';
 
 /**
  * The one per-process `Archivist`. ADR-0181 §Architecture mandates a per-process
@@ -70,17 +167,195 @@ let processArchivist: Archivist | null = null;
 /** Set once `initProcessArchivist()` has run `initialize()` to completion. */
 let initialized = false;
 
+// ── Capability adapters (Phase 4) ────────────────────────────────────────────
+//
+// Each cli-side controller is wrapped here in a TINY adapter that presents the
+// narrow `agentdb/archivist` capability surface — handlers never see the cli
+// function shapes, only `TaskRouter` / `EmbeddingScorer` / `PatternReader`
+// (`capabilities.ts`). The cli `routeTask(...)` / `generateEmbedding(...)` /
+// `searchPatterns(...)` paths already encode the project's preferred semantics
+// (ADR-0069 unified embedding, ADR-0166 axis separation, B7 BanditLearner) —
+// these adapters do not re-implement them, they re-shape.
+//
+// Imports are deferred (`await import('../...')`) so the cli archivist startup
+// path does not eager-load the entire memory-router / mcp-tools surface — a
+// handler dispatch is what pulls them in.
+
 /**
- * Build the cli process's `ArchivistInitConfig`. Phase 1: `projectRoot` only —
- * see the module header for why `rvfBackend` / `sqliteDb` are deliberately
- * absent. `projectRoot` is resolved via `findProjectRoot()` (the canonical
- * resolver — `.ruflo-project` / `CLAUDE.md`+`.claude/` / `.git` walk, never
- * throws, falls back to cwd with a logged warning) so the cli, daemon, and
- * hook-handler all agree on the same root.
+ * Adapt the cli's `routeTask({ task, context })` path
+ * (`mcp-tools/agentdb-orchestration.ts:227` — SemanticRouter `.route()` →
+ * LearningSystem `recommendAlgorithm` fallback + B7 BanditLearner arm
+ * statistics) to the narrow `TaskRouter` capability.
+ *
+ * `TaskRouter.route(...)` MUST return a `RouteDecision`; cli `routeTask`
+ * returns `null` when neither SemanticRouter nor LearningSystem is wired —
+ * surface that as a throw, not as a silent default, per `feedback-no-fallbacks`.
  */
-export function buildArchivistConfig(projectRoot?: string): ArchivistInitConfig {
-  const root = projectRoot ?? findProjectRoot();
-  return { projectRoot: root };
+function makeCliTaskRouter(): TaskRouter {
+  return {
+    async route(input): Promise<RouteDecision> {
+      const { routeTask } = await import('../mcp-tools/agentdb-orchestration.js');
+      const decision = await routeTask({
+        task: input.task,
+        context: input.context,
+      });
+      if (!decision) {
+        throw new Error(
+          'archivist: cli TaskRouter capability — routeTask() returned null ' +
+            '(SemanticRouter and LearningSystem both unavailable in this process). ' +
+            'Wire one of the two controllers via memory-router before dispatching agentdb_route.',
+        );
+      }
+      // RouteDecision has `readonly agents: ReadonlyArray<string>`; cli
+      // routeTask returns `agents: string[]`. The array is already a fresh
+      // allocation per call, so pass it through as readonly without copying.
+      return {
+        route: decision.route,
+        confidence: decision.confidence,
+        agents: decision.agents,
+        controller: decision.controller,
+      };
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `generateEmbedding(text)` path
+ * (`memory-router.ts:2335` re-export from `mcp-tools/embeddings-tools.ts:117`,
+ * which itself dispatches to the unified ADR-0069 mpnet pipeline) to the
+ * narrow `EmbeddingScorer` capability.
+ *
+ * `cosineSimilarity` is implemented locally — exactly one well-tested
+ * implementation per the `capabilities.ts` rationale, rather than three
+ * handler-local copies. Throws on length mismatch (no silent 0,
+ * `feedback-no-fallbacks` — a 0 there would mask a dimension bug).
+ */
+function makeCliEmbeddingScorer(): EmbeddingScorer {
+  return {
+    async embed(text: string): Promise<Float32Array> {
+      const { generateEmbedding } = await import('./memory-router.js');
+      const result = await generateEmbedding(text);
+      // generateEmbedding returns { embedding: number[], dimensions, model }
+      // (per memory-router.ts:2335 → adapter.generateEmbedding). Convert
+      // number[] → Float32Array; do not store the intermediate array.
+      const arr = (result as { embedding: number[] }).embedding;
+      if (!Array.isArray(arr)) {
+        throw new Error(
+          'archivist: cli EmbeddingScorer capability — generateEmbedding(text) ' +
+            'returned a shape without an `embedding: number[]` field.',
+        );
+      }
+      return Float32Array.from(arr);
+    },
+    cosineSimilarity(a: Float32Array, b: Float32Array): number {
+      if (a.length !== b.length) {
+        throw new Error(
+          `archivist: cli EmbeddingScorer.cosineSimilarity — length mismatch ` +
+            `(${a.length} vs ${b.length}); refusing to silently return 0.`,
+        );
+      }
+      let dot = 0;
+      let normA = 0;
+      let normB = 0;
+      for (let i = 0; i < a.length; i++) {
+        const x = a[i];
+        const y = b[i];
+        dot += x * y;
+        normA += x * x;
+        normB += y * y;
+      }
+      const denom = Math.sqrt(normA) * Math.sqrt(normB);
+      if (denom === 0) {
+        // One of the vectors is the zero vector — cosine similarity is
+        // mathematically undefined. Returning 0 (orthogonal) is the
+        // conventional choice; we surface it explicitly rather than silently.
+        return 0;
+      }
+      return dot / denom;
+    },
+  };
+}
+
+/**
+ * Adapt the cli's `searchPatterns({ query, topK, minConfidence })` path
+ * (`mcp-tools/agentdb-orchestration.ts:49` — `routePatternOp` → ReasoningBank
+ * BM25+semantic+RRF fusion over the `reasoning_patterns` SQLite table) to the
+ * narrow read-only `PatternReader` capability.
+ *
+ * The cli returns `{ results, controller, error? }`; the narrow surface
+ * returns `ReadonlyArray<PatternHit>`. A populated `error` means the upstream
+ * ReasoningBank route failed — surface as a throw rather than silently
+ * returning an empty array (`feedback-no-fallbacks`); an empty `results` with
+ * no error is a legitimate "no patterns matched" and passes through.
+ */
+function makeCliPatternReader(): PatternReader {
+  return {
+    async searchPatterns(query): Promise<ReadonlyArray<PatternHit>> {
+      const { searchPatterns } = await import('../mcp-tools/agentdb-orchestration.js');
+      const result = await searchPatterns({
+        query: query.query,
+        topK: query.topK,
+        minConfidence: query.minConfidence,
+      });
+      if (result.error) {
+        throw new Error(
+          `archivist: cli PatternReader capability — searchPatterns failed ` +
+            `(controller=${result.controller}): ${result.error}`,
+        );
+      }
+      // result.results is `Array<{ id, content, score }>` — already
+      // structurally compatible with `PatternHit`. Cast for readonly + freeze.
+      return result.results.map((r) => ({ id: r.id, content: r.content, score: r.score }));
+    },
+  };
+}
+
+/**
+ * Build the cli process's `ArchivistInitConfig`. Phase 4 wires `projectRoot`
+ * plus four substrate/capability slots; `rvfBackend` is supplied separately by
+ * the caller (the `MemoryRvfAdapter` is async to construct, so
+ * `initProcessArchivist()` pre-resolves it and threads the instance in here).
+ *
+ * `projectRoot` is resolved via `findProjectRoot()` (the canonical resolver —
+ * `.ruflo-project` / `CLAUDE.md`+`.claude/` / `.git` walk, never throws, falls
+ * back to cwd with a logged warning) so the cli, daemon, and hook-handler all
+ * agree on the same root.
+ *
+ * `sqliteDb` is conditionally opened on `<projectRoot>/.claude-flow/archivist.db`
+ * (a separate file from `agentdb.db` so the archivist's mutation audit trail
+ * does not share a transaction surface with the cli's controller writes). The
+ * open is gated on a project-marker check in `initProcessArchivist()` — when
+ * `findProjectRoot()` falls back to cwd, the caller passes `sqliteDb: null`
+ * and this function omits the slot from the config. See the module header's
+ * "Eager-vs-lazy resolution" section for the full Bug-#3 rationale.
+ *
+ * The three capability factories (`taskRouter`, `embeddingScorer`,
+ * `patternReader`) use the lazy form so an idle archivist does not
+ * force-construct an embedding pipeline or open the router. The adapter
+ * closures defer the cli-side `import(...)` until first dispatch.
+ */
+export function buildArchivistConfig(
+  projectRoot: string,
+  rvfBackend: VectorBackendAsync,
+  sqliteDb: BetterSqlite3.Database | null,
+): ArchivistInitConfig {
+  // `sqliteDb` is nullable: when `initProcessArchivist()` detects that
+  // `findProjectRoot()` fell back to cwd (no `.ruflo-project` / `CLAUDE.md`
+  // + `.claude/` / `.git/` marker), the archivist DB is NOT opened — we
+  // pass `null` and omit the slot via conditional spread so the archivist
+  // holds no SQLite substrate. Any handler dispatched through a
+  // SQLite-carve-out store will fail loud at `requireSqliteSubstrate()`
+  // (agentdb archivist index.ts:374-378), which is the correct
+  // ADR-0181 §Decision-Drivers failure mode for "running in a non-project
+  // cwd".
+  return {
+    projectRoot,
+    rvfBackend,
+    ...(sqliteDb !== null ? { sqliteDb } : {}),
+    taskRouterFactory: makeCliTaskRouter,
+    embeddingScorerFactory: makeCliEmbeddingScorer,
+    patternReaderFactory: makeCliPatternReader,
+  };
 }
 
 /**
@@ -120,14 +395,8 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   const archivist = getProcessArchivist();
   if (initialized) return archivist;
 
-  const config = buildArchivistConfig(projectRoot);
-  const root = config.projectRoot as string;
-
-  // No eager mkdir of `.claude-flow/data/` here: audit-writer.ts creates it
-  // lazily on its first write (`ensureFdOpen`). Doing it eagerly would create
-  // `.claude-flow/` in whatever cwd the cli runs in — and the cli runs in
-  // arbitrary directories — which makes commands like `memory store` mistake a
-  // non-project cwd for a project (ADR-0069 Bug #3 regression).
+  const root = projectRoot ?? findProjectRoot();
+  const claudeFlowDir = join(root, '.claude-flow');
 
   // Point the audit writer at the SAME resolved root the archivist's FS-JSON
   // stores use. audit-writer's default is `process.cwd()`-relative; if we leave
@@ -135,7 +404,72 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   // stores and the audit log land under different roots and the multi-process
   // audit chain (ADR-0180 §15) fragments. Must run before `initialize()` /
   // before any dispatch — `setAuditLogPath()` throws once the audit fd is open.
-  setAuditLogPath(join(root, '.claude-flow', 'data', 'archivist-audit.jsonl'));
+  setAuditLogPath(join(claudeFlowDir, 'data', 'archivist-audit.jsonl'));
+
+  // ── Pre-resolve the substrate handles before `initialize(config)` ──
+  //
+  // `rvfBackend` is always wired: the adapter constructor itself is sync, but
+  // memory-router needs `ensureRouter()` to open the `.rvf` file + build the
+  // HNSW index. We await that here once, then synchronously construct the
+  // adapter against the now-live `_storage` instance via `getStorageInstance()`.
+  //
+  // `dimension: 768` is the project-wide ADR-0069/0072 constant
+  // (all-mpnet-base-v2 output dimension) — the same value memory-router /
+  // intelligence.ts / embeddings-tools.ts all hardcode. Threading it from
+  // config-chain instead is possible but unnecessary here: the adapter wraps
+  // the same memory-router that already opened the underlying file at 768;
+  // passing a different value would be a configuration lie.
+  //
+  // ── On `mkdirSync` + the ADR-0069 Bug #3 invariant ──
+  //
+  // Phase 1 (this file's original `initProcessArchivist`) deliberately did
+  // NOT eager-mkdir `.claude-flow/`: the cli runs in arbitrary cwds, and
+  // creating `.claude-flow/` in a non-project cwd makes subsequent commands
+  // mistake that cwd for an init'd project (ADR-0069 Bug #3 regression).
+  // Audit-writer relied on lazy first-write mkdir to preserve that
+  // invariant.
+  //
+  // SQLite (`archivist.db`) does NOT have a lazy-first-write knob —
+  // `new BetterSqlite3(path)` throws `SQLITE_CANTOPEN` if the parent dir is
+  // missing, AND we cannot defer the open to first dispatch because the
+  // archivist's `initialize(config)` eagerly mints the SQLite substrate the
+  // moment it sees `config.sqliteDb` (agentdb archivist index.ts:318-321).
+  // So an eager `mkdir + new BetterSqlite3(...)` would re-introduce Bug #3.
+  //
+  // Resolution: gate the SQLite open on a project-marker check. We
+  // re-evaluate the same markers `findProjectRoot()` uses (in the same
+  // priority order, types.ts:55-57) at the resolved `root`. If a marker
+  // exists, this is a real project — eager-mkdir + open are safe. If none
+  // exists, `findProjectRoot()` fell back to cwd (types.ts:63-69 — warn +
+  // return startDir); we leave `.claude-flow/` un-created and pass
+  // `sqliteDb: null` to `buildArchivistConfig`, which omits the slot from
+  // the config. Handlers that dispatch through SQLite-carve-out stores
+  // fail loud at `requireSqliteSubstrate()` (archivist index.ts:374-378) —
+  // the correct ADR-0181 §Decision-Drivers failure mode for "running in a
+  // non-project cwd".
+  const isRealProjectRoot =
+    existsSync(join(root, '.ruflo-project')) ||
+    (existsSync(join(root, 'CLAUDE.md')) && existsSync(join(root, '.claude'))) ||
+    existsSync(join(root, '.git'));
+
+  // ADR-0069/0072 unified embedding dimension — see memory-router.ts:818,
+  // intelligence.ts:24, embeddings-tools.ts:12.
+  const EMBEDDING_DIMENSION = 768;
+
+  const { ensureRouter, getStorageInstance } = await import('./memory-router.js');
+  await ensureRouter();
+  const cliMemoryRvfBackend = getStorageInstance();
+  const rvfBackend = new MemoryRvfAdapter(cliMemoryRvfBackend, {
+    dimension: EMBEDDING_DIMENSION,
+  });
+
+  let sqliteDb: BetterSqlite3.Database | null = null;
+  if (isRealProjectRoot) {
+    mkdirSync(claudeFlowDir, { recursive: true });
+    sqliteDb = new BetterSqlite3(join(claudeFlowDir, 'archivist.db'));
+  }
+
+  const config = buildArchivistConfig(root, rvfBackend, sqliteDb);
 
   await archivist.initialize(config);
   initialized = true;
