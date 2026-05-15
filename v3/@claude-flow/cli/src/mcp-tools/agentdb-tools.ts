@@ -140,7 +140,6 @@ async function getBridge(): Promise<AgentDbBridge> {
 }
 
 import {
-  recordCausalEdge,
   sessionStart,
   sessionEnd,
   hierarchicalQuery,
@@ -156,12 +155,17 @@ import {
 // (handlers/agentdb/**). The orchestration helpers above remain for the
 // surfaces without an archivist counterpart (sessionStart/sessionEnd,
 // hierarchicalQuery, contextSynthesize, flashConsolidate, batchOperation,
-// batchOptimize, batchPrune, recordCausalEdge); flipped surfaces use the
-// typed `archivist.dispatch<K>` / `dispatchRead<K>` overloads from
+// batchOptimize, batchPrune); flipped surfaces use the typed
+// `archivist.dispatch<K>` / `dispatchRead<K>` overloads from
 // `forks/agentdb/src/archivist/dispatch-types.ts`. RVF-family reads gate
 // behind `ensureRvfWired()`, SQLite-carve-out reads behind
 // `ensureSqliteWired()`; FS-JSON tools need neither (Phase 4
 // `t1-6-empty-search` regression posture).
+//
+// `recordCausalEdge` is intentionally NOT imported here — the
+// agentdb_causal_edge dispatch path reaches it indirectly via the
+// `makeCliCausalGraphWriter` adapter in archivist-init.ts (deferred dynamic
+// import per call). ADR-0181 Item 3 (2026-05-16).
 import { getProcessArchivist, ensureRvfWired, ensureSqliteWired } from '../memory/archivist-init.js';
 
 // ===== agentdb_health — Controller health check =====
@@ -364,13 +368,32 @@ export const agentdbCausalEdge: MCPTool = {
       if (!sourceId) return { success: false, error: 'sourceId is required (non-empty string)' };
       if (!targetId) return { success: false, error: 'targetId is required (non-empty string)' };
       if (!relation) return { success: false, error: 'relation is required (non-empty string)' };
-      const result = await recordCausalEdge({
+      const weight = typeof params.weight === 'number' ? validateScore(params.weight, 0.5) : undefined;
+      // ADR-0181 Item 3 (2026-05-16): dispatch through the archivist. The
+      // handler at `handlers/agentdb/causal-edge.ts` opens a SQLite
+      // carve-out `withWrite` scope (audit boundary only) and calls the
+      // CausalGraphWriter capability — the cli adapter
+      // (`makeCliCausalGraphWriter` at archivist-init.ts) delegates to the
+      // existing `recordCausalEdge`/`routeCausalOp` path. Today the actual
+      // write lands in RVF via router-fallback because ADR-0147 R7 (string
+      // → numeric memoryId mapping) has not landed yet — the handler header
+      // documents the audit-vs-storage split-brain so a future R7 wire-up
+      // doesn't accidentally collapse the wrong way.
+      // Storage classification: see archivist handler causal-edge.ts header
+      // — Item 3 is audit-trail wiring; durable bytes still land in RVF via
+      // router-fallback (ADR-0147 R7).
+      // Gate behind ensureSqliteWired() — storeId classifies as SQLite
+      // carve-out at substrate-registry.ts:118 even though today's writer
+      // doesn't use the SQLite scope; the gate is the carve-out invariant
+      // boundary, not a byte-target predicate.
+      await ensureSqliteWired();
+      await (await getProcessArchivist()).dispatch('agentdb_causal_edge', {
         sourceId,
         targetId,
         relation,
-        weight: typeof params.weight === 'number' ? validateScore(params.weight, 0.5) : undefined,
+        weight,
       });
-      return result ?? { success: false, error: 'AgentDB not available. Use memory_store/memory_search instead.' };
+      return { success: true, sourceId, targetId, relation, controller: 'archivist' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }

@@ -156,6 +156,8 @@ import type BetterSqlite3 from 'better-sqlite3';
 import type {
   Archivist,
   ArchivistInitConfig,
+  CausalGraphWriter,
+  CausalGraphWriteResult,
   EmbeddingScorer,
   FeedbackRecorder,
   FeedbackWriteResult,
@@ -850,6 +852,76 @@ function makeCliSemanticRouteReader(): SemanticRouteReader {
   };
 }
 
+// ── ADR-0181 Item 3 capability adapter (2026-05-16) ──────────────────────────
+//
+// `makeCliCausalGraphWriter` adapts the cli's `recordCausalEdge(...)`
+// orchestration helper (`mcp-tools/agentdb-orchestration.ts:150`) down to the
+// narrow `CausalGraphWriter` capability surface. The helper itself delegates
+// to `routeCausalOp({type:'edge'})` (memory-router.ts:2097) which:
+//   1. tries `getController('causalGraph').addEdge(...)` first, AND
+//   2. falls through to `routeMemoryOp({namespace:'causal-edges'})` (RVF) when
+//      the controller is unwired or has the wrong-shape contract.
+//
+// Today's path is (2): `CausalMemoryGraph.addCausalEdge` requires a numeric
+// memoryId + memoryType enum that the string-shaped cli tool surface cannot
+// produce (ADR-0147 R7 TODO at memory-router.ts:2106-2122). So the writer
+// returns `controller:'router-fallback'` with `success:true` — the b5
+// causalGraph probe (lib/acceptance-adr0090-b5-checks.sh:700-911 step 5b)
+// then sees the marker via `memory list --namespace causal-edges`.
+//
+// Per-call resolution discipline: the adapter resolves `recordCausalEdge` via
+// deferred dynamic import per call (no module/closure caching), and
+// `routeCausalOp` itself awaits `ensureRegistry()` per call so a controller
+// swap mid-process is observed at the next dispatch.
+//
+// Audit-vs-storage rationale: the dispatched handler at
+// `forks/agentdb/src/archivist/handlers/agentdb/causal-edge.ts` opens a
+// SQLite-carve-out `withWrite` scope that the writer does NOT use — that
+// scope provides the audit-chain enrolment, not the byte target. The bytes
+// land where the cli's pre-Phase-5 path put them (RVF). See the handler
+// header for the full per-(i)-(ii)-(iii)-(iv) breakdown plus the ADR-0147 R7
+// re-visit trigger.
+
+/**
+ * Adapt the cli's `recordCausalEdge(...)` orchestration helper down to the
+ * narrow `CausalGraphWriter` capability. The helper always returns an
+ * envelope (never undefined): `{success, controller, error?}`. We map the
+ * "controller not present at all" envelope (`controller:'unavailable'` /
+ * `'none'` with `success:false`) to `null` so the handler's fail-loud throw
+ * reads "controller not available" rather than wrapping `recordCausalEdge`'s
+ * own message; success envelopes (including the `controller:'router-fallback'`
+ * path that fires today per ADR-0147 R7) pass through unchanged.
+ *
+ * Throws fail-loud (`feedback-no-fallbacks`) at the dispatch boundary if
+ * neither the controller nor the router-fallback is reachable — which today
+ * cannot happen because the router-fallback has its own internal try/catch
+ * that returns success:true on the happy path; this is defense-in-depth.
+ */
+function makeCliCausalGraphWriter(): CausalGraphWriter {
+  return {
+    async recordEdge(input): Promise<CausalGraphWriteResult | null> {
+      // Per-call resolution — no module/closure caching of the orchestration
+      // helper or of the underlying controller. See the section header above
+      // for the full singleton-resolution rationale.
+      const { recordCausalEdge } = await import('../mcp-tools/agentdb-orchestration.js');
+      const result = await recordCausalEdge({
+        sourceId: input.sourceId,
+        targetId: input.targetId,
+        relation: input.relation,
+        weight: input.weight,
+      });
+      // recordCausalEdge always returns an envelope — never undefined.
+      // controller='unavailable'/'none' + success:false is the
+      // "no controller present" sentinel; map to null so the handler's
+      // require/throw chain reports "controller not available" cleanly.
+      if (!result.success && (result.controller === 'unavailable' || result.controller === 'none')) {
+        return null;
+      }
+      return result;
+    },
+  };
+}
+
 /**
  * Build the cli process's `ArchivistInitConfig`. Phase 4 wires `projectRoot`
  * plus four substrate/capability slots; `rvfBackend` is supplied separately by
@@ -912,6 +984,12 @@ export function buildArchivistConfig(
     // controllers PER CALL via getController(...) — no closure caching.
     gnnTelemetryReaderFactory: makeCliGnnTelemetryReader,
     semanticRouteReaderFactory: makeCliSemanticRouteReader,
+    // ADR-0181 Item 3 (2026-05-16): CausalMemoryGraph writer capability
+    // surface. Adapter resolves `recordCausalEdge` via deferred dynamic
+    // import per call; underlying `routeCausalOp` awaits `ensureRegistry()`
+    // per call. Today's writer routes to RVF via router-fallback (ADR-0147
+    // R7 gap); see handler header for full audit-vs-storage rationale.
+    causalGraphWriterFactory: makeCliCausalGraphWriter,
   };
 }
 
@@ -1094,6 +1172,13 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
     // SemanticRouteReader header for rationale (Phase 7 r1→r2 lesson).
     gnnTelemetryReaderFactory: makeCliGnnTelemetryReader,
     semanticRouteReaderFactory: makeCliSemanticRouteReader,
+    // ADR-0181 Item 3 (2026-05-16): CausalMemoryGraph writer capability.
+    // Adapter resolves `recordCausalEdge` per call (no closure caching);
+    // `routeCausalOp` itself awaits `ensureRegistry()` per call. Today's
+    // path falls through to RVF via router-fallback (ADR-0147 R7). See
+    // handler header at forks/agentdb/src/archivist/handlers/agentdb/
+    // causal-edge.ts for the full audit-vs-storage rationale.
+    causalGraphWriterFactory: makeCliCausalGraphWriter,
   };
 
   // Remember the resolved root so `ensureSqliteWired()` agrees with
