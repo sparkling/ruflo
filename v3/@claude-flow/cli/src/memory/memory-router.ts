@@ -1416,6 +1416,63 @@ export async function getController<T = unknown>(name: string): Promise<T | unde
 }
 
 /**
+ * ADR-0181 Phase 7 r2: live BetterSqlite3.Database handle from the
+ * cli's ControllerRegistry-owned AgentDB instance.
+ *
+ * Forces lazy `ensureRegistry()` init (which constructs AgentDB and runs
+ * `loadSchemas()`, creating `<projectRoot>/.swarm/memory.db`), then
+ * returns the same `database` handle the carve-out controllers
+ * (ReflexionMemory, SkillLibrary, HierarchicalMemory) write to.
+ *
+ * Used by `archivist-init.ts` `ensureSqliteWired()` to share ONE handle
+ * with the controllers — eliminates the startup-ordering bug from the r1
+ * path-repoint, where ensureSqliteWired ran before AgentDB.initialize had
+ * created the file. Sharing the handle also avoids a second
+ * file-descriptor + prepared-statement cache + cross-handle
+ * BEGIN-IMMEDIATE serialization risk.
+ *
+ * Throws loud (`feedback-no-fallbacks`) if registry init failed, if no
+ * AgentDB instance exists on the registry, or if the AgentDB instance
+ * has no `database` field (which would mean AgentDB chose a backend
+ * other than better-sqlite3 — a config bug, not a recoverable state).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getControllerRegistryAgentDb(): Promise<any> {
+  await ensureRegistry();
+  if (!_registryInstance) {
+    throw new Error(
+      'memory-router: getControllerRegistryAgentDb — ControllerRegistry is not ' +
+        'initialized after ensureRegistry() returned. Either neural is disabled ' +
+        '(config.neural.enabled === false) or registry init silently bailed. ' +
+        '(ADR-0181 Phase 7)',
+    );
+  }
+  if (typeof _registryInstance.getAgentDB !== 'function') {
+    throw new Error(
+      'memory-router: getControllerRegistryAgentDb — _registryInstance.getAgentDB ' +
+        'is not a function. ControllerRegistry public surface changed; update this ' +
+        'accessor to match. (ADR-0181 Phase 7)',
+    );
+  }
+  const agentdb = _registryInstance.getAgentDB();
+  if (!agentdb) {
+    throw new Error(
+      'memory-router: getControllerRegistryAgentDb — ControllerRegistry.getAgentDB() ' +
+        'returned null/undefined. AgentDB.initialize() may have failed silently inside ' +
+        'the registry init path. (ADR-0181 Phase 7)',
+    );
+  }
+  if (!agentdb.database) {
+    throw new Error(
+      'memory-router: getControllerRegistryAgentDb — registry.getAgentDB().database ' +
+        'is missing. AgentDB chose a backend other than better-sqlite3 (e.g. WASM-SQLite, ' +
+        'postgres) — that is a config bug, not a recoverable state. (ADR-0181 Phase 7)',
+    );
+  }
+  return agentdb.database;
+}
+
+/**
  * Check if a controller exists in the pool.
  * Same shared-singleton contract as getController — see its JSDoc.
  */

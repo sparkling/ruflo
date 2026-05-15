@@ -1110,30 +1110,51 @@ export async function ensureRvfWired(): Promise<void> {
  * `better-sqlite3`, and threads the handle into the archivist via
  * `setSqliteDb()`. The promise is cached and shared by concurrent callers.
  *
- * ── ADR-0181 Phase 7: repoint from `.claude-flow/archivist.db` to `.swarm/memory.db` ──
+ * ── ADR-0181 Phase 7 r2: SHARE the cli's controller-registry AgentDB handle ──
  *
  * Pre-Phase-7 this opened a SEPARATE empty file at `.claude-flow/archivist.db`.
  * That file had no schemas — the cli's AgentDB controllers (ReflexionMemory,
  * SkillLibrary, HierarchicalMemory) write to `<root>/.swarm/memory.db` via
  * `agentdb.initialize() → loadSchemas()` from controller-registry. Reads
  * dispatched through the archivist therefore queried an empty handle while
- * writes landed in a separate file. Phase 7 collapses this split — the
- * archivist's SQLite handle now points at the SAME file the controllers
- * already opened.
+ * writes landed in a separate file.
  *
- * Fail-loud invariants (per team-lead ruling, `feedback-no-fallbacks`):
+ * Phase 7 r1 attempted a path-repoint: open a fresh `BetterSqlite3` on
+ * `<root>/.swarm/memory.db`. That hit a STARTUP-ORDERING BUG — the cli's
+ * agentdb_* MCP tool dispatch path (`agentdb_skill_create`, etc.) is the
+ * FIRST agentdb_*-axis touch-point in a fresh CLI subprocess. If the file
+ * doesn't already exist, `ensureSqliteWired` ran BEFORE
+ * `ensureRegistry()` (which is what triggers AgentDB.initialize →
+ * loadSchemas). The fail-loud guard caught it (good!) but converted what
+ * should be a working dispatch into 5 acceptance-suite failures (p13
+ * skill/reflexion + 3 adr0112 carve-outs).
+ *
+ * r2 collapses both problems: ask the cli's existing ControllerRegistry
+ * for its already-live AgentDB handle (via `getControllerRegistryAgentDb()`
+ * in `memory-router.ts`). The accessor calls `ensureRegistry()` first,
+ * which is what creates `.swarm/memory.db` via AgentDB's own init path,
+ * THEN returns the live `database` field. The archivist's
+ * `setSqliteDb(...)` then receives the SAME `BetterSqlite3.Database`
+ * handle the carve-out controllers already use. Benefits:
+ *   - One file descriptor, one prepared-statement cache.
+ *   - No cross-handle BEGIN IMMEDIATE serialization risk (one handle).
+ *   - No path-existence race — registry init creates the file as a
+ *     side-effect of the lookup itself.
+ *   - The carve-out probe (still kept) is now provably true: it runs
+ *     against the handle whose `loadSchemas()` JUST installed those
+ *     tables.
+ *
+ * Fail-loud invariants (per `feedback-no-fallbacks`):
  *  - Marker-gate failure → throw (markerless cwd should not have dispatched
  *    a SQLite-carve-out tool in the first place).
- *  - `.swarm/memory.db` MUST exist before `ensureSqliteWired` runs — it is
- *    created + schema-installed by AgentDB's `loadSchemas()` during
- *    `agentdb.initialize()` from the controller-registry startup path. If
- *    it's missing, throw loud rather than `mkdirSync` + auto-create — that
- *    would mask a controller-startup-ordering bug.
- *  - On open, run a one-time probe listing the visible carve-out tables
- *    (`episodes`, `skills`, `skill_embeddings`, `hierarchical_memory`) and
- *    write the result to `process.stderr`. Queen's empirical falsifier: if
- *    the warn shows zero of these tables in test env, the controllers did
- *    not initialize against this file and the diagnosis is wrong.
+ *  - Registry init failure → propagates via `ensureRegistry()` (memory-router.ts
+ *    `_isFatalInitError` path). The `getControllerRegistryAgentDb` accessor
+ *    also throws if the handle field is missing (e.g. AgentDB chose a
+ *    non-better-sqlite3 backend — config bug, not recoverable).
+ *  - On open, run the carve-out probe listing visible tables (`episodes`,
+ *    `skills`, `skill_embeddings`, `hierarchical_memory`) to `process.stderr`.
+ *    Queen's empirical falsifier: if it prints zero of these names, the
+ *    controllers did not initialize against this file and Phase 7 is wrong.
  *
  * L2 memo-only-success (ADR-0181 Phase 5 team-lead ruling): on rejection
  * (transient EBUSY on SQLite open, intermediate FS state), the memo clears
@@ -1174,34 +1195,23 @@ export async function ensureSqliteWired(): Promise<void> {
           `site, not this gate.`,
       );
     }
-    // ADR-0181 Phase 7: open the SAME SQLite file the cli's AgentDB
-    // controllers (ReflexionMemory, SkillLibrary, HierarchicalMemory) write
-    // to. AgentDB's `initialize()` (called from controller-registry during
-    // cli startup) runs `loadSchemas()` on this file and creates `.swarm/`
-    // + `memory.db` itself. We do NOT `mkdirSync` and do NOT auto-create —
-    // missing file means controller-registry init has not run, which is a
-    // startup-ordering bug, not a recoverable condition (`feedback-no-fallbacks`).
-    const swarmDbPath = join(root, '.swarm', 'memory.db');
-    if (!existsSync(swarmDbPath)) {
-      throw new Error(
-        `archivist-init: ensureSqliteWired — '${swarmDbPath}' does not exist. ` +
-          `AgentDB's controller-registry init (which runs loadSchemas() and creates ` +
-          `this file) must complete before any SQLite-carve-out dispatch reaches ` +
-          `the archivist. Refusing to auto-create — that would mask a startup-ordering ` +
-          `bug. (ADR-0181 Phase 7 / feedback-no-fallbacks).`,
-      );
-    }
-    // Deferred dynamic import — see file header note next to the
-    // commented-out static import. Keeps `archivist-init.ts` importable in
-    // environments that don't have the native `better-sqlite3` build (the
-    // optional-dependency contract from ADR-0086).
-    const { default: BetterSqlite3 } = await import('better-sqlite3');
-    const sqliteDb = new BetterSqlite3(swarmDbPath);
+    // ADR-0181 Phase 7 r2: SHARE the cli's controller-registry AgentDB
+    // handle. The accessor calls `ensureRegistry()` first, which triggers
+    // AgentDB.initialize → loadSchemas, creating `.swarm/memory.db` as a
+    // side-effect of the lookup itself, then returns the live
+    // `BetterSqlite3.Database` field. No `new BetterSqlite3()` open here —
+    // we share the SAME handle the carve-out controllers (ReflexionMemory,
+    // SkillLibrary, HierarchicalMemory) already use. Eliminates the
+    // startup-ordering bug from r1 (path-repoint variant) where
+    // ensureSqliteWired ran before AgentDB had created the file.
+    const { getControllerRegistryAgentDb } = await import('./memory-router.js');
+    const sqliteDb = await getControllerRegistryAgentDb();
     // Queen's empirical falsifier (ADR-0181 Phase 7): list visible
     // carve-out tables on first open, written to stderr so it shows in the
-    // release log. If this prints zero of the expected names in the test
-    // env, the controllers did not initialize against this file and the
-    // Phase 7 diagnosis is wrong.
+    // release log. Now provably true since `loadSchemas()` ran inside the
+    // accessor above — if this prints zero of the expected names, the
+    // schema set is wrong, not the wiring.
+    const swarmDbPath = join(root, '.swarm', 'memory.db');
     try {
       const rows = sqliteDb
         .prepare(
@@ -1211,14 +1221,14 @@ export async function ensureSqliteWired(): Promise<void> {
         .all() as ReadonlyArray<{ name: string }>;
       const tableNames = rows.map((r) => r.name).sort().join(',') || '(none)';
       process.stderr.write(
-        `archivist-init: ensureSqliteWired opened ${swarmDbPath} ` +
+        `archivist-init: ensureSqliteWired shared ${swarmDbPath} ` +
           `[carve-out tables visible: ${tableNames}]\n`,
       );
     } catch (probeErr) {
       // Probe is diagnostic only — don't fail the wire-up if SELECT itself
       // throws (e.g. corrupt sqlite_master). The handle is still installed.
       process.stderr.write(
-        `archivist-init: ensureSqliteWired opened ${swarmDbPath} ` +
+        `archivist-init: ensureSqliteWired shared ${swarmDbPath} ` +
           `[carve-out probe failed: ${(probeErr as Error).message}]\n`,
       );
     }
