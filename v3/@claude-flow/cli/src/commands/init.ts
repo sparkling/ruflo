@@ -484,18 +484,24 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       output.writeln();
       output.printInfo('Initializing ONNX embedding subsystem...');
 
-      const { execSync } = await import('child_process');
+      const { execFileSync } = await import('child_process');
 
       try {
         output.writeln(output.dim(`  Model: ${embeddingModel}`));
         output.writeln(output.dim('  Hyperbolic: Enabled (Poincaré ball)'));
-        output.writeln(output.dim('  Downloading ONNX model (~110 MB, one-time)...'));
-        execSync(`npx @sparkleideas/cli@latest embeddings init --model ${embeddingModel} --force 2>/dev/null`, {
+        output.writeln(output.dim('  Loading ONNX model (cached at ~/.cache/transformers, ~110 MB first time)...'));
+        // Invoke this same CLI binary directly instead of `npx @sparkleideas/cli@latest`.
+        // npx-against-@latest re-resolves and re-installs the published cli on every
+        // call (60+s on a clean npm cache), which dominated harness-init wall time.
+        // The ONNX model itself is already cached by @xenova/transformers under
+        // ~/.cache/transformers — the misleading "Downloading (one-time)" copy
+        // is what masked the real culprit.
+        execFileSync(process.execPath, [process.argv[1], 'embeddings', 'init', '--model', embeddingModel, '--force'], {
           stdio: 'pipe',
           cwd: ctx.cwd,
-          timeout: 120000 // ADR-0080: allow 2 min for model download
+          timeout: 120000 // ADR-0080: allow 2 min for cold-cache model download
         });
-        output.writeln(output.success('  ✓ Embeddings initialized + model downloaded'));
+        output.writeln(output.success('  ✓ Embeddings initialized'));
       } catch (err) {
         output.writeln(output.warning('  Embedding initialization skipped (run manually)'));
       }
