@@ -1928,9 +1928,12 @@ export const agentdbExperienceRecord: MCPTool = {
       // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
       // `handlers/agentdb/experience-record.ts` owns the LearningSystem write
       // (including the FOREIGN-KEY-honoring session bootstrap) under
-      // substrate.withWrite. STORE_ID 'agentdb_experience_record' is in the
-      // RVF family per substrate-registry — gate behind ensureRvfWired().
-      await ensureRvfWired();
+      // substrate.withWrite. ADR-0181 Item 5 (2026-05-16): post-pglite→SQLite
+      // port, LearningSystem persists to the SQLite carve-out — same off-by-one
+      // class as the Phase 7 r3 fix at agentdb-tools.ts:559 — gate behind
+      // ensureSqliteWired() so the cli's existing AgentDB SQLite handle is
+      // shared with the archivist substrate (handle-share, not path-repoint).
+      await ensureSqliteWired();
       await (await getProcessArchivist()).dispatch('agentdb_experience_record', {
         task,
         input,

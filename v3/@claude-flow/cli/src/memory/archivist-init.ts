@@ -654,19 +654,23 @@ function makeCliLearningSystemWriter(): LearningSystemWriter {
         // recordExperience signature (LearningSystem.ts):
         //   { sessionId, toolName, action, stateBefore?, stateAfter?,
         //     outcome, reward, success, latencyMs?, metadata? } -> Promise<number>
-        // The b5 probe sends {task, success, reward}. We map task into
-        // both `action` (the activity tag) and `outcome` (the recorded
-        // result). `outcome` is what lands in the `learning_experiences
-        // .action` column at LearningSystem.ts:1346 (slot 3 of INSERT) —
-        // see the controller's recordExperience implementation. The b5
-        // helper greps `learning_experiences.action LIKE '%marker%'`,
-        // so passing `task` as `outcome` is what makes the round-trip
-        // work.
+        // Field-map IS NOT bijective with the SQLite columns:
+        //   - INSERT slot 3 (the `action` column) is bound from method
+        //     param `outcome` (LearningSystem.ts:1238).
+        //   - method param `action` is folded into the metadata JSON
+        //     blob alongside toolName + stateBefore/stateAfter (line
+        //     1245).
+        // The b5 probe greps `learning_experiences.action LIKE '%marker%'`
+        // — `outcome` MUST carry the per-call task description so the
+        // greppable column receives it. `action` is the stable activity
+        // class tag — 'experience-record' identifies which dispatch
+        // surface produced the row, useful for future analytics that
+        // partition the experience corpus by writer.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const insertedRowId = await (recordFn as any).call(learning, {
           sessionId,
           toolName: 'archivist',
-          action: input.task,
+          action: 'experience-record',
           outcome: input.task,
           reward: input.reward,
           success: input.success,
