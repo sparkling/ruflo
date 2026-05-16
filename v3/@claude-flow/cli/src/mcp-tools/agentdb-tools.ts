@@ -2169,8 +2169,17 @@ export const agentdbSonaTrajectoryStore: MCPTool = {
       await ensureSqliteWired();
       const archivist = await getProcessArchivist();
 
+      // ADR-0181 Item 6 r2 (2026-05-16): the read handler is registered
+      // under a DISTINCT storeId — `agentdb_sona_trajectory_stats` — NOT
+      // `agentdb_sona_trajectory_store`. r1 co-registered both under the
+      // same name and dispatchRead resolved the mutation entry instead
+      // (getRegistration in registration.ts:150 checks mutation first).
+      // Distinct-storeId pattern matches Item 2's neural_patterns/gnn_stats
+      // split. The cli surface (`agentdb_sona_trajectory_store` MCP tool +
+      // `--params action=stats|record`) stays unchanged for callers; only
+      // the archivist's internal storeId for the read side is split off.
       if (action === 'stats') {
-        const stats = await archivist.dispatchRead('agentdb_sona_trajectory_store', {
+        const stats = await archivist.dispatchRead('agentdb_sona_trajectory_stats', {
           action: 'stats',
         }) as {
           success: true;
@@ -2194,7 +2203,7 @@ export const agentdbSonaTrajectoryStore: MCPTool = {
       // Project post-write stats into the b5 record envelope (probe at
       // lib/acceptance-adr0090-b5-checks.sh:1841-1855 reads trajectoryCount /
       // trajectoryCountDelta / agentTypes from the record response).
-      const after = await archivist.dispatchRead('agentdb_sona_trajectory_store', {
+      const after = await archivist.dispatchRead('agentdb_sona_trajectory_stats', {
         action: 'stats',
       }) as {
         success: true;
