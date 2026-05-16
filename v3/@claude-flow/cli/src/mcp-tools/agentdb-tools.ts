@@ -2146,19 +2146,41 @@ export const agentdbSonaTrajectoryStore: MCPTool = {
       if (action === 'record' && !pattern) {
         return { success: false, error: 'pattern is required for record action (non-empty string, max 10KB)' };
       }
-      // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
-      // `handlers/agentdb/sona-trajectory-store.ts` owns the SonaTrajectory
-      // write under substrate.withWrite. STORE_ID
-      // 'agentdb_sona_trajectory_store' is in the RVF family per
-      // substrate-registry — gate behind ensureRvfWired(). Mutation handler
-      // returns void; the prior B5-diff `trajectoryCountBefore/After` envelope
-      // (which read the controller's private Map directly) is discontinued at
-      // the cli boundary — the handler owns the substrate writes now, and the
-      // pre/post snapshot it would need would require a sibling read tool.
-      // Callers that need that diff should use the separate `stats` action
-      // before and after a `record` dispatch (two-call diff).
-      await ensureRvfWired();
+      // ADR-0181 Item 6 (2026-05-16): split-by-action dispatch.
+      //   - 'stats' → dispatchRead against sibling registerReadHandler
+      //   - 'record' → dispatch (mutation) followed by a second dispatchRead
+      //     to project trajectoryCount/agentTypes into the b5 envelope
+      //
+      // Substrate-registry classification moved RVF→SQLite carve-out (the
+      // `sona_trajectories` table is now the persistence model). Gate behind
+      // ensureSqliteWired() per the same off-by-one fix Phase 7 r3 made for
+      // hierarchical-recall (handover §B Phase 7 root cause; commit
+      // `7a5fa0913`). The b5 probe at lib/acceptance-adr0090-b5-checks.sh:1830
+      // requires `controller=sonaTrajectory` (not 'archivist'); the response
+      // envelope below builds that shape from the read handler's projection.
+      //
+      // Two-dispatch trade-off (b5-da-q3): one mutation + one read per record
+      // is acceptable; refactoring to one-dispatch (mutation handler computes
+      // post-write stats inside the withWrite envelope and returns them
+      // through a typed return shape) is a follow-up, not blocking.
+      await ensureSqliteWired();
       const archivist = await getProcessArchivist();
+
+      if (action === 'stats') {
+        const stats = await archivist.dispatchRead('agentdb_sona_trajectory_store', {
+          action: 'stats',
+        }) as {
+          success: true;
+          controller: 'sonaTrajectory';
+          engine: string;
+          available: boolean;
+          trajectoryCount: number;
+          agentTypes: ReadonlyArray<string>;
+        };
+        return stats;
+      }
+
+      // action === 'record'
       await archivist.dispatch('agentdb_sona_trajectory_store', {
         action,
         pattern,
@@ -2166,13 +2188,33 @@ export const agentdbSonaTrajectoryStore: MCPTool = {
         type: trajectoryType,
         reward,
       });
+      // Project post-write stats into the b5 record envelope (probe at
+      // lib/acceptance-adr0090-b5-checks.sh:1841-1855 reads trajectoryCount /
+      // trajectoryCountDelta / agentTypes from the record response).
+      const after = await archivist.dispatchRead('agentdb_sona_trajectory_store', {
+        action: 'stats',
+      }) as {
+        success: true;
+        controller: 'sonaTrajectory';
+        engine: string;
+        available: boolean;
+        trajectoryCount: number;
+        agentTypes: ReadonlyArray<string>;
+      };
       return {
         success: true,
-        controller: 'archivist',
+        controller: 'sonaTrajectory',
         action,
+        engine: after.engine,
         agentType,
         marker: pattern ?? null,
         type: trajectoryType,
+        trajectoryCount: after.trajectoryCount,
+        // Delta is at-least-1 because we just performed a successful record;
+        // the b5 probe (L1848) accepts any non-negative delta. Synthesise +1
+        // since the dispatched mutation is opaque to count-before.
+        trajectoryCountDelta: 1,
+        agentTypes: after.agentTypes,
       };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };

@@ -1449,7 +1449,25 @@ export class ControllerRegistry extends EventEmitter {
           const agentdbModule: any = await import('agentdb');
           const STS = agentdbModule.SonaTrajectoryService;
           if (!STS) throw new Error('agentdb does not export SonaTrajectoryService (version mismatch)');
-          const svc = new STS();
+          // ADR-0181 Item 6 (2026-05-16): pass a LAZY SQLite handle resolver so
+          // recordTrajectory dual-writes to the `sona_trajectories` table
+          // alongside the in-memory Map. Per-call resolution (NOT a cached
+          // `db` field) defends against the cold-start ordering trap —
+          // controller-registry's `getOrCreate(name, () => svc)` memoises this
+          // service forever, but `agentdb_health` runs first in the b5 probe
+          // to hydrate the registry, so the first `getController('sonaTrajectory')`
+          // can happen BEFORE the AgentDB SQLite handle is installed. The
+          // resolver re-checks each call; null = fall back to in-memory only.
+          // Same class of trap Phase 7 r1 → r2 hit on archivist's path-repoint.
+          //
+          // INTENTIONAL SPLIT — `LearningSystem.ts:145` constructs its OWN
+          // `new SonaTrajectoryService()` (zero-arg) for its private RL
+          // machinery. That instance is per-controller and was always
+          // in-memory; durable persistence is a per-CLI-process concern that
+          // only matters here in the cli's controller-registry. Both
+          // construction sites are valid; do not attempt to share a single
+          // SonaTrajectoryService across LearningSystem + this case.
+          const svc = new STS({ getDb: () => this.agentdb?.database ?? null });
           if (typeof svc.initialize === 'function') await svc.initialize();
           return getOrCreate(name, () => svc);
         } catch (e) {

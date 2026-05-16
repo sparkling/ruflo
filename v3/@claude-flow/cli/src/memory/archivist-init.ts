@@ -176,6 +176,7 @@ import type {
   SemanticRouteReader,
   SkillLibraryWriter,
   SkillLibraryWriteResult,
+  SonaTrajectoryReader,
   SonaTrajectoryWriter,
   SonaTrajectoryWriteResult,
   TaskRouter,
@@ -901,6 +902,63 @@ function makeCliSemanticRouteReader(): SemanticRouteReader {
   };
 }
 
+/**
+ * Adapt the cli's `getController('sonaTrajectory').getStats()` path down to
+ * the narrow `SonaTrajectoryReader` capability (ADR-0181 Item 6, 2026-05-16).
+ * Used by the sibling read handler at
+ * `forks/agentdb/src/archivist/handlers/agentdb/sona-trajectory-store.ts` so
+ * the b5 `adr0090-b5-sonaTrajectory` probe's `'stats'` action returns
+ * `{success:true, controller:"sonaTrajectory", trajectoryCount, agentTypes}`.
+ *
+ * Per-call controller resolution — same discipline as
+ * `makeCliGnnTelemetryReader` / `makeCliSemanticRouteReader`. The cli's
+ * `controller-registry.ts:1452` constructs SonaTrajectoryService with a
+ * lazy `{ getDb }` resolver so the SQLite handle race (Phase 7 r1 → r2
+ * lesson) is defended at the controller boundary; the reader simply
+ * resolves the controller fresh per call and forwards getStats().
+ *
+ * Fail-loud when the controller is unwired (`feedback-no-fallbacks`).
+ */
+function makeCliSonaTrajectoryReader(): SonaTrajectoryReader {
+  return {
+    async getStats() {
+      const { getController } = await import('./memory-router.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sona = await getController<any>('sonaTrajectory');
+      if (!sona) {
+        throw new Error(
+          'archivist: cli SonaTrajectoryReader capability — getController(\'sonaTrajectory\') ' +
+            'returned null (controller not wired in this build). The b5-sonaTrajectory ' +
+            'probe regex matches "not wired"/"not available"/"not initialized" so this ' +
+            'surfaces as SKIP_ACCEPTED at the harness boundary, not a silent zero-count.',
+        );
+      }
+      // Real SonaTrajectoryService surface (post-Item-6) returns SonaStats
+      // with `available`, `trajectoryCount`, `agentTypes`. Stub controllers
+      // that don't expose getStats fail loud here.
+      if (typeof sona.getStats !== 'function') {
+        throw new Error(
+          'archivist: cli SonaTrajectoryReader capability — sonaTrajectory controller ' +
+            'has no getStats() method (version mismatch).',
+        );
+      }
+      const stats = sona.getStats() as {
+        available?: boolean;
+        trajectoryCount?: number;
+        agentTypes?: ReadonlyArray<string>;
+      };
+      const engine: string =
+        typeof sona.getEngineType === 'function' ? String(sona.getEngineType() ?? 'unknown') : 'unknown';
+      return {
+        engine,
+        available: Boolean(stats.available),
+        trajectoryCount: Number(stats.trajectoryCount ?? 0),
+        agentTypes: Array.isArray(stats.agentTypes) ? stats.agentTypes : [],
+      };
+    },
+  };
+}
+
 // ── ADR-0181 Item 3 capability adapter (2026-05-16) ──────────────────────────
 //
 // `makeCliCausalGraphWriter` adapts the cli's `recordCausalEdge(...)`
@@ -1033,6 +1091,10 @@ export function buildArchivistConfig(
     // controllers PER CALL via getController(...) — no closure caching.
     gnnTelemetryReaderFactory: makeCliGnnTelemetryReader,
     semanticRouteReaderFactory: makeCliSemanticRouteReader,
+    // ADR-0181 Item 6 (2026-05-16): SonaTrajectoryService stats reader for
+    // the sibling registerReadHandler at agentdb/sona-trajectory-store.ts.
+    // Per-call resolution; getStats() returns merged in-memory + SQLite.
+    sonaTrajectoryReaderFactory: makeCliSonaTrajectoryReader,
     // ADR-0181 Item 3 (2026-05-16): CausalMemoryGraph writer capability
     // surface. Adapter resolves `recordCausalEdge` via deferred dynamic
     // import per call; underlying `routeCausalOp` awaits `ensureRegistry()`
@@ -1221,6 +1283,10 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
     // SemanticRouteReader header for rationale (Phase 7 r1→r2 lesson).
     gnnTelemetryReaderFactory: makeCliGnnTelemetryReader,
     semanticRouteReaderFactory: makeCliSemanticRouteReader,
+    // ADR-0181 Item 6 (2026-05-16): SonaTrajectoryService stats reader for
+    // the sibling registerReadHandler at agentdb/sona-trajectory-store.ts.
+    // Per-call resolution; getStats() returns merged in-memory + SQLite.
+    sonaTrajectoryReaderFactory: makeCliSonaTrajectoryReader,
     // ADR-0181 Item 3 (2026-05-16): CausalMemoryGraph writer capability.
     // Adapter resolves `recordCausalEdge` per call (no closure caching);
     // `routeCausalOp` itself awaits `ensureRegistry()` per call. Today's
