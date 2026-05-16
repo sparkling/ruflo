@@ -1852,11 +1852,13 @@ export const agentdbLearnerRun: MCPTool = {
         const report = await Promise.race([learner.run(), timeoutPromise]);
         return { success: true, report: report ?? {} };
       }
-      if (typeof learner.consolidate === 'function') {
-        const report = await Promise.race([learner.consolidate({}), timeoutPromise]);
+      // ADR-0181 follow-up #88: fallback to consolidateEpisodes (NightlyLearner's
+      // actual method name). The prior `consolidate` probe was dead code.
+      if (typeof learner.consolidateEpisodes === 'function') {
+        const report = await Promise.race([learner.consolidateEpisodes({}), timeoutPromise]);
         return { success: true, report: report ?? {} };
       }
-      return { success: false, error: 'NightlyLearner lacks run/consolidate methods' };
+      return { success: false, error: 'NightlyLearner lacks run/consolidateEpisodes methods' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }

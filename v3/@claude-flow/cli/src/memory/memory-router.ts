@@ -1953,12 +1953,15 @@ export async function routeSessionOp(op: SessionOp): Promise<MemoryResult> {
         persisted = true;
       } catch { /* session persistence non-fatal */ }
 
-      // Trigger NightlyLearner consolidation if available
+      // Trigger NightlyLearner consolidation if available.
+      // ADR-0181 follow-up #88: NightlyLearner exposes `consolidateEpisodes`,
+      // not `consolidate`. The prior probe for `consolidate` was dead code
+      // (always false), so agentdb_session_end never triggered consolidation.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const nightlyLearner = await getController<any>('nightlyLearner');
-      if (nightlyLearner && typeof nightlyLearner.consolidate === 'function') {
+      if (nightlyLearner && typeof nightlyLearner.consolidateEpisodes === 'function') {
         try {
-          await nightlyLearner.consolidate({ sessionId: op.sessionId });
+          await nightlyLearner.consolidateEpisodes({ sessionId: op.sessionId });
           controller += '+nightlyLearner';
         } catch { /* non-fatal */ }
       }
