@@ -1229,6 +1229,13 @@ export class RvfBackend implements IMemoryBackend {
       while (Date.now() - openStartTime < maxOpenWaitMs) {
         try {
           this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
+          // ADR-0181 handover §E ergonomic: if the on-disk dim differs from
+          // the configured dim, adopt the file's dim and warn. Existing files
+          // can't be re-created at a new dim mid-stream when init flips
+          // `--embedding-model`; the alternative is a fatal mismatch on the
+          // first ingest. Existing fail-loud at write-time stays correct;
+          // this just makes the UX better at open-time.
+          this.adoptOnDiskDimIfDiffers();
           if (this.config.verbose) {
             console.log(
               `[RvfBackend] Native @ruvector/rvf-node loaded (SFVR file opened` +
@@ -1429,6 +1436,12 @@ export class RvfBackend implements IMemoryBackend {
           m: this.config.hnswM,
           efConstruction: this.config.hnswEfConstruction,
         });
+        // ADR-0181 handover §E ergonomic: if a concurrent peer created
+        // the file with a different dim before our `openOrCreate` won
+        // the race-to-open, the binding returns us its handle on the
+        // existing file. Adopt that dim instead of writing 768-dim
+        // vectors into a 384-dim store.
+        this.adoptOnDiskDimIfDiffers();
         if (this.config.verbose) {
           console.log('[RvfBackend] Native @ruvector/rvf-node openOrCreate succeeded');
         }
@@ -1464,6 +1477,7 @@ export class RvfBackend implements IMemoryBackend {
           m: this.config.hnswM,
           efConstruction: this.config.hnswEfConstruction,
         });
+        // `create` always uses the supplied dim — no probe needed here.
         return true;
       } catch (err: any) {
         lastCreateErr = err;
@@ -1475,6 +1489,9 @@ export class RvfBackend implements IMemoryBackend {
         if ((isAlreadyExists || isLockHeld) && fileExists(this.config.databasePath)) {
           try {
             this.nativeDb = rvf.RvfDatabase.open(this.config.databasePath);
+            // Dispatch-to-open after AlreadyExists: another peer created
+            // the file first. Adopt its dim (see SFVR-magic branch above).
+            this.adoptOnDiskDimIfDiffers();
             return true;
           } catch (openErr: any) {
             lastCreateErr = openErr;
@@ -1494,6 +1511,48 @@ export class RvfBackend implements IMemoryBackend {
       `(code=${lastCreateErr?.code ?? 'unknown'}, attempts=${createAttempt + 1}, elapsed=${Date.now() - createStart}ms): ` +
       `${lastCreateErr?.message ?? lastCreateErr}`,
     );
+  }
+
+  /**
+   * ADR-0181 handover §E ergonomic. After a successful native open, the
+   * on-disk store has a fixed dim baked in at create time. If the user
+   * has flipped `--embedding-model` (or the config supplied a different
+   * dim than the file was originally created at), every subsequent
+   * ingest would explode with a dim-mismatch error. Adopting the file's
+   * dim and warning is friendlier than fatal-on-write, and it preserves
+   * the pre-existing data.
+   *
+   * Existing fail-loud at write-time stays correct for the case where
+   * the file is genuinely the wrong shape — this only adjusts the
+   * config to match a file that successfully opened. The native binding
+   * is the source of truth for dim once a file exists.
+   *
+   * No-op cases:
+   *   - `nativeDb` is null (cold fallback path took over).
+   *   - `nativeDb.dimension` is missing (older binding without
+   *     `dimension()` accessor — leave config alone, ingest will fail
+   *     loud as before).
+   *   - file dim equals configured dim (the happy path).
+   */
+  private adoptOnDiskDimIfDiffers(): void {
+    if (!this.nativeDb) return; // silent-fallthrough-OK: callers already either set or failed nativeDb
+    if (typeof this.nativeDb.dimension !== 'function') return; // silent-fallthrough-OK: older binding; ingest-time mismatch keeps fail-loud path
+    let onDiskDim: number;
+    try {
+      onDiskDim = this.nativeDb.dimension();
+    } catch {
+      return; // silent-fallthrough-OK: probe failed; next ingest will surface the real binding error
+    }
+    if (!Number.isFinite(onDiskDim) || onDiskDim < 1) return; // silent-fallthrough-OK: invalid dim from binding; let ingest surface fail-loud
+    if (onDiskDim === this.config.dimensions) return; // silent-fallthrough-OK: happy path, dims match
+    console.warn(
+      `[RvfBackend] On-disk dim ${onDiskDim} differs from configured ` +
+      `${this.config.dimensions} at ${this.config.databasePath}; ` +
+      `adopting on-disk dim. (Cause: --embedding-model flipped mid-stream ` +
+      `or config supplied a different dim than the file was created at. ` +
+      `Existing vectors are preserved; new vectors must match dim ${onDiskDim}.)`,
+    );
+    this.config.dimensions = onDiskDim;
   }
 
   /**

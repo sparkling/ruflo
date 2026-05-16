@@ -1180,11 +1180,23 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
   // `archivist: tool not registered '<name>'`, which the acceptance harness
   // `_expect_mcp_body` whitelists as `skip_accepted` (ADR-0082 narrow).
   //
-  // Done as a SECOND dynamic import (not statically by
-  // `agentdb/archivist/index.ts`) to avoid the TDZ cycle the handlers'
-  // own root-barrel imports would trigger if re-entered mid-load: by the
-  // time this import runs, `agentdb/archivist` is fully initialised.
-  // (ADR-0181 Phase 5 → Phase 6 stub-curation — surfaced 2026-05-15.)
+  // The handler-registration side-effect lives in a SEPARATE dynamic import
+  // (rather than being statically pulled by `agentdb/archivist/index.ts`)
+  // because handler registration is, by design, a side-effect of MODULE
+  // LOAD: each handler's top-level `registerMutationHandler` /
+  // `registerReadHandler` call mutates the registry the first time its
+  // module evaluates. Wiring it into the archivist barrel would force
+  // every consumer of `Archivist` to also evaluate every handler — fine
+  // for cli (we want exactly this), wrong for any other consumer that
+  // wants the dispatch surface without the side-effect.
+  //
+  // Historical note: before the handler-barrel TDZ refactor (ADR-0181
+  // handover §G, 2026-05-16), handlers value-imported register* via
+  // `'../../index.js'`, which formed a cycle on root-barrel re-entry
+  // mid-load. The split (`registration.js` for value imports,
+  // `index.js` for type-only imports) removes that cycle — the two
+  // dynamic imports here are now ordered purely for the side-effect
+  // contract above, NOT to defeat a TDZ.
   await import('agentdb/archivist/handlers');
 
   // Bootstrap: cannot call the guarded `getProcessArchivist()` here — the guard
