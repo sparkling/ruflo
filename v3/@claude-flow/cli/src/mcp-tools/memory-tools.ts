@@ -1176,17 +1176,21 @@ export const memoryTools: MCPTool[] = [
     },
     handler: async (input) => {
       await ensureInitialized();
-      // PHASE 6+: route through archivist when memory_search_index→memory_store
-      // collapse lands. The archivist handler at
-      // `handlers/memory/search-unified.ts` does cross-store sort+dedup against
-      // the FS-JSON `memory_search_index` candidate store that nothing
-      // currently writes to (Phase 3 carry-forward — see `archivist-init.ts`
-      // header lines 75-92 + `handlers/memory/search-unified.ts` lines 24-30).
-      // Dispatching now would return an empty RankedResults for every query —
-      // a release-acceptance regression. Stay on per-namespace `searchEntries`
-      // (cli-side cross-namespace assembly) until the substrate-seam expansion
-      // (or cli-side index populator) lands.
-      const { searchEntries } = await getMemoryFunctions();
+      // ADR-0181 task #100 (2026-05-17): dispatch through the archivist. The
+      // `memory_search_unified` handler (forks/agentdb handlers/memory/
+      // search-unified.ts) owns cross-store sort+dedup after task #99 landed
+      // STORE_ID = 'memory_store'. The dispatched path replaces the cli's
+      // per-namespace `searchEntries` fan-out with a single multi-namespace
+      // substrate.vectorSearch + post-hoc per-namespace bucketing.
+      //
+      // Carry-forward (handler header line 99): UNIFIED_TOPK_MULTIPLIER=8 —
+      // the handler widens topK by 8× to keep per-namespace rank buckets
+      // populated. Equivalent to the cli's pre-flip fan-out (each namespace
+      // got `limit * 2` candidates) but bounded by ONE HNSW query rather
+      // than N independent ones. At very large namespace counts with low
+      // limit, the post-bucket rank assignment may have fewer per-store
+      // members than the pre-flip path; if acceptance flags this, dispatch
+      // becomes per-namespace.
       validateMemoryInput(undefined, undefined, input.query as string);
 
       const query = input.query as string;
@@ -1196,65 +1200,89 @@ export const memoryTools: MCPTool[] = [
 
       if (ns) { const vNs = validateIdentifier(ns, 'namespace'); if (!vNs.valid) return { success: false, query, results: [], total: 0, error: vNs.error }; }
 
-      // Search all namespaces unless filtered
-      const namespaces = ns ? [ns] : ['default', 'claude-memories', 'auto-memory', 'patterns', 'tasks', 'feedback'];
-      const allResults: Array<{
-        key: string;
-        content: string;
-        score: number;
-        namespace: string;
-        source: string;
-        provenance: { storeId: string; matchType: 'semantic'; rawScore: number; rank: number; matchedField: 'content' };
-      }> = [];
+      // Pre-flip default fan-out (cli's enumerated namespaces) — preserved
+      // for the response's `searchedNamespaces` field so downstream consumers
+      // see a stable list of "namespaces this tool would have considered".
+      const searchedNamespaces = ns
+        ? [ns]
+        : ['default', 'claude-memories', 'auto-memory', 'patterns', 'tasks', 'feedback'];
 
-      for (const searchNs of namespaces) {
-        try {
-          const r = await searchEntries({ query, namespace: searchNs, limit: limit * 2 });
-          if (r?.results) {
-            r.results.forEach((entry: unknown, idx: number) => {
-              const e = entry as Record<string, unknown>;
-              const rawScore = (e.score as number) || 0;
-              const source = searchNs === 'claude-memories' ? 'claude-code' : searchNs === 'auto-memory' ? 'auto-memory' : 'agentdb';
-              allResults.push({
-                key: (e.key as string) || (e.id as string) || '',
-                content: ((e.content as string) || (e.value as string) || '').toString().slice(0, 200),
-                score: rawScore,
-                namespace: searchNs,
-                source,
-                // ADR-0180 §102: per-store rank captured BEFORE cross-store dedup so RRF
-                // reconstruction (k=60) remains possible from provenance alone.
-                provenance: { storeId: source, matchType: 'semantic', rawScore, rank: idx, matchedField: 'content' },
-              });
+      try {
+        await ensureRvfWired();
+        const archivist = await getProcessArchivist();
+        const raw = await archivist.dispatchRead('memory_search_unified', {
+          query,
+          limit,
+          ...(ns !== undefined ? { namespace: ns } : {}),
+        });
+        const ranked = raw as ReadonlyArray<{
+          item: { key: string; namespace: string; content: string; score: number };
+          score: number;
+          provenance: {
+            storeId: string;
+            matchType: 'semantic' | 'bm25' | 'exact' | 'fused' | 'status';
+            rawScore: number;
+            rank: number;
+            matchedField?: string;
+          };
+        }>;
+
+        // Flatten RankedResults to the cli's pre-flip flat shape. `source`
+        // is derived from namespace the same way the pre-flip fan-out did
+        // (claude-memories → 'claude-code', auto-memory → 'auto-memory',
+        // anything else → 'agentdb'). The handler already populated
+        // provenance.storeId from the per-store source, but mapping back
+        // through the cli's source-derivation keeps the response stable for
+        // any consumer keying off `source`.
+        const flat = ranked.map((r) => {
+          const recordNamespace = r.item.namespace;
+          const source =
+            recordNamespace === 'claude-memories'
+              ? 'claude-code'
+              : recordNamespace === 'auto-memory'
+                ? 'auto-memory'
+                : 'agentdb';
+          return {
+            key: r.item.key,
+            content: (r.item.content || '').toString().slice(0, 200),
+            score: r.score,
+            namespace: recordNamespace,
+            source,
+            provenance: {
+              storeId: source,
+              matchType: 'semantic' as const,
+              rawScore: r.provenance.rawScore,
+              rank: r.provenance.rank,
+              matchedField: 'content' as const,
+            },
+          };
+        });
+
+        // ADR-0180 §102: provenance flag gates the response shape.
+        const shapedResults = includeProvenance
+          ? flat
+          : flat.map(r => {
+              const { provenance: _provenance, ...rest } = r;
+              return rest;
             });
-          }
-        } catch { /* namespace may not exist */ }
+
+        return {
+          success: true,
+          query,
+          results: shapedResults,
+          total: shapedResults.length,
+          searchedNamespaces,
+          searchTime: Date.now(),
+        };
+      } catch (error) {
+        return {
+          success: false,
+          query,
+          results: [],
+          total: 0,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        };
       }
-
-      // Sort by score, deduplicate by key, take top N
-      allResults.sort((a, b) => b.score - a.score);
-      const seen = new Set<string>();
-      const deduplicated = allResults.filter(r => {
-        if (seen.has(r.key)) return false;
-        seen.add(r.key);
-        return true;
-      }).slice(0, limit);
-
-      // ADR-0180 §102: provenance flag gates the response shape.
-      const shapedResults = includeProvenance
-        ? deduplicated
-        : deduplicated.map(r => {
-            const { provenance: _provenance, ...rest } = r;
-            return rest;
-          });
-
-      return {
-        success: true,
-        query,
-        results: shapedResults,
-        total: shapedResults.length,
-        searchedNamespaces: namespaces,
-        searchTime: Date.now(),
-      };
     },
   },
 ];
