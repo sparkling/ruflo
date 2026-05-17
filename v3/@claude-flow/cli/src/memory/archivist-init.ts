@@ -265,9 +265,15 @@ function makeCliTaskRouter(): TaskRouter {
  */
 function makeCliEmbeddingScorer(): EmbeddingScorer {
   return {
-    async embed(text: string): Promise<Float32Array> {
+    async embed(text: string, opts?: { intent?: 'query' | 'document' }): Promise<Float32Array> {
       const { generateEmbedding } = await import('./memory-router.js');
-      const result = await generateEmbedding(text);
+      // ADR-0181 task #100 root-cause fix: forward intent to generateEmbedding
+      // so the asymmetric task-prefix (mpnet/bge etc) matches the caller's
+      // intent. Read-side callers pass {intent: 'query'}; write-side callers
+      // pass nothing (defaults to 'document' on both sides — preserved).
+      // Prior bug: this method dropped opts → query embeddings got the
+      // document prefix → cosine recall regression in e2e-0059-mem-search.
+      const result = await generateEmbedding(text, opts);
       // generateEmbedding returns { embedding: number[], dimensions, model }
       // (per memory-router.ts:2335 → adapter.generateEmbedding). Convert
       // number[] → Float32Array; do not store the intermediate array.
