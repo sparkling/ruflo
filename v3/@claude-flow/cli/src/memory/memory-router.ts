@@ -267,10 +267,25 @@ export const RVF_CANONICAL_EXTENSIONS = [
   '.ingestlock', // <path>.ingestlock — native ingest lock
 ] as const;
 
+// ADR-0183 A0: canonical project-membership predicate. `.claude-flow/` is a
+// runtime-produced directory (the archivist audit-writer mkdir's
+// `<cwd>/.claude-flow/data/` on first dispatch — forks/agentdb
+// audit-writer.ts:93) and MUST NOT be used as a project signal. The cli's
+// own `findProjectRoot()` (mcp-tools/types.ts) and the archivist init
+// pre-flight (archivist-init.ts:1368-1371) share this canonical set; this
+// predicate keeps memory-router aligned with them.
+function _isProjectRoot(dir: string): boolean {
+  return (
+    fs.existsSync(path.join(dir, '.ruflo-project')) ||
+    (fs.existsSync(path.join(dir, 'CLAUDE.md')) && fs.existsSync(path.join(dir, '.claude'))) ||
+    fs.existsSync(path.join(dir, '.git'))
+  );
+}
+
 function _findProjectRoot(): string {
   let dir = findProjectRoot();
   while (dir !== path.dirname(dir)) {
-    if (fs.existsSync(path.join(dir, '.claude-flow'))) return dir;
+    if (_isProjectRoot(dir)) return dir;
     dir = path.dirname(dir);
   }
   return findProjectRoot();
@@ -349,12 +364,19 @@ function _resolveDatabasePath(configuredPath: string): string {
   if (path.isAbsolute(configuredPath)) return configuredPath;
 
   // Relative path. Find project root. _findProjectRoot() returns cwd as
-  // fallback when no ancestor `.claude-flow/` exists, so we must also check
-  // that the root we found actually has a `.claude-flow/` directory — that
-  // tells us whether we're inside a project or just sitting in an arbitrary
-  // cwd.
+  // fallback when no ancestor canonical marker exists, so we must also check
+  // that the root we found is a real project root — that tells us whether
+  // we're inside a project or just sitting in an arbitrary cwd.
+  //
+  // ADR-0183 A0: use canonical markers (.ruflo-project | CLAUDE.md+.claude/ |
+  // .git/), NOT `.claude-flow/`. The archivist's audit-writer creates
+  // `<cwd>/.claude-flow/data/` as a side-effect on first dispatch
+  // (forks/agentdb audit-writer.ts:93), so a `.claude-flow/` existence check
+  // false-positives "in project" on the next cold-start in a markerless cwd
+  // and silently relocates the memory file off the per-user default path —
+  // exactly the ADR-0069 Bug #3 failure mode this resolver was added to fix.
   const projectRoot = _findProjectRoot();
-  const inProject = fs.existsSync(path.join(projectRoot, '.claude-flow'));
+  const inProject = _isProjectRoot(projectRoot);
 
   if (inProject) {
     // Inside an init'd project — resolve relative to project root so callers
