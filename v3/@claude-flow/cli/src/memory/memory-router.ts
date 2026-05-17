@@ -1400,6 +1400,8 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
           item: {
             key: string;
             namespace: string;
+            content?: string;
+            tags?: readonly string[];
             storedAt?: string;
             updatedAt?: string;
             accessCount?: number;
@@ -1410,6 +1412,13 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         // Map handler's storedAt (ISO) → createdAt (unix-millis) so the MCP
         // wrapper at memory-tools.ts:770-776 (which renames createdAt →
         // storedAt) still produces the correct response shape.
+        //
+        // ADR-0181 task #100 follow-up (2026-05-17): include `content` + `tags`
+        // post the agentdb MemoryListRecord widening (forks/agentdb a72f664).
+        // session_save → loadRelatedStores reads `entry.content` to persist
+        // values into the session blob; session_restore writes them back via
+        // routeMemoryOp({type:'store'}). Without `content` here, the round-trip
+        // wrote empty values back and broke p8-inv12-mem-full.
         const entries = results.map((r) => {
           const it = r.item;
           const createdAt =
@@ -1419,6 +1428,8 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
           return {
             key: it.key,
             namespace: it.namespace,
+            ...(it.content !== undefined ? { content: it.content } : {}),
+            ...(it.tags !== undefined ? { tags: it.tags } : {}),
             ...(createdAt !== undefined && !Number.isNaN(createdAt) ? { createdAt } : {}),
             ...(updatedAt !== undefined && !Number.isNaN(updatedAt) ? { updatedAt } : {}),
             ...(it.accessCount !== undefined ? { accessCount: it.accessCount } : {}),
