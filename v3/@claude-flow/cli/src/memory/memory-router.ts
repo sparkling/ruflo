@@ -1008,96 +1008,93 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
 
   switch (op.type) {
     case 'store': {
-      // ADR-0183 A1: dispatch through the archivist. Phase 5's exit gate
-      // ("every MCP tool + CLI write command + hook + daemon routes through
-      // the archivist") is honoured for memory writes — the cli's internal
-      // write router joins the MCP boundary in dispatching through the same
-      // `memory_store` handler. Both paths now produce identical on-disk
-      // shape (rich metadata + shape_version: 2). The handler at
-      // forks/agentdb/src/archivist/handlers/memory/store.ts owns:
-      //   - embedding generation via EmbeddingScorer capability
-      //   - ADR-0094 RC-2 idempotency (same-content no-op, dup-key throw,
-      //     upsert update-in-place)
-      //   - TTL → metadata.expiresAt
-      //
-      // The 12 routeMemoryOp({type:'store'}) callsites stay unchanged; the
-      // facade normalises their MemoryOp payload into the handler's
-      // MemoryStorePayload (fields outside the handler's contract are
-      // dropped explicitly — no silent coercion). See ADR-0183 §Architecture
-      // "Flip mechanism — Strategy 1".
       try {
+        const id = generateId('mem');
         const namespace = op.namespace || 'default';
-        const key = op.key || generateId('mem');
-        const content = op.value ?? '';
+        const now = Date.now();
 
-        await ensureRvfWired();
-        const archivist = await getProcessArchivist();
+        // Generate embedding for semantic search
+        let embedding: Float32Array | undefined;
+        if (op.generateEmbedding !== false && op.value) {
+          try {
+            const adapterMod = await import('@claude-flow/memory/embedding-adapter' as string);
+            const result = await adapterMod.generateEmbedding(op.value);
+            embedding = new Float32Array(result.embedding);
+          } catch { /* embedding optional — store without it */ }
+        }
 
-        try {
-          await archivist.dispatch('memory_store', {
-            namespace,
-            key,
-            content,
-            tags: op.tags ?? [],
-            ...(op.ttl !== undefined ? { ttl: op.ttl } : {}),
-            upsert: !!op.upsert,
-            generateEmbedding: op.generateEmbedding !== false,
-          });
-        } catch (e) {
-          // Handler RC-2 guard throws on duplicate-key + !upsert. Map the
-          // handler's structured error back to the legacy envelope so call
-          // sites + acceptance tests that match on the exact string remain
-          // green.
-          const msg = e instanceof Error ? e.message : String(e);
-          if (msg.includes('duplicate key')) {
+        // ADR-0094 RC-2: idempotency guard. Without a pre-check, two back-to-back
+        // `store(key=k, value=v, namespace=n)` calls with `upsert:false` would create
+        // two rows (router always fell through to storage.store()). We now always
+        // look up the existing entry first:
+        //   - same value         → no-op return (idempotent)
+        //   - different value + !upsert → error (use upsert:true to replace)
+        //   - different value + upsert  → update existing row
+        //   - no existing entry  → fall through to the unconditional insert below
+        if (op.key) {
+          const existing = await storage.getByKey(namespace, op.key);
+          if (existing) {
+            const existingContent = (existing as { content?: string }).content ?? '';
+            const newContent = op.value ?? '';
+            const sameValue = existingContent === newContent;
+
+            if (sameValue) {
+              // Idempotent no-op: same (key, value, namespace) — return existing entry
+              return {
+                success: true, key: op.key, stored: true,
+                storedAt: new Date((existing as { createdAt?: number }).createdAt ?? now).toISOString(),
+                hasEmbedding: !!(existing as { embedding?: unknown }).embedding,
+                embeddingDimensions: (existing as { embedding?: { length?: number } }).embedding?.length ?? null,
+                idempotent: true,
+              };
+            }
+
+            if (!op.upsert) {
+              return {
+                success: false,
+                key: op.key,
+                stored: false,
+                error: "'key' already exists in this namespace with a different value; set upsert:true to replace",
+              };
+            }
+
+            // upsert === true and value differs → overwrite
+            await storage.update(existing.id, {
+              content: op.value,
+              tags: op.tags,
+              metadata: { ...(existing.metadata || {}), ttl: op.ttl },
+            });
             return {
-              success: false,
-              key,
-              stored: false,
-              error: "'key' already exists in this namespace with a different value; set upsert:true to replace",
+              success: true, key: op.key, stored: true,
+              storedAt: new Date().toISOString(),
+              hasEmbedding: !!embedding, embeddingDimensions: embedding?.length || null,
             };
           }
-          throw e;
         }
 
-        // Re-read for envelope metadata parity (mirrors mcp-tools/memory-tools.ts
-        // store wrapper, lines 302-321). The dispatch above is the authoritative
-        // write; this re-read surfaces hasEmbedding / embeddingDimensions /
-        // storedAt without coupling the cli to the handler's internal shape.
-        let hasEmbedding = false;
-        let embeddingDimensions: number | null = null;
-        let storedAt = new Date().toISOString();
-        let idempotent = false;
-        try {
-          const existing = await storage.getByKey(namespace, key);
-          if (existing) {
-            hasEmbedding = !!(existing as { embedding?: unknown }).embedding;
-            embeddingDimensions = (existing as { embedding?: { length?: number } }).embedding?.length ?? null;
-            const createdAt = (existing as { createdAt?: number }).createdAt;
-            if (typeof createdAt === 'number') {
-              storedAt = new Date(createdAt).toISOString();
-              // Heuristic: idempotent no-op when the existing record's
-              // createdAt is older than the dispatch instant. Preserves the
-              // legacy envelope's `idempotent: true` signal for same-content
-              // re-writes.
-              if (createdAt < Date.now() - 50 && (existing as { content?: string }).content === content) {
-                idempotent = true;
-              }
-            }
-          }
-        } catch {
-          // Re-read non-fatal — the dispatch already succeeded. Envelope
-          // just lacks the embedding-metadata fields in that case.
-        }
+        const entry = {
+          id,
+          key: op.key || id,
+          content: op.value || '',
+          embedding,
+          type: 'semantic' as const,
+          namespace,
+          tags: op.tags || [],
+          metadata: op.ttl ? { ttl: op.ttl } : {},
+          accessLevel: 'private' as const,
+          createdAt: now,
+          updatedAt: now,
+          version: 1,
+          references: [],
+          accessCount: 0,
+          lastAccessedAt: now,
+        };
 
+        await storage.store(entry);
         return {
-          success: true,
-          key,
-          stored: true,
-          storedAt,
-          hasEmbedding,
-          embeddingDimensions,
-          ...(idempotent ? { idempotent: true } : {}),
+          success: true, key: op.key, stored: true,
+          storedAt: new Date().toISOString(),
+          hasEmbedding: !!embedding, embeddingDimensions: embedding?.length || null,
         };
       } catch (e) {
         return { success: false, error: `store failed: ${e instanceof Error ? e.message : String(e)}` };
