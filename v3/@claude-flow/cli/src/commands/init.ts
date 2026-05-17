@@ -422,13 +422,16 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       output.writeln();
       output.printInfo('Starting services...');
 
-      const { execSync } = await import('child_process');
+      // Invoke this same CLI binary directly instead of `npx @sparkleideas/cli@latest`.
+      // npx-against-@latest re-resolves and re-installs the published cli on every
+      // call (60+s on a clean npm cache), which dominated harness-init wall time.
+      const { execFileSync, spawn } = await import('child_process');
 
       // Initialize memory database
       if (startAll) {
         try {
           output.writeln(output.dim('  Initializing memory database...'));
-          execSync('npx @sparkleideas/cli@latest memory init 2>/dev/null', {
+          execFileSync(process.execPath, [process.argv[1], 'memory', 'init'], {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 30000
@@ -439,15 +442,16 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
         }
       }
 
-      // Start daemon
+      // Start daemon — spawn detached + unref so the parent doesn't block.
       if (startDaemon) {
         try {
           output.writeln(output.dim('  Starting daemon...'));
-          execSync('npx @sparkleideas/cli@latest daemon start 2>/dev/null &', {
-            stdio: 'pipe',
+          const child = spawn(process.execPath, [process.argv[1], 'daemon', 'start'], {
+            stdio: 'ignore',
             cwd: ctx.cwd,
-            timeout: 10000
+            detached: true
           });
+          child.unref();
           output.writeln(output.success('  ✓ Daemon started'));
         } catch {
           output.writeln(output.warning('  Daemon may already be running'));
@@ -458,7 +462,7 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       if (startAll) {
         try {
           output.writeln(output.dim('  Initializing swarm...'));
-          execSync('npx @sparkleideas/cli@latest swarm init --topology hierarchical-mesh 2>/dev/null', {
+          execFileSync(process.execPath, [process.argv[1], 'swarm', 'init', '--topology', 'hierarchical-mesh'], {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 30000
@@ -491,11 +495,10 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
         output.writeln(output.dim('  Hyperbolic: Enabled (Poincaré ball)'));
         output.writeln(output.dim('  Loading ONNX model (cached at ~/.cache/transformers, ~110 MB first time)...'));
         // Invoke this same CLI binary directly instead of `npx @sparkleideas/cli@latest`.
-        // npx-against-@latest re-resolves and re-installs the published cli on every
-        // call (60+s on a clean npm cache), which dominated harness-init wall time.
-        // The ONNX model itself is already cached by @xenova/transformers under
-        // ~/.cache/transformers — the misleading "Downloading (one-time)" copy
-        // is what masked the real culprit.
+        // Pattern: process.execPath + process.argv[1] avoids re-resolving + re-installing
+        // the published cli (60+s on a clean npm cache). The ONNX model itself is
+        // already cached by @xenova/transformers under ~/.cache/transformers — the
+        // misleading "Downloading (one-time)" copy is what masked the real culprit.
         execFileSync(process.execPath, [process.argv[1], 'embeddings', 'init', '--model', embeddingModel, '--force'], {
           stdio: 'pipe',
           cwd: ctx.cwd,
@@ -791,9 +794,10 @@ export const wizardCommand: Command = {
       if (enableEmbeddings) {
         output.writeln();
         output.printInfo('Initializing ONNX embedding subsystem...');
-        const { execSync } = await import('child_process');
+        // Invoke same CLI binary directly; npx-against-@latest re-installs on every call.
+        const { execFileSync } = await import('child_process');
         try {
-          execSync(`npx @sparkleideas/cli@latest embeddings init --model ${embeddingModel} --no-download --force 2>/dev/null`, {
+          execFileSync(process.execPath, [process.argv[1], 'embeddings', 'init', '--model', embeddingModel, '--no-download', '--force'], {
             stdio: 'pipe',
             cwd: ctx.cwd,
             timeout: 30000
@@ -835,11 +839,12 @@ export const wizardCommand: Command = {
       if (startDaemon || startAll) {
         output.writeln();
         output.printInfo('Starting services...');
-        const { execSync } = await import('child_process');
+        // Invoke same CLI binary directly; npx-against-@latest re-installs on every call.
+        const { execFileSync, spawn } = await import('child_process');
         if (startAll) {
           try {
             output.writeln(output.dim('  Initializing memory database...'));
-            execSync('npx @sparkleideas/cli@latest memory init 2>/dev/null', {
+            execFileSync(process.execPath, [process.argv[1], 'memory', 'init'], {
               stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
             });
             output.writeln(output.success('  \u2713 Memory initialized'));
@@ -848,16 +853,17 @@ export const wizardCommand: Command = {
         if (startDaemon) {
           try {
             output.writeln(output.dim('  Starting daemon...'));
-            execSync('npx @sparkleideas/cli@latest daemon start 2>/dev/null &', {
-              stdio: 'pipe', cwd: ctx.cwd, timeout: 10000
+            const child = spawn(process.execPath, [process.argv[1], 'daemon', 'start'], {
+              stdio: 'ignore', cwd: ctx.cwd, detached: true
             });
+            child.unref();
             output.writeln(output.success('  \u2713 Daemon started'));
           } catch { /* T4: daemon start failure is expected if already running */ output.writeln(output.warning('  Daemon may already be running')); }
         }
         if (startAll) {
           try {
             output.writeln(output.dim('  Initializing swarm...'));
-            execSync(`npx @sparkleideas/cli@latest swarm init --topology ${options.runtime.topology || 'hierarchical-mesh'} 2>/dev/null`, {
+            execFileSync(process.execPath, [process.argv[1], 'swarm', 'init', '--topology', String(options.runtime.topology || 'hierarchical-mesh')], {
               stdio: 'pipe', cwd: ctx.cwd, timeout: 30000
             });
             output.writeln(output.success('  \u2713 Swarm initialized'));

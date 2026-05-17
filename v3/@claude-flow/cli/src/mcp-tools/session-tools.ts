@@ -12,9 +12,10 @@
  * the user's working directory, not a coordinated multi-process write that
  * needs the audit chain.
  *
- * NOTE: A second `session-tools.ts` exists at `v3/mcp/tools/session-tools.ts`
- * (slashed-name tools). The same no-flip rationale applies to both files.
- * See DA-memo carry-forward #7 for the dual-file consolidation question.
+ * NOTE: A second `session-tools.ts` previously existed at `v3/mcp/tools/session-tools.ts`
+ * (slashed-name tools). That dead tree was removed in the post-Phase-7 close-out
+ * (DA carry-forward #7 was audit-only; the tree was confirmed not in any tsconfig
+ * include or copy-source.sh, so its deletion was a single-commit cleanup).
  *
  * Council reference: docs/council/ADR-0181-phase-5-da-memo.md row #12
  * (W-session verdict).
