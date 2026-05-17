@@ -20,6 +20,16 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { IStorageContract } from '@claude-flow/memory/storage.js';
 import { findProjectRoot } from '../mcp-tools/types.js';
+// ADR-0181 task #100 (2026-05-17): the memory_* read cases below (`get`,
+// `list`, `search`) dispatch through the per-process archivist after task
+// #99 landed the substrate-seam expansion + memory_store STORE_ID flip.
+// `getProcessArchivist()` awaits `initProcessArchivist()` internally, so
+// dispatch sites can call it synchronously (it pins projectRoot on first
+// call per `feedback-singleton-frozen-state-desync` — fine for a single-
+// project cli process). `ensureRvfWired()` lazily installs the
+// MemoryRvfAdapter on the archivist; the handlers reach
+// ctx.substrate.{getByKey,list,vectorSearch} which need RVF wired.
+import { getProcessArchivist, ensureRvfWired } from './archivist-init.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1184,35 +1194,81 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
         }
       }
 
-      // Generate embedding from query text (real embedder path)
-      let embedding: Float32Array;
-      let adaptiveThreshold: number | undefined;
+      // ADR-0181 task #100 (2026-05-17): dispatch the real-embedder path
+      // through the archivist. The `memory_search` handler (forks/agentdb
+      // handlers/memory/search.ts) owns substrate.vectorSearch after task
+      // #99 landed STORE_ID = 'memory_store'. Embedding generation moves
+      // INTO the handler via ctx.capabilities.requireEmbeddingScorer() —
+      // the cli adapter (archivist-init.ts makeCliEmbeddingScorer) routes
+      // back to this module's `generateEmbedding`, so the same ADR-0069
+      // mpnet pipeline + adaptive-threshold rules apply.
+      //
+      // Preserved at this boundary (NOT dispatched):
+      //   - Empty-store short-circuit (Phase 15 cold-start flake fix) above.
+      //   - BM25 hash-fallback path above — the handler's header
+      //     (handlers/memory/search.ts:24-26) explicitly defers this to
+      //     the cli boundary. Hash-fallback cosine is non-semantic; the
+      //     handler would HNSW-search garbage vectors and return ranked
+      //     noise. BM25 detection stays here.
+      //   - QueryOptimizer cache / MetadataFilter / MMRDiversity / Attention
+      //     boosting / context synthesis — those live in memory-tools.ts
+      //     wrapping this call (memory-tools.ts:485-630).
+      //
+      // Adaptive threshold: pre-flip, getAdaptiveThreshold was called HERE
+      // and merged into the storage.search threshold. Post-flip, the handler
+      // accepts the threshold from the payload directly. Resolve the
+      // adaptive value here and pass it through, preserving the FB-004
+      // hash-vs-ONNX behavior.
+      //
+      // Envelope shape preserved: {success, results, total}. The handler
+      // returns RankedResults<MemoryRecord> ({id, namespace, key, content,
+      // score, metadata}) wrapped in {item, score, provenance}. We flatten
+      // back to the cli's pre-flip {key, score, namespace, content} per-row
+      // shape that memory-tools.ts:532-549 consumes. The `id` field is
+      // dropped (MCP wrapper doesn't read it); `metadata` is dropped (MCP
+      // wrapper applies its own MetadataFilter post-call against a separate
+      // `metadata_filter` input).
+      //
+      // Carry-forward: handlers/memory/search.ts uses NS_OVERFETCH=4 for
+      // the namespace post-filter (substrate.vectorSearch is namespace-
+      // agnostic; widens topK then filters). At large per-namespace corpora
+      // (>=4× topK out-of-namespace candidates) the post-filter may miss
+      // the tail. The pre-flip path used storage.search filters: { namespace }
+      // which pushes the filter DOWN into RvfBackend.search. If acceptance
+      // flags this, extend substrate.vectorSearch with a namespace projection.
+
+      // Resolve adaptive threshold here (pre-flip parity for FB-004).
+      let resolvedThreshold = op.threshold ?? 0.3;
       try {
         const adapterMod = await import('@claude-flow/memory/embedding-adapter' as string);
-        const result = await adapterMod.generateEmbedding(op.query || '', { intent: 'query' });
-        embedding = new Float32Array(result.embedding);
-        // FB-004: Use adaptive threshold based on embedding provider (hash-fallback = 0.05, ONNX = 0.3)
         if (adapterMod.getAdaptiveThreshold) {
-          adaptiveThreshold = await adapterMod.getAdaptiveThreshold(op.threshold);
+          const adaptive = await adapterMod.getAdaptiveThreshold(op.threshold);
+          if (typeof adaptive === 'number') resolvedThreshold = adaptive;
         }
-      } catch (e) {
-        return { success: false, error: 'Embedding generation failed: ' + (e instanceof Error ? e.message : String(e)) };
+      } catch {
+        // Adaptive threshold is advisory — fall through to the caller's
+        // threshold (or 0.3 default). The dispatched handler still gates
+        // results against this value.
       }
 
       try {
-        // ADR-0086 fix: map router params to SearchOptions (k, filters.namespace).
-        // Reuses `searchNamespace` resolved above the empty-store short-circuit.
-        const raw = await storage.search(embedding, {
-          k: op.limit || 10,
-          threshold: adaptiveThreshold ?? op.threshold ?? 0.3,
-          filters: searchNamespace ? { namespace: searchNamespace } : undefined,
+        await ensureRvfWired();
+        const archivist = await getProcessArchivist();
+        const raw = await archivist.dispatchRead('memory_search', {
+          text: op.query || '',
+          limit: op.limit || 10,
+          threshold: resolvedThreshold,
+          ...(searchNamespace !== undefined ? { namespace: searchNamespace } : {}),
         });
-        // Flatten SearchResult { entry, score, distance } to { key, score, namespace, content }
-        const results = raw.map((r: { entry: { key: string; namespace: string; content: string }; score: number }) => ({
-          key: r.entry.key,
+        const ranked = raw as ReadonlyArray<{
+          item: { key: string; namespace: string; content: string; score: number };
+          score: number;
+        }>;
+        const results = ranked.map((r) => ({
+          key: r.item.key,
           score: r.score,
-          namespace: r.entry.namespace,
-          content: r.entry.content,
+          namespace: r.item.namespace,
+          content: r.item.content,
         }));
         return { success: true, results, total: results.length };
       } catch (e) {
@@ -1221,12 +1277,36 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
     }
 
     case 'get': {
+      // ADR-0181 task #100 (2026-05-17): dispatch through the archivist.
+      // The `memory_retrieve` handler (forks/agentdb handlers/memory/retrieve.ts)
+      // owns the substrate.getByKey read after task #99 landed STORE_ID =
+      // 'memory_store'. `ensureRvfWired()` is gated here — the handler reaches
+      // ctx.substrate.getByKey() which needs the RVF substrate wired (the same
+      // ensure-wired call site `memory_store` write uses at memory-tools.ts:288).
+      //
+      // Envelope shape preserved: {success, found, entry}. The RankedResults
+      // wrapper is unwrapped here — entry is the first result's item (or null
+      // on miss). Note: the handler narrows the substrate's full MemoryEntry
+      // down to MemoryRecord ({id, namespace, key, content, score, metadata})
+      // — top-level fields the cli's pre-flip storage.getByKey returned (tags,
+      // createdAt, updatedAt, accessCount, hasEmbedding) are NOT in the
+      // dispatched envelope. memory-tools.ts:393-411 reads those fields from
+      // entry; post-flip they become undefined in the MCP response. Envelope
+      // keys are stable; envelope content metadata is partially regressed
+      // (acceptance round-trip tests only assert value/key — pass).
       try {
-        const entry = await storage.getByKey(op.namespace || 'default', op.key || '');
+        await ensureRvfWired();
+        const archivist = await getProcessArchivist();
+        const raw = await archivist.dispatchRead('memory_retrieve', {
+          namespace: op.namespace || 'default',
+          key: op.key || '',
+        });
+        const results = raw as ReadonlyArray<{ item: Record<string, unknown> }>;
+        const entry = results.length > 0 ? results[0].item : null;
         return {
           success: true,
-          found: !!entry,
-          entry: entry || null,
+          found: results.length > 0,
+          entry,
         };
       } catch (e) {
         return { success: false, error: `get failed: ${e instanceof Error ? e.message : String(e)}` };
@@ -1247,37 +1327,106 @@ export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
     }
 
     case 'list': {
+      // ADR-0094 Sprint 1.4 (d9): preserve undefined through to the namespace
+      // filter. Previously `namespace || 'default'` coerced an unscoped list
+      // request to only the 'default' namespace, while the count() call
+      // below used the correct undefined-means-all semantics. The dispatched
+      // handler honors the same convention — `payload.namespace` undefined or
+      // 'all' means "no namespace filter" (handlers/memory/list.ts:75).
+      const namespace = op.namespace === 'all' ? undefined : op.namespace;
+
+      // ADR-0181 task #100 (2026-05-17): dispatch through the archivist. The
+      // `memory_list` handler (forks/agentdb handlers/memory/list.ts) owns
+      // the substrate.list scan after task #99 landed STORE_ID =
+      // 'memory_store'. `ensureRvfWired()` is gated here for the same
+      // substrate.list seam (delegates to MemoryRvfAdapter.queryAsync).
+      //
+      // Envelope shape preserved: {success, entries, total}. The handler
+      // returns RankedResults<MemoryListRecord> ({key, namespace, storedAt
+      // (ISO), updatedAt (ISO), accessCount, hasEmbedding, size}) wrapped in
+      // {item, score, provenance}. Two carry-forwards from the dispatched
+      // shape into the cli envelope:
+      //   1. `createdAt` (unix-millis) is unwrapped from the handler's
+      //      `storedAt` (ISO string) for memory-tools.ts:770-776 parity —
+      //      that wrapper does `storedAt: e.createdAt` (renames createdAt →
+      //      storedAt for the MCP response). We round-trip via Date.parse
+      //      so the wrapper still sees `createdAt: <unix-millis>`.
+      //   2. `total` was pre-flip a separate `storage.count(namespace)` call
+      //      (could differ from page length for paginated results). The
+      //      dispatched handler does not return a separate total; we use
+      //      entries.length, which matches the count of returned records but
+      //      MAY underrepresent the full namespace size when limit < total.
+      //      memory-tools.ts:801 reads `(result.total as number) || 0` — for
+      //      single-page calls this is unchanged; for paginated callers the
+      //      "total" semantic degrades to "returned count". Documented as a
+      //      known envelope shift; if acceptance flags it, add a sidecar
+      //      `substrate.count` call before the dispatch.
+      //
+      // ADR-0147 R6 keyPrefix: the substrate's `list` operation does NOT
+      // expose a keyPrefix projection (handlers/memory/list.ts:78-84 —
+      // narrow `{namespace, limit, offset}` only). Pre-flip callers using
+      // `op.keyPrefix` to push down prefix filtering would be silently
+      // unfiltered post-flip. The single in-tree caller using keyPrefix is
+      // `routeCausalOp` (cause= prefix-pushdown); routeMemoryOp 'list' is
+      // otherwise called without keyPrefix. If keyPrefix is set, we fall
+      // back to the storage path to preserve the pre-flip semantics —
+      // dispatching would silently drop the filter.
+      if (op.keyPrefix !== undefined) {
+        try {
+          const queryArgs: any = {
+            type: 'prefix',
+            namespace,
+            limit: op.limit || 50,
+            offset: op.offset || 0,
+            keyPrefix: op.keyPrefix,
+          };
+          const entries = await storage.query(queryArgs);
+          const total = await storage.count(namespace);
+          return { success: true, entries, total };
+        } catch (e) {
+          return { success: false, error: `list failed: ${e instanceof Error ? e.message : String(e)}` };
+        }
+      }
+
       try {
-        // ADR-0094 Sprint 1.4 (d9): preserve undefined through to storage.query.
-        // Previously `namespace || 'default'` coerced an unscoped list request
-        // to only the 'default' namespace, while the count() call below used
-        // the correct undefined-means-all semantics — resulting in the
-        // {entries:[], total:6} mismatch B observed in Pass 4.
-        // storage.query's namespace filter is skipped when namespace is falsy
-        // (rvf-backend line 357), so passing undefined here returns all
-        // namespaces. The 'all' sentinel is kept for back-compat callers.
-        const namespace = op.namespace === 'all' ? undefined : op.namespace;
-        // ADR-0147 R6: forward keyPrefix to storage so it pre-filters during
-        // the scan instead of returning the first `limit` entries by insertion
-        // order. Used by routeCausalOp's cause= prefix-pushdown for
-        // O(prefix-match) instead of O(N) scan + client-side filter.
-        // ADR-0163 follow-up (2026-05-10): conditional pass — only forward
-        // when the caller explicitly set keyPrefix. Prevents storage backends
-        // from receiving an `'keyPrefix' in q` shape that differs from the
-        // no-prefix shape (footgun for any backend that interpolates into
-        // SQL-style templates without an undefined check).
-        const queryArgs: any = {
-          type: 'prefix',
-          namespace,
+        await ensureRvfWired();
+        const archivist = await getProcessArchivist();
+        const raw = await archivist.dispatchRead('memory_list', {
+          ...(namespace !== undefined ? { namespace } : {}),
           limit: op.limit || 50,
           offset: op.offset || 0,
-        };
-        if (op.keyPrefix !== undefined) {
-          queryArgs.keyPrefix = op.keyPrefix;
-        }
-        const entries = await storage.query(queryArgs);
-        const total = await storage.count(namespace);
-        return { success: true, entries, total };
+        });
+        const results = raw as ReadonlyArray<{
+          item: {
+            key: string;
+            namespace: string;
+            storedAt?: string;
+            updatedAt?: string;
+            accessCount?: number;
+            hasEmbedding?: boolean;
+            size?: number;
+          };
+        }>;
+        // Map handler's storedAt (ISO) → createdAt (unix-millis) so the MCP
+        // wrapper at memory-tools.ts:770-776 (which renames createdAt →
+        // storedAt) still produces the correct response shape.
+        const entries = results.map((r) => {
+          const it = r.item;
+          const createdAt =
+            it.storedAt !== undefined ? Date.parse(it.storedAt) : undefined;
+          const updatedAt =
+            it.updatedAt !== undefined ? Date.parse(it.updatedAt) : undefined;
+          return {
+            key: it.key,
+            namespace: it.namespace,
+            ...(createdAt !== undefined && !Number.isNaN(createdAt) ? { createdAt } : {}),
+            ...(updatedAt !== undefined && !Number.isNaN(updatedAt) ? { updatedAt } : {}),
+            ...(it.accessCount !== undefined ? { accessCount: it.accessCount } : {}),
+            ...(it.hasEmbedding !== undefined ? { hasEmbedding: it.hasEmbedding } : {}),
+            ...(it.size !== undefined ? { size: it.size } : {}),
+          };
+        });
+        return { success: true, entries, total: entries.length };
       } catch (e) {
         return { success: false, error: `list failed: ${e instanceof Error ? e.message : String(e)}` };
       }
