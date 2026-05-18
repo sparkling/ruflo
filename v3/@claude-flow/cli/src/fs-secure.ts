@@ -15,6 +15,16 @@
  * AES-256-GCM-encrypted before hitting disk. Reads use the magic-byte
  * sniff so legacy plaintext files keep working unchanged during the
  * incremental migration.
+ *
+ * ADR-0188 boundary: writeFileRestricted is NOT used for session-state
+ * JSON writes. Per ADR-0188 Option 2, `init/helpers-generator.ts`
+ * SESSION_FILE writes, `hive-mind-session.ts` archive writes, and
+ * `commands/session.ts` user-export writes are deliberately left at the
+ * inherited umask (typically 0644) — they are project-local ephemeral
+ * state, not credential material. Only the three audit-listed sensitive
+ * write sites use writeFileRestricted: `mcp-tools/terminal-tools.ts`,
+ * `mcp-tools/session-tools.ts`, and `memory-router.ts` (chmod 0600 on
+ * memory.db).
  */
 
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
