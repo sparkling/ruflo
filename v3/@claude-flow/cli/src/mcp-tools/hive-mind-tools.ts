@@ -32,6 +32,13 @@ import { validateWorkerType, WORKER_TYPES } from './validate-input.js';
 // init / join / leave / consensus / status stay on the original cli path —
 // see per-tool inline notes for the carry-forward reason.
 import { getProcessArchivist } from '../memory/archivist-init.js';
+// ADR-0185 Wave 2b: RaftTermCollisionError is thrown by agentdb's raft
+// propose handler (raft.ts:67) on term collision; the cli's try/catch
+// reshape arm uses `instanceof` to discriminate it for envelope reshape.
+import { RaftTermCollisionError } from 'agentdb/archivist';
+// ADR-0185 Wave 2b: response-builder is the post-dispatch projection
+// function for consensus responses. See hive-mind-consensus-response.ts.
+import { buildConsensusResponse } from './hive-mind-consensus-response.js';
 // ADR-0121 (T3): state-based CRDT primitives for the 'crdt' strategy.
 import {
   GCounter,
@@ -2042,19 +2049,6 @@ export const hiveMindTools: MCPTool[] = [
       required: ['action'],
     },
     handler: async (input) => {
-      // ADR-0180 Phase 4 pre-flight: wrap load → mutate → save under
-      // `withHiveStoreLock` (cross-process O_EXCL sentinel) so concurrent
-      // propose/vote/status calls cannot lost-update each other's
-      // `state.consensus.pending` / `state.consensus.history`. Pattern mirrors
-      // hive-mind_spawn and hive-mind_init. The lock is NOT reentrant
-      // (O_CREAT|O_EXCL); the handler must avoid calling other
-      // lock-acquiring code paths. The `list` action is read-only but
-      // harmlessly nested in the lock so the dispatch logic stays a single
-      // block.
-      return withHiveStoreLock(async () => {
-      const state = loadHiveState();
-      const action = input.action as string;
-
       // ADR-0119 (T1) — carry-forward from ADR-0106 R1: 'byzantine' is a wire-
       // boundary alias for 'bft'. Normalize before dispatch so the runtime sees
       // only the canonical 'bft' value (per ADR-0118 review-notes-triage 2026-05-02).
@@ -2063,118 +2057,94 @@ export const hiveMindTools: MCPTool[] = [
       if (input.strategy === 'byzantine') {
         input.strategy = 'bft';
       }
-
+      const action = input.action as string;
       const strategy = (input.strategy as ConsensusStrategy) || 'raft';
-      const totalNodes = state.workers.length || 1;
 
+      // ADR-0185 Wave 2b — propose action flipped to archivist.dispatch. The
+      // propose branch MUST run OUTSIDE `withHiveStoreLock`: agentdb's
+      // dispatch enters `withWrite` which uses the SAME O_EXCL sentinel as
+      // cli's lock. Nesting them deadlocks (hive-mind_init line 1742-1754
+      // has the same pattern + explicit comment).
       if (action === 'propose') {
-        // ADR-0119 §Decision Outcome: weighted strategy requires an elected queen.
-        // Throw synchronously rather than degrade to permissive math when state.queen
-        // is undefined (init race, dangling shutdown, queen nulled by error path).
-        if (strategy === 'weighted' && !state.queen) {
+        // Pre-flight cli guard retained — fast-fail before dispatch. Agentdb's
+        // weighted handler ALSO throws this defensively at weighted.ts:67;
+        // pre-flighting avoids the dispatch round-trip + Promise rejection.
+        const preState = loadHiveState();
+        if (strategy === 'weighted' && !preState.queen) {
           throw new MissingQueenForWeightedConsensusError('propose');
         }
 
+        // Pre-mint proposalId — task_create precedent (task-tools.ts:127).
+        // Agentdb honours `payload.proposalId ?? <mint>` across all 6
+        // strategies (verified at bft.ts:63, raft.ts:70, quorum.ts:51,
+        // weighted.ts:69, gossip.ts:63, crdt.ts:74). Sidesteps the
+        // pre/post-snapshot race for parallel propose calls.
         const proposalId = `proposal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const quorumPreset = (input.quorumPreset as QuorumPreset) || 'majority';
-        const term = (input.term as number) || (state.queen?.term ?? 1);
-        const timeoutMs = (input.timeoutMs as number) || 30000;
 
-        // Raft: check if there's already a pending proposal for this term
-        if (strategy === 'raft') {
-          const existingTermProposal = state.consensus.pending.find(
-            p => p.strategy === 'raft' && p.term === term && p.status === 'pending',
-          );
-          if (existingTermProposal) {
+        try {
+          await (await getProcessArchivist()).dispatch('hive-mind_consensus', {
+            action: 'propose',
+            type: input.type as string,
+            value: input.value,
+            strategy,
+            quorumPreset: input.quorumPreset as QuorumPreset | undefined,
+            term: input.term as number | undefined,
+            timeoutMs: input.timeoutMs as number | undefined,
+            roundTimeoutMs: input.roundTimeoutMs as number | undefined,
+            voterId: input.voterId as string | undefined,
+            proposalId,
+          });
+        } catch (e: unknown) {
+          // ADR-0185 Wave 2b propose-action reshape: only 1 of the 8 typed
+          // errors is reachable from the propose path. RaftTermCollisionError
+          // fires when agentdb's raft.ts:67 detects an existing pending
+          // proposal for the term. The other 7 typed classes are either
+          // vote-side (DuplicateVote / ProposalNotFound / VoterIdRequired /
+          // RaftVoteChange) or always-re-throw (MissingQueenForWeighted /
+          // WorkerAlreadyFailed / ProposalAlreadyFailed). The bare `throw e`
+          // re-throw covers all non-matching cases per cli pre-flip contract.
+          if (e instanceof RaftTermCollisionError) {
+            const typed = e as { term: number; existingProposalId: string };
             return {
               action,
-              error: `Raft term ${term} already has a pending proposal: ${existingTermProposal.proposalId}. Wait for resolution or use a higher term.`,
-              existingProposalId: existingTermProposal.proposalId,
-              term,
+              error: `Raft term ${typed.term} already has a pending proposal: ${typed.existingProposalId}. Wait for resolution or use a higher term.`,
+              existingProposalId: typed.existingProposalId,
+              term: typed.term,
             };
           }
+          throw e;
         }
 
-        const required = calculateRequiredVotes(strategy, totalNodes, quorumPreset);
-
-        // ADR-0120 (T2): gossip needs `totalNodes` snapshot at propose-time
-        // (per §Specification: "snapshotted at propose-time and stays fixed").
-        // Late-joining workers are admitted into the candidate pool via the
-        // canonical voter-set lookup but do not change the bound.
-        const isGossip = strategy === 'gossip';
-        // ADR-0121 (T3): CRDT shares the per-round-timeout knob with gossip
-        // (used to bound the wait for the last voter's snapshot). Default
-        // matches GOSSIP_ROUND_TIMEOUT_MS_DEFAULT (5000ms).
-        const isCrdt = strategy === 'crdt';
-        const roundTimeoutMs = (isGossip || isCrdt)
-          ? ((input.roundTimeoutMs as number) || GOSSIP_ROUND_TIMEOUT_MS_DEFAULT)
-          : undefined;
-
-        // ADR-0131 (T12): set `timeoutAt` for ALL threshold-based strategies
-        // so the auto-status-transition predicate in _consensus({action:'status'})
-        // can fire across bft/raft/quorum/weighted. Gossip and CRDT have their
-        // own roundStartedAt/roundTimeoutMs settling mechanism — they retain
-        // `timeoutAt: undefined` and bypass the auto-transition (their own
-        // settle paths handle timeout-driven resolution per ADR-0120/ADR-0121).
-        const isThresholdBased =
-          strategy === 'bft' ||
-          strategy === 'raft' ||
-          strategy === 'quorum' ||
-          strategy === 'weighted';
-        const proposal: ConsensusProposal = {
-          proposalId,
-          type: (input.type as string) || 'general',
-          value: input.value,
-          proposedBy: (input.voterId as string) || 'system',
-          proposedAt: new Date().toISOString(),
-          votes: {},
-          status: 'pending',
+        // Re-read POST-dispatch state. Mirrors cli hive-mind_spawn pattern
+        // (line 1569-1571): invalidateHiveCache + loadHiveState. The
+        // dispatch's withWrite scope has persisted the proposal before the
+        // await returns.
+        invalidateHiveCache();
+        const postState = loadHiveState();
+        // `input` is `Record<string, unknown>` at the MCP boundary; cast to
+        // the builder's typed input. Field shapes are validated by the
+        // builder per ADR-0185 §Architecture.
+        return buildConsensusResponse(
+          'propose',
           strategy,
-          term: strategy === 'raft' ? term : undefined,
-          quorumPreset: strategy === 'quorum' ? quorumPreset : undefined,
-          byzantineVoters: strategy === 'bft' ? [] : undefined,
-          timeoutAt: isThresholdBased ? new Date(Date.now() + timeoutMs).toISOString() : undefined,
-          // Gossip-only fields (ADR-0120 §Implementation §3).
-          gossipRound: isGossip ? 0 : undefined,
-          lastVoteChangedRound: isGossip ? 0 : undefined,
-          totalNodes: isGossip ? totalNodes : undefined,
-          currentRoundBroadcastSet: isGossip ? [] : undefined,
-          roundTimeoutMs,
-          roundStartedAt: (isGossip || isCrdt) ? new Date().toISOString() : undefined,
-          // ADR-0121 (T3): CRDT triple is initialised empty at propose-time;
-          // each subsequent vote merges the voter's snapshot into this
-          // accumulator. `crdtExpectedVoters` snapshots the voter count so the
-          // settle rule "all expected voters submitted" is stable across
-          // workers joining mid-round (mirrors gossip's `totalNodes` snapshot).
-          crdtState: isCrdt ? emptyCRDTState() : undefined,
-          crdtExpectedVoters: isCrdt ? Math.max(1, totalNodes) : undefined,
-        };
-
-        state.consensus.pending.push(proposal);
-        saveHiveState(state);
-
-        return {
-          action,
           proposalId,
-          type: proposal.type,
-          strategy,
-          status: 'pending',
-          required,
-          totalNodes,
-          term: proposal.term,
-          quorumPreset: proposal.quorumPreset,
-          timeoutAt: proposal.timeoutAt,
-          // ADR-0120 (T2): expose gossip parameters so callers know the
-          // expected round budget and timeout.
-          gossipRound: proposal.gossipRound,
-          gossipBound: isGossip ? gossipFanout(totalNodes) : undefined,
-          roundTimeoutMs: proposal.roundTimeoutMs,
-          // ADR-0121 (T3): expose CRDT round shape so callers know the
-          // expected voter count and the empty-triple sentinel.
-          crdtExpectedVoters: proposal.crdtExpectedVoters,
-          crdtState: proposal.crdtState,
-        };
+          postState,
+          input as unknown as import('./hive-mind-consensus-response.js').BuildConsensusResponseInput,
+        );
       }
+
+      // ADR-0180 Phase 4 pre-flight: wrap load → mutate → save under
+      // `withHiveStoreLock` (cross-process O_EXCL sentinel) so concurrent
+      // vote/status calls cannot lost-update each other's
+      // `state.consensus.pending` / `state.consensus.history`. Pattern mirrors
+      // hive-mind_spawn and hive-mind_init. The lock is NOT reentrant
+      // (O_CREAT|O_EXCL); the handler must avoid calling other
+      // lock-acquiring code paths. The `list` action is read-only but
+      // harmlessly nested in the lock so the dispatch logic stays a single
+      // block. Propose action moved out per Wave 2b deadlock fix above.
+      return withHiveStoreLock(async () => {
+      const state = loadHiveState();
+      const totalNodes = state.workers.length || 1;
 
       if (action === 'vote') {
         // ADR-0131 (T12): reconcile §6 absence markers BEFORE evaluating

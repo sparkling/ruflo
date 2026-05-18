@@ -74,14 +74,39 @@ vi.mock('node:fs', () => {
 // `hive-mind_shutdown` which DO call getProcessArchivist (lines 1555, 1753,
 // 3037 of hive-mind-tools.ts). Mock returns a no-op archivist whose
 // dispatch + dispatchRead resolve to undefined.
+// ADR-0185 Wave 2b — singleton dispatch fn via vi.hoisted so test bodies
+// can use `mockDispatch.mockRejectedValueOnce(...)` to override the default
+// for a single test (e.g. term-collision throws RaftTermCollisionError).
+// vi.hoisted runs before vi.mock factory hoisting, so the fns are defined
+// when the factory references them.
+const { mockDispatch, mockDispatchRead } = vi.hoisted(() => ({
+  mockDispatch: vi.fn(async () => undefined),
+  mockDispatchRead: vi.fn(async () => undefined),
+}));
+
+// ADR-0185 Wave 2b — stub `agentdb/archivist` so the test transformer can
+// resolve `RaftTermCollisionError`. The package is optional-dep externalized
+// via vitest.config's `externalize-optional-deps` plugin; at fork-dev-time
+// it's not installed in node_modules, so vitest fails to resolve at runtime
+// when the test file imports concrete classes. Stub provides a minimal
+// class shape that the test + cli source can instanceof-check + construct.
+vi.mock('agentdb/archivist', () => ({
+  RaftTermCollisionError: class extends Error {
+    constructor(public readonly term: number, public readonly existingProposalId: string) {
+      super(`hive-mind_consensus.propose: Raft term ${term} already has a pending proposal: ${existingProposalId}`);
+      this.name = 'RaftTermCollisionError';
+    }
+  },
+}));
+
 vi.mock('../src/memory/archivist-init.js', () => ({
   getProcessArchivist: vi.fn(async () => ({
-    dispatch: vi.fn(async () => undefined),
-    dispatchRead: vi.fn(async () => undefined),
+    dispatch: mockDispatch,
+    dispatchRead: mockDispatchRead,
   })),
   initProcessArchivist: vi.fn(async () => ({
-    dispatch: vi.fn(async () => undefined),
-    dispatchRead: vi.fn(async () => undefined),
+    dispatch: mockDispatch,
+    dispatchRead: mockDispatchRead,
   })),
   ensureArchivistInitialized: vi.fn(async () => undefined),
   ensureRvfWired: vi.fn(async () => undefined),
@@ -117,10 +142,16 @@ import {
   loadHiveState,
   saveHiveState,
   _resetHiveCacheForTest,
+  calculateRequiredVotes,
   type ConsensusStrategy,
   type ConsensusProposal,
   type HiveState,
 } from '../src/mcp-tools/hive-mind-tools.js';
+// ADR-0185 Wave 2b — RaftTermCollisionError is thrown by agentdb's raft
+// propose handler (raft.ts:67); the harness's term-collision cell uses
+// mockDispatch.mockRejectedValueOnce(new RaftTermCollisionError(...)) to
+// drive the cli try/catch reshape arm under the singleton mock.
+import { RaftTermCollisionError } from 'agentdb/archivist';
 import {
   buildConsensusResponse,
   type ConsensusResponse,
@@ -244,6 +275,15 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  // ADR-0185 Wave 2b — restore singleton dispatch fns to the no-op default
+  // after any per-test mockRejectedValueOnce / mockResolvedValueOnce. The
+  // hoisted vi.fn survives vi.restoreAllMocks (which only restores spies);
+  // one-shot overrides drain themselves after fire, but defensive reset
+  // protects against tests that set up an override and never invoke it.
+  mockDispatch.mockReset();
+  mockDispatch.mockResolvedValue(undefined);
+  mockDispatchRead.mockReset();
+  mockDispatchRead.mockResolvedValue(undefined);
 });
 
 // ── Per-cell helpers ────────────────────────────────────────────────────────
@@ -287,19 +327,89 @@ async function freshHive(workerCount: number = 4): Promise<{ queenId: string; wo
   return { queenId, workerIds };
 }
 
-/** Run a propose action through cli, capture cli response + post-state. */
-async function runProposeCell(strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt'): Promise<{
-  cliResponse: any;
-  postState: HiveState;
-}> {
-  const cliResponse: any = await consensusTool().handler({
-    action: 'propose',
+/**
+ * Build a fully-typed `ConsensusProposal` for a synthetic post-propose state.
+ * Field shapes mirror agentdb's per-strategy propose handlers (raft.ts:75-98,
+ * bft.ts:63-98, etc.) which set non-strategy fields to explicit `undefined`
+ * per ADR-0184 Wave 2 DA Axis h (prevent stale-field leakage).
+ *
+ * Module-scope so both `runProposeCell` (Wave 2b vote/status/list setup) and
+ * the propose shape-contract cells share the same fixture builder.
+ */
+function makePendingProposal(
+  strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt',
+  overrides: Partial<{ term: number; quorumPreset: 'unanimous' | 'majority' | 'supermajority'; totalNodes: number }> = {},
+): ConsensusProposal {
+  const proposalId = `proposal-${FIXED_EPOCH}-${strategy}cell`;
+  const isGossip = strategy === 'gossip';
+  const isCrdt = strategy === 'crdt';
+  const isThresholdBased =
+    strategy === 'bft' || strategy === 'raft' || strategy === 'quorum' || strategy === 'weighted';
+  const totalNodes = overrides.totalNodes ?? 4;
+  return {
+    proposalId,
     type: `parity-${strategy}`,
     value: { v: strategy },
+    proposedBy: 'system',
+    proposedAt: new Date(FIXED_EPOCH).toISOString(),
+    votes: {},
+    status: 'pending',
     strategy,
-  });
-  const postState = loadHiveState();
-  return { cliResponse, postState };
+    term: strategy === 'raft' ? (overrides.term ?? 1) : undefined,
+    quorumPreset: strategy === 'quorum' ? (overrides.quorumPreset ?? 'majority') : undefined,
+    byzantineVoters: strategy === 'bft' ? [] : undefined,
+    timeoutAt: isThresholdBased ? new Date(FIXED_EPOCH + 30000).toISOString() : undefined,
+    gossipRound: isGossip ? 0 : undefined,
+    lastVoteChangedRound: isGossip ? 0 : undefined,
+    totalNodes: isGossip ? totalNodes : undefined,
+    currentRoundBroadcastSet: isGossip ? [] : undefined,
+    roundTimeoutMs: (isGossip || isCrdt) ? 5000 : undefined,
+    roundStartedAt: (isGossip || isCrdt) ? new Date(FIXED_EPOCH).toISOString() : undefined,
+    crdtState: isCrdt
+      ? { votes: { counts: {} }, approvers: { entries: [], tombstones: [] }, verdict: {} }
+      : undefined,
+    crdtExpectedVoters: isCrdt ? Math.max(1, totalNodes) : undefined,
+  };
+}
+
+/**
+ * Push a fully-typed proposal into pending and return its id. The
+ * `saveHiveState` call updates the in-process hiveCache (per
+ * hive-mind-tools.ts:1241 `hiveCache.set(HIVE_STATE_DOC_KEY, state)`); a
+ * subsequent `loadHiveState()` returns the updated state without hitting
+ * disk. DA Wave 2a cache-update sequence clarification.
+ */
+function pushSyntheticProposal(
+  strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt',
+  overrides: Partial<{ term: number; quorumPreset: 'unanimous' | 'majority' | 'supermajority'; totalNodes: number }> = {},
+): string {
+  const proposal = makePendingProposal(strategy, overrides);
+  const state = loadHiveState();
+  state.consensus.pending.push(proposal);
+  saveHiveState(state);
+  return proposal.proposalId;
+}
+
+/**
+ * Set up a pending proposal in state directly. Wave 2b conversion: the cli's
+ * propose branch now dispatches to agentdb (mocked to no-op), so driving the
+ * cli handler here would leave state.consensus.pending empty. Synthesise the
+ * proposal directly via saveHiveState.
+ *
+ * Returns a minimal `cliResponse` shape: only `proposalId` (the only field
+ * the 20 downstream vote/status/list cells consume from this helper —
+ * verified by grep of `proposeOut\.` across the cell bodies). Plus `action`
+ * for shape consistency. DA Wave 2b verdict on field-selection trimming.
+ */
+async function runProposeCell(strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt'): Promise<{
+  cliResponse: { action: 'propose'; proposalId: string };
+  postState: HiveState;
+}> {
+  const proposalId = pushSyntheticProposal(strategy);
+  return {
+    cliResponse: { action: 'propose', proposalId },
+    postState: loadHiveState(),
+  };
 }
 
 // ── Suite ───────────────────────────────────────────────────────────────────
@@ -322,70 +432,10 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
     // What we verify here is that the builder's response shape remains
     // STABLE for known inputs through Waves 2-6.
 
-    /**
-     * Build a fully-typed `ConsensusProposal` for a synthetic post-propose
-     * state. Field shapes mirror agentdb's per-strategy propose handlers
-     * (raft.ts:75-98 etc.) which set non-strategy fields to explicit
-     * `undefined` per ADR-0184 Wave 2 DA Axis h (prevent stale-field leakage).
-     *
-     * The fully-typed return ensures missing-field bugs surface at TS-check
-     * rather than at runtime (DA Wave 2a Concern: no `as any` casts on
-     * fixtures — the synthetic state must match what agentdb's handler
-     * would actually write so the builder reads the same shape).
-     */
-    function makePendingProposal(
-      strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt',
-      overrides: Partial<{ term: number; quorumPreset: 'unanimous' | 'majority' | 'supermajority'; totalNodes: number }> = {},
-    ): ConsensusProposal {
-      const proposalId = `proposal-${FIXED_EPOCH}-${strategy}cell`;
-      const isGossip = strategy === 'gossip';
-      const isCrdt = strategy === 'crdt';
-      const isThresholdBased =
-        strategy === 'bft' || strategy === 'raft' || strategy === 'quorum' || strategy === 'weighted';
-      const totalNodes = overrides.totalNodes ?? 4;
-      return {
-        proposalId,
-        type: `parity-${strategy}`,
-        value: { v: strategy },
-        proposedBy: 'system',
-        proposedAt: new Date(FIXED_EPOCH).toISOString(),
-        votes: {},
-        status: 'pending',
-        strategy,
-        term: strategy === 'raft' ? (overrides.term ?? 1) : undefined,
-        quorumPreset: strategy === 'quorum' ? (overrides.quorumPreset ?? 'majority') : undefined,
-        byzantineVoters: strategy === 'bft' ? [] : undefined,
-        timeoutAt: isThresholdBased ? new Date(FIXED_EPOCH + 30000).toISOString() : undefined,
-        gossipRound: isGossip ? 0 : undefined,
-        lastVoteChangedRound: isGossip ? 0 : undefined,
-        totalNodes: isGossip ? totalNodes : undefined,
-        currentRoundBroadcastSet: isGossip ? [] : undefined,
-        roundTimeoutMs: (isGossip || isCrdt) ? 5000 : undefined,
-        roundStartedAt: (isGossip || isCrdt) ? new Date(FIXED_EPOCH).toISOString() : undefined,
-        crdtState: isCrdt
-          ? { votes: { counts: {} }, approvers: { entries: [], tombstones: [] }, verdict: {} }
-          : undefined,
-        crdtExpectedVoters: isCrdt ? Math.max(1, totalNodes) : undefined,
-      };
-    }
-
-    /**
-     * Push a fully-typed proposal into pending and return its id. The
-     * `saveHiveState` call updates the in-process hiveCache (per
-     * hive-mind-tools.ts:1241 `hiveCache.set(HIVE_STATE_DOC_KEY, state)`);
-     * a subsequent `loadHiveState()` returns the updated state without
-     * hitting disk. DA Wave 2a cache-update sequence clarification.
-     */
-    function pushSyntheticProposal(
-      strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt',
-      overrides: Partial<{ term: number; quorumPreset: 'unanimous' | 'majority' | 'supermajority'; totalNodes: number }> = {},
-    ): string {
-      const proposal = makePendingProposal(strategy, overrides);
-      const state = loadHiveState();
-      state.consensus.pending.push(proposal);
-      saveHiveState(state);
-      return proposal.proposalId;
-    }
+    // ADR-0185 Wave 2b — `makePendingProposal` + `pushSyntheticProposal`
+    // lifted to module scope (above the suite) so `runProposeCell` can
+    // reuse them. Both helpers preserve the same typed-fixture +
+    // cache-update behaviour as Wave 2a.
 
     it('propose × bft — builder shape contract', async () => {
       await freshHive(4); // totalNodes=4, bft required = floor(2*4/3)+1 = 3
@@ -504,12 +554,16 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
     // ── 2 new error-path cells (DA Wave 2 v2 verdict) ────────────────────
 
     it('propose × raft term-collision — cli reshape envelope (Wave 2 contract)', async () => {
-      // Pre-Wave 2b: cli soft-returns the envelope directly (line 2089-2095).
-      // Post-Wave 2b: cli try/catch reshapes RaftTermCollisionError to same
-      // envelope. Both states pass this cell.
+      // Wave 2b — cli's propose branch now dispatches; the real agentdb
+      // raft.ts:67 throws RaftTermCollisionError on detection. The harness
+      // mock dispatch is no-op by default; override for this single call
+      // via `mockRejectedValueOnce` so the cli's try/catch reshape arm
+      // fires under the singleton mock dispatch.
       await freshHive(4);
-      // Inject an existing raft proposal at term 1.
-      pushSyntheticProposal('raft', { term: 1 });
+      const injectedProposalId = pushSyntheticProposal('raft', { term: 1 });
+      mockDispatch.mockRejectedValueOnce(
+        new RaftTermCollisionError(1, injectedProposalId),
+      );
       const result: any = await consensusTool().handler({
         action: 'propose',
         type: 'parity-raft-collision',
@@ -521,10 +575,9 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
       expect(result).toMatchObject({
         action: 'propose',
         error: expect.stringMatching(/[Rr]aft term 1 already has/),
+        existingProposalId: injectedProposalId,
         term: 1,
       });
-      expect(typeof result.existingProposalId).toBe('string');
-      expect(result.existingProposalId).toMatch(/^proposal-/);
     });
 
     it('propose × weighted missing-queen — pre-flight throws (Wave 2 contract)', async () => {
@@ -735,19 +788,19 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
       // byzantineDetected: true from `proposal.byzantineVoters.includes(voterId)`
       // when voterId is NOT in proposal.votes. DA's Concern #2 follow-up.
       const { workerIds } = await freshHive(5);
-      // Propose 2 of the same type so cross-proposal detection has a peer.
-      const p1: any = await consensusTool().handler({
-        action: 'propose',
-        type: 'cross-byz',
-        value: 'a',
-        strategy: 'bft',
-      });
-      const p2: any = await consensusTool().handler({
-        action: 'propose',
-        type: 'cross-byz',
-        value: 'b',
-        strategy: 'bft',
-      });
+      // ADR-0185 Wave 2b — propose dispatches to no-op mock; synthesise the
+      // 2 cross-byzantine proposals directly. The 2 proposals share the
+      // SAME `type` field (per BFT cross-proposal detection at cli line
+      // 2451-2470), but different proposalIds + values.
+      const baseProposal1 = makePendingProposal('bft');
+      const p1 = { proposalId: `${baseProposal1.proposalId}-cross1`, type: 'cross-byz', value: 'a' };
+      const p2 = { proposalId: `${baseProposal1.proposalId}-cross2`, type: 'cross-byz', value: 'b' };
+      const seedState = loadHiveState();
+      seedState.consensus.pending.push(
+        { ...baseProposal1, proposalId: p1.proposalId, type: p1.type, value: p1.value },
+        { ...baseProposal1, proposalId: p2.proposalId, type: p2.type, value: p2.value },
+      );
+      saveHiveState(seedState);
       // Voter casts YES on p1, then attempts NO on p2 — same voter, same type,
       // conflicting votes → byzantine cross-proposal detection on p2.
       await consensusTool().handler({
@@ -962,19 +1015,18 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
   describe('list action', () => {
     it('list — builder matches cli with mixed-strategy pending', async () => {
       await freshHive(4);
-      // Seed pending with two proposals of different strategies.
-      await consensusTool().handler({
-        action: 'propose',
-        type: 'list-cell-bft',
-        value: 'a',
-        strategy: 'bft',
-      });
-      await consensusTool().handler({
-        action: 'propose',
-        type: 'list-cell-quorum',
-        value: 'b',
-        strategy: 'quorum',
-      });
+      // ADR-0185 Wave 2b — propose dispatches to no-op mock; synthesise
+      // both proposals directly. The list cell's invariant is "builder
+      // emits the same rows as cli for whatever's in pending"; we don't
+      // care HOW they got there.
+      const bftBase = makePendingProposal('bft');
+      const quorumBase = makePendingProposal('quorum');
+      const seedState = loadHiveState();
+      seedState.consensus.pending.push(
+        { ...bftBase, proposalId: `${bftBase.proposalId}-list1`, type: 'list-cell-bft', value: 'a' },
+        { ...quorumBase, proposalId: `${quorumBase.proposalId}-list2`, type: 'list-cell-quorum', value: 'b' },
+      );
+      saveHiveState(seedState);
 
       const cliOut: any = await consensusTool().handler({ action: 'list' });
       const postState = loadHiveState();
