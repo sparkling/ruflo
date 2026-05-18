@@ -143,6 +143,29 @@ export {
   type ReplayMutation,
 } from './domain/signed-trajectory.js';
 
+// Causal-graph self-healing selectors (ADR-122 Phase 2)
+export {
+  CausalRecoveryService,
+  type CausalRecoveryServiceOptions,
+  type AnnotatedSnapshot,
+} from './application/causal-recovery-service.js';
+export {
+  InMemoryBreakStore,
+  JsonFileBreakStore,
+  classifyBreak,
+  parseUrl,
+  type IBreakStore,
+} from './infrastructure/causal-recovery-store.js';
+export {
+  SelectorBreakEventSchema,
+  SelectorBreakKindSchema,
+  CausalRiskAnnotationSchema,
+  type SelectorBreakEvent,
+  type SelectorBreakKind,
+  type CausalRiskAnnotation,
+  type RecoveryExplanation,
+} from './domain/causal-recovery.js';
+
 // MCP tools
 export { browserTools } from './mcp-tools/browser-tools.js';
 export type { MCPTool } from './mcp-tools/browser-tools.js';
