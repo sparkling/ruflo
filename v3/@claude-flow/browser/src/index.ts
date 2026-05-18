@@ -110,6 +110,39 @@ export {
   type BrowserServiceConfig,
 } from './application/browser-service.js';
 
+// Signed trajectory containers (ADR-122 Phase 1)
+export {
+  sealTrajectory,
+  verifySealedTrajectory,
+  writeSealedTrajectory,
+  readSealedTrajectory,
+  planReplay,
+  buildReplayDelta,
+  type SealTrajectoryInput,
+  type SealedTrajectory,
+} from './application/signed-trajectory-service.js';
+export {
+  generateWitnessKey,
+  loadWitnessKey,
+  resolveWitnessKey,
+  signTrajectory,
+  verifyTrajectory,
+  canonicalJSON,
+  sha256Hex,
+  type WitnessKey,
+} from './infrastructure/witness-signer.js';
+export {
+  SIGNED_TRAJECTORY_ENVELOPE_VERSION,
+  SIGNED_TRAJECTORY_KIND,
+  SignedTrajectoryEnvelopeSchema,
+  SignedTrajectoryPayloadSchema,
+  type SignedTrajectoryEnvelope,
+  type SignedTrajectoryPayload,
+  type VerificationResult,
+  type ReplayDelta,
+  type ReplayMutation,
+} from './domain/signed-trajectory.js';
+
 // MCP tools
 export { browserTools } from './mcp-tools/browser-tools.js';
 export type { MCPTool } from './mcp-tools/browser-tools.js';
