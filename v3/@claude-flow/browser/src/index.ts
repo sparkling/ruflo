@@ -166,6 +166,47 @@ export {
   type RecoveryExplanation,
 } from './domain/causal-recovery.js';
 
+// Federated MCTS branch exploration (ADR-122 Phase 4)
+export {
+  MctsExplorer,
+  ucb1,
+  type MctsExplorerOptions,
+  type RootAction,
+  type ExpansionPolicy,
+} from './application/mcts-explorer.js';
+export {
+  McTsBranchSchema,
+  BranchStatusSchema,
+  type McTsBranch,
+  type BranchStatus,
+  type MctsRunResult,
+  type PeerAdapter,
+  type UcbParams,
+  type ValueScorer,
+} from './domain/mcts-branch.js';
+
+// AIDefence-attested cookie vault (ADR-122 Phase 3)
+export {
+  CookieVaultService,
+  type CookieVaultServiceOptions,
+  type CookieVaultScannerInfo,
+} from './application/cookie-vault-service.js';
+export {
+  VAULT_ENVELOPE_VERSION,
+  VAULT_ENVELOPE_KIND,
+  VaultEntryEnvelopeSchema,
+  VaultEntryPayloadSchema,
+  CookieValueSchema,
+  ScanAttestationSchema,
+  VaultRefusalSchema,
+  type CookieValue,
+  type ScanAttestation,
+  type VaultEntryEnvelope,
+  type VaultEntryPayload,
+  type VaultVerificationResult,
+  type VaultRefusal,
+} from './domain/cookie-vault.js';
+
 // MCP tools
 export { browserTools } from './mcp-tools/browser-tools.js';
 export type { MCPTool } from './mcp-tools/browser-tools.js';
