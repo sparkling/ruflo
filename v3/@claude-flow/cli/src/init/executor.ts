@@ -1416,7 +1416,14 @@ async function writeRuntimeConfig(
       embDefaults = {
         model: cfg.model ?? embDefaults.model,
         dimension: cfg.dimension ?? embDefaults.dimension,
-        provider: (cfg.provider === 'transformers' ? 'transformers.js' : cfg.provider) ?? embDefaults.provider, // ADR-0080: normalize agentdb enum to config convention
+        // ADR-0080: normalize agentdb enum to config convention.
+        // Both 'transformers' and 'onnx' map to 'transformers.js' (canonical CLI-level
+        // provider per ADR-0080) — the underlying runtime is the same Xenova/all-mpnet-base-v2
+        // model loaded via @huggingface/transformers, which dispatches to ONNX runtime.
+        // The 'onnx' value comes from agentdb's `feedback-no-api-keys` config-layer enum
+        // (only local providers permitted); the canonical CLI-level surface stays
+        // 'transformers.js' so adr0070-init-generated.test asserts a single source-of-truth.
+        provider: (cfg.provider === 'transformers' || cfg.provider === 'onnx' ? 'transformers.js' : cfg.provider) ?? embDefaults.provider,
         taskPrefixQuery: cfg.taskPrefixQuery ?? embDefaults.taskPrefixQuery,
         taskPrefixIndex: cfg.taskPrefixIndex ?? embDefaults.taskPrefixIndex,
       };
