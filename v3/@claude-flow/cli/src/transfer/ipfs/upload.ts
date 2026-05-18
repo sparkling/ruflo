@@ -108,6 +108,7 @@ async function uploadToWeb3Storage(
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
     },
     body,
+    signal: AbortSignal.timeout(60000),
   });
 
   if (!response.ok) {
@@ -173,6 +174,7 @@ async function uploadToPinata(
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
     },
     body,
+    signal: AbortSignal.timeout(60000),
   });
 
   if (!response.ok) {
@@ -310,6 +312,7 @@ export async function pinContent(
           hashToPin: cid,
           pinataMetadata: { name: options.name || cid },
         }),
+        signal: AbortSignal.timeout(15000),
       });
 
       if (response.ok) {
@@ -350,6 +353,7 @@ export async function unpinContent(
           'pinata_api_key': pinataKey,
           'pinata_secret_api_key': pinataSecret || '',
         },
+        signal: AbortSignal.timeout(15000),
       });
 
       if (response.ok) {
@@ -439,6 +443,7 @@ async function uploadToLocalIPFS(
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
     },
     body,
+    signal: AbortSignal.timeout(60000),
   });
 
   if (!response.ok) {

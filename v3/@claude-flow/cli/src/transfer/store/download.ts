@@ -167,7 +167,7 @@ export class PatternDownloader {
 
     try {
       // Real HTTP fetch with progress
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
 
       if (!response.ok) {
         console.error(`[Download] HTTP ${response.status}: ${response.statusText}`);
@@ -220,7 +220,7 @@ export class PatternDownloader {
         if (gateway === this.config.gateway) continue;
         try {
           console.log(`[Download] Trying alternative gateway: ${gateway}`);
-          const altResponse = await fetch(`${gateway}/ipfs/${cid}`);
+          const altResponse = await fetch(`${gateway}/ipfs/${cid}`, { signal: AbortSignal.timeout(30000) });
           if (altResponse.ok) {
             const arrayBuffer = await altResponse.arrayBuffer();
             const buffer = Buffer.from(arrayBuffer);

@@ -57,7 +57,7 @@ const DEFAULT_MANIFEST_URL = 'https://raw.githubusercontent.com/ruvnet/ruflo/{br
 
 async function fetchWitness(branch: string): Promise<Witness> {
   const url = DEFAULT_MANIFEST_URL.replace('{branch}', branch);
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) {
     throw new Error(`Failed to fetch manifest from ${url}: ${res.status} ${res.statusText}`);
   }
