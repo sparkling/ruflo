@@ -179,7 +179,11 @@ function crdtSemanticEqual(a: CRDTState | undefined, b: CRDTState | undefined): 
   }
   const aValue = LWWRegister.from(a.verdict).value();
   const bValue = LWWRegister.from(b.verdict).value();
-  return aValue === bValue;
+  // Use JSON-canonical structural equality for LWWRegister values — the
+  // ADR-0185 fixture values are objects (e.g. `{v: 'crdt'}`) and `===`
+  // is reference-equal for objects. JSON.stringify is safe here because
+  // the LWWRegister value is a serialisable proposal-value.
+  return JSON.stringify(aValue) === JSON.stringify(bValue);
 }
 
 // ── Per-cell parity diff ────────────────────────────────────────────────────
@@ -244,19 +248,42 @@ afterEach(() => {
 // ── Per-cell helpers ────────────────────────────────────────────────────────
 
 const consensusTool = () => hiveMindTools.find(t => t.name === 'hive-mind_consensus')!;
-const initTool = () => hiveMindTools.find(t => t.name === 'hive-mind_init')!;
-const spawnTool = () => hiveMindTools.find(t => t.name === 'hive-mind_spawn')!;
-const shutdownTool = () => hiveMindTools.find(t => t.name === 'hive-mind_shutdown')!;
 
-/** Fresh hive with N workers + queen. totalNodes = workers.length. */
+/**
+ * Synthesise a fresh HiveState directly via `saveHiveState` rather than
+ * driving cli's hive-mind_init + hive-mind_spawn handlers. The init/spawn
+ * handlers depend on archivist dispatch (mocked above to no-op), so going
+ * through them leaves state.workers empty + state.queen undefined.
+ *
+ * Direct state synthesis isolates the consensus-handler-under-test from
+ * the archivist plumbing — the consensus handler does NOT call the
+ * archivist at Wave 1 (pre-flip), so this faithfully exercises the
+ * consensus code path with realistic state.
+ *
+ * Returns the worker IDs + queen ID for use as voterIds in vote actions.
+ */
 async function freshHive(workerCount: number = 4): Promise<{ queenId: string; workerIds: string[] }> {
-  await shutdownTool().handler({ force: true });
-  const initOut: any = await initTool().handler({ topology: 'mesh' });
-  const spawnOut: any = await spawnTool().handler({ count: workerCount, role: 'worker' });
-  return {
-    queenId: initOut.queenId as string,
-    workerIds: spawnOut.workers.map((w: any) => w.agentId as string),
+  _resetHiveCacheForTest();
+  const queenId = `queen-${workerCount}`;
+  const workerIds: string[] = Array.from({ length: workerCount }, (_, i) => `worker-${i}`);
+  const state: HiveState = {
+    initialized: true,
+    topology: 'mesh',
+    queen: {
+      agentId: queenId,
+      queenType: 'strategic',
+      term: 1,
+      electedAt: new Date().toISOString(),
+    },
+    workers: workerIds,
+    workerMeta: Object.fromEntries(workerIds.map(w => [w, { failedAt: null, retryOf: null }])),
+    consensus: { pending: [], history: [] },
+    sharedMemory: {},
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
+  saveHiveState(state);
+  return { queenId, workerIds };
 }
 
 /** Run a propose action through cli, capture cli response + post-state. */

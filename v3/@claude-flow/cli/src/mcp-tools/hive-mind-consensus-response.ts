@@ -461,8 +461,15 @@ function buildVoteResponse(
   // `proposal.gossipExhausted` is added to ConsensusProposal in ADR-0184 Wave
   // 4 (currently `unknown` at the type level via the cast — TS exact shape
   // is updated when the agentdb-side change syncs). Read defensively.
+  // Cli emits `exhausted: gossipSettleResult?.exhausted` — which is
+  // `undefined` (not `false`) when `settleCheckGossip` doesn't return an
+  // `exhausted` key (it only sets the key on hard-budget-exhausted state).
+  // The builder must mirror this: emit `true` if persisted, `undefined`
+  // otherwise. Plain `Boolean(undefined) === false` would diverge from
+  // the cli's undefined and surface as a parity diff.
+  const gossipExhaustedFlag = (proposal as unknown as { gossipExhausted?: boolean } | null)?.gossipExhausted;
   const exhausted = isGossip
-    ? Boolean((proposal as unknown as { gossipExhausted?: boolean } | null)?.gossipExhausted)
+    ? (gossipExhaustedFlag === true ? true : undefined)
     : undefined;
   // `settled`: gossip proposals move to history ONLY on settle (per cli vote
   // branch line 2594-2611 — `tryResolveProposal` returns non-null only on
@@ -503,14 +510,19 @@ function buildStatusResponse(
   const historyRow = state.consensus.history.find(h => h.proposalId === proposalId);
 
   // History-only path: the proposal lives in history (resolved or auto-
-  // transitioned to failed-quorum-not-reached). Matches cli line 2655-2666.
+  // transitioned to failed-quorum-not-reached). Matches cli line 2655-2666
+  // verbatim: `return { action, ...historical, historical: true, resolved:
+  // true, statusJustTransitioned: false }`. The history row carries `result`
+  // not `status` — the cli's spread therefore emits no `status` field.
+  // The builder enumerates the history row's actual fields (per ConsensusResult
+  // interface at hive-mind-tools.ts:570-584: proposalId, type, result, votes,
+  // decidedAt, strategy, term?, byzantineDetected?, absentVoters?).
   if (!pending && historyRow) {
     return {
       action: 'status',
       proposalId,
       type: historyRow.type,
       strategy: historyRow.strategy as ConsensusStrategy,
-      status: historyRow.result,
       votes: historyRow.votes,
       decidedAt: historyRow.decidedAt,
       term: historyRow.term,
