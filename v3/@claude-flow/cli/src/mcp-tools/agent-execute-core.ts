@@ -8,7 +8,7 @@
  * place rather than duplicated.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { findProjectRoot } from './types.js';
 
@@ -39,20 +39,19 @@ interface AgentStore {
 
 function getAgentDir(): string { return join(findProjectRoot(), STORAGE_DIR, AGENT_DIR); }
 function getAgentPath(): string { return join(getAgentDir(), AGENT_FILE); }
-function ensureAgentDir(): void {
-  const dir = getAgentDir();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-}
+// `ensureAgentDir` removed (ADR-0181 Phase C): pre-Phase-C only `saveAgentStore`
+// needed mkdir; that function is now archivist-owned.
 function loadAgentStore(): AgentStore {
   try {
     if (existsSync(getAgentPath())) return JSON.parse(readFileSync(getAgentPath(), 'utf-8'));
   } catch { /* fall through */ }
   return { agents: {}, version: '3.0.0' };
 }
-function saveAgentStore(store: AgentStore): void {
-  ensureAgentDir();
-  writeFileSync(getAgentPath(), JSON.stringify(store, null, 2), 'utf-8');
-}
+// `saveAgentStore` removed in ADR-0181 Phase C wire-up (2026-05-18). All
+// writes now flow through archivist.dispatch('agent_execute', ...) — see
+// pre-LLM busy reservation + post-LLM idle release dispatches below. The
+// archivist handler owns the substrate.withWrite envelope for the
+// 'agent_spawn' FS-JSON store.
 
 const MODEL_MAP: Record<string, string> = {
   haiku: 'claude-3-5-haiku-latest',
@@ -320,6 +319,16 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
     };
   }
 
+  // ADR-0181 Phase C (2026-05-18): three saveAgentStore() raw fs writes
+  // (pre-LLM busy reservation, post-success idle release, post-error idle
+  // release) now flip through archivist.dispatch('agent_execute', ...) for
+  // audit-chain enrolment. The fs writes themselves remain owned by the
+  // dispatched handler's substrate.withWrite envelope (FS-JSON store
+  // 'agent_spawn'). Pre-existence check stays in cli (legacy "Agent not
+  // found" envelope at agent-tools.ts:373-378 already uses loadAgentStore
+  // for this; mirroring the same pre-check pattern here keeps the
+  // "Agent not found" / "Agent has been terminated" envelopes returning
+  // before any dispatch overhead).
   const store = loadAgentStore();
   const agent = store.agents[input.agentId];
   if (!agent) return { success: false, agentId: input.agentId, error: 'Agent not found' };
@@ -331,9 +340,16 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
     `Agent ID: ${input.agentId}. Domain: ${agent.domain ?? 'general'}. ` +
     `Respond directly and stay focused on the task. If you need information you don't have, state that explicitly.`;
 
-  agent.status = 'busy';
-  agent.taskCount = (agent.taskCount || 0) + 1;
-  saveAgentStore(store);
+  // Pre-LLM busy reservation — one audit-traced mutation. taskCountDelta:1
+  // bumps the count; lastResult omitted so any prior execution's result
+  // remains visible until the new one lands.
+  const { getProcessArchivist } = await import('../memory/archivist-init.js');
+  const archivist = await getProcessArchivist();
+  await archivist.dispatch('agent_execute', {
+    agentId: input.agentId,
+    status: 'busy',
+    taskCountDelta: 1,
+  });
 
   const startedAt = Date.now();
 
@@ -362,8 +378,15 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '<unreadable error body>');
-      agent.status = 'idle';
-      saveAgentStore(store);
+      // Post-LLM idle release (non-OK status) — second audit-traced mutation.
+      // taskCountDelta omitted (defaults to 0); count was already bumped at
+      // reservation. lastResult also omitted on error path — preserves the
+      // previous successful result so a transient API failure doesn't
+      // erase the last good output.
+      await archivist.dispatch('agent_execute', {
+        agentId: input.agentId,
+        status: 'idle',
+      });
       return {
         success: false,
         agentId: input.agentId,
@@ -400,14 +423,22 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
       durationMs: Date.now() - startedAt,
     };
 
-    agent.status = 'idle';
-    agent.lastResult = result as unknown as Record<string, unknown>;
-    saveAgentStore(store);
+    // Post-LLM idle release (success) — second audit-traced mutation.
+    // lastResult set to the new result.
+    await archivist.dispatch('agent_execute', {
+      agentId: input.agentId,
+      status: 'idle',
+      lastResult: result as unknown as Record<string, unknown>,
+    });
 
     return result;
   } catch (err) {
-    agent.status = 'idle';
-    saveAgentStore(store);
+    // Post-LLM idle release (exception path) — second audit-traced mutation.
+    // lastResult omitted; preserves prior successful output.
+    await archivist.dispatch('agent_execute', {
+      agentId: input.agentId,
+      status: 'idle',
+    });
     const msg = err instanceof Error ? err.message : String(err);
     return {
       success: false,
