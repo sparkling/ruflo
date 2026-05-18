@@ -649,7 +649,7 @@ export function calculateRequiredVotes(
       // is mathematical, not arithmetic — settling is decided by "all expected
       // voters submitted OR per-round timeout", not "k-of-n approved".
       // We return `totalNodes` as a nominal denominator so callers that read
-      // `required` for telemetry get a coherent number; `tryResolveProposal`
+      // `required` for telemetry get a coherent number; the resolution path
       // bypasses the arithmetic entirely on the 'crdt' branch.
       return Math.max(1, totalNodes);
     case 'gossip':
@@ -693,107 +693,6 @@ export function weightedTally(
   return { votesFor, votesAgainst };
 }
 
-/**
- * Detect Byzantine behavior: a voter who has cast conflicting votes
- * across proposals in the same round (same type, overlapping time).
- * Here we check if the voter already voted differently on this proposal
- * (which shouldn't happen if we block double-votes, so this checks
- * cross-proposal conflicting votes for same type within the pending set).
- */
-function detectByzantineVoters(
-  pending: ConsensusProposal[],
-  currentProposal: ConsensusProposal,
-  voterId: string,
-  newVote: boolean,
-): boolean {
-  // Check if voter cast opposite votes on proposals of the same type
-  for (const p of pending) {
-    if (p.proposalId === currentProposal.proposalId) continue;
-    if (p.type !== currentProposal.type) continue;
-    if (voterId in p.votes && p.votes[voterId] !== newVote) {
-      return true; // Conflicting vote detected
-    }
-  }
-  return false;
-}
-
-/**
- * Try to resolve a proposal based on its strategy.
- * Returns 'approved', 'rejected', or null if still pending.
- *
- * ADR-0119 (T1): when `proposal.strategy === 'weighted'`, both the tally and
- * the deadlock arithmetic use weighted sums (queen contributes QUEEN_WEIGHT,
- * workers contribute 1). Comparing raw vote counts to a weighted denominator
- * — or summing raw uncast voters into the deadlock check — would mark
- * legitimate live proposals as deadlocked once the queen weight is in play.
- *
- * `queenId` is required when `proposal.strategy === 'weighted'`. Callers must
- * pass `state.queen?.agentId`; the precondition that `state.queen !== undefined`
- * is enforced in the propose/vote handlers (see MissingQueenForWeightedConsensusError).
- */
-function tryResolveProposal(
-  proposal: ConsensusProposal,
-  totalNodes: number,
-  queenId?: string,
-): 'approved' | 'rejected' | null {
-  const required = calculateRequiredVotes(
-    proposal.strategy,
-    totalNodes,
-    proposal.quorumPreset,
-  );
-
-  if (proposal.strategy === 'weighted') {
-    // Precondition asserted in propose/vote: `state.queen` is defined.
-    if (!queenId) {
-      // Defensive — the handler check should have already thrown. If we
-      // reach here, the caller bypassed the precondition (programming error).
-      throw new MissingQueenForWeightedConsensusError('resolve');
-    }
-    const { votesFor, votesAgainst } = weightedTally(proposal, queenId);
-
-    if (votesFor >= required) return 'approved';
-    if (votesAgainst >= required) return 'rejected';
-
-    // Weighted deadlock: compute remaining weighted capacity. Workers not yet
-    // voted contribute 1 each; the queen, if uncast, contributes QUEEN_WEIGHT.
-    const castVoters = new Set(Object.keys(proposal.votes));
-    const queenStillUncast = !castVoters.has(queenId);
-    // Worker slots remaining = totalWorkers - workers already cast.
-    const workersAlreadyCast = Array.from(castVoters).filter(v => v !== queenId).length;
-    const totalWorkers = Math.max(0, totalNodes - 1);
-    const workerSlotsRemaining = Math.max(0, totalWorkers - workersAlreadyCast);
-    const weightedRemaining = workerSlotsRemaining + (queenStillUncast ? QUEEN_WEIGHT : 0);
-
-    if (votesFor + weightedRemaining < required && votesAgainst + weightedRemaining < required) {
-      // Deadlock: neither side can reach `required` even with all remaining votes.
-      return 'rejected';
-    }
-
-    return null;
-  }
-
-  const votesFor = Object.values(proposal.votes).filter(v => v).length;
-  const votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
-
-  if (votesFor >= required) return 'approved';
-  if (votesAgainst >= required) return 'rejected';
-
-  // For quorum with 'unanimous', also reject if any vote is against
-  if (proposal.strategy === 'quorum' && proposal.quorumPreset === 'unanimous' && votesAgainst > 0) {
-    return 'rejected';
-  }
-
-  // Check if it's impossible to reach quorum (remaining potential votes can't tip it)
-  const totalVotes = Object.keys(proposal.votes).length;
-  const remaining = totalNodes - totalVotes;
-  if (votesFor + remaining < required && votesAgainst + remaining < required) {
-    // Deadlock: neither side can win -- reject
-    return 'rejected';
-  }
-
-  return null;
-}
-
 // ── ADR-0120 (T2): gossip helpers ─────────────────────────────────────
 //
 // Push-style epidemic propagation. Each `vote` action where strategy is
@@ -821,37 +720,6 @@ export interface GossipSettleStatus {
   bound: number;
   result?: 'approved' | 'rejected';
   noVotes?: boolean;
-}
-
-/**
- * Apply per-round timeout: if the current round has been open longer than
- * `roundTimeoutMs`, force-advance `gossipRound` and clear
- * `currentRoundBroadcastSet`. Caller must `saveHiveState` after invocation
- * if any mutation happened.
- *
- * Per ADR-0120 §Specification "Per-round timeout": without this, a single
- * non-voting worker would block all rounds indefinitely (the broadcast set
- * never covers all voters → `gossipRound` never advances → settling never
- * fires). With the timeout, the round advances after `roundTimeoutMs`; the
- * dropped voter's vote is simply absent from the tally; the predicate
- * still fires once `lastVoteChangedRound` quiesces.
- *
- * Returns `true` if a round-advance happened (the caller saves state).
- */
-function maybeAdvanceGossipRoundOnTimeout(
-  proposal: ConsensusProposal,
-  now: number = Date.now(),
-): boolean {
-  if (proposal.strategy !== 'gossip') return false;
-  if (!proposal.roundStartedAt) return false;
-  const roundTimeoutMs = proposal.roundTimeoutMs ?? GOSSIP_ROUND_TIMEOUT_MS_DEFAULT;
-  const elapsed = now - new Date(proposal.roundStartedAt).getTime();
-  if (elapsed < roundTimeoutMs) return false;
-  // Round timeout fired — advance.
-  proposal.gossipRound = (proposal.gossipRound ?? 0) + 1;
-  proposal.currentRoundBroadcastSet = [];
-  proposal.roundStartedAt = new Date(now).toISOString();
-  return true;
 }
 
 /**

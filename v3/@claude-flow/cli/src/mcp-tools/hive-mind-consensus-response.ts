@@ -25,12 +25,14 @@
  *
  *  - `gossipBound`, `noVotes`, `settled`, `exhausted` (status × gossip):
  *      Re-invokes `settleCheckGossip(proposal)` against post-dispatch state.
- *      The cli's pre-flip status handler runs `maybeAdvanceGossipRoundOnTimeout`
- *      then `settleCheckGossip`; both round-counter mutations are persisted
- *      by the dispatch before this builder runs, so re-invoking
- *      `settleCheckGossip` against the post-dispatch proposal produces the
- *      same four telemetry fields the cli's call-site captured. Safe
- *      because `settleCheckGossip` is pure-read math over proposal fields.
+ *      The cli's pre-flip status handler ran `maybeAdvanceGossipRoundOnTimeout`
+ *      then `settleCheckGossip` (the former was deleted in Wave 6 — agentdb's
+ *      gossip status handler now owns round-timeout advancement); both
+ *      round-counter mutations are persisted by the dispatch before this
+ *      builder runs, so re-invoking `settleCheckGossip` against the
+ *      post-dispatch proposal produces the same four telemetry fields the
+ *      cli's call-site captured. Safe because `settleCheckGossip` is
+ *      pure-read math over proposal fields.
  *      (DA Wave 1 open-item resolution: Option A.)
  *
  *  - `absentVoters` (status × any threshold strategy after auto-transition):
@@ -471,11 +473,13 @@ function buildVoteResponse(
   const exhausted = isGossip
     ? (gossipExhaustedFlag === true ? true : undefined)
     : undefined;
-  // `settled`: gossip proposals move to history ONLY on settle (per cli vote
-  // branch line 2594-2611 — `tryResolveProposal` returns non-null only on
-  // settle). Exhaustion does NOT move to history (cli lines 2581-2588 keep
-  // exhausted proposals in pending). So `settled === !!historyRow` is
-  // correct for gossip vote responses. DA Wave 1 post-commit Concern #2.
+  // `settled`: gossip proposals move to history ONLY on settle (per the
+  // pre-flip cli vote branch line 2594-2611 — `tryResolveProposal` returned
+  // non-null only on settle; the helper was deleted in Wave 6 and the
+  // equivalent transition logic now lives in agentdb's gossip vote handler).
+  // Exhaustion does NOT move to history (the pre-flip cli kept exhausted
+  // proposals in pending; agentdb mirrors that). So `settled === !!historyRow`
+  // is correct for gossip vote responses. DA Wave 1 post-commit Concern #2.
   const settled = isGossip ? resolved : undefined;
 
   return {
@@ -595,11 +599,13 @@ function buildStatusResponse(
 
   // Gossip-strategy telemetry. DA Wave 1 open-item resolution (Option A):
   // re-invoke `settleCheckGossip` on the post-dispatch proposal for the
-  // status path. The cli's pre-flip status handler invokes settleCheckGossip
-  // AFTER maybeAdvanceGossipRoundOnTimeout, both of which are persisted by
-  // the dispatch before this builder runs — so the post-dispatch proposal's
-  // round counters are exactly what the cli's call-site observed. Safe
-  // because settleCheckGossip is pure-read (lines 857-894 of hive-mind-tools.ts).
+  // status path. The cli's pre-flip status handler invoked settleCheckGossip
+  // AFTER maybeAdvanceGossipRoundOnTimeout (the latter was deleted in Wave 6
+  // — agentdb's gossip status handler now owns round-timeout advancement);
+  // both round-counter mutations are persisted by the dispatch before this
+  // builder runs — so the post-dispatch proposal's round counters are
+  // exactly what the cli's call-site observed. Safe because settleCheckGossip
+  // is pure-read math over proposal fields.
   //
   // Vote path uses different sourcing (`proposal.gossipExhausted`) because
   // agentdb's gossip.ts writes the flag at exhaustion but doesn't always
