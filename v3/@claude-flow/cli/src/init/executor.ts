@@ -492,7 +492,7 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
             result.created.push(`.claude/helpers/${helperName}`);
           }
           fs.copyFileSync(sourcePath, targetPath);
-          try { fs.chmodSync(targetPath, '755'); } catch {}
+          try { fs.chmodSync(targetPath, '755'); } catch { /* chmod is no-op on Windows / non-POSIX FS */ }
         }
       }
     } else {
@@ -510,7 +510,7 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
           result.created.push(`.claude/helpers/${helperName}`);
         }
         fs.writeFileSync(targetPath, content, 'utf-8');
-        try { fs.chmodSync(targetPath, '755'); } catch {}
+        try { fs.chmodSync(targetPath, '755'); } catch { /* chmod is no-op on Windows / non-POSIX FS */ }
       }
     }
 
