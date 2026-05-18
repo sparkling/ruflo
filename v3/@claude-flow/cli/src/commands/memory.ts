@@ -674,17 +674,33 @@ const statsCommand: Command = {
       try {
         // ADR-0162 Batch C+D hand-port: memory-initializer.js was deleted in our
         // fork (ADR-0086 / ADR-0161 relocated the seam). The upstream introspection
-        // helpers now live in memory-router.ts. HNSW status is derived from the
-        // controller registry rather than a dedicated helper since the controller
-        // registry is the single source of truth for live indexing state.
-        const { loadEmbeddingModel: lem, getController: gc } = await import('../memory/memory-router.js');
+        // helpers now live in memory-router.ts.
+        //
+        // HNSW status comes from RvfBackend (IStorageContract), not the
+        // `enhancedEmbeddingService` controller. EnhancedEmbeddingService is a
+        // WASM-cosine helper for batch embedding generation — it has no HNSW
+        // state, no `isReady()`, and its `getStats()` returns
+        // `{cacheSize, wasmEnabled, simdEnabled}` (no `totalEntries`). The
+        // previous code also used the short name `enhancedEmbedding` which
+        // never matched the registry's canonical name `enhancedEmbeddingService`,
+        // so getController returned null and the row always reported "not
+        // active" even when HNSW was active with vectors indexed.
+        //
+        // The canonical source of truth is `routeEmbeddingOp({type:'hnswStatus'})`,
+        // which calls `_storage.getStats()` and returns `hnswStats` when the
+        // RvfBackend has an HNSW index wired in (see rvf-backend.ts:998).
+        const { loadEmbeddingModel: lem, routeEmbeddingOp: reo } = await import('../memory/memory-router.js');
         const embedding = await lem({ verbose: false });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const enhEmb = await gc<any>('enhancedEmbedding');
+        const hnswResult: any = await reo({ type: 'hnswStatus' });
+        // Presence of `hnswStats` in storage stats means RvfBackend has an
+        // HNSW index wired in. `vectorCount` is the number of vectors
+        // currently indexed (may be 0 on a fresh init — that's still "active").
+        const hnswActive = !!(hnswResult?.success && hnswResult.hnswStats);
         const hnsw = {
-          available: !!enhEmb,
-          initialized: !!(enhEmb && typeof enhEmb.isReady === 'function' ? enhEmb.isReady() : enhEmb),
-          entryCount: enhEmb && typeof enhEmb.getStats === 'function' ? (enhEmb.getStats()?.totalEntries ?? 0) : 0,
+          available: hnswActive,
+          initialized: hnswActive,
+          entryCount: hnswResult?.hnswStats?.vectorCount ?? 0,
         };
         // Map model name → semantic capability so users can spot the
         // hash-fallback case without reading docs.
