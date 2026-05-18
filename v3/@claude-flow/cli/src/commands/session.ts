@@ -9,6 +9,7 @@ import { confirm, input, select } from '../prompt.js';
 import { callMCPTool, MCPClientError } from '../mcp-client.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { writeFileRestricted } from '../fs-secure.js';
 
 // Format date for display
 function formatDate(dateStr: string): string {
@@ -587,7 +588,8 @@ const exportCommand: Command = {
         ? outputPath
         : path.join(ctx.cwd, outputPath);
 
-      fs.writeFileSync(absolutePath, content, 'utf-8');
+      // ADR-0188 Option 1: session exports may contain user prompts / AI responses; write 0600.
+      writeFileRestricted(absolutePath, content, 'utf-8');
 
       spinner.succeed('Session exported');
       output.writeln();

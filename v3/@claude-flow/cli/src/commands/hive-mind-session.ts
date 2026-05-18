@@ -37,6 +37,7 @@ import {
   statSync,
   unlinkSync,
 } from 'node:fs';
+import { writeFileRestricted } from '../fs-secure.js';
 import { join, basename, dirname, isAbsolute, resolve } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { spawn as childSpawn, execSync } from 'node:child_process';
@@ -410,7 +411,9 @@ export function writeArchiveAtomic(archivePath: string, compressed: Uint8Array):
   const dir = dirname(archivePath);
   const name = basename(archivePath);
   const tmpPath = join(dir, `.${name}.tmp.${process.pid}.${Date.now()}`);
-  writeFileSync(tmpPath, compressed);
+  // ADR-0188 Option 1: session archives may contain user prompts / AI responses; write 0600.
+  // Buffer.from on a Uint8Array is zero-copy (shares the underlying ArrayBuffer).
+  writeFileRestricted(tmpPath, Buffer.from(compressed.buffer, compressed.byteOffset, compressed.byteLength));
   renameSync(tmpPath, archivePath);
 }
 
