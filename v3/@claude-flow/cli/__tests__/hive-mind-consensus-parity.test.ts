@@ -676,12 +676,15 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
         proposeOut.proposalId,
         postState,
         { action: 'status', strategy: 'raft' },
-      ) as any;
+      );
 
       expect(statusOut.historical).toBe(true);
-      expect(builder.historical).toBe(true);
-      expect(builder.result).toBe(statusOut.result);
-      expect(builder.statusJustTransitioned).toBe(false);
+      // DA Wave 1 post-commit Concern #3: full parity diff (not spot-checks)
+      // — the cli's history-fallback uses `{action, ...historical, historical:
+      // true, resolved: true, statusJustTransitioned: false}` (cli line
+      // 2657-2665). The builder enumerates those fields explicitly; only a
+      // full deep-equal catches missing or extra fields.
+      assertParity('status-history-row', statusOut, builder);
     });
   });
 

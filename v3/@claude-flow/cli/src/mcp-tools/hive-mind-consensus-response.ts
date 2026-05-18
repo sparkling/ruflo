@@ -122,6 +122,14 @@ export interface ProposeResponse {
  *  Sub-path (b) is constructed inline at the Wave 3 try/catch site, NOT
  *  by `buildConsensusResponse`. Wave 3 implementer: resolve the
  *  typed-error-vs-plain-Error question before writing the try/catch.
+ *
+ *  TODO(Wave 3): forks/agentdb/src/archivist/handlers/hive-mind/consensus/
+ *  bft.ts:150 throws a plain `Error` for same-voter-conflict re-submission.
+ *  Wave 3 try/catch site at cli vote-flip MUST EITHER (1) catch by
+ *  `e.message.startsWith('hive-mind_consensus.vote: voter ')` (fragile) OR
+ *  (2) require agentdb amend bft.ts to throw a NEW typed class (e.g.
+ *  `SameVoterConflictError`) added to the 8 existing reshape classes in
+ *  agentdb's `_shared.ts`. Option (2) is the principled fix.
  */
 export interface VoteResponse {
   action: 'vote';
@@ -371,14 +379,16 @@ function buildVoteResponse(
     const resolved = !!historyRow;
     const result = historyRow?.result as 'approved' | 'rejected' | undefined;
 
-    // crdtTimedOut: cli sources from a wall-clock comparison against
-    // roundStartedAt + roundTimeoutMs. Post-dispatch, this is preserved
-    // implicitly by the proposal having settled into history (timeout-driven
-    // path). We cannot re-derive without knowing the wall clock at dispatch
-    // time, so we surface it as `undefined` here and rely on the dispatch
-    // response (Waves 2-5) for the persisted flag. At Wave 1 the parity
-    // harness uses fake timers so the cli's crdtTimedOut is deterministic;
-    // the builder cannot match it exactly without a persisted flag.
+    // crdtTimedOut: derived from `roundStartedAt + roundTimeoutMs` vs Date.now()
+    // — same comparison the cli uses (lines 2327-2331). Post-dispatch state
+    // preserves `roundStartedAt`, so the builder reproduces the cli's
+    // call-site computation exactly. DA Wave 1 post-commit Block resolution.
+    let crdtTimedOut: boolean | undefined = undefined;
+    if (proposal?.roundStartedAt && proposal?.roundTimeoutMs) {
+      const elapsed = Date.now() - new Date(proposal.roundStartedAt).getTime();
+      crdtTimedOut = elapsed >= proposal.roundTimeoutMs;
+    }
+
     return {
       action: 'vote',
       proposalId,
@@ -396,6 +406,7 @@ function buildVoteResponse(
       crdtVerdict,
       crdtApprovers: approverIds,
       crdtVoteCount,
+      crdtTimedOut,
     };
   }
 
@@ -453,8 +464,11 @@ function buildVoteResponse(
   const exhausted = isGossip
     ? Boolean((proposal as unknown as { gossipExhausted?: boolean } | null)?.gossipExhausted)
     : undefined;
-  // `settled`: gossip resolves into history. If the proposal is in history,
-  // settled=true; else settled=false (still pending).
+  // `settled`: gossip proposals move to history ONLY on settle (per cli vote
+  // branch line 2594-2611 — `tryResolveProposal` returns non-null only on
+  // settle). Exhaustion does NOT move to history (cli lines 2581-2588 keep
+  // exhausted proposals in pending). So `settled === !!historyRow` is
+  // correct for gossip vote responses. DA Wave 1 post-commit Concern #2.
   const settled = isGossip ? resolved : undefined;
 
   return {
