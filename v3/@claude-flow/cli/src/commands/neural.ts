@@ -1191,6 +1191,7 @@ const exportCommand: Command = {
             'pinata_secret_api_key': pinataSecret,
           },
           body: JSON.stringify(exportPackage),
+          signal: AbortSignal.timeout(30000),
         });
 
         if (!response.ok) {
