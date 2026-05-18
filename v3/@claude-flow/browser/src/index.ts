@@ -166,6 +166,27 @@ export {
   type RecoveryExplanation,
 } from './domain/causal-recovery.js';
 
+// Cost-aware action routing + GOAP preflight (ADR-122 Phase 5)
+export {
+  ActionRouter,
+  type ActionRouterOptions,
+} from './application/action-router.js';
+export {
+  ActionTierSchema,
+  type ActionTier,
+  type RoutingDecision,
+  type ActionRoutingInput,
+  type TrajectoryCostReport,
+} from './domain/action-routing.js';
+export {
+  GoapPreflightService,
+  type GoapPreflightServiceOptions,
+  type GoapPreflightInput,
+  type GoapPreflightResult,
+  type GoapPreflightFinding,
+  type PlannedStep,
+} from './application/goap-preflight.js';
+
 // Federated MCTS branch exploration (ADR-122 Phase 4)
 export {
   MctsExplorer,
