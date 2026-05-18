@@ -64,6 +64,32 @@ vi.mock('node:fs', () => {
   };
 });
 
+// Stub archivist-init.js to avoid vitest transform-time resolution of
+// `agentdb/archivist` (an optional dep that's externalized via the
+// `externalize-optional-deps` plugin in vitest.config.ts, but the
+// archivist-init.ts top-level import still triggers a transform attempt).
+// The cli `hive-mind_consensus` handler does NOT call getProcessArchivist
+// at Wave 1 (pre-flip); the dispatch wiring lands in Waves 2-5. But the
+// harness's `freshHive` helper drives `hive-mind_init` / `hive-mind_spawn` /
+// `hive-mind_shutdown` which DO call getProcessArchivist (lines 1555, 1753,
+// 3037 of hive-mind-tools.ts). Mock returns a no-op archivist whose
+// dispatch + dispatchRead resolve to undefined.
+vi.mock('../src/memory/archivist-init.js', () => ({
+  getProcessArchivist: vi.fn(async () => ({
+    dispatch: vi.fn(async () => undefined),
+    dispatchRead: vi.fn(async () => undefined),
+  })),
+  initProcessArchivist: vi.fn(async () => ({
+    dispatch: vi.fn(async () => undefined),
+    dispatchRead: vi.fn(async () => undefined),
+  })),
+  ensureArchivistInitialized: vi.fn(async () => undefined),
+  ensureRvfWired: vi.fn(async () => undefined),
+  ensureSqliteWired: vi.fn(async () => undefined),
+  __resetProcessArchivistForTests: vi.fn(async () => undefined),
+  buildArchivistConfig: vi.fn(() => ({})),
+}));
+
 vi.mock('fs', () => {
   const memStore = new Map<string, string>();
   return {
