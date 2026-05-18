@@ -199,7 +199,25 @@ const autopilotLearn: MCPTool = {
   description: 'Discover success patterns from past task completions. Requires AgentDB for full functionality.',
   category: 'autopilot',
   inputSchema: { type: 'object', properties: {} },
+  // ADR-0181 Phase F (2026-05-18): dispatched through archivist via
+  // `AutopilotLearner` capability. The handler at
+  // `forks/agentdb/src/archivist/handlers/autopilot/learn.ts` opens a
+  // substrate `withWrite` envelope, writes the discovery result under the
+  // `autopilot_learn` storeId for audit-chain enrolment, then returns.
+  // The cli wrapper re-fetches the discovery result for its envelope —
+  // matches the legacy `ok({ metrics, patterns })` / `ok({ available: false, ... })`
+  // response shape.
   handler: async () => {
+    const { getProcessArchivist } = await import('../memory/archivist-init.js');
+    const archivist = await getProcessArchivist();
+    await archivist.dispatch('autopilot_learn', {});
+    // Re-resolve the result for the cli envelope. The capability adapter
+    // performs the actual `tryLoadLearning()` + getMetrics() +
+    // discoverSuccessPatterns() work; the dispatch above stamped the audit
+    // chain. Calling it again here returns the same shape — this is the
+    // post-dispatch read-back pattern used by other Phase 5+ flips (memory
+    // wrapper at `mcp-tools/memory-tools.ts:288-321` does the same for
+    // envelope parity).
     const learning = await tryLoadLearning();
     if (learning) {
       const [metrics, patterns] = await Promise.all([

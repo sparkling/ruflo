@@ -156,6 +156,8 @@ import type BetterSqlite3 from 'better-sqlite3';
 import type {
   Archivist,
   ArchivistInitConfig,
+  AutopilotLearner,
+  AutopilotLearnResult,
   CausalGraphWriter,
   CausalGraphWriteResult,
   EmbeddingScorer,
@@ -1039,6 +1041,60 @@ function makeCliCausalGraphWriter(): CausalGraphWriter {
   };
 }
 
+// ─── ADR-0181 Phase F (2026-05-18) ───────────────────────────────────────────
+// `makeCliAutopilotLearner` adapts the cli's `tryLoadLearning()`
+// (`autopilot-state.ts:314-324`) down to the narrow `AutopilotLearner`
+// capability surface used by `forks/agentdb/src/archivist/handlers/autopilot/
+// learn.ts`. `tryLoadLearning()` lazy-imports `agentic-flow/dist/coordination/
+// autopilot-learning.js` and returns an initialized `AutopilotLearning`
+// instance, OR null when AgentDB is not available.
+//
+// Per-call resolution discipline: `discover()` calls `tryLoadLearning()` each
+// time so a mid-process AutopilotLearning swap is observed at the next
+// dispatch. No closure caching of the instance.
+//
+// Unavailable-controller envelope: when `tryLoadLearning()` returns null, the
+// adapter returns `{ available: false, reason }` — same shape the legacy cli
+// handler returned at `autopilot-tools.ts:211`. The agentdb handler
+// (`autopilot/learn.ts`) writes this envelope verbatim under the
+// `autopilot_learn` storeId.
+//
+// Audit-vs-storage note: the dispatched handler opens a substrate `withWrite`
+// scope that stamps the AuditEntry; the underlying `discoverSuccessPatterns()`
+// side-effects (pattern records materialized in AgentDB) happen INSIDE the
+// adapter call, not via the substrate write. This is intentional — the
+// substrate-internal-only seam (ADR-0180 §Type enforcement) is the
+// audit-chain primitive, not a storage gate for the AutopilotLearning
+// controller's own persistence.
+
+/**
+ * Adapt cli's `tryLoadLearning()` + `getMetrics()` + `discoverSuccessPatterns()`
+ * to the narrow `AutopilotLearner` capability. Per-call resolution; null
+ * controller surfaces as `{ available: false, reason }`.
+ */
+function makeCliAutopilotLearner(): AutopilotLearner {
+  return {
+    async discover(): Promise<AutopilotLearnResult> {
+      // Per-call resolution; no closure caching of the AutopilotLearning
+      // instance — mirrors causal/sona adapter discipline.
+      const { tryLoadLearning } = await import('../autopilot-state.js');
+      const learning = await tryLoadLearning();
+      if (!learning) {
+        return {
+          available: false,
+          reason: 'AgentDB/AutopilotLearning not initialized',
+          patterns: [],
+        };
+      }
+      const [metrics, patterns] = await Promise.all([
+        (learning as unknown as { getMetrics(): Promise<unknown> }).getMetrics(),
+        (learning as unknown as { discoverSuccessPatterns(): Promise<unknown> }).discoverSuccessPatterns(),
+      ]);
+      return { available: true, metrics, patterns };
+    },
+  };
+}
+
 /**
  * Build the cli process's `ArchivistInitConfig`. Phase 4 wires `projectRoot`
  * plus four substrate/capability slots; `rvfBackend` is supplied separately by
@@ -1111,6 +1167,8 @@ export function buildArchivistConfig(
     // per call. Today's writer routes to RVF via router-fallback (ADR-0147
     // R7 gap); see handler header for full audit-vs-storage rationale.
     causalGraphWriterFactory: makeCliCausalGraphWriter,
+    // ADR-0181 Phase F (2026-05-18): AutopilotLearner capability.
+    autopilotLearnerFactory: makeCliAutopilotLearner,
   };
 }
 
@@ -1316,6 +1374,13 @@ export async function initProcessArchivist(projectRoot?: string): Promise<Archiv
     // handler header at forks/agentdb/src/archivist/handlers/agentdb/
     // causal-edge.ts for the full audit-vs-storage rationale.
     causalGraphWriterFactory: makeCliCausalGraphWriter,
+    // ADR-0181 Phase F (2026-05-18): AutopilotLearner capability for the
+    // `autopilot_learn` handler. Adapter resolves `tryLoadLearning()` per
+    // call (no closure caching) so a mid-process AutopilotLearning swap
+    // is observed at the next dispatch. Null returns map to
+    // `{ available: false, reason }` per the legacy cli envelope
+    // (autopilot-tools.ts:211).
+    autopilotLearnerFactory: makeCliAutopilotLearner,
   };
 
   // Remember the resolved root so `ensureSqliteWired()` agrees with
