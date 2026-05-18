@@ -2227,265 +2227,67 @@ export const hiveMindTools: MCPTool[] = [
         );
       }
 
+      // ADR-0185 Wave 4 — status action flipped to archivist.dispatch. Like
+      // propose (Wave 2b) + vote (Wave 3), status MUST run OUTSIDE
+      // withHiveStoreLock (agentdb's dispatch enters its own withWrite scope
+      // on the same O_EXCL sentinel; nesting deadlocks per DA axis-(i)).
+      //
+      // Status is a WRITE action per ADR-0131 inline-timing decision from
+      // ADR-0184 Wave 4 — uses archivist.dispatch not dispatchRead. The
+      // agentdb per-strategy status handlers own: §6 absence-marker
+      // reconciliation, ADR-0131 auto-transition (failed-quorum-not-reached
+      // + absentVoters), gossip settleCheckGossip + advancement, crdt
+      // force-settle on timeout, weighted tally recompute.
+      if (action === 'status') {
+        const proposalId = input.proposalId as string;
+
+        try {
+          await (await getProcessArchivist()).dispatch('hive-mind_consensus', {
+            action: 'status',
+            proposalId,
+            includeProvenance: input.includeProvenance as boolean | undefined,
+          });
+        } catch (e: unknown) {
+          // ADR-0185 Wave 4 — status-action reshape: only 1 of the 8 typed
+          // errors is reachable from the status path. ProposalNotFoundError
+          // fires when proposalId is in NEITHER pending nor history (the
+          // history fast-path at agentdb raft.ts:182-184 returns void
+          // silently for proposals already in history). Builder handles the
+          // history case from post-dispatch state (response.ts:510-535).
+          // MissingQueenForWeightedConsensusError('status-transition')
+          // (agentdb weighted.ts:228) and plain Errors per cli pre-flip
+          // contract are re-thrown by the bare `throw e` below.
+          if (e instanceof ProposalNotFoundError) {
+            return { action, error: 'Proposal not found' };
+          }
+          throw e;
+        }
+
+        invalidateHiveCache();
+        const postState = loadHiveState();
+        return buildConsensusResponse(
+          'status',
+          strategy,
+          proposalId,
+          postState,
+          input as unknown as import('./hive-mind-consensus-response.js').BuildConsensusResponseInput,
+        );
+      }
+
       // ADR-0180 Phase 4 pre-flight: wrap load → mutate → save under
       // `withHiveStoreLock` (cross-process O_EXCL sentinel) so concurrent
-      // status calls cannot lost-update each other's
+      // list calls cannot lost-update each other's
       // `state.consensus.pending` / `state.consensus.history`. Pattern mirrors
       // hive-mind_spawn and hive-mind_init. The lock is NOT reentrant
       // (O_CREAT|O_EXCL); the handler must avoid calling other
       // lock-acquiring code paths. The `list` action is read-only but
       // harmlessly nested in the lock so the dispatch logic stays a single
-      // block. Propose action moved out per Wave 2b deadlock fix above; vote
-      // moved out per Wave 3 deadlock fix above. Status/list to follow in
-      // Waves 4-5.
+      // block. Propose / vote / status actions moved out per Waves 2b/3/4
+      // deadlock fixes above; list to follow in Wave 5.
       return withHiveStoreLock(async () => {
       const state = loadHiveState();
       const totalNodes = state.workers.length || 1;
 
-
-      if (action === 'status') {
-        // ADR-0131 (T12) — reconcile §6 prompt-protocol absence markers BEFORE
-        // looking at the proposal. The §6 contract instructs the queen LLM to
-        // write `worker-<id>-status: 'absent'` via _memory; this scan
-        // propagates that marker into per-worker workerMeta.failedAt so the
-        // auto-transition's `absentVoters` snapshot is current.
-        const reconciled = reconcileFailedFromStatusKeys(state);
-        if (reconciled) {
-          saveHiveState(state);
-        }
-
-        const proposal = state.consensus.pending.find(p => p.proposalId === input.proposalId);
-        if (!proposal) {
-          // Check history
-          const historical = state.consensus.history.find(h => h.proposalId === input.proposalId);
-          if (historical) {
-            return {
-              action,
-              ...historical,
-              historical: true,
-              resolved: true,
-              // ADR-0131 (T12): subsequent calls for an already-transitioned
-              // proposal return the historical row with statusJustTransitioned: false.
-              statusJustTransitioned: false,
-            };
-          }
-          return { action, error: 'Proposal not found' };
-        }
-
-        const proposalStrategy = proposal.strategy || 'raft';
-        // ADR-0119 (T1): mirror vote-handler accounting — when proposal is
-        // weighted, report weighted tallies so callers get a coherent view of
-        // votesFor/votesAgainst against the weighted `required` denominator.
-        let votesFor: number;
-        let votesAgainst: number;
-        if (proposalStrategy === 'weighted' && state.queen) {
-          const tally = weightedTally(proposal, state.queen.agentId);
-          votesFor = tally.votesFor;
-          votesAgainst = tally.votesAgainst;
-        } else {
-          votesFor = Object.values(proposal.votes).filter(v => v).length;
-          votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
-        }
-        const required = calculateRequiredVotes(
-          proposalStrategy,
-          totalNodes,
-          proposal.quorumPreset,
-        );
-
-        // Raft: check timeout
-        let timedOut = false;
-        if (proposalStrategy === 'raft' && proposal.timeoutAt) {
-          timedOut = new Date().getTime() > new Date(proposal.timeoutAt).getTime();
-        }
-
-        // ADR-0131 (T12) — auto-status-transition for ALL threshold-based
-        // strategies (bft/raft/quorum/weighted). Predicate per
-        // ADR-0131 §Specification:
-        //   `Date.now() >= proposal.timeoutAt && totalVotes < required`
-        // On trigger: status flips to 'failed-quorum-not-reached',
-        // absentVoters populated, proposal moved from pending to history,
-        // state saved.
-        //
-        // Strategy-agnostic at the dispatch boundary; the threshold is
-        // already strategy-aware via calculateRequiredVotes (T1/T2/T3 extended
-        // it to weighted/gossip/crdt). Gossip and CRDT have their own
-        // settle paths and timeoutAt is undefined for them, so the predicate
-        // never trips on those branches — the existing settle-check paths
-        // handle their timeout-driven resolution.
-        let statusJustTransitioned = false;
-        if (
-          proposal.timeoutAt &&
-          Date.now() >= new Date(proposal.timeoutAt).getTime() &&
-          proposal.status === 'pending' &&
-          Object.keys(proposal.votes).length < required
-        ) {
-          // Compute absentVoters: workers in state.workers who didn't vote.
-          // Per ADR-0131 §Specification: `state.workers.filter(w => !(w.id in proposal.votes))`
-          // — the WorkerEntry shape is keyed by worker ID; state.workers is
-          // string[] of IDs in the current schema, so filter by membership.
-          const absentVoters = state.workers.filter(
-            (workerId) => !(workerId in proposal.votes),
-          );
-
-          // Mutate proposal status to the verbatim contract literal per
-          // ADR-0131 §Decision. Downstream tests assert on the exact literal.
-          proposal.status = 'failed-quorum-not-reached';
-          proposal.absentVoters = absentVoters;
-
-          // Idempotency guard per ADR-0131 §Refinement edge case
-          // "Concurrent transitions": dedupe on proposalId before pushing
-          // to history. Two callers serialising via saveHiveState's lock —
-          // the second observes the proposal already in history and skips.
-          const alreadyInHistory = state.consensus.history.some(
-            (h) => h.proposalId === proposal.proposalId,
-          );
-          if (!alreadyInHistory) {
-            // Append to history with the failed-quorum-not-reached marker
-            // and the absentVoters snapshot per ADR-0131 §Architecture data flow.
-            state.consensus.history.push({
-              proposalId: proposal.proposalId,
-              type: proposal.type,
-              result: 'failed-quorum-not-reached',
-              votes: { for: votesFor, against: votesAgainst },
-              decidedAt: new Date().toISOString(),
-              strategy: proposalStrategy,
-              term: proposal.term,
-              absentVoters,
-            });
-          }
-
-          // Remove from pending.
-          state.consensus.pending = state.consensus.pending.filter(
-            (p) => p.proposalId !== proposal.proposalId,
-          );
-          saveHiveState(state);
-          statusJustTransitioned = true;
-        }
-
-        // ADR-0120 (T2): gossip settle_check folds into the status action
-        // (per ADR-0120 §Review notes row 5 DEFER-TO-IMPL: extend `status` to
-        // surface the predicate). Status invocation may mutate state via
-        // maybeAdvanceGossipRoundOnTimeout — if a timeout fires, we must
-        // persist + move to history if settled.
-        let gossipSettleResult: GossipSettleStatus | undefined;
-        let gossipResolved = false;
-        let gossipResult: 'approved' | 'rejected' | undefined;
-        if (proposalStrategy === 'gossip') {
-          const advanced = maybeAdvanceGossipRoundOnTimeout(proposal);
-          gossipSettleResult = settleCheckGossip(proposal);
-          if (gossipSettleResult.settled && gossipSettleResult.result) {
-            gossipResult = gossipSettleResult.result;
-            gossipResolved = true;
-            proposal.status = gossipResult;
-            // Move to history (mirrors vote-action resolution path).
-            state.consensus.history.push({
-              proposalId: proposal.proposalId,
-              type: proposal.type,
-              result: gossipResult,
-              votes: { for: votesFor, against: votesAgainst },
-              decidedAt: new Date().toISOString(),
-              strategy: proposalStrategy,
-            });
-            state.consensus.pending = state.consensus.pending.filter(
-              p => p.proposalId !== proposal.proposalId,
-            );
-            saveHiveState(state);
-          } else if (advanced) {
-            // Timeout-driven mutation, no settle yet — still need to persist.
-            saveHiveState(state);
-          }
-        }
-
-        // ADR-0121 (T3): CRDT status surfaces the merged triple + a
-        // timeout-driven force-settle path. Mirrors gossip's status branch
-        // (row 10 DEFER-TO-IMPL: union of voter-count + timeoutMs).
-        let crdtTimedOut = false;
-        let crdtResolved = false;
-        let crdtResult: 'approved' | 'rejected' | undefined;
-        let crdtVerdictValue: unknown;
-        let crdtApproverList: string[] = [];
-        let crdtVoteTotal = 0;
-        if (proposalStrategy === 'crdt' && proposal.crdtState) {
-          const verdictReg = LWWRegister.from(proposal.crdtState.verdict);
-          const approverSet = ORSet.from<string>(proposal.crdtState.approvers);
-          const gcounter = GCounter.from(proposal.crdtState.votes);
-          crdtVerdictValue = verdictReg.value();
-          crdtApproverList = approverSet.elements();
-          crdtVoteTotal = gcounter.value();
-
-          // Timeout check.
-          if (proposal.roundStartedAt && proposal.roundTimeoutMs) {
-            const elapsed = Date.now() - new Date(proposal.roundStartedAt).getTime();
-            if (elapsed >= proposal.roundTimeoutMs) crdtTimedOut = true;
-          }
-
-          // Force-settle if all expected voters submitted OR timeout fired.
-          const distinctVoters = Object.keys(proposal.votes).length;
-          const expected = proposal.crdtExpectedVoters ?? 1;
-          if (distinctVoters >= expected || crdtTimedOut) {
-            const approverCount = crdtApproverList.length;
-            const totalCast = distinctVoters;
-            crdtResult = approverCount > 0 && approverCount * 2 >= totalCast
-              ? 'approved'
-              : 'rejected';
-            crdtResolved = true;
-            proposal.status = crdtResult;
-            state.consensus.history.push({
-              proposalId: proposal.proposalId,
-              type: proposal.type,
-              result: crdtResult,
-              votes: { for: approverCount, against: Math.max(0, totalCast - approverCount) },
-              decidedAt: new Date().toISOString(),
-              strategy: proposalStrategy,
-            });
-            state.consensus.pending = state.consensus.pending.filter(
-              p => p.proposalId !== proposal.proposalId,
-            );
-            saveHiveState(state);
-          }
-        }
-
-        return {
-          action,
-          proposalId: proposal.proposalId,
-          type: proposal.type,
-          strategy: proposalStrategy,
-          status: proposal.status,
-          votesFor,
-          votesAgainst,
-          totalVotes: Object.keys(proposal.votes).length,
-          required,
-          totalNodes,
-          resolved: gossipResolved || crdtResolved || statusJustTransitioned,
-          result: gossipResolved ? gossipResult : (crdtResolved ? crdtResult : undefined),
-          term: proposal.term,
-          quorumPreset: proposal.quorumPreset,
-          byzantineVoters: proposal.byzantineVoters?.length ? proposal.byzantineVoters : undefined,
-          timedOut,
-          timeoutAt: proposal.timeoutAt,
-          hint: timedOut ? `Raft timeout reached. Re-propose with term ${(proposal.term || 1) + 1}.` : undefined,
-          // ADR-0131 (T12): auto-status-transition surface. statusJustTransitioned
-          // is true on the call that fired the transition; false on subsequent
-          // calls (proposal already in history). absentVoters is the snapshot
-          // of state.workers IDs that didn't cast a vote when the predicate fired.
-          statusJustTransitioned,
-          absentVoters: statusJustTransitioned ? proposal.absentVoters : undefined,
-          // ADR-0120 (T2): gossip-only telemetry on status response.
-          gossipRound: proposal.gossipRound,
-          lastVoteChangedRound: proposal.lastVoteChangedRound,
-          gossipBound: gossipSettleResult?.bound,
-          settled: gossipSettleResult?.settled,
-          exhausted: gossipSettleResult?.exhausted,
-          noVotes: gossipSettleResult?.noVotes,
-          // ADR-0121 (T3): CRDT-only telemetry on status response.
-          crdtState: proposalStrategy === 'crdt' ? proposal.crdtState : undefined,
-          crdtVerdict: proposalStrategy === 'crdt' ? crdtVerdictValue : undefined,
-          crdtApprovers: proposalStrategy === 'crdt' ? crdtApproverList : undefined,
-          crdtVoteCount: proposalStrategy === 'crdt' ? crdtVoteTotal : undefined,
-          crdtExpectedVoters: proposal.crdtExpectedVoters,
-          crdtTimedOut: proposalStrategy === 'crdt' ? crdtTimedOut : undefined,
-        };
-      }
 
       if (action === 'list') {
         return {

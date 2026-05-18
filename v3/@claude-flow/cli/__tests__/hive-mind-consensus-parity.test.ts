@@ -191,6 +191,7 @@ import {
   RaftTermCollisionError,
   DuplicateVoteError,
   RaftVoteChangeError,
+  ProposalNotFoundError,
 } from 'agentdb/archivist';
 import {
   buildConsensusResponse,
@@ -959,45 +960,88 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
   // ──────────────────────────────────────────────────────────────────────
   // status × any-threshold-strategy with timeoutAt in the past (ADR-0131)
   // ──────────────────────────────────────────────────────────────────────
-  describe('status action — ADR-0131 auto-transition', () => {
+  describe('status action — ADR-0131 auto-transition (Wave 4 pivot)', () => {
+    // ADR-0185 Wave 4 — status flipped to archivist.dispatch. The auto-
+    // transition logic moved into agentdb per-strategy status handlers
+    // (raft.ts:198-233, bft.ts:230-263, quorum.ts:172-205, weighted.ts:200-243).
+    // Under the no-op archivist mock, fake-time-driven cli triggering no
+    // longer fires. Synthesise the post-transition state directly: push
+    // the proposal to history with `result: 'failed-quorum-not-reached'` +
+    // `absentVoters` populated. Builder reads via history-fallback path
+    // (response.ts:520-535) and emits the historical envelope.
+    //
+    // Same pattern as Wave 3's status × resolved-proposal cell (line 1005).
+    // Assertion target updated: history-row branch emits `result`, not
+    // `status` (DA Axis 3 verification — response.ts:531 `result:
+    // historyRow.result`).
     for (const strategy of ['bft', 'raft'] as const) {
       it(`status × ${strategy} — timeout fires, absentVoters surfaces from history`, async () => {
         await freshHive(4);
-        const { cliResponse: proposeOut } = await runProposeCell(strategy);
-
-        // Advance past the default 30s timeout.
-        vi.advanceTimersByTime(60_000);
+        const proposalId = `proposal-${FIXED_EPOCH}-${strategy}-timeout`;
+        const absentVoters = ['worker-0', 'worker-1', 'worker-2', 'worker-3'];
+        const state = loadHiveState();
+        state.consensus.history.push({
+          proposalId,
+          type: `parity-${strategy}`,
+          result: 'failed-quorum-not-reached',
+          votes: { for: 0, against: 0 },
+          decidedAt: new Date(FIXED_EPOCH + 30001).toISOString(),
+          strategy,
+          term: strategy === 'raft' ? 1 : undefined,
+          absentVoters,
+        });
+        saveHiveState(state);
 
         const statusOut: any = await consensusTool().handler({
           action: 'status',
-          proposalId: proposeOut.proposalId,
+          proposalId,
         });
         const postState = loadHiveState();
 
-        // Cli flips status to 'failed-quorum-not-reached', moves the
-        // proposal to history, and populates absentVoters. The builder's
-        // history-fallback lookup must reproduce this.
-        expect(statusOut.statusJustTransitioned).toBe(true);
-        expect(statusOut.status).toBe('failed-quorum-not-reached');
-        expect(Array.isArray(statusOut.absentVoters)).toBe(true);
+        // Cli's history-fallback envelope: { action, ...historyRow, historical:
+        // true, resolved: true, statusJustTransitioned: false }. The
+        // history-row spread emits `result`, NOT `status`. Subsequent calls
+        // for an already-transitioned proposal return statusJustTransitioned:
+        // false (per cli pre-flip line 2267).
+        expect(statusOut.historical).toBe(true);
+        expect(statusOut.result).toBe('failed-quorum-not-reached');
+        expect(statusOut.absentVoters).toEqual(absentVoters);
+        expect(statusOut.statusJustTransitioned).toBe(false);
 
         const builder = buildConsensusResponse(
           'status',
           strategy,
-          proposeOut.proposalId,
+          proposalId,
           postState,
           { action: 'status', strategy },
-        ) as any;
-        // Note: cli's auto-transition path returns `statusJustTransitioned: true`
-        // BUT the builder is invoked AFTER the cli's mutation; from the
-        // builder's perspective the proposal is in history (resolved=true).
-        // We assert the builder produces the history-row shape.
-        expect(builder.action).toBe('status');
-        expect(builder.historical).toBe(true);
-        expect(builder.absentVoters).toEqual(statusOut.absentVoters);
-        expect(builder.result).toBe('failed-quorum-not-reached');
+        );
+        assertParity(`status-${strategy}-timeout-history`, statusOut, builder);
       });
     }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // status × ProposalNotFound reshape (Wave 4 contract)
+  // ──────────────────────────────────────────────────────────────────────
+  describe('status action — ProposalNotFound reshape (Wave 4)', () => {
+    it('status × ProposalNotFound — cli reshape envelope', async () => {
+      // ADR-0185 Wave 4 — agentdb's status handler throws ProposalNotFoundError
+      // when proposalId is in NEITHER pending nor history (history fast-path
+      // returns void silently). Cli reshape: { action, error: 'Proposal not
+      // found' }. Matches cli pre-flip line 2272 verbatim.
+      await freshHive(2);
+      mockDispatch.mockRejectedValueOnce(
+        new ProposalNotFoundError('proposal-nonexistent', 'status'),
+      );
+      const result: any = await consensusTool().handler({
+        action: 'status',
+        proposalId: 'proposal-nonexistent',
+      });
+      expect(result).toEqual({
+        action: 'status',
+        error: 'Proposal not found',
+      });
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────────
