@@ -2274,44 +2274,36 @@ export const hiveMindTools: MCPTool[] = [
         );
       }
 
-      // ADR-0180 Phase 4 pre-flight: wrap load → mutate → save under
-      // `withHiveStoreLock` (cross-process O_EXCL sentinel) so concurrent
-      // list calls cannot lost-update each other's
-      // `state.consensus.pending` / `state.consensus.history`. Pattern mirrors
-      // hive-mind_spawn and hive-mind_init. The lock is NOT reentrant
-      // (O_CREAT|O_EXCL); the handler must avoid calling other
-      // lock-acquiring code paths. The `list` action is read-only but
-      // harmlessly nested in the lock so the dispatch logic stays a single
-      // block. Propose / vote / status actions moved out per Waves 2b/3/4
-      // deadlock fixes above; list to follow in Wave 5.
-      return withHiveStoreLock(async () => {
-      const state = loadHiveState();
-      const totalNodes = state.workers.length || 1;
-
-
+      // ADR-0185 Wave 5 — list action flipped to archivist.dispatch. List is a
+      // pure read action: all 6 agentdb list handlers return void without
+      // throwing typed errors, so no reshape arm is required. Like
+      // propose/vote/status, list MUST run OUTSIDE withHiveStoreLock (Wave 5
+      // deletes the wrapper entirely — all 4 actions now dispatch outside the
+      // cli's O_EXCL sentinel, which would deadlock against agentdb's nested
+      // withWrite). The bare `throw e` arm preserves any unexpected throws
+      // (defensive — should not fire in normal operation).
       if (action === 'list') {
-        return {
-          action,
-          pending: state.consensus.pending.map(p => ({
-            proposalId: p.proposalId,
-            type: p.type,
-            strategy: p.strategy || 'raft',
-            proposedAt: p.proposedAt,
-            totalVotes: Object.keys(p.votes).length,
-            required: calculateRequiredVotes(
-              p.strategy || 'raft',
-              totalNodes,
-              p.quorumPreset,
-            ),
-            term: p.term,
-            status: p.status,
-          })),
-          recentHistory: state.consensus.history.slice(-5),
-        };
+        try {
+          await (await getProcessArchivist()).dispatch('hive-mind_consensus', {
+            action: 'list',
+            includeProvenance: input.includeProvenance as boolean | undefined,
+          });
+        } catch (e: unknown) {
+          throw e;
+        }
+
+        invalidateHiveCache();
+        const postState = loadHiveState();
+        return buildConsensusResponse(
+          'list',
+          strategy,
+          '',
+          postState,
+          input as unknown as import('./hive-mind-consensus-response.js').BuildConsensusResponseInput,
+        );
       }
 
       return { action, error: 'Unknown action' };
-      });
     },
   },
   /**
