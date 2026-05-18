@@ -291,8 +291,11 @@ export function isHiveQueenType(value: unknown): value is HiveQueenType {
 // not arithmetic — there is NO vote-count threshold (calculateRequiredVotes
 // short-circuits 'crdt' before reaching the strategy switch).
 // See ADR-0121 §Specification + crdt-types.ts.
-type ConsensusStrategy = 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt';
-type QuorumPreset = 'unanimous' | 'majority' | 'supermajority';
+// ADR-0185 Wave 1: exported so the response-builder
+// (mcp-tools/hive-mind-consensus-response.ts) can consume the same types as
+// the handler. Pure type re-export — zero runtime impact.
+export type ConsensusStrategy = 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt';
+export type QuorumPreset = 'unanimous' | 'majority' | 'supermajority';
 
 /**
  * ADR-0120 (T2): default per-round timeout for gossip rounds (ms).
@@ -373,7 +376,9 @@ export function selectGossipTargets(
  * not stored on `ConsensusProposal`. If retuning is ever required, write
  * a follow-up ADR (B/C options in ADR-0119 §Considered Options).
  */
-const QUEEN_WEIGHT = 3;
+// ADR-0185 Wave 1: exported for the response-builder so its weighted-tally
+// derivation uses the same default queen weight as the handler.
+export const QUEEN_WEIGHT = 3;
 
 /**
  * Thrown when a 'weighted' consensus operation runs without a queen elected.
@@ -591,7 +596,8 @@ interface ConsensusResult {
  * the previous silent majority `default:` arm with a synchronous throw, applied
  * across ALL strategies (bft/raft/quorum/weighted) per `feedback-no-fallbacks.md`.
  */
-function calculateRequiredVotes(
+// ADR-0185 Wave 1: exported for the response-builder's `required` derivation.
+export function calculateRequiredVotes(
   strategy: ConsensusStrategy,
   totalNodes: number,
   quorumPreset: QuorumPreset = 'majority',
@@ -655,7 +661,8 @@ function calculateRequiredVotes(
  * The voter whose `voterId` matches `queenId` contributes `queenWeight`;
  * all others contribute 1. Returns { votesFor, votesAgainst } as weighted sums.
  */
-function weightedTally(
+// ADR-0185 Wave 1: exported for the response-builder's weighted-strategy tally.
+export function weightedTally(
   proposal: ConsensusProposal,
   queenId: string,
   queenWeight: number = QUEEN_WEIGHT,
