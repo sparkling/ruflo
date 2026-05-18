@@ -32,10 +32,19 @@ import { validateWorkerType, WORKER_TYPES } from './validate-input.js';
 // init / join / leave / consensus / status stay on the original cli path —
 // see per-tool inline notes for the carry-forward reason.
 import { getProcessArchivist } from '../memory/archivist-init.js';
-// ADR-0185 Wave 2b: RaftTermCollisionError is thrown by agentdb's raft
-// propose handler (raft.ts:67) on term collision; the cli's try/catch
-// reshape arm uses `instanceof` to discriminate it for envelope reshape.
-import { RaftTermCollisionError } from 'agentdb/archivist';
+// ADR-0185 Wave 2b: RaftTermCollisionError thrown by agentdb's raft propose
+// handler (raft.ts:67) on term collision.
+// ADR-0185 Wave 3: 4 additional vote-side reshape error classes thrown by
+// per-strategy vote handlers (bft/raft/quorum/weighted/gossip/crdt). Cli's
+// try/catch uses `instanceof` discrimination to reshape into pre-flip
+// envelope shapes.
+import {
+  RaftTermCollisionError,
+  DuplicateVoteError,
+  RaftVoteChangeError,
+  ProposalNotFoundError,
+  VoterIdRequiredError,
+} from 'agentdb/archivist';
 // ADR-0185 Wave 2b: response-builder is the post-dispatch projection
 // function for consensus responses. See hive-mind-consensus-response.ts.
 import { buildConsensusResponse } from './hive-mind-consensus-response.js';
@@ -2133,487 +2142,106 @@ export const hiveMindTools: MCPTool[] = [
         );
       }
 
+      // ADR-0185 Wave 3 — vote action flipped to archivist.dispatch. Like
+      // propose in Wave 2b, the vote branch MUST run OUTSIDE withHiveStoreLock
+      // (agentdb's dispatch enters its own withWrite scope on the same
+      // O_EXCL sentinel; nesting deadlocks per DA axis-(i) confirmation).
+      if (action === 'vote') {
+        // Pre-flight: voterId required (cli pre-flip line 2182-2184).
+        // Fast-fail before dispatch; agentdb's vote handlers also throw
+        // VoterIdRequiredError defensively at <strategy>.ts.
+        const voterId = input.voterId as string | undefined;
+        if (!voterId) {
+          return { action, error: 'voterId is required for voting' };
+        }
+        const proposalId = input.proposalId as string;
+        const voteValue = input.vote as boolean;
+
+        try {
+          await (await getProcessArchivist()).dispatch('hive-mind_consensus', {
+            action: 'vote',
+            proposalId,
+            voterId,
+            vote: voteValue,
+            strategy,
+            crdtSnapshot: input.crdtSnapshot,
+          });
+        } catch (e: unknown) {
+          // ADR-0185 Wave 3 — vote-action reshape. 4 reshape arms + 3 re-throw
+          // (re-throw covered by bare `throw e` below). Reshape envelopes
+          // match cli pre-flip return shapes verbatim per the line refs.
+          if (e instanceof DuplicateVoteError) {
+            const typed = e as { voterId: string; proposalId: string; existingVote: boolean };
+            // Cli pre-flip distinguished same-value vs value-change envelopes
+            // (line 2399-2407 + 2440-2444). Agentdb's DuplicateVoteError
+            // fires for BOTH cases (quorum.ts:129 + weighted.ts:153 — single
+            // throw site); reshape by comparing `voteValue` to
+            // `typed.existingVote` to reconstruct the cli-pre-flip envelope.
+            if (voteValue === typed.existingVote) {
+              return {
+                action,
+                error: `Voter ${typed.voterId} has already cast the same vote on this proposal`,
+                proposalId: typed.proposalId,
+                existingVote: typed.existingVote,
+              };
+            }
+            return {
+              action,
+              error: `Voter ${typed.voterId} has already voted on this proposal`,
+              proposalId: typed.proposalId,
+            };
+          }
+          if (e instanceof RaftVoteChangeError) {
+            const typed = e as { voterId: string; term: number | undefined };
+            return {
+              action,
+              error: `Raft: voter ${typed.voterId} already voted in term ${typed.term}. Cannot change vote.`,
+              proposalId,
+              term: typed.term,
+            };
+          }
+          if (e instanceof ProposalNotFoundError) {
+            // Cli pre-flip line 2178: { action, error: 'Proposal not found or already resolved' }.
+            return { action, error: 'Proposal not found or already resolved' };
+          }
+          if (e instanceof VoterIdRequiredError) {
+            // Defence-in-depth — pre-flight catches this above, but agentdb
+            // may throw if the proposal-level guard fires first.
+            return { action, error: 'voterId is required for voting' };
+          }
+          // Re-throw (per cli pre-flip contract):
+          //   MissingQueenForWeightedConsensusError — cli line 2204 threw.
+          //   WorkerAlreadyFailedError — cli line 2194 threw.
+          //   ProposalAlreadyFailedError — cli line 2170 threw.
+          throw e;
+        }
+
+        invalidateHiveCache();
+        const postState = loadHiveState();
+        return buildConsensusResponse(
+          'vote',
+          strategy,
+          proposalId,
+          postState,
+          input as unknown as import('./hive-mind-consensus-response.js').BuildConsensusResponseInput,
+        );
+      }
+
       // ADR-0180 Phase 4 pre-flight: wrap load → mutate → save under
       // `withHiveStoreLock` (cross-process O_EXCL sentinel) so concurrent
-      // vote/status calls cannot lost-update each other's
+      // status calls cannot lost-update each other's
       // `state.consensus.pending` / `state.consensus.history`. Pattern mirrors
       // hive-mind_spawn and hive-mind_init. The lock is NOT reentrant
       // (O_CREAT|O_EXCL); the handler must avoid calling other
       // lock-acquiring code paths. The `list` action is read-only but
       // harmlessly nested in the lock so the dispatch logic stays a single
-      // block. Propose action moved out per Wave 2b deadlock fix above.
+      // block. Propose action moved out per Wave 2b deadlock fix above; vote
+      // moved out per Wave 3 deadlock fix above. Status/list to follow in
+      // Waves 4-5.
       return withHiveStoreLock(async () => {
       const state = loadHiveState();
       const totalNodes = state.workers.length || 1;
 
-      if (action === 'vote') {
-        // ADR-0131 (T12): reconcile §6 absence markers BEFORE evaluating
-        // worker-failed status. The §6 contract writes
-        // `worker-<id>-status: 'absent'` via _memory; this scan propagates
-        // that into per-worker workerMeta.failedAt so the vote-time guard
-        // observes the freshly-marked worker.
-        if (reconcileFailedFromStatusKeys(state)) {
-          saveHiveState(state);
-        }
-
-        const proposalId = input.proposalId as string;
-
-        // ADR-0131 (T12) — ProposalAlreadyFailedError. A vote against a
-        // proposal already moved to history (terminal state, including
-        // 'failed-quorum-not-reached') throws synchronously. Per ADR-0131
-        // §Specification invariants, votes against terminal proposals MUST
-        // throw rather than silently no-op.
-        const historicalRow = state.consensus.history.find(
-          (h) => h.proposalId === proposalId,
-        );
-        if (historicalRow) {
-          throw new ProposalAlreadyFailedError(
-            proposalId,
-            historicalRow.result,
-          );
-        }
-
-        const proposal = state.consensus.pending.find(p => p.proposalId === proposalId);
-        if (!proposal) {
-          return { action, error: 'Proposal not found or already resolved' };
-        }
-
-        const voterId = input.voterId as string;
-        if (!voterId) {
-          return { action, error: 'voterId is required for voting' };
-        }
-
-        // ADR-0131 (T12) — WorkerAlreadyFailedError. A vote from a worker
-        // whose failedAt !== null throws synchronously. Per ADR-0131
-        // §Decision Outcome ("Worker-rejoin-after-marked-failed stance:
-        // throw, not silent admission"), re-admitting a previously-marked-
-        // absent voter would invalidate the absentVoters snapshot already
-        // written to history. Re-spawn requires a NEW worker ID + retryOf.
-        const voterMeta = workerMetaFor(state, voterId);
-        if (voterMeta.failedAt !== null) {
-          throw new WorkerAlreadyFailedError(voterId, voterMeta.failedAt);
-        }
-
-        const voteValue = input.vote as boolean;
-        const proposalStrategy = proposal.strategy || 'raft';
-
-        // ADR-0119 §Decision Outcome: weighted vote requires an elected queen
-        // at vote-time too (not just propose-time). Covers the case where the
-        // queen abdicated between propose and vote.
-        if (proposalStrategy === 'weighted' && !state.queen) {
-          throw new MissingQueenForWeightedConsensusError('vote');
-        }
-
-        // ────────────────────────────────────────────────────────────────
-        // ADR-0121 (T3): CRDT vote branch.
-        //
-        // Per §Review-notes row 14 DEFER-TO-IMPL: the `vote` action overloads
-        // its input shape — accepting an optional `crdtSnapshot` field
-        // alongside (or in place of) the boolean `vote`. The boolean is
-        // implicit: `true` if `crdtSnapshot.approvers.elements` contains the
-        // voter, else derived from the explicit `vote` arg.
-        //
-        // Re-submission policy (row 12 DEFER-TO-IMPL — accept-and-let-LWW-
-        // resolve): same voter writing twice is NOT rejected. The merge is
-        // idempotent / the LWW tiebreaker handles same-millisecond collisions.
-        // This contradicts the bft/raft/quorum double-vote rejection — we
-        // short-circuit those checks for the CRDT branch below.
-        //
-        // Settle rule (row 10 DEFER-TO-IMPL — union of voter-count + timeoutMs):
-        // round closes when DISTINCT voters submitted >= crdtExpectedVoters
-        // OR the per-round timeout fires (mirrors gossip's bound + timeout
-        // approach but with "all expected voters" as the bound rather than
-        // ceil(log2(N))). Verdict comes from the LWW-Register's value().
-        // ────────────────────────────────────────────────────────────────
-        if (proposalStrategy === 'crdt') {
-          // Validate optional crdtSnapshot shape per `feedback-no-fallbacks.md`.
-          // If supplied, it MUST be a triple of `{ votes, approvers, verdict }`
-          // — partial / malformed shapes throw rather than silently coerce.
-          const rawSnapshot = (input.crdtSnapshot as unknown) ?? undefined;
-          let snapshot: CRDTState | undefined;
-          if (rawSnapshot !== undefined) {
-            if (typeof rawSnapshot !== 'object' || rawSnapshot === null) {
-              throw new Error(
-                `hive-mind_consensus.vote: crdtSnapshot must be an object, got ${typeof rawSnapshot}`,
-              );
-            }
-            const obj = rawSnapshot as Record<string, unknown>;
-            if (!('votes' in obj) || !('approvers' in obj) || !('verdict' in obj)) {
-              throw new Error(
-                'hive-mind_consensus.vote: crdtSnapshot must contain { votes, approvers, verdict }',
-              );
-            }
-            snapshot = obj as unknown as CRDTState;
-          }
-
-          // Build a local snapshot from the voter's contribution. Two paths:
-          //   (a) caller provided crdtSnapshot — use it verbatim (already
-          //       contains the voter's local state).
-          //   (b) caller provided only `vote: boolean` — synthesise a
-          //       minimal snapshot: GCounter increment for this voter,
-          //       OR-Set add if approving, LWW-Register write of the proposal
-          //       value as the verdict.
-          const wallClockMs = Date.now();
-          let voterSnapshot: CRDTState;
-          if (snapshot !== undefined) {
-            voterSnapshot = snapshot;
-          } else {
-            const g = new GCounter();
-            g.increment(voterId);
-            const aps = new ORSet<string>();
-            const isApproving = voteValue === true;
-            if (isApproving) aps.add(voterId, voterId);
-            const reg = new LWWRegister<unknown>();
-            // Write the proposal value as verdict only when approving;
-            // a 'no' vote leaves the register untouched on this branch
-            // (the proposal remains rejectable through the GCounter tally
-            // if no approver writes overcome the empty verdict).
-            if (isApproving) {
-              reg.write(proposal.value, voterId, wallClockMs);
-            }
-            voterSnapshot = {
-              votes: g.toJSON(),
-              approvers: aps.toJSON(),
-              verdict: reg.toJSON(),
-            };
-          }
-
-          // Merge into the proposal's accumulator (initialised at propose-time).
-          const before = proposal.crdtState ?? emptyCRDTState();
-          proposal.crdtState = mergeCRDTState(before, voterSnapshot);
-
-          // Track voter participation via the existing `votes` map.
-          // Boolean is implicit per row 14: true if approvers contains voter,
-          // else explicit `vote` value, else default false.
-          const approverIds = ORSet.from<string>(proposal.crdtState.approvers).elements();
-          const voterIsApprover = approverIds.includes(voterId);
-          proposal.votes[voterId] = voterIsApprover ? true : (voteValue ?? false);
-
-          // Settlement: all expected voters submitted, OR timeout fired.
-          // Per ADR-0121 §Review-notes row 10 (DEFER-TO-IMPL): "round closes
-          // when state.workers.length distinct voters have submitted, OR
-          // after the same timeoutMs window the Raft strategy already uses".
-          // We use crdtExpectedVoters (snapshot at propose-time) as the
-          // distinct-voter bound — fixed across the round.
-          const distinctVoters = Object.keys(proposal.votes).length;
-          const expected = proposal.crdtExpectedVoters ?? Math.max(1, totalNodes);
-          const allSubmitted = distinctVoters >= expected;
-
-          // Per-round timeout (CRDT round timeout fires once roundTimeoutMs
-          // has elapsed since proposal creation; we reuse roundStartedAt).
-          let timedOut = false;
-          if (proposal.roundStartedAt && proposal.roundTimeoutMs) {
-            const elapsed = wallClockMs - new Date(proposal.roundStartedAt).getTime();
-            if (elapsed >= proposal.roundTimeoutMs) timedOut = true;
-          }
-
-          let crdtResolution: 'approved' | 'rejected' | null = null;
-          if (allSubmitted || timedOut) {
-            // Resolution from the merged triple. Verdict = LWW-Register value;
-            // approvers = OR-Set elements; vote count = GCounter value.
-            // 'approved' iff approver count > 0 AND >= half of submitted votes
-            // (simple majority of cast votes at settle time). Otherwise rejected.
-            const approverCount = approverIds.length;
-            const totalCast = distinctVoters;
-            // Strict majority of cast votes were approvers, OR all approvers
-            // when no dissent recorded. (Per §Pseudocode "verdict.value() is
-            // the round's resolved verdict; approvers.elements() is the union
-            // of approvers; votes.value() is the total approval count".)
-            crdtResolution = approverCount > 0 && approverCount * 2 >= totalCast
-              ? 'approved'
-              : 'rejected';
-            proposal.status = crdtResolution;
-            state.consensus.history.push({
-              proposalId: proposal.proposalId,
-              type: proposal.type,
-              result: crdtResolution,
-              votes: { for: approverCount, against: Math.max(0, totalCast - approverCount) },
-              decidedAt: new Date(wallClockMs).toISOString(),
-              strategy: proposalStrategy,
-            });
-            state.consensus.pending = state.consensus.pending.filter(
-              p => p.proposalId !== proposal.proposalId,
-            );
-          }
-
-          saveHiveState(state);
-
-          // Compute response telemetry.
-          const verdictReg = LWWRegister.from(proposal.crdtState.verdict);
-          const gcounter = GCounter.from(proposal.crdtState.votes);
-          return {
-            action,
-            proposalId: proposal.proposalId,
-            voterId,
-            strategy: proposalStrategy,
-            // Use approver count and dissent count (cast - approver) for
-            // the response — analogous to votesFor/votesAgainst for other
-            // strategies, but derived from the merged CRDT state.
-            votesFor: approverIds.length,
-            votesAgainst: Math.max(0, distinctVoters - approverIds.length),
-            totalCast: distinctVoters,
-            crdtExpectedVoters: expected,
-            totalNodes,
-            resolved: crdtResolution !== null,
-            result: crdtResolution ?? undefined,
-            status: proposal.status,
-            // CRDT-specific telemetry surface.
-            crdtState: proposal.crdtState,
-            crdtVerdict: verdictReg.value(),
-            crdtApprovers: approverIds,
-            crdtVoteCount: gcounter.value(),
-            crdtTimedOut: timedOut,
-          };
-        }
-
-        const required = calculateRequiredVotes(
-          proposalStrategy,
-          totalNodes,
-          proposal.quorumPreset,
-        );
-
-        // Prevent double-voting
-        if (voterId in proposal.votes) {
-          const previousVote = proposal.votes[voterId];
-          if (previousVote === voteValue) {
-            return {
-              action,
-              error: `Voter ${voterId} has already cast the same vote on this proposal`,
-              proposalId: proposal.proposalId,
-              existingVote: previousVote,
-            };
-          }
-          // Conflicting vote from same voter
-          if (proposalStrategy === 'bft') {
-            // BFT: detect as Byzantine behavior
-            if (!proposal.byzantineVoters) proposal.byzantineVoters = [];
-            if (!proposal.byzantineVoters.includes(voterId)) {
-              proposal.byzantineVoters.push(voterId);
-            }
-            // Remove their vote entirely -- Byzantine voter is excluded
-            delete proposal.votes[voterId];
-            saveHiveState(state);
-
-            return {
-              action,
-              proposalId: proposal.proposalId,
-              voterId,
-              byzantineDetected: true,
-              message: `Byzantine behavior detected: voter ${voterId} attempted conflicting vote. Vote invalidated.`,
-              byzantineVoters: proposal.byzantineVoters,
-              status: proposal.status,
-            };
-          }
-          if (proposalStrategy === 'raft') {
-            // Raft: only one vote per node per term, reject the change
-            return {
-              action,
-              error: `Raft: voter ${voterId} already voted in term ${proposal.term}. Cannot change vote.`,
-              proposalId: proposal.proposalId,
-              term: proposal.term,
-            };
-          }
-          // Quorum: reject double-vote
-          return {
-            action,
-            error: `Voter ${voterId} has already voted on this proposal`,
-            proposalId: proposal.proposalId,
-          };
-        }
-
-        // BFT: check for cross-proposal Byzantine behavior
-        if (proposalStrategy === 'bft') {
-          const isByzantine = detectByzantineVoters(
-            state.consensus.pending,
-            proposal,
-            voterId,
-            voteValue,
-          );
-          if (isByzantine) {
-            if (!proposal.byzantineVoters) proposal.byzantineVoters = [];
-            if (!proposal.byzantineVoters.includes(voterId)) {
-              proposal.byzantineVoters.push(voterId);
-            }
-            saveHiveState(state);
-            return {
-              action,
-              proposalId: proposal.proposalId,
-              voterId,
-              byzantineDetected: true,
-              message: `Byzantine behavior detected: voter ${voterId} cast conflicting votes across proposals of same type. Vote rejected.`,
-              byzantineVoters: proposal.byzantineVoters,
-              status: proposal.status,
-            };
-          }
-        }
-
-        // ADR-0120 (T2): gossip needs prior-tally snapshot to detect tally
-        // mutation (drives lastVoteChangedRound). For non-gossip strategies
-        // this is a no-op tracking variable.
-        const priorVotesFor = Object.values(proposal.votes).filter(v => v).length;
-        const priorVotesAgainst = Object.values(proposal.votes).filter(v => !v).length;
-
-        // Record the vote
-        proposal.votes[voterId] = voteValue;
-
-        // ADR-0119 (T1): when proposalStrategy === 'weighted', report weighted
-        // vote totals (queen contributes QUEEN_WEIGHT, workers contribute 1) so
-        // the caller's view of `votesFor`/`votesAgainst` matches what
-        // tryResolveProposal consumes against the weighted denominator.
-        let votesFor: number;
-        let votesAgainst: number;
-        if (proposalStrategy === 'weighted') {
-          // state.queen guaranteed defined by the precondition check above.
-          const tally = weightedTally(proposal, state.queen!.agentId);
-          votesFor = tally.votesFor;
-          votesAgainst = tally.votesAgainst;
-        } else {
-          votesFor = Object.values(proposal.votes).filter(v => v).length;
-          votesAgainst = Object.values(proposal.votes).filter(v => !v).length;
-        }
-
-        // ────────────────────────────────────────────────────────────────
-        // ADR-0120 (T2): gossip propagation bookkeeping.
-        //
-        // On each vote (where strategy === 'gossip'):
-        //   1. Update lastVoteChangedRound if the tally changed (drives the
-        //      "quiescent round" clause of the settle predicate).
-        //   2. Pick `fanout(N)` deterministic-per-round targets from the
-        //      voter set, excluding self and already-broadcast set members.
-        //   3. Add (voterId ∪ targets) to currentRoundBroadcastSet.
-        //   4. If broadcastSet covers all voters, advance gossipRound and
-        //      clear the set (round complete).
-        //   5. Apply per-round timeout if elapsed > roundTimeoutMs.
-        //   6. Settling decided by settleCheckGossip (NOT tryResolveProposal —
-        //      gossip uses eventual-consistency semantics, not threshold-based
-        //      resolution).
-        //
-        // Per ADR §Architecture: re-broadcasts in single-process MCP server
-        // are bookkeeping only — peer voters observe the merged proposal on
-        // their next vote/status call (state shared via state.consensus.pending).
-        // ────────────────────────────────────────────────────────────────
-        let resolution: 'approved' | 'rejected' | null = null;
-        let resolved = false;
-        let gossipSettleResult: GossipSettleStatus | undefined;
-
-        if (proposalStrategy === 'gossip') {
-          const gossipTotalNodes = proposal.totalNodes ?? Math.max(1, totalNodes);
-          const gossipRound = proposal.gossipRound ?? 0;
-
-          // (1) Update lastVoteChangedRound if tally changed.
-          const tallyChanged =
-            votesFor !== priorVotesFor || votesAgainst !== priorVotesAgainst;
-          if (tallyChanged) {
-            proposal.lastVoteChangedRound = gossipRound;
-          }
-
-          // (2) Voter set = all known workers AT VOTE-TIME (anti-entropy:
-          // late joiners admitted into candidate pool but totalNodes is fixed).
-          // Per §Refinement "Voter set changes mid-round": canonical voter set
-          // is `state.workers`, so a worker that joined post-propose appears
-          // in candidates without changing the round budget.
-          const voterSet = [...state.workers];
-          const fanoutSize = gossipFanout(gossipTotalNodes);
-          const broadcastSet = new Set(proposal.currentRoundBroadcastSet ?? []);
-          // (3) Always add the voter themselves to the round's broadcast set —
-          // they have "broadcast from" their position by voting.
-          broadcastSet.add(voterId);
-
-          // Pick targets only when fanout > 0 (N > 1).
-          if (fanoutSize > 0) {
-            const targets = selectGossipTargets(
-              proposal.proposalId,
-              gossipRound,
-              voterSet,
-              broadcastSet,
-              fanoutSize,
-            );
-            for (const t of targets) broadcastSet.add(t);
-          }
-
-          proposal.currentRoundBroadcastSet = [...broadcastSet];
-
-          // (4) Round complete? Covers-all-voters check uses voterSet (not
-          // totalNodes snapshot) so late joiners don't permanently block the
-          // round. If voterSet is empty (no workers joined) the round trivially
-          // completes.
-          const voterSetCanonical = voterSet.length === 0 ? [] : [...voterSet].sort();
-          const coversAll = voterSetCanonical.length === 0
-            || voterSetCanonical.every(v => broadcastSet.has(v));
-          if (coversAll) {
-            proposal.gossipRound = gossipRound + 1;
-            proposal.currentRoundBroadcastSet = [];
-            proposal.roundStartedAt = new Date().toISOString();
-          }
-
-          // (5) Per-round timeout (force-advance if a round has been open too long).
-          maybeAdvanceGossipRoundOnTimeout(proposal);
-
-          // (6) Settle predicate.
-          gossipSettleResult = settleCheckGossip(proposal);
-          if (gossipSettleResult.settled && gossipSettleResult.result) {
-            resolution = gossipSettleResult.result;
-            resolved = true;
-            proposal.status = resolution;
-          } else if (gossipSettleResult.exhausted) {
-            // Hard budget exhausted: per `feedback-no-fallbacks.md`, do NOT
-            // silently coerce to a settled tally. Surface explicitly via the
-            // response payload; status stays 'pending' so callers can decide
-            // (retry / escalate / treat as inconclusive). Proposal is NOT
-            // moved to history because it didn't resolve.
-            // resolved stays false.
-          }
-        } else {
-          // Non-gossip: existing tryResolveProposal path.
-          resolution = tryResolveProposal(proposal, totalNodes, state.queen?.agentId);
-        }
-
-        // Move to history if resolved (unified for gossip + non-gossip).
-        if (resolution !== null) {
-          resolved = true;
-          proposal.status = resolution;
-          state.consensus.history.push({
-            proposalId: proposal.proposalId,
-            type: proposal.type,
-            result: resolution,
-            votes: { for: votesFor, against: votesAgainst },
-            decidedAt: new Date().toISOString(),
-            strategy: proposalStrategy,
-            term: proposal.term,
-            byzantineDetected: proposal.byzantineVoters?.length ? proposal.byzantineVoters : undefined,
-          });
-          state.consensus.pending = state.consensus.pending.filter(
-            p => p.proposalId !== proposal.proposalId,
-          );
-        }
-
-        saveHiveState(state);
-
-        return {
-          action,
-          proposalId: proposal.proposalId,
-          voterId,
-          vote: voteValue,
-          strategy: proposalStrategy,
-          votesFor,
-          votesAgainst,
-          required,
-          totalNodes,
-          resolved,
-          result: resolved ? resolution : undefined,
-          status: proposal.status,
-          term: proposal.term,
-          byzantineVoters: proposal.byzantineVoters?.length ? proposal.byzantineVoters : undefined,
-          // ADR-0120 (T2): gossip-only telemetry on vote response.
-          gossipRound: proposal.gossipRound,
-          lastVoteChangedRound: proposal.lastVoteChangedRound,
-          gossipBound: proposalStrategy === 'gossip'
-            ? gossipFanout(proposal.totalNodes ?? totalNodes)
-            : undefined,
-          settled: gossipSettleResult?.settled,
-          exhausted: gossipSettleResult?.exhausted,
-        };
-      }
 
       if (action === 'status') {
         // ADR-0131 (T12) — reconcile §6 prompt-protocol absence markers BEFORE
