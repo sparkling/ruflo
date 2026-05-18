@@ -23,16 +23,15 @@
  *      We do NOT re-invoke `settleCheckGossip` here — the builder is a pure
  *      projection over post-dispatch state.
  *
- *  - `gossipBound` (status × gossip):
- *      Derives from `gossipFanout(proposal.totalNodes ?? totalNodes)`. The
- *      cli's pre-flip handler reads `gossipSettleResult.bound` which itself
- *      is `gossipFanout(totalNodes-snapshot)`, so the two derivations agree
- *      by construction.
- *
- *  - `noVotes` (status × gossip):
- *      Derived as `Object.keys(proposal.votes).length === 0`. The cli's
- *      pre-flip handler reads `gossipSettleResult.noVotes` which is the
- *      same predicate.
+ *  - `gossipBound`, `noVotes`, `settled`, `exhausted` (status × gossip):
+ *      Re-invokes `settleCheckGossip(proposal)` against post-dispatch state.
+ *      The cli's pre-flip status handler runs `maybeAdvanceGossipRoundOnTimeout`
+ *      then `settleCheckGossip`; both round-counter mutations are persisted
+ *      by the dispatch before this builder runs, so re-invoking
+ *      `settleCheckGossip` against the post-dispatch proposal produces the
+ *      same four telemetry fields the cli's call-site captured. Safe
+ *      because `settleCheckGossip` is pure-read math over proposal fields.
+ *      (DA Wave 1 open-item resolution: Option A.)
  *
  *  - `absentVoters` (status × any threshold strategy after auto-transition):
  *      Looked up from `state.consensus.history.find(...)?.absentVoters`.
@@ -54,6 +53,7 @@ import {
   type HiveState,
   calculateRequiredVotes,
   gossipFanout,
+  settleCheckGossip,
   weightedTally,
 } from './hive-mind-tools.js';
 import {
@@ -567,21 +567,23 @@ function buildStatusResponse(
   const isGossip = proposalStrategy === 'gossip';
   const isCrdt = proposalStrategy === 'crdt';
 
-  // Gossip-strategy telemetry derived directly from proposal fields per DA
-  // Wave 1 Concern #3 resolution.
-  const gossipBound = isGossip
-    ? gossipFanout(proposal.totalNodes ?? totalNodes)
-    : undefined;
-  const noVotes = isGossip
-    ? Object.keys(proposal.votes).length === 0
-    : undefined;
-  // `settled`/`exhausted` for status when proposal is still in pending: the
-  // proposal has NOT settled (would be in history). `exhausted` reads the
-  // ADR-0184 Wave 4 persisted flag (Concern #3 resolution).
-  const settled = isGossip ? false : undefined;
-  const exhausted = isGossip
-    ? Boolean((proposal as unknown as { gossipExhausted?: boolean }).gossipExhausted)
-    : undefined;
+  // Gossip-strategy telemetry. DA Wave 1 open-item resolution (Option A):
+  // re-invoke `settleCheckGossip` on the post-dispatch proposal for the
+  // status path. The cli's pre-flip status handler invokes settleCheckGossip
+  // AFTER maybeAdvanceGossipRoundOnTimeout, both of which are persisted by
+  // the dispatch before this builder runs — so the post-dispatch proposal's
+  // round counters are exactly what the cli's call-site observed. Safe
+  // because settleCheckGossip is pure-read (lines 857-894 of hive-mind-tools.ts).
+  //
+  // Vote path uses different sourcing (`proposal.gossipExhausted`) because
+  // agentdb's gossip.ts writes the flag at exhaustion but doesn't always
+  // advance round counters in a way that settleCheckGossip would re-derive
+  // safely mid-vote. The asymmetry mirrors the cli's pre-flip semantics.
+  const gossipSettle = isGossip ? settleCheckGossip(proposal) : undefined;
+  const gossipBound = gossipSettle?.bound;
+  const noVotes = gossipSettle?.noVotes;
+  const settled = gossipSettle?.settled;
+  const exhausted = gossipSettle?.exhausted;
 
   // ADR-0131 (T12) post-transition path: if the proposal transitioned during
   // dispatch, it is now in history, not pending. The history-only branch
