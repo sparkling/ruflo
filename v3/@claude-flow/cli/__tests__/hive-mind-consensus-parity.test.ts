@@ -118,6 +118,7 @@ import {
   saveHiveState,
   _resetHiveCacheForTest,
   type ConsensusStrategy,
+  type ConsensusProposal,
   type HiveState,
 } from '../src/mcp-tools/hive-mind-tools.js';
 import {
@@ -307,36 +308,250 @@ describe('ADR-0185 Wave 1 — parity: buildConsensusResponse vs cli handler', ()
   // ──────────────────────────────────────────────────────────────────────
   // propose × {bft, raft, quorum, weighted, gossip, crdt}
   // ──────────────────────────────────────────────────────────────────────
-  describe('propose action', () => {
-    for (const strategy of ['bft', 'raft', 'quorum', 'gossip', 'crdt'] as const) {
-      it(`propose × ${strategy} — builder matches cli`, async () => {
-        await freshHive(4);
-        const { cliResponse, postState } = await runProposeCell(strategy);
+  describe('propose action — builder shape contracts (Wave 2a pivot)', () => {
+    // ADR-0185 Wave 2a — DA Path Z verdict: the 6 propose × strategy cells
+    // pivot from "cli vs builder parity" to builder shape-contract tests.
+    // The cli's propose branch flips to `archivist.dispatch` in Wave 2b;
+    // the archivist mock in this harness no-ops dispatch, so a cli-vs-builder
+    // parity test would fail post-Wave-2b (proposal never lands in pending).
+    //
+    // These cells synthesise the post-propose state directly via
+    // `saveHiveState`, then call `buildConsensusResponse` and assert the
+    // shape with `toMatchObject`. Wave 1's correctness validation (builder
+    // shape matches cli pre-flip shape, 26/26 green at patch.193) is FROZEN.
+    // What we verify here is that the builder's response shape remains
+    // STABLE for known inputs through Waves 2-6.
 
-        const builderResponse = buildConsensusResponse(
-          'propose',
-          strategy,
-          cliResponse.proposalId,
-          postState,
-          { action: 'propose', strategy, type: `parity-${strategy}`, value: { v: strategy } },
-        );
-
-        assertParity(`propose-${strategy}`, cliResponse, builderResponse);
-      });
+    /**
+     * Build a fully-typed `ConsensusProposal` for a synthetic post-propose
+     * state. Field shapes mirror agentdb's per-strategy propose handlers
+     * (raft.ts:75-98 etc.) which set non-strategy fields to explicit
+     * `undefined` per ADR-0184 Wave 2 DA Axis h (prevent stale-field leakage).
+     *
+     * The fully-typed return ensures missing-field bugs surface at TS-check
+     * rather than at runtime (DA Wave 2a Concern: no `as any` casts on
+     * fixtures — the synthetic state must match what agentdb's handler
+     * would actually write so the builder reads the same shape).
+     */
+    function makePendingProposal(
+      strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt',
+      overrides: Partial<{ term: number; quorumPreset: 'unanimous' | 'majority' | 'supermajority'; totalNodes: number }> = {},
+    ): ConsensusProposal {
+      const proposalId = `proposal-${FIXED_EPOCH}-${strategy}cell`;
+      const isGossip = strategy === 'gossip';
+      const isCrdt = strategy === 'crdt';
+      const isThresholdBased =
+        strategy === 'bft' || strategy === 'raft' || strategy === 'quorum' || strategy === 'weighted';
+      const totalNodes = overrides.totalNodes ?? 4;
+      return {
+        proposalId,
+        type: `parity-${strategy}`,
+        value: { v: strategy },
+        proposedBy: 'system',
+        proposedAt: new Date(FIXED_EPOCH).toISOString(),
+        votes: {},
+        status: 'pending',
+        strategy,
+        term: strategy === 'raft' ? (overrides.term ?? 1) : undefined,
+        quorumPreset: strategy === 'quorum' ? (overrides.quorumPreset ?? 'majority') : undefined,
+        byzantineVoters: strategy === 'bft' ? [] : undefined,
+        timeoutAt: isThresholdBased ? new Date(FIXED_EPOCH + 30000).toISOString() : undefined,
+        gossipRound: isGossip ? 0 : undefined,
+        lastVoteChangedRound: isGossip ? 0 : undefined,
+        totalNodes: isGossip ? totalNodes : undefined,
+        currentRoundBroadcastSet: isGossip ? [] : undefined,
+        roundTimeoutMs: (isGossip || isCrdt) ? 5000 : undefined,
+        roundStartedAt: (isGossip || isCrdt) ? new Date(FIXED_EPOCH).toISOString() : undefined,
+        crdtState: isCrdt
+          ? { votes: { counts: {} }, approvers: { entries: [], tombstones: [] }, verdict: {} }
+          : undefined,
+        crdtExpectedVoters: isCrdt ? Math.max(1, totalNodes) : undefined,
+      };
     }
 
-    it('propose × weighted — builder matches cli (queen-elected)', async () => {
-      await freshHive(4); // 4 workers + queen = totalNodes 4; denom 6
-      const { cliResponse, postState } = await runProposeCell('weighted');
+    /**
+     * Push a fully-typed proposal into pending and return its id. The
+     * `saveHiveState` call updates the in-process hiveCache (per
+     * hive-mind-tools.ts:1241 `hiveCache.set(HIVE_STATE_DOC_KEY, state)`);
+     * a subsequent `loadHiveState()` returns the updated state without
+     * hitting disk. DA Wave 2a cache-update sequence clarification.
+     */
+    function pushSyntheticProposal(
+      strategy: 'bft' | 'raft' | 'quorum' | 'weighted' | 'gossip' | 'crdt',
+      overrides: Partial<{ term: number; quorumPreset: 'unanimous' | 'majority' | 'supermajority'; totalNodes: number }> = {},
+    ): string {
+      const proposal = makePendingProposal(strategy, overrides);
+      const state = loadHiveState();
+      state.consensus.pending.push(proposal);
+      saveHiveState(state);
+      return proposal.proposalId;
+    }
 
-      const builderResponse = buildConsensusResponse(
-        'propose',
-        'weighted',
-        cliResponse.proposalId,
-        postState,
+    it('propose × bft — builder shape contract', async () => {
+      await freshHive(4); // totalNodes=4, bft required = floor(2*4/3)+1 = 3
+      const proposalId = pushSyntheticProposal('bft');
+      const builder = buildConsensusResponse(
+        'propose', 'bft', proposalId, loadHiveState(),
+        { action: 'propose', strategy: 'bft', type: 'parity-bft', value: { v: 'bft' } },
+      );
+      expect(builder).toMatchObject({
+        action: 'propose',
+        proposalId,
+        type: 'parity-bft',
+        strategy: 'bft',
+        status: 'pending',
+        required: 3,
+        totalNodes: 4,
+      });
+    });
+
+    it('propose × raft — builder shape contract', async () => {
+      await freshHive(4); // raft required = floor(4/2)+1 = 3
+      const proposalId = pushSyntheticProposal('raft');
+      const builder = buildConsensusResponse(
+        'propose', 'raft', proposalId, loadHiveState(),
+        { action: 'propose', strategy: 'raft', type: 'parity-raft', value: { v: 'raft' } },
+      );
+      expect(builder).toMatchObject({
+        action: 'propose',
+        proposalId,
+        type: 'parity-raft',
+        strategy: 'raft',
+        status: 'pending',
+        required: 3,
+        totalNodes: 4,
+        term: 1,
+      });
+    });
+
+    it('propose × quorum — builder shape contract', async () => {
+      await freshHive(4); // quorum majority required = floor(4/2)+1 = 3
+      const proposalId = pushSyntheticProposal('quorum');
+      const builder = buildConsensusResponse(
+        'propose', 'quorum', proposalId, loadHiveState(),
+        { action: 'propose', strategy: 'quorum', type: 'parity-quorum', value: { v: 'quorum' } },
+      );
+      expect(builder).toMatchObject({
+        action: 'propose',
+        proposalId,
+        type: 'parity-quorum',
+        strategy: 'quorum',
+        status: 'pending',
+        required: 3,
+        totalNodes: 4,
+        quorumPreset: 'majority',
+      });
+    });
+
+    it('propose × weighted — builder shape contract (queen-elected)', async () => {
+      await freshHive(4); // weighted required = max(0, 4-1) + 3 = 6 (QUEEN_WEIGHT default)
+      const proposalId = pushSyntheticProposal('weighted');
+      const builder = buildConsensusResponse(
+        'propose', 'weighted', proposalId, loadHiveState(),
         { action: 'propose', strategy: 'weighted', type: 'parity-weighted', value: { v: 'weighted' } },
       );
-      assertParity('propose-weighted', cliResponse, builderResponse);
+      expect(builder).toMatchObject({
+        action: 'propose',
+        proposalId,
+        type: 'parity-weighted',
+        strategy: 'weighted',
+        status: 'pending',
+        required: 6,
+        totalNodes: 4,
+      });
+    });
+
+    it('propose × gossip — builder shape contract', async () => {
+      await freshHive(4); // gossip required = max(1, totalNodes) = 4; bound = ceil(log2(4)) = 2
+      const proposalId = pushSyntheticProposal('gossip');
+      const builder = buildConsensusResponse(
+        'propose', 'gossip', proposalId, loadHiveState(),
+        { action: 'propose', strategy: 'gossip', type: 'parity-gossip', value: { v: 'gossip' } },
+      );
+      expect(builder).toMatchObject({
+        action: 'propose',
+        proposalId,
+        type: 'parity-gossip',
+        strategy: 'gossip',
+        status: 'pending',
+        required: 4,
+        totalNodes: 4,
+        gossipRound: 0,
+        gossipBound: 2,
+        roundTimeoutMs: 5000,
+      });
+    });
+
+    it('propose × crdt — builder shape contract', async () => {
+      await freshHive(4); // crdt required = max(1, totalNodes) = 4
+      const proposalId = pushSyntheticProposal('crdt');
+      const builder = buildConsensusResponse(
+        'propose', 'crdt', proposalId, loadHiveState(),
+        { action: 'propose', strategy: 'crdt', type: 'parity-crdt', value: { v: 'crdt' } },
+      );
+      expect(builder).toMatchObject({
+        action: 'propose',
+        proposalId,
+        type: 'parity-crdt',
+        strategy: 'crdt',
+        status: 'pending',
+        required: 4,
+        totalNodes: 4,
+        crdtExpectedVoters: 4,
+      });
+    });
+
+    // ── 2 new error-path cells (DA Wave 2 v2 verdict) ────────────────────
+
+    it('propose × raft term-collision — cli reshape envelope (Wave 2 contract)', async () => {
+      // Pre-Wave 2b: cli soft-returns the envelope directly (line 2089-2095).
+      // Post-Wave 2b: cli try/catch reshapes RaftTermCollisionError to same
+      // envelope. Both states pass this cell.
+      await freshHive(4);
+      // Inject an existing raft proposal at term 1.
+      pushSyntheticProposal('raft', { term: 1 });
+      const result: any = await consensusTool().handler({
+        action: 'propose',
+        type: 'parity-raft-collision',
+        value: { v: 'collision' },
+        strategy: 'raft',
+        term: 1,
+      });
+      // Envelope shape: `{ action: 'propose', error: '...', existingProposalId, term }`.
+      expect(result).toMatchObject({
+        action: 'propose',
+        error: expect.stringMatching(/[Rr]aft term 1 already has/),
+        term: 1,
+      });
+      expect(typeof result.existingProposalId).toBe('string');
+      expect(result.existingProposalId).toMatch(/^proposal-/);
+    });
+
+    it('propose × weighted missing-queen — pre-flight throws (Wave 2 contract)', async () => {
+      // Pre-Wave 2b: cli throws synchronously at line 2067-2069.
+      // Post-Wave 2b: cli pre-flight throws same error BEFORE dispatch.
+      // Both states pass this cell.
+      _resetHiveCacheForTest();
+      const state: HiveState = {
+        initialized: true,
+        topology: 'mesh',
+        queen: undefined, // The setup the pre-flight guard catches.
+        workers: ['w0', 'w1', 'w2'],
+        workerMeta: {},
+        consensus: { pending: [], history: [] },
+        sharedMemory: {},
+        createdAt: new Date(FIXED_EPOCH).toISOString(),
+        updatedAt: new Date(FIXED_EPOCH).toISOString(),
+      };
+      saveHiveState(state);
+      await expect(
+        consensusTool().handler({
+          action: 'propose',
+          type: 'parity-weighted-noqueen',
+          value: { v: 'noqueen' },
+          strategy: 'weighted',
+        }),
+      ).rejects.toThrow(/weighted .* requires an elected queen|state\.queen is undefined/);
     });
   });
 
