@@ -1120,7 +1120,20 @@ export function getIntelligenceStats(): IntelligenceStats & {
   }
   const ruvllmStats = ruvllmCoordinator?.stats?.() || null;
 
-  // Fetch cross-module stats for unified reporting
+  // Fetch cross-module stats for unified reporting.
+  //
+  // `_contrastiveTrainer` references the upstream `@ruvector/ruvllm`
+  // `ContrastiveTrainer` class, which was REMOVED from ruvllm 2.5.x. The
+  // current ruvllm exposes `TrainingPipeline` / `TrainingFactory` /
+  // `SonaCoordinator` instead. Reporting "Unavailable" here is correct —
+  // the class genuinely doesn't exist anymore. Future work: a separate
+  // ADR can update sona-optimizer.ts to use the new training API and
+  // rename the reporter accordingly.
+  //
+  // `_trainingBackend` detects the presence of ruvllm's `TrainingPipeline`
+  // class (currently exported from `@ruvector/ruvllm`). When available,
+  // ruvllm-backed training is wired and `neural status` reports the
+  // "Training Pipeline" row as Active.
   let contrastiveTrainer: { triplets: number; agents: number } | string = 'unavailable';
   let trainingBackend = 'unavailable';
   try {
@@ -1129,6 +1142,20 @@ export function getIntelligenceStats(): IntelligenceStats & {
     const sonaModule = (globalThis as any).__claudeFlowSonaStats;
     if (sonaModule) {
       contrastiveTrainer = sonaModule._contrastiveTrainer || 'unavailable';
+    }
+    // Detect TrainingPipeline via the same module we already loaded for
+    // SonaCoordinator. ruvllmCoordinator presence means @ruvector/ruvllm
+    // resolved cleanly, but we need to probe the module itself for the
+    // TrainingPipeline export. Sync require — this function isn't async.
+    if (ruvllmCoordinator) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      const { createRequire } = require('module') as { createRequire: (url: string) => NodeJS.Require };
+      const requireCjs = createRequire(import.meta.url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ruvllm: any = requireCjs('@ruvector/ruvllm');
+      if (ruvllm && typeof ruvllm.TrainingPipeline === 'function') {
+        trainingBackend = 'ruvllm';
+      }
     }
   } catch { /* not available */ }
 
