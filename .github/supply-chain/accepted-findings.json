@@ -2,16 +2,23 @@
   "$schema": "./accepted-findings.schema.json",
   "version": 1,
   "comment": "Triaged supply-chain findings that the audit currently tolerates. Every entry must cite a tracking issue or ADR. Entries WITHOUT a tracking link fail audit. Adding to this file requires CODEOWNER review per .github/CODEOWNERS.",
+  "fixedDirectly": [
+    {
+      "date": "2026-05-19",
+      "commit": "PR #2050 follow-up",
+      "summary": "Bumped agentdb 3.0.0-alpha.10/13 → 3.0.0-alpha.14 (root, memory, cli), agentic-flow 2.0.7 → 2.0.11 (root + browser). Added overrides for @opentelemetry/sdk-node >= 0.218.0, @opentelemetry/auto-instrumentations-node >= 0.75.0, @opentelemetry/exporter-prometheus >= 0.217.0, axios >= 1.13.2, fast-uri >= 3.1.0, vite >= 6.4.6, ws >= 8.18.4. Root npm audit now reports 0 vulnerabilities (was 13 HIGH/CRITICAL). Same overrides duplicated in v3/@claude-flow/browser/package.json for standalone npm publish."
+    }
+  ],
   "cve": [
     {
       "package": "v3/@claude-flow/browser",
       "depName": "agentic-flow",
       "severity": "high",
-      "via": ["@xenova/transformers", "agentdb"],
+      "via": ["@xenova/transformers"],
       "tracking": "ADR-121 Phase 4 — migration to ruvector-onnx-embeddings-wasm",
       "trackingIssue": "https://github.com/ruvnet/ruflo/issues/2036",
       "expiresAt": "2026-08-19",
-      "rationale": "Transitive via @xenova/transformers (upstream-retired, migration to ruvector-onnx-embeddings-wasm tracked in ADR-121 Phase 4). Browser package does not invoke the vulnerable code path. Re-audit when ADR-121 Phase 4 lands or expires."
+      "rationale": "Direct dep agentic-flow@2.0.11 still pulls in @xenova/transformers in its direct dependencies. Upstream has not yet shipped a Xenova-free version (3.0.0-alpha.2 still depends on it). The browser package does not invoke any embedding code paths. Re-audit when ADR-121 Phase 4 lands or when agentic-flow ships a clean release. Transitive chain (agentdb → @opentelemetry/sdk-node) was eliminated by bumping agentdb to 3.0.0-alpha.14 + overrides; only the @xenova/transformers chain remains."
     }
   ],
   "lockfile": [
