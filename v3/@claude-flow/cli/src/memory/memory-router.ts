@@ -1846,7 +1846,23 @@ export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
       if (!_storage) return { success: false, error: 'Storage not initialized' };
       try {
         const stats = await _storage.getStats();
-        return { success: true, ...stats };
+        // Project hnswStats sub-fields up to the top level so callers don't
+        // need to know the internal shape (memory.ts + neural.ts + future
+        // reporters all see a uniform `{ available, entryCount, dimensions }`
+        // contract). The presence of `hnswStats` means RvfBackend has an
+        // HNSW index wired (see rvf-backend.ts ~L998). On the native
+        // @sparkleideas/ruvector-rvf-node path `hnswStats` is undefined
+        // — that case is a separate reporter follow-up (the agent flagged
+        // this when fixing the memory.ts HNSW reporter).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const hnswStats: any = (stats as any).hnswStats;
+        return {
+          success: true,
+          ...stats,
+          available: !!hnswStats,
+          entryCount: hnswStats?.vectorCount ?? 0,
+          dimensions: hnswStats?.dimensions ?? 0,
+        };
       } catch (e) {
         return { success: false, error: `hnswStatus failed: ${e instanceof Error ? e.message : String(e)}` };
       }
