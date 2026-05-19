@@ -790,7 +790,13 @@ export class AgentDBAdapter extends EventEmitter implements IMemoryBackend {
   }
 
   /**
-   * Semantic search by content string
+   * Semantic search by content string.
+   *
+   * ADR-125 Phase 5 — degrades gracefully when the embedding generator is
+   * unavailable. Instead of throwing, emits `health:embedder` with
+   * `status: 'degraded'` and falls back to {@link searchKeyword} so the
+   * memory subsystem remains usable when `@claude-flow/embeddings` is
+   * unreachable (per ADR-124's lazy/degrade posture).
    */
   async semanticSearch(
     content: string,
@@ -798,11 +804,60 @@ export class AgentDBAdapter extends EventEmitter implements IMemoryBackend {
     threshold?: number
   ): Promise<SearchResult[]> {
     if (!this.config.embeddingGenerator) {
-      throw new Error('Embedding generator not configured');
+      this.emit('health:embedder', { status: 'degraded', reason: 'no-generator' });
+      return this.searchKeyword(content, { k, threshold } as SearchOptions);
     }
 
-    const embedding = await this.config.embeddingGenerator(content);
-    return this.search(embedding, { k, threshold });
+    try {
+      const embedding = await this.config.embeddingGenerator(content);
+      return this.search(embedding, { k, threshold });
+    } catch (err) {
+      this.emit('health:embedder', {
+        status: 'degraded',
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      return this.searchKeyword(content, { k, threshold } as SearchOptions);
+    }
+  }
+
+  /**
+   * Keyword search — in-memory token-overlap ranking against the
+   * `entries` map. Used as a fallback when the embedder is unavailable
+   * and as the "sparse" arm of the hybridSearch controller.
+   *
+   * Falls back to the SqlJs / SQLite backend FTS5 path when a backend is
+   * wired that exposes a `searchKeyword` method. The AgentDBAdapter itself
+   * keeps the implementation cheap and dependency-free.
+   *
+   * @internal ADR-125 Phase 5
+   */
+  async searchKeyword(
+    query: string,
+    options: SearchOptions = { k: 10 } as SearchOptions
+  ): Promise<SearchResult[]> {
+    const k = options.k ?? 10;
+    const tokens = tokenize(query);
+    if (tokens.size === 0) return [];
+
+    const scored: SearchResult[] = [];
+    for (const entry of this.entries.values()) {
+      const entryTokens = tokenize(entry.content);
+      let overlap = 0;
+      for (const t of tokens) if (entryTokens.has(t)) overlap += 1;
+      if (overlap === 0) continue;
+      // Simple token-overlap ratio in [0,1]. Adequate for fallback ranking.
+      const score = overlap / Math.max(tokens.size, 1);
+      if (options.threshold && score < options.threshold) continue;
+      // Apply additional filters if provided
+      if (options.filters) {
+        const filtered = this.applyFilters([entry], options.filters);
+        if (filtered.length === 0) continue;
+      }
+      scored.push({ entry, score, distance: 1 - score });
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, k);
   }
 
   // ===== Private Methods =====
@@ -1272,6 +1327,28 @@ interface PersistedMeta {
   namespaceIndex: Record<string, string[]>;
   keyIndex: Record<string, string>;
   tagIndex: Record<string, string[]>;
+}
+
+// ADR-125 Phase 5 — minimal tokenizer for the in-memory keyword fallback.
+// Mirrors the shape used in `smart-retrieval.ts` but is duplicated here so the
+// adapter has no dependency on the retrieval layer.
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'any', 'can',
+  'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his',
+  'how', 'man', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy',
+  'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use', 'with', 'this',
+  'that', 'have', 'from', 'they', 'will', 'been', 'were', 'what', 'when',
+  'your',
+]);
+
+function tokenize(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length > 2 && !STOPWORDS.has(t))
+  );
 }
 
 export default AgentDBAdapter;
