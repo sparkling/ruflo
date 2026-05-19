@@ -312,17 +312,26 @@ export function calculateReward(iterations: number, durationMs: number): number 
 // ── Learning Integration ──────────────────────────────────────
 
 export async function tryLoadLearning(): Promise<{ initialize: () => Promise<boolean>; [key: string]: unknown } | null> {
-  // ADR-0191 Cluster A: `agentic-flow` is in cli/package.json:optionalDependencies
-  // AND this points at an internal-dist subpath that varies by version. The `.catch`
-  // arm uses `tryOptionalImport`'s discrimination set: MODULE_NOT_FOUND (package
-  // absent), ERR_PACKAGE_PATH_NOT_EXPORTED (package present, subpath not in
-  // `exports` map — observed in agentic-flow ≥2.0.2 where `dist/coordination/*`
-  // is no longer exported). Anything else (init bug in present-and-exported
-  // AutopilotLearning, ESM/CJS interop failure) propagates.
+  // ADR-0191 Cluster A + ADR-0192 Phase 3: `agentic-flow` is in
+  // cli/package.json:optionalDependencies. The dynamic import uses a LITERAL
+  // string so the codemod's Pass 3 (UNSCOPED_IMPORT_RE) can rewrite
+  // `agentic-flow` → `@sparkleideas/agentic-flow` in published artifacts;
+  // a variable-indirected `import(modPath)` would survive the codemod
+  // as `agentic-flow` and fail to resolve at runtime in the published
+  // package (where the dependency is installed under the scoped name).
+  //
+  // The `.catch` arm tolerates the four Node-resolver "subpath absent"
+  // codes:
+  //   - MODULE_NOT_FOUND / ERR_MODULE_NOT_FOUND — package absent (optionalDep)
+  //   - ERR_PACKAGE_PATH_NOT_EXPORTED — package installed but `./coordination/...`
+  //     not in its `exports` map (occurred between agentic-flow ≥2.0.2 versions)
+  //   - ERR_PACKAGE_IMPORT_NOT_DEFINED — import-map miss on `#`-prefixed specs
+  // Anything else (init bug, ESM/CJS interop failure, real syntax error)
+  // propagates so operators see it.
+  //
   // `instance.initialize()` is intentionally unwrapped — a failing init is a
   // real bug operators need to see.
-  const modPath = 'agentic-flow/dist/coordination/autopilot-learning.js';
-  const mod = await import(/* webpackIgnore: true */ modPath).catch((e: unknown) => {
+  const mod = await import('agentic-flow/coordination/autopilot-learning').catch((e: unknown) => {
     const code = (e as { code?: string } | null)?.code;
     if (
       code === 'ERR_MODULE_NOT_FOUND' ||

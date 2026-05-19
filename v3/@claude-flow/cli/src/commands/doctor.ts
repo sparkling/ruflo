@@ -714,6 +714,43 @@ async function checkAgenticFlow(): Promise<HealthCheck> {
   }
 }
 
+// ADR-0192 Phase 6: AutopilotLearning availability + episode count.
+//
+// `tryLoadLearning()` returns null when the agentic-flow optionalDep is
+// absent OR when the `./coordination/autopilot-learning` subpath isn't
+// exported (version skew). When non-null, we read the metrics surface
+// (`available`, `episodes`, `patterns`) so operators can see the
+// feature-on state explicitly — closing the "absence-not-accepted"
+// observability requirement from ADR-0191 for this site.
+async function checkAutopilotLearning(): Promise<HealthCheck> {
+  try {
+    const { tryLoadLearning } = await import('../autopilot-state.js');
+    const learning = await tryLoadLearning();
+    if (!learning) {
+      return {
+        name: 'Autopilot Learning',
+        status: 'warn',
+        message: 'unavailable — agentic-flow optionalDep not installed OR ./coordination/autopilot-learning subpath not exported',
+        fix: 'npm install @sparkleideas/agentic-flow@latest',
+      };
+    }
+    const metrics = await (learning as {
+      getMetrics(): Promise<{ available: boolean; episodes: number; patterns: number }>;
+    }).getMetrics();
+    return {
+      name: 'Autopilot Learning',
+      status: metrics.available ? 'pass' : 'warn',
+      message: `available=${metrics.available} episodes=${metrics.episodes} patterns=${metrics.patterns}`,
+    };
+  } catch (e) {
+    return {
+      name: 'Autopilot Learning',
+      status: 'fail',
+      message: `probe threw: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 // Check encryption-at-rest status (ADR-096 Phase 5)
 //
 // Reports four facets without disclosing the key itself:
@@ -830,7 +867,7 @@ export const doctorCommand: Command = {
     {
       name: 'component',
       short: 'c',
-      description: 'Check specific component (version, node, npm, config, daemon, memory, controllers, api, git, mcp, claude, disk, typescript)',
+      description: 'Check specific component (version, node, npm, config, daemon, memory, controllers, api, git, mcp, claude, disk, typescript, autopilot-learning)',
       type: 'string'
     },
     {
@@ -878,6 +915,7 @@ export const doctorCommand: Command = {
       checkDiskSpace,
       checkBuildTools,
       checkAgenticFlow,
+      checkAutopilotLearning, // ADR-0192 Phase 6
       checkEncryptionAtRest, // ADR-096 Phase 5
       checkFederationBreaker, // ADR-097 Phase 4
     ];
@@ -899,6 +937,7 @@ export const doctorCommand: Command = {
       'disk': checkDiskSpace,
       'typescript': checkBuildTools,
       'agentic-flow': checkAgenticFlow,
+      'autopilot-learning': checkAutopilotLearning, // ADR-0192 Phase 6
       'controllers': checkControllers, // ADR-0191 Task #22
       'encryption': checkEncryptionAtRest, // ADR-096 Phase 5
       'federation': checkFederationBreaker, // ADR-097 Phase 4
