@@ -1,6 +1,7 @@
 # @claude-flow/memory
 
 [![npm version](https://img.shields.io/npm/v/@claude-flow/memory.svg)](https://www.npmjs.com/package/@claude-flow/memory)
+[![Downloads](https://img.shields.io/badge/downloads-3.2M%2B-blue.svg)](https://www.npmjs.com/org/claude-flow)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![HNSW search](https://img.shields.io/badge/HNSW-0.53ms%20%7C%201%2C889%20ops%2Fs-brightgreen.svg)](./benchmarks/results/)
