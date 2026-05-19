@@ -1,10 +1,24 @@
 # ADR-123 — Sublinear-time-solver integration: signed, federatable PageRank as a RuFlo substrate primitive
 
-**Status**: Proposed (2026-05-18)
+**Status**: Proposed (2026-05-18) — revised 2026-05-19 to track upstream `sublinear-time-solver@1.7.0`
 **Date**: 2026-05-18
 **Authors**: claude (drafted with rUv)
-**Related**: [`sublinear-time-solver@1.6.0`](https://www.npmjs.com/package/sublinear-time-solver) ([crates.io](https://crates.io/crates/sublinear), [github](https://github.com/ruvnet/sublinear-time-solver), [announcement gist](https://gist.github.com/ruvnet/342518ef950348c376bc7c04ffeb5337)), [eleven-wedge research gist](https://gist.github.com/ruvnet/61d6d04af514b3c81ad0abf1e37fe116), ADR-103 (witness temporal history), ADR-104 (federation wire transport), ADR-105 (federation state snapshot), ADR-118 (AIDefence 2.3.0), ADR-121 (embeddings RuVector upgrade), ADR-122 (browser substrate). Library lineage: [Andoni–Krauthgamer–Pogrow ITCS 2019 (SDD sublinear)](https://arxiv.org/abs/1809.02995), [Kyng–Sachdeva FOCS 2016 (approx Cholesky)](https://rasmuskyng.com/research.html), [Asymmetric DD sublinear (2025)](https://arxiv.org/abs/2509.13891), [Friedkin–Johnsen application (2025)](https://arxiv.org/abs/2509.13112).
+**Related**: [`sublinear-time-solver@1.7.0`](https://www.npmjs.com/package/sublinear-time-solver) ([crates.io `sublinear@0.3.0`](https://crates.io/crates/sublinear), [github](https://github.com/ruvnet/sublinear-time-solver), [1.6.0 announcement gist](https://gist.github.com/ruvnet/342518ef950348c376bc7c04ffeb5337), [upstream `sublinear` ADR-001 "Complexity as Architecture"](https://github.com/ruvnet/sublinear-time-solver/blob/main/docs/adr/ADR-001-complexity-as-architecture.md)), [eleven-wedge research gist](https://gist.github.com/ruvnet/61d6d04af514b3c81ad0abf1e37fe116), ADR-103 (witness temporal history), ADR-104 (federation wire transport), ADR-105 (federation state snapshot), ADR-118 (AIDefence 2.3.0), ADR-121 (embeddings RuVector upgrade), ADR-122 (browser substrate). Library lineage: [Andoni–Krauthgamer–Pogrow ITCS 2019 (SDD sublinear)](https://arxiv.org/abs/1809.02995), [Kyng–Sachdeva FOCS 2016 (approx Cholesky)](https://rasmuskyng.com/research.html), [Asymmetric DD sublinear (2025)](https://arxiv.org/abs/2509.13891), [Friedkin–Johnsen application (2025)](https://arxiv.org/abs/2509.13112).
 **Supersedes**: nothing (additive)
+
+## Upstream version update (2026-05-19 revision)
+
+`sublinear-time-solver@1.7.0` shipped 2026-05-19 with three additions that materially shape this ADR. All three were called out as risks or open questions in the original 1.6.0 draft and are now resolved upstream:
+
+| Upstream 1.7.0 addition | Effect on this ADR |
+|---|---|
+| **`Complexity` trait + 12-tier `ComplexityClass` enum** (`src/complexity.rs`) — every public solver declares its worst-case class at the type level; `is_edge_safe()` filters by Pi-Zero-class budgets; `Adaptive { default, worst }` carries both bounds | **Phase 1 exposes `max_complexity_class` as a budget arg on every MCP call**, wired into the existing ADR-026 3-tier model router (`hooks_route`). Tier 1 (Agent Booster, $0) routes to `Logarithmic`-class single-entry queries only; Tier 2 (Haiku) tolerates `Linear`; Tier 3 (Sonnet/Opus) accepts `Polynomial` full-solves. The same gate handles the browser substrate's Phase 6 `BrowserExecutionAdapter` edge runtimes (Cloudflare Workers, Deno Deploy) via `is_edge_safe()` |
+| **Coherence gate** — `coherence_score(&dyn Matrix) -> f64` (per-row DD margin in [−∞, 1]) + `SolverError::Incoherent { coherence, threshold }`; opt-in via `SolverOptions::coherence_threshold` (default 0.0 = disabled, wire-compatible) | **Closes original Open Question #5 (failure modes when source matrix is not DD).** Plugin adapters call `coherence_score()` before submitting a graph; ADR-123 no longer needs to hand-roll a DD check. The structured `Incoherent` error has `is_recoverable() = true` and severity `Low`, so plugins can fall back gracefully (clamp weights, renormalise, switch to dense solver) without crashing |
+| **`solve_on_change(matrix, prev_solution, delta)` event-gated entry** (`src/incremental.rs`) via the `IncrementalSolver` extension trait blanket-impl'd on every `SolverAlgorithm`. Solves `A·dx = delta` then `x_new = prev + dx`; sparse RHS gives asymptotically faster solves on small deltas; sidesteps the Neumann initial-guess trap | **Adds a new wedge to this ADR (Wedge 12, below): incremental PageRank for streaming systems.** Streamlined for federation peers exchanging trust-delta updates, MCTS branch additions during exploration, causal-break events appended in real time, cost-attribution increments per spend, and observability span streams. Re-uses the same `ruflo-sublinear` plugin surface — no new MCP tool needed beyond exposing the `delta` parameter |
+
+Upstream also shipped its own [ADR-001 "Complexity as Architecture"](https://github.com/ruvnet/sublinear-time-solver/blob/main/docs/adr/ADR-001-complexity-as-architecture.md), formalising the same compile-time-complexity-as-architecture stance RuFlo's ADR-026 takes for model routing. The two ADRs are mutually reinforcing: ruflo-sublinear is the *call surface* and the upstream complexity classes are the *budget contracts* it negotiates against.
+
+Test counts updated: upstream 137 → 151 (lib only) at 1.7.0; full matrix 148/148 green. The original `sublinear-time-solver@1.6.0` was unbuildable on macOS Apple Silicon before its `aarch64 mrs cntvct_el0` fix — 1.7.0 is the first release that runs cleanly on the M-series macOS hosts where most of the RuFlo team works.
 
 ## Core thesis (beyond-SOTA wedge, stated first)
 
@@ -82,8 +96,9 @@ The research gist enumerates eleven plugins whose internals are graph computatio
 | 9 | `ruflo-goals` | n/a (precondition LP) | Kyng–Sachdeva packing/covering LP | ε-feasibility check | O(states) A\* enumeration | microsecond infeasibility detection |
 | 10 | `ruflo-aidefence` | Syscall call graph | `(I − αP^T)suspicion = e` (α=0.95) | Single-entry PR from flagged syscall | full trace walk | O(log calls) |
 | 11 | `ruflo-jujutsu` (`diff-analyze`) | File-import graph | `(I − αP^T)impact = e` (α=0.8) | Single-entry PR from changed file | O(LOC × imports) per push | O(log files) PR-time |
+| **12** | **streaming subset of wedges 1, 3, 6, 7, 10** (browser causal break appends, federation trust deltas, cost-tracker spend events, observability span streams, AIDefence flag updates) — added in 2026-05-19 revision | **any wedge with append-only event input** | **`A·dx = delta` via `solve_on_change`** | **upstream 1.7.0 `IncrementalSolver` trait** | **O(log N) per event but full-cost vector materialisation each tick** | **O(nnz(delta) · log N) per event — pays only for the change** |
 
-Cross-cutting addendum from the gist: `@claude-flow/embeddings` currently ships a hand-rolled Johnson–Lindenstrauss projection with a documented dimension bug. `sublinear-time-solver@1.6.0` ships a hardened JL with the `target_dim ≤ n−1` cap correctly enforced. This is a correctness fix, not a performance fix, and closes the [ADR-121](./ADR-121-embeddings-ruvector-upgrade.md) Phase 4 follow-up.
+Cross-cutting addendum from the gist: `@claude-flow/embeddings` currently ships a hand-rolled Johnson–Lindenstrauss projection with a documented dimension bug. `sublinear-time-solver@1.7.0` ships a hardened JL with the `target_dim ≤ n−1` cap correctly enforced (Achlioptas / Dasgupta–Gupta constant). This is a correctness fix, not a performance fix, and closes the [ADR-121](./ADR-121-embeddings-ruvector-upgrade.md) Phase 4 follow-up.
 
 ## Architecture
 
@@ -186,17 +201,20 @@ Adapters live in the owning plugins (not centralised in `ruflo-sublinear`) — s
 
 ### MCP tool surface
 
-Five new tools, mounted under the `sublinear/*` namespace:
+Six tools (one added in 2026-05-19 revision for upstream 1.7.0 incremental solver), mounted under the `sublinear/*` namespace. Every tool accepts the optional upstream 1.7.0 fields `maxComplexityClass` (budget gate) and `coherenceThreshold` (DD-margin floor; default 0 = disabled, wire-compatible with pre-1.7.0 callers):
 
 | Tool | Purpose | Inputs | Output |
 |---|---|---|---|
-| `sublinear/page-rank-entry` | Single-entry PR (Wedges 1, 3, 4, 5, 6, 7, 10, 11) | `{ graphId, nodeId, alpha?, epsilon?, seedNodes? }` | `{ score, queriedAt, witnessId? }` |
-| `sublinear/solve` | Full linear solve (Wedge 8) | `{ graphId, rhs, algorithm: "cg" \| "neumann" }` | `{ x, residual, iterations }` |
-| `sublinear/feasibility` | LP packing/covering feasibility (Wedge 9) | `{ constraints, tolerance }` | `{ feasible, witness?, certificateOfInfeasibility? }` |
+| `sublinear/page-rank-entry` | Single-entry PR (Wedges 1, 3, 4, 5, 6, 7, 10, 11) | `{ graphId, nodeId, alpha?, epsilon?, seedNodes?, maxComplexityClass?, coherenceThreshold? }` | `{ score, queriedAt, witnessId?, complexityClass, coherenceScore }` |
+| `sublinear/solve` | Full linear solve (Wedge 8) | `{ graphId, rhs, algorithm: "cg" \| "neumann", maxComplexityClass?, coherenceThreshold? }` | `{ x, residual, iterations, complexityClass, coherenceScore }` |
+| **`sublinear/solve-on-change`** | **Incremental delta solve (Wedge 12, NEW)** | `{ graphId, prevSolution, delta: { indices, values }, algorithm?, maxComplexityClass? }` | `{ x, residual, iterations, deltaNnz, complexityClass }` |
+| `sublinear/feasibility` | LP packing/covering feasibility (Wedge 9) | `{ constraints, tolerance, maxComplexityClass? }` | `{ feasible, witness?, certificateOfInfeasibility? }` |
 | `sublinear/jl-embed` | Johnson–Lindenstrauss projection (embeddings fix) | `{ vectors, targetDim, epsilon }` | `{ projected, distortionBound }` |
-| `sublinear/analyze` | Matrix diagnostics | `{ graphId }` | `{ conditionNumber, diagDominance, sparsity, isSymmetric, recommendedAlgorithm }` |
+| `sublinear/analyze` | Matrix diagnostics | `{ graphId }` | `{ conditionNumber, diagDominance, sparsity, isSymmetric, recommendedAlgorithm, coherenceScore, declaredComplexityClass }` |
 
-`sublinear/page-rank-entry` is the workhorse — eight of eleven wedges call it. Its memoization key is `(graphHash, graphTimestamp, nodeId, alpha, epsilon, seedNodes?)`; TTL is configurable per `graphId` (default 60 s for fast-mutating graphs like span causality, 24 h for slow-mutating graphs like file-import).
+`sublinear/page-rank-entry` is the workhorse — eight of eleven wedges call it. Its memoization key is `(graphHash, graphTimestamp, nodeId, alpha, epsilon, seedNodes?, maxComplexityClass?)`; TTL is configurable per `graphId` (default 60 s for fast-mutating graphs like span causality, 24 h for slow-mutating graphs like file-import). `sublinear/solve-on-change` is the streaming workhorse — for event-driven plugins (federation trust deltas, span streams, append-only causal break events) it replaces the recompute-from-scratch path with `O(nnz(delta) · log N)` deltas, sidestepping the `prev_solution` initial-guess trap that Neumann historically had (fixed in upstream 1.7.0).
+
+`maxComplexityClass` is the integration point with ADR-026's 3-tier model router. Tier-1 callers (Agent Booster, $0) clamp at `Logarithmic`. Tier-2 callers (Haiku) tolerate `Linear`. Tier-3 callers (Sonnet/Opus) accept `Polynomial` or below. Tools that cannot serve a request within the requested class return a structured `ComplexityBudgetExceeded` error so the caller can downgrade query parameters (loosen ε, narrow seed set) or escalate the tier.
 
 ### Witness-signed PR artifact (Phase 7 / 8 — beyond-SOTA)
 
@@ -210,13 +228,15 @@ pub struct SignedPageRankArtifact {
     pub graph_hash: Hash256,                  // content hash of the input matrix
     pub graph_timestamp: Timestamp,
     pub algorithm: SolverAlgorithm,           // "forward-push" / "backward-push" / "bidirectional"
+    pub complexity_class: ComplexityClass,    // upstream 1.7.0 — Logarithmic / Adaptive { default, worst } / Linear / ...
+    pub coherence_score: f64,                 // upstream 1.7.0 — DD margin at compute time
     pub alpha: f64,
     pub epsilon: f64,
     pub query_node: Option<String>,           // None for full-vector artifacts
     pub seed_nodes: Vec<String>,              // empty for plain PR; populated for PPR
     pub result: PageRankResult,               // either a single score or a sparse vector
     pub result_hash: Hash256,                 // hash of `result`
-    pub solver_version: String,               // "sublinear-time-solver@1.6.0"
+    pub solver_version: String,               // "sublinear-time-solver@1.7.0"
     pub signature: Ed25519Signature,          // over all of the above
 }
 ```
@@ -436,14 +456,15 @@ Promote signed PR artifacts to a federation-distributable object. A federation p
 
 | Phase | Wedges landed | Cumulative composed primitives | Ships as |
 |---|---|---|---|
-| 1 | foundation | `ruflo-sublinear@0.1.0-alpha.1` + 5 MCP tools | alpha.1 |
+| 1 | foundation | `ruflo-sublinear@0.1.0-alpha.1` + 6 MCP tools (incl. `solve-on-change`) + `maxComplexityClass`/`coherenceThreshold` budget surface | alpha.1 |
 | 2 | W1 (browser causal) | + browser adapter | alpha.2 |
 | 3 | W3, W6, W7 | + federation, cost-tracker, observability adapters | alpha.3 |
 | 4 | W4, W5 | + KG, RAG adapters | alpha.4 |
 | 5 | W8 | + neural-trader CG path | alpha.5 |
 | 6 | W9, W10, W11, JL | + GOAP feasibility, AIDefence, jujutsu, embeddings JL fix | alpha.6 |
-| 7 | **signed PR artifact** | + witness-signed PR / replay round-trip | **alpha.7** ← beyond-SOTA wedge |
-| 8 | **federation distribution** | + `pr_artifact_request`/`pr_artifact_response` over ADR-104 | **alpha.8** ← beyond-SOTA moat |
+| 6.5 | **W12 streaming** (2026-05-19 revision) | + `solve-on-change` integrations for federation trust deltas, cost spend events, observability span stream, AIDefence flag updates, causal-break append | alpha.6.5 |
+| 7 | **signed PR artifact** | + witness-signed PR / replay round-trip (artifact carries `complexity_class` + `coherence_score`) | **alpha.7** ← beyond-SOTA wedge |
+| 8 | **federation distribution** | + `pr_artifact_request`/`pr_artifact_response` + `pr_artifact_delta` over ADR-104 | **alpha.8** ← beyond-SOTA moat |
 
 Wedge 2 (browser MCTS global value augment) lands as a separate `@claude-flow/browser@3.0.0-alpha.{N+1}` release tied to ADR-122's Phase 4/7 — it's an upgrade to the substrate consumer, not a new phase of `ruflo-sublinear` itself.
 
@@ -468,11 +489,13 @@ Wedge 2 (browser MCTS global value augment) lands as a separate `@claude-flow/br
 
 4. **Benchmark target matrices — what's "representative" for each plugin?** Each owning plugin must supply a benchmark fixture matrix (or a recorded production trace) for its own wedge. The acceptance numbers in Phases 2–6 assume reasonable target matrices; if a plugin lacks an honest fixture, the benchmark is a placeholder and the acceptance number is provisional. Phase 1 ships a "benchmark fixture catalog" doc that lists missing fixtures.
 
-5. **Failure modes — what happens when the source matrix is NOT diagonally-dominant?** `sublinear/analyze` returns the diagnostic; `sublinear/page-rank-entry` and `sublinear/solve` reject the call with a structured error if `isDiagonallyDominant` is false and the algorithm requires DD. Specifically: forward-push assumes column-stochastic + α-damped (always DD); backward-push assumes row-stochastic + α-damped (always DD); CG requires SPD (covariance matrices are by construction SPD; trader case is safe); LP feasibility checks have their own preconditions. If a plugin's graph drifts to non-DD (e.g. an asymmetric trust update that introduces negative weights), the adapter must either preprocess (clamp, renormalise) or report `not applicable`. The owning plugin is responsible for the preprocessing decision because it understands the semantic meaning of the weights.
+5. **Failure modes — what happens when the source matrix is NOT diagonally-dominant?** ~~Open as of original draft.~~ **Closed upstream by `sublinear-time-solver@1.7.0`'s coherence gate** (2026-05-19 revision): `coherence_score(matrix)` returns the per-row DD margin in [−∞, 1]; `check_coherence_or_reject(matrix, threshold)` produces `SolverError::Incoherent { coherence, threshold }` with `is_recoverable() = true` and severity `Low`. Plugins pass `coherenceThreshold` on the MCP call; the structured rejection lets adapters fall back gracefully (clamp negative weights, renormalise rows, or switch to a dense solver). RuFlo no longer hand-rolls a DD check. Original guidance still applies for non-DD branches (CG needs SPD; LP has its own preconditions; the owning plugin still chooses preprocessing semantics because only it knows the weight meaning) — the only change is that the failure now arrives as a clean structured error instead of silent divergence.
 
-6. **Node-Rust binding strategy — WASM, native node addon, or both?** `sublinear-time-solver@1.6.0` ships both. The plugin defaults to **native node addon when available, WASM as a fallback**. The detection is at plugin-load time, mirroring how `@claude-flow/embeddings` handles ONNX runtime detection. The WASM path serves Edge runtimes (Cloudflare Workers, Deno Deploy) where native modules are unavailable; the native path is the hot path in the v3 monorepo. Latency budgets above assume native; WASM has ~3× overhead.
+6. **Node-Rust binding strategy — WASM, native node addon, or both?** `sublinear-time-solver@1.7.0` ships both. The plugin defaults to **native node addon when available, WASM as a fallback**. The detection is at plugin-load time, mirroring how `@claude-flow/embeddings` handles ONNX runtime detection. The WASM path serves Edge runtimes (Cloudflare Workers, Deno Deploy) where native modules are unavailable; the native path is the hot path in the v3 monorepo. Latency budgets above assume native; WASM has ~3× overhead. **Edge detection now uses the upstream 1.7.0 `is_edge_safe()` helper** rather than an ad-hoc check.
 
 7. **Federation distribution of PR vectors — does this need an ADR-104 transport extension?** Most likely **no**, because ADR-104's message-type extensibility was designed for this. The new `pr_artifact_request` / `pr_artifact_response` message types fit cleanly under the existing wire framing. However, **cross-installation federation** (i.e. an Installation A in one org talking to Installation B in another org) may want stricter rate-limiting + capability-token authorization than the within-mesh case — and that may want an **ADR-124-federation-graph-artifact-distribution** as a follow-up. Flagged as a Phase 8 prerequisite.
+
+8. **Incremental updates: when does `solve_on_change` win vs full re-solve?** (2026-05-19 revision, opened by upstream 1.7.0.) Heuristic: when `nnz(delta) / nnz(matrix) < 0.05` AND the previous solution is < 1 hour old, prefer `solve-on-change`. Otherwise full re-solve. Phase 1 ships a heuristic; Phase 6 measures actual crossover on each wedge's production trace and tunes per-graph. Federation peers exchanging deltas (Wedge 12 streaming subset) should be served `solve-on-change` directly; the federation request payload carries a `lastKnownSolutionHash` so the server can decide whether to ship a delta or a full vector.
 
 ## Updates to assumptions discovered during research
 
@@ -482,12 +505,16 @@ Two SOTA findings updated working assumptions mid-flight; recorded here explicit
 
 - **The right comparison object is not zk-SNARK-of-PageRank; it's "Ed25519-signed inputs + hash-of-output + deterministic replay".** Initial drafting assumed the cryptographic-provenance angle would parallel ZK-DeepSeek and ZKPROV. After re-reading those papers it became clear they target a different threat model — proprietary models, hidden weights, untrusted compute. RuFlo's threat model is the *opposite*: the algorithm is public, the inputs are content-addressable, and the federation peer is semi-trusted via a witness-key trust set. A SNARK circuit over Neumann or CG would be enormously expensive for no marginal security gain in this threat model. Ed25519-over-inputs-and-output-hash is sufficient because the verifier can replay the computation in microseconds. This shifts Phase 7 from "build a SNARK circuit" to "extend ADR-103 schema with PR-specific fields" — a ~1-day task instead of a multi-week one.
 
+- **Upstream `sublinear-time-solver@1.7.0` shipped three features that closed planned ADR-123 risks (2026-05-19 revision).** (a) The 12-tier `ComplexityClass` taxonomy + `is_edge_safe()` lets ADR-123 wire complexity-budget gating into ADR-026's 3-tier model router *via the solver itself* — no need to invent a separate budget abstraction; the upstream `max_complexity_class` arg threads through to every MCP tool. (b) The coherence gate closes Open Question #5 cleanly (see above). (c) `solve_on_change` lifts streaming wedges (federation trust deltas, span streams, append-only causal breaks) into a separate event-loop-friendly path that pays only `O(nnz(delta) · log N)` per event — recorded as Wedge 12 in the context table and as the new `sublinear/solve-on-change` MCP tool. None of these capabilities existed when the original 1.6.0 draft was written; this is genuine SOTA movement, not a re-framing.
+
 ## References
 
-- `sublinear-time-solver@1.6.0` npm: https://www.npmjs.com/package/sublinear-time-solver
-- `sublinear` crate: https://crates.io/crates/sublinear
+- `sublinear-time-solver@1.7.0` npm: https://www.npmjs.com/package/sublinear-time-solver
+- `sublinear@0.3.0` crate: https://crates.io/crates/sublinear
 - Library github: https://github.com/ruvnet/sublinear-time-solver
 - 1.6.0 announcement gist: https://gist.github.com/ruvnet/342518ef950348c376bc7c04ffeb5337
+- Upstream `sublinear` ADR-001 — Complexity as Architecture: https://github.com/ruvnet/sublinear-time-solver/blob/main/docs/adr/ADR-001-complexity-as-architecture.md
+- Upstream CHANGELOG (1.6.0 + 1.7.0): https://github.com/ruvnet/sublinear-time-solver/blob/main/CHANGELOG.md
 - Eleven-wedge research gist (foundational): https://gist.github.com/ruvnet/61d6d04af514b3c81ad0abf1e37fe116
 - Andoni, Krauthgamer, Pogrow — "On Solving Linear Systems in Sublinear Time" (ITCS 2019): https://arxiv.org/abs/1809.02995
 - Asymmetric DD sublinear (2025): https://arxiv.org/abs/2509.13891
