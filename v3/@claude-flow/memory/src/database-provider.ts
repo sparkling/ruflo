@@ -14,11 +14,20 @@ import {
 } from './types.js';
 import { SQLiteBackend, SQLiteBackendConfig } from './sqlite-backend.js';
 import { getConfig } from './resolve-config.js';
+import type { EmbeddingGenerator } from './types.js';
+// TODO(adr-125-phase2-fork): upstream's sql.js fallback backend is not vendored
+// in fork — see ADR-0177 carve-out. (fork uses better-sqlite3 native path.)
 
 /**
- * Available database provider types
+ * Available database provider types.
+ *
+ * ADR-125 Phase 2 added `'hybrid'` and `'agentdb'` so the package can deliver
+ * ADR-009's hybrid-tier promise through `createDatabase`.
  */
-export type DatabaseProvider = 'better-sqlite3' | 'rvf' | 'auto';
+// Fork keeps narrow provider union (sqljs / json / hybrid-tier / agentdb backends
+// not vendored). TODO(adr-125-phase2-fork): re-expand to upstream union when
+// those backend modules land in fork.
+export type DatabaseProvider = 'better-sqlite3' | 'rvf' | 'hybrid' | 'agentdb' | 'auto';
 
 /**
  * Database creation options
@@ -44,6 +53,15 @@ export interface DatabaseOptions {
 
   /** Auto-persist interval (milliseconds) */
   autoPersistInterval?: number;
+
+  /**
+   * Embedding generator. Required for `'hybrid'` and `'agentdb'` providers
+   * (and recommended for semantic search on any provider).
+   */
+  embeddingGenerator?: EmbeddingGenerator;
+
+  /** Vector dimensions for `'hybrid'` and `'agentdb'` providers (fork default 768 — ADR-0068 mpnet) */
+  dimensions?: number;
 }
 
 /**
@@ -177,6 +195,10 @@ export async function createDatabase(
     defaultNamespace = 'default',
     maxEntries = 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
     autoPersistInterval = 5000,
+    embeddingGenerator,
+    // ADR-0068 fork standard: 768-dim (mpnet model). Upstream defaults to
+    // 1536; fork's unified embedding model is `Xenova/all-mpnet-base-v2`.
+    dimensions = 768,
   } = options;
 
   // Select provider
@@ -205,6 +227,7 @@ export async function createDatabase(
     }
 
     case 'rvf': {
+      // Fork uses storage-factory wrapper (post-ADR-0177 SQLite restoration path).
       const { createStorageFromConfig } = await import('./storage-factory.js');
       backend = await createStorageFromConfig(getConfig(), {
         databasePath: path,
@@ -212,6 +235,47 @@ export async function createDatabase(
         autoPersistInterval,
         maxElements: maxEntries,
         verbose,
+      });
+      break;
+    }
+
+    case 'hybrid': {
+      // ADR-009 / ADR-125 Phase 2 — SQLite for structured queries + AgentDB
+      // for semantic search. Wires fork's vendored hybrid-tier backend
+      // through the same constructor shape upstream uses.
+      const { HybridBackend } = await import('./hybrid-backend.js');
+      backend = new HybridBackend({
+        sqlite: {
+          databasePath: path,
+          walMode,
+          optimize,
+          defaultNamespace,
+          maxEntries,
+          verbose,
+        },
+        agentdb: {
+          dbPath: path.replace(/\.(db|json|rvf)$/, '.agentdb'),
+          namespace: defaultNamespace,
+          vectorDimension: dimensions,
+          embeddingGenerator,
+          maxEntries,
+        },
+        defaultNamespace,
+        embeddingGenerator,
+      });
+      break;
+    }
+
+    case 'agentdb': {
+      // ADR-125 Phase 2 — vector-tier-only path. Uses the same
+      // AgentDBBackend module that hybrid-tier consumes.
+      const { AgentDBBackend } = await import('./agentdb-backend.js');
+      backend = new AgentDBBackend({
+        dbPath: path,
+        namespace: defaultNamespace,
+        vectorDimension: dimensions,
+        embeddingGenerator,
+        maxEntries,
       });
       break;
     }

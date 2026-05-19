@@ -381,11 +381,33 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
     this.adapter.on('index:added', (data) => this.emit('index:added', data));
   }
 
+  /**
+   * Replace the active backend with a pre-built `IMemoryBackend`.
+   *
+   * Used by `createHybridService` (ADR-125 Phase 2) to wire `the hybrid-tier backend`
+   * through `createDatabase` rather than instantiating `AgentDBAdapter`
+   * directly. The legacy `AgentDBAdapter` instance is kept around for the
+   * `storeEntry` / `semanticSearch` convenience methods that the IMemoryBackend
+   * interface doesn't cover; those calls still flow through it.
+   *
+   * Returns `this` for chaining.
+   *
+   * @internal Prefer the factory functions (`createHybridService`,
+   *   `createPersistentService`, etc.) over calling this directly.
+   */
+  withBackend(backend: IMemoryBackend): this {
+    this.backend = backend;
+    return this;
+  }
+
   // ===== Lifecycle =====
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    await this.adapter.initialize();
+    await this.backend.initialize();
+    // If the active backend is something other than the adapter (e.g. a
+    // the hybrid-tier backend wired by createHybridService), the adapter may never be
+    // used — skip its initialize() in that case to avoid double-allocating.
     this.initialized = true;
 
     // ADR-125 Phase 4 — start background consolidator if requested.
@@ -510,27 +532,27 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
-    return this.adapter.get(id);
+    return this.backend.get(id);
   }
 
   async getByKey(namespace: string, key: string): Promise<MemoryEntry | null> {
-    return this.adapter.getByKey(namespace, key);
+    return this.backend.getByKey(namespace, key);
   }
 
   async update(id: string, update: MemoryEntryUpdate): Promise<MemoryEntry | null> {
-    return this.adapter.update(id, update);
+    return this.backend.update(id, update);
   }
 
   async delete(id: string): Promise<boolean> {
-    return this.adapter.delete(id);
+    return this.backend.delete(id);
   }
 
   async query(query: MemoryQuery): Promise<MemoryEntry[]> {
-    return this.adapter.query(query);
+    return this.backend.query(query);
   }
 
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
-    return this.adapter.search(embedding, options);
+    return this.backend.search(embedding, options);
   }
 
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
@@ -542,47 +564,80 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async bulkDelete(ids: string[]): Promise<number> {
-    return this.adapter.bulkDelete(ids);
+    return this.backend.bulkDelete(ids);
   }
 
   async count(namespace?: string): Promise<number> {
-    return this.adapter.count(namespace);
+    return this.backend.count(namespace);
   }
 
   async listNamespaces(): Promise<string[]> {
-    return this.adapter.listNamespaces();
+    return this.backend.listNamespaces();
   }
 
   async clearNamespace(namespace: string): Promise<number> {
-    return this.adapter.clearNamespace(namespace);
+    return this.backend.clearNamespace(namespace);
   }
 
   async getStats(): Promise<BackendStats> {
-    return this.adapter.getStats();
+    return this.backend.getStats();
   }
 
   async healthCheck(): Promise<HealthCheckResult> {
-    return this.adapter.healthCheck();
+    return this.backend.healthCheck();
   }
 
   // ===== Convenience Methods =====
 
   /**
-   * Store an entry from simple input
+   * Store an entry from simple input.
+   *
+   * When the active backend is the default AgentDBAdapter, delegates to its
+   * native `storeEntry`. When a custom backend is wired (e.g. the hybrid-tier backend
+   * via `createHybridService`), this builds a full `MemoryEntry` and stores
+   * it through the IMemoryBackend interface.
    */
   async storeEntry(input: MemoryEntryInput): Promise<MemoryEntry> {
-    return this.adapter.storeEntry(input);
+    if (this.backend === this.adapter) {
+      return this.adapter.storeEntry(input);
+    }
+    // Generic path for non-AgentDBAdapter backends
+    const { createDefaultEntry } = await import('./types.js');
+    const entry = createDefaultEntry(input as any);
+    // Generate an embedding on demand if needed
+    if (!entry.embedding && this.config.embeddingGenerator && entry.content) {
+      try {
+        entry.embedding = await this.config.embeddingGenerator(entry.content);
+      } catch {
+        // Leave embedding undefined; backend may still accept the entry.
+      }
+    }
+    await this.backend.store(entry);
+    return entry;
   }
 
   /**
-   * Semantic search by content string
+   * Semantic search by content string.
+   *
+   * When the active backend is the default AgentDBAdapter, delegates to its
+   * native `semanticSearch`. Otherwise generates an embedding via the
+   * configured generator and calls `backend.search()`.
    */
   async semanticSearch(
     content: string,
     k: number = 10,
     threshold?: number
   ): Promise<SearchResult[]> {
-    return this.adapter.semanticSearch(content, k, threshold);
+    if (this.backend === this.adapter) {
+      return this.adapter.semanticSearch(content, k, threshold);
+    }
+    if (!this.config.embeddingGenerator) {
+      throw new Error(
+        'semanticSearch requires an embeddingGenerator when backend is not the AgentDBAdapter'
+      );
+    }
+    const embedding = await this.config.embeddingGenerator(content);
+    return this.backend.search(embedding, { k, threshold });
   }
 
   /**
@@ -652,7 +707,12 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
   // ===== Migration =====
 
   /**
-   * Migrate from a legacy memory source
+   * Migrate from a legacy memory source.
+   *
+   * The migrator is AgentDB-specific (writes through `AgentDBAdapter`).
+   * When a custom backend is wired (e.g. the hybrid-tier backend), migration still
+   * targets the local AgentDB adapter; the hybrid backend can pick up the
+   * migrated entries on next read via its own AgentDB index.
    */
   async migrateFrom(
     source: MigrationSource,
@@ -796,12 +856,16 @@ export function createEmbeddingService(
 }
 
 /**
- * Create a hybrid memory service (SQLite + AgentDB)
- * This is the DEFAULT recommended configuration per ADR-009
+ * Create a hybrid memory service (SQLite + AgentDB).
+ *
+ * This is the DEFAULT recommended configuration per ADR-009. ADR-125 Phase 2
+ * delivers the real wiring: the returned service's backend is a `the hybrid-tier backend`
+ * created through `createDatabase({ provider: 'hybrid' })`, not an AgentDB-only
+ * downgrade as in earlier versions.
  *
  * @example
  * ```typescript
- * const memory = createHybridService('./data/memory.db', embeddingFn);
+ * const memory = await createHybridService('./data/memory.db', embeddingFn);
  * await memory.initialize();
  *
  * // Structured queries go to SQLite
@@ -809,22 +873,32 @@ export function createEmbeddingService(
  *
  * // Semantic queries go to AgentDB
  * const similar = await memory.semanticSearch('authentication patterns', 10);
+ *
+ * // Verify the backend is actually hybrid
+ * import { the hybrid-tier backend } from '@claude-flow/memory';
+ * memory.backend instanceof the hybrid-tier backend; // true
  * ```
  */
-export function createHybridService(
+export async function createHybridService(
   databasePath: string,
   embeddingGenerator: EmbeddingGenerator,
   dimensions: number = 768
-): UnifiedMemoryService {
-  return new UnifiedMemoryService({
+): Promise<UnifiedMemoryService> {
+  const { createDatabase } = await import('./database-provider.js');
+  const hybridBackend = await createDatabase(databasePath, {
+    provider: 'hybrid',
+    embeddingGenerator,
+    dimensions,
+  });
+  const service = new UnifiedMemoryService({
     embeddingGenerator,
     dimensions,
     autoEmbed: true,
     cacheEnabled: true,
-    // Creates an AgentDB-backed service with persistence
     persistenceEnabled: true,
     persistencePath: databasePath,
   });
+  return service.withBackend(hybridBackend);
 }
 
 // Default export

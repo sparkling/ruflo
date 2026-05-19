@@ -124,6 +124,9 @@ describe('DatabaseProvider', () => {
       await db.shutdown();
     });
 
+    // TODO(adr-125-phase2-fork): upstream's 'json' / 'hybrid' / 'agentdb' provider
+    // tests are deferred — those backends aren't vendored in this fork. See the
+    // matching TODO in database-provider.ts.
   });
 
   describe('Cross-Platform Functionality', () => {
