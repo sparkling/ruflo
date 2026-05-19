@@ -1920,19 +1920,33 @@ export class ControllerRegistry extends EventEmitter {
 
       // ----- ADR-0061 Phase 4: Optimization -----
       case 'queryOptimizer': {
-        // silent-fallthrough-OK: ADR-0085 best-effort wrapper for non-Tier-1 controller; null return is the documented "not available in build" signal that callers discriminate. Tier 1 controllers (reasoningBank/skills/etc.) use strict-mode discrimination per ADR-0112 Phase 2 controller-registry track.
-        if (!this.agentdb) return null;
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const QO = agentdbModule.QueryOptimizer;
-          if (!QO) return null;
-          // ADR-0066 P2: Forward config-driven cache params to QueryOptimizer
-          const qoCfg = this.config.queryOptimizer || {};
-          return getOrCreate(name, () => new QO(this.agentdb.database, {
-            maxSize: qoCfg.maxSize ?? 1000,
-            ttl: qoCfg.ttl ?? 60000,
-          }));
-        } catch { return null; }
+        // ADR-0191 follow-up: the legacy bare `catch { return null }` was
+        // hiding the actual reason queryOptimizer never registers in fresh
+        // installs. Each missing precondition now logs a discriminating
+        // message; constructor errors propagate (initController will catch
+        // and record as { enabled: false, error: msg }).
+        if (!this.agentdb) {
+          console.error('[controller-registry] queryOptimizer: skipping — this.agentdb is null at registration time');
+          return null;
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const db = (this.agentdb as any).database;
+        if (!db) {
+          console.error('[controller-registry] queryOptimizer: skipping — this.agentdb.database is null/undefined (agentdb chose a backend without a `database` field)');
+          return null;
+        }
+        const agentdbModule: any = await import('agentdb');
+        const QO = agentdbModule.QueryOptimizer;
+        if (!QO) {
+          console.error('[controller-registry] queryOptimizer: skipping — agentdb module did not export QueryOptimizer (version mismatch)');
+          return null;
+        }
+        // ADR-0066 P2: Forward config-driven cache params to QueryOptimizer
+        const qoCfg = this.config.queryOptimizer || {};
+        return getOrCreate(name, () => new QO(db, {
+          maxSize: qoCfg.maxSize ?? 1000,
+          ttl: qoCfg.ttl ?? 60000,
+        }));
       }
 
       case 'enhancedEmbeddingService': {
