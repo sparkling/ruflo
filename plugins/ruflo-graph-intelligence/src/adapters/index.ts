@@ -58,3 +58,30 @@ export {
   type RagMemorySource,
   type RagMemoryAdapterOptions,
 } from './rag-memory-adapter.js';
+
+export {
+  PortfolioCovarianceAdapter,
+  portfolioGraphId,
+  registerPortfolioCovarianceAdapter,
+  type CovarianceEntry,
+  type PortfolioSource,
+  type PortfolioAdapterOptions,
+} from './portfolio-cg-adapter.js';
+
+export {
+  AIDefenceSuspicionAdapter,
+  AIDEFENCE_CALL_GRAPH_ID,
+  registerAIDefenceSuspicionAdapter,
+  type CallEdge,
+  type AIDefenceSource,
+  type AIDefenceAdapterOptions,
+} from './aidefence-suspicion-adapter.js';
+
+export {
+  JujutsuBlastRadiusAdapter,
+  JUJUTSU_IMPORT_GRAPH_ID,
+  registerJujutsuBlastRadiusAdapter,
+  type ImportEdge,
+  type JujutsuSource,
+  type JujutsuAdapterOptions,
+} from './jujutsu-blast-radius-adapter.js';

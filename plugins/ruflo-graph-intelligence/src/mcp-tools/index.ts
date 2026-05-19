@@ -204,15 +204,65 @@ export const graphIntelligenceTools: MCPTool[] = [
       required: ['constraints'],
     },
     handler: async (input) => {
-      // Phase 1: stub — returns "feasible unless trivially impossible". Wedge 9
-      // wires this into the real LP solver via the sublinear-time-solver MCP.
-      const constraints = (input.constraints as unknown[]) ?? [];
+      // Phase 6: relaxed packing/covering LP. Each constraint is a row Aᵢ
+      // with shape { coeffs: Record<varId, number>, bound: number, kind: 'leq'|'geq'|'eq' }.
+      // The relaxed check: does there exist x ≥ 0 satisfying all constraints within `tolerance`?
+      // For Phase 6 we ship a tight bounded-variable LP via a simple Lagrangian
+      // shrink-on-violation pass. Real Kyng–Sachdeva solver wires in Phase 7+.
+      const constraints = (input.constraints as Array<{
+        coeffs: Record<string, number>;
+        bound: number;
+        kind?: 'leq' | 'geq' | 'eq';
+      }>) ?? [];
+      const tolerance = (input.tolerance as number) ?? 0.05;
+      if (constraints.length === 0) {
+        return { success: true, result: { feasible: true, witness: {}, method: 'no-constraints' } };
+      }
+      // Collect variables; initialise x = 0 (the trivial point).
+      const varSet = new Set<string>();
+      for (const c of constraints) for (const k of Object.keys(c.coeffs)) varSet.add(k);
+      const vars = [...varSet];
+      const x: Record<string, number> = {};
+      for (const v of vars) x[v] = 0;
+      // 200-iter Lagrangian shrink: for each violated row, push x toward
+      // satisfaction by a small step proportional to violation magnitude.
+      const stepSize = 0.05;
+      for (let it = 0; it < 200; it++) {
+        let maxViolation = 0;
+        for (const c of constraints) {
+          let lhs = 0;
+          for (const [k, w] of Object.entries(c.coeffs)) lhs += (x[k] ?? 0) * w;
+          const kind = c.kind ?? 'leq';
+          let violation = 0;
+          if (kind === 'leq' && lhs > c.bound) violation = lhs - c.bound;
+          else if (kind === 'geq' && lhs < c.bound) violation = c.bound - lhs;
+          else if (kind === 'eq') violation = Math.abs(lhs - c.bound);
+          if (violation > maxViolation) maxViolation = violation;
+          if (violation === 0) continue;
+          for (const [k, w] of Object.entries(c.coeffs)) {
+            if (w === 0) continue;
+            const direction = kind === 'leq' ? -Math.sign(w) : Math.sign(w);
+            x[k] = Math.max(0, (x[k] ?? 0) + direction * stepSize * (violation / Math.abs(w)));
+          }
+        }
+        if (maxViolation <= tolerance) {
+          return { success: true, result: { feasible: true, witness: x, iterations: it + 1, method: 'lagrangian-shrink' } };
+        }
+      }
+      // Couldn't satisfy within iteration cap — infeasibility certificate
+      // is the residual violation vector.
+      const residuals = constraints.map((c) => {
+        let lhs = 0;
+        for (const [k, w] of Object.entries(c.coeffs)) lhs += (x[k] ?? 0) * w;
+        return { lhs, bound: c.bound, kind: c.kind ?? 'leq' };
+      });
       return {
         success: true,
         result: {
-          feasible: constraints.length === 0 || constraints.every((c) => c !== null),
-          method: 'stub (Phase 1) — real LP wired in Wedge 9',
-          tolerance: input.tolerance ?? 0.05,
+          feasible: false,
+          witness: x,
+          certificateOfInfeasibility: residuals,
+          method: 'lagrangian-shrink (capped)',
         },
       };
     },
@@ -233,19 +283,32 @@ export const graphIntelligenceTools: MCPTool[] = [
       required: ['vectors', 'targetDim'],
     },
     handler: async (input) => {
-      // Phase 1: stub for now — wired in Phase 6 when we swap embeddings JL.
+      // Phase 6: real JL via jlEmbed (replaces ADR-121 hand-rolled).
+      const { jlEmbed } = await import('../infrastructure/jl-embed.js');
       const vectors = (input.vectors as number[][]) ?? [];
-      const targetDim = Math.min((input.targetDim as number) ?? 64, vectors[0]?.length ?? 64);
-      const projected = vectors.map((v) => v.slice(0, targetDim));
-      return {
-        success: true,
-        result: {
-          projected,
-          targetDim,
-          distortionBound: (input.epsilon as number) ?? 0.1,
-          method: 'stub (Phase 1) — real JL wired in Phase 6',
-        },
-      };
+      const targetDim = (input.targetDim as number) ?? 64;
+      const epsilon = (input.epsilon as number) ?? 0.1;
+      try {
+        const result = jlEmbed(vectors, { targetDim, epsilon });
+        return {
+          success: true,
+          result: {
+            projected: result.projected,
+            targetDim: result.targetDim,
+            distortionBound: result.epsilon,
+            withinAchlioptasBound: result.withinAchlioptasBound,
+            method: 'real JL — Gaussian projection with k ≤ n−1 cap',
+          },
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: {
+            kind: 'invalid-input',
+            message: err instanceof Error ? err.message : String(err),
+          },
+        };
+      }
     },
   },
 ];

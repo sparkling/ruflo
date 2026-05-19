@@ -42,6 +42,9 @@ export { graphIntelligenceTools, type MCPTool } from './mcp-tools/index.js';
 // Adapters (per-wedge integrations)
 export * from './adapters/index.js';
 
+// JL embedding (ADR-121 follow-up)
+export { jlEmbed, computeTargetDim, type JLEmbedOptions, type JLEmbedResult } from './infrastructure/jl-embed.js';
+
 // Default export
 import { graphIntelligenceTools } from './mcp-tools/index.js';
 import { getRegistry } from './domain/adapter.js';
