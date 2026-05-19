@@ -39,6 +39,9 @@ export {
 // MCP tools
 export { graphIntelligenceTools, type MCPTool } from './mcp-tools/index.js';
 
+// Adapters (per-wedge integrations)
+export * from './adapters/index.js';
+
 // Default export
 import { graphIntelligenceTools } from './mcp-tools/index.js';
 import { getRegistry } from './domain/adapter.js';
