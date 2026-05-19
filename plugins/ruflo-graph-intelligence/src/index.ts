@@ -1,0 +1,45 @@
+/**
+ * ruflo-graph-intelligence — RuFlo Graph Intelligence Engine (ADR-123)
+ *
+ * Real-time relationship intelligence with complexity-aware execution.
+ *
+ * Three-layer architecture:
+ *   Neural Layer        — adaptive learning (existing — @claude-flow/neural)
+ *   Graph Intelligence  — relationship reasoning (this plugin)
+ *   Complexity Layer    — runtime governance (this plugin)
+ *
+ * Built on `sublinear-time-solver@1.7.0`.
+ */
+
+// Domain
+export * from './domain/types.js';
+export {
+  AdapterRegistry,
+  getRegistry,
+  resetRegistry,
+  noopUnsubscribe,
+  type SublinearAdapter,
+} from './domain/adapter.js';
+
+// Infrastructure
+export {
+  coherenceScore,
+  checkCoherence,
+  singleEntryPageRank,
+  conjugateGradient,
+  neumann,
+  solveOnChange,
+  hashResult,
+  observedComplexity,
+  runPageRank,
+  runSolve,
+  runSolveOnChange,
+} from './infrastructure/solver-bridge.js';
+
+// MCP tools
+export { graphIntelligenceTools, type MCPTool } from './mcp-tools/index.js';
+
+// Default export
+import { graphIntelligenceTools } from './mcp-tools/index.js';
+import { getRegistry } from './domain/adapter.js';
+export default { tools: graphIntelligenceTools, registry: getRegistry };
