@@ -624,6 +624,58 @@ async function installClaudeCode(): Promise<boolean> {
   }
 }
 
+// ADR-0191 Task #22 + ADR-0192: per-controller registration observability.
+// Surfaces total / active / inactive / failed counts so operators can see
+// when a documented controller silently failed to register (the failure
+// mode that hid the queryOptimizer issue ADR-0191 surfaced).
+async function checkControllers(): Promise<HealthCheck> {
+  // Same-package import; the catch only fires if memory-router itself
+  // failed to load, which is a fatal install state — fail loud rather
+  // than degrade silently.
+  const { listControllerInfo, waitForDeferred } = await import('../memory/memory-router.js');
+  // Wait for deferred (Level 2+) init to complete so the count is accurate;
+  // without this, doctor reports a partial snapshot mid-init.
+  try { await waitForDeferred(); } catch { /* registry never came up; listControllerInfo will return [] and we'll report below */ }
+  const controllers = await listControllerInfo();
+  if (!Array.isArray(controllers) || controllers.length === 0) {
+    return {
+      name: 'Controllers',
+      status: 'warn',
+      message: 'No controllers registered (memory-router init failed or neural disabled)',
+      fix: 'Check `ruflo init --full` and config.json neural.enabled',
+    };
+  }
+  type Entry = { name: string; enabled?: boolean; error?: string };
+  const list = controllers as Entry[];
+  const total = list.length;
+  const active = list.filter(c => c.enabled !== false).length;
+  const inactive = total - active;
+  const withErrors = list.filter(c => c.error).map(c => `${c.name}: ${c.error}`);
+  const inactiveNames = list.filter(c => c.enabled === false).map(c => c.name);
+
+  // INIT_LEVELS in @claude-flow/memory registers 41 controllers as of
+  // ADR-0191 follow-up. If fewer ARE in the registry, some were filtered
+  // by isControllerEnabled (config-disabled) — not necessarily an error.
+  // Treat low active counts (< 30 of 41) as a warning, otherwise pass.
+  const status: HealthCheck['status'] = active >= 30 ? 'pass' : active > 0 ? 'warn' : 'fail';
+  const messageParts: string[] = [`${active}/${total} active`];
+  if (inactive > 0) messageParts.push(`${inactive} inactive`);
+  if (withErrors.length > 0) {
+    messageParts.push(`${withErrors.length} with errors: ${withErrors.slice(0, 3).join('; ')}${withErrors.length > 3 ? ` (+${withErrors.length - 3} more)` : ''}`);
+  }
+  // Disabled-by-default surface: keep this short, operators can dig deeper
+  // via `mcp exec --tool agentdb_controllers`.
+  if (inactiveNames.length > 0 && inactiveNames.length <= 5) {
+    messageParts.push(`inactive: ${inactiveNames.join(', ')}`);
+  }
+  return {
+    name: 'Controllers',
+    status,
+    message: messageParts.join(' — '),
+    fix: status === 'pass' ? undefined : 'Run `mcp exec --tool agentdb_controllers` for full per-controller state',
+  };
+}
+
 // Check agentic-flow v3 integration (filesystem-based to avoid slow WASM/DB init)
 async function checkAgenticFlow(): Promise<HealthCheck> {
   try {
@@ -778,7 +830,7 @@ export const doctorCommand: Command = {
     {
       name: 'component',
       short: 'c',
-      description: 'Check specific component (version, node, npm, config, daemon, memory, api, git, mcp, claude, disk, typescript)',
+      description: 'Check specific component (version, node, npm, config, daemon, memory, controllers, api, git, mcp, claude, disk, typescript)',
       type: 'string'
     },
     {
@@ -819,6 +871,7 @@ export const doctorCommand: Command = {
       checkDaemonStatus,
       checkMemoryDatabase,
       checkMemoryBackend,
+      checkControllers, // ADR-0191 Task #22: per-controller registration state
       checkApiKeys,
       checkMcpServers,
       checkAIDefence, // #1807
@@ -846,6 +899,7 @@ export const doctorCommand: Command = {
       'disk': checkDiskSpace,
       'typescript': checkBuildTools,
       'agentic-flow': checkAgenticFlow,
+      'controllers': checkControllers, // ADR-0191 Task #22
       'encryption': checkEncryptionAtRest, // ADR-096 Phase 5
       'federation': checkFederationBreaker, // ADR-097 Phase 4
     };

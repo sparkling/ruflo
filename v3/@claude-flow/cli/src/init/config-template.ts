@@ -195,7 +195,14 @@ export function getFullConfigTemplate(
         reasoningBank: true,
         causalRecall: true,
         nightlyLearner: true,
-        queryOptimizer: false,
+        // ADR-0191 follow-up (Task B7 / ADR-0192 spec): queryOptimizer was
+        // disabled by default since the init template was first written
+        // (commit aa7c7673f, no rationale documented). The controller is
+        // a lightweight LRU query-plan cache (256 entries × 60s TTL per
+        // the tuning section below) with no external runtime cost. Its
+        // tuning config IS populated below, which only makes sense if
+        // the controller is enabled. Enabling by default.
+        queryOptimizer: true,
         auditLogger: false,
         batchOperations: false,
         attentionService: true,
