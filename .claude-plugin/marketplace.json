@@ -127,6 +127,11 @@
       "description": "Cross-installation agent federation with zero-trust security, PII-gated data flow, and compliance-grade audit trails"
     },
     {
+      "name": "ruflo-graph-intelligence",
+      "source": "./plugins/ruflo-graph-intelligence",
+      "description": "Real-time graph intelligence — personalized PageRank, streaming delta updates, witness-signed reasoning, and federation-distributable vectors"
+    },
+    {
       "name": "ruflo-iot-cognitum",
       "source": "./plugins/ruflo-iot-cognitum",
       "description": "IoT device lifecycle, telemetry anomaly detection, fleet management, and witness chain verification for Cognitum Seed hardware"
