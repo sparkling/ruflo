@@ -1148,8 +1148,10 @@ export function getIntelligenceStats(): IntelligenceStats & {
     // resolved cleanly, but we need to probe the module itself for the
     // TrainingPipeline export. Sync require — this function isn't async.
     if (ruvllmCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-      const { createRequire } = require('module') as { createRequire: (url: string) => NodeJS.Require };
+      // Use the already-imported `createRequire` from `node:module` (line 16).
+      // Earlier attempt used `require('module')` which throws in ESM
+      // context and was swallowed by this try/catch → trainingBackend
+      // stayed 'unavailable'. The top-level import is the correct pattern.
       const requireCjs = createRequire(import.meta.url);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ruvllm: any = requireCjs('@ruvector/ruvllm');
