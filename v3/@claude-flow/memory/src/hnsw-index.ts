@@ -529,6 +529,15 @@ export class HNSWIndex extends EventEmitter {
     return this.nodes.size;
   }
 
+  /**
+   * Read-only view of the resolved HNSW config (dimensions, M, etc.).
+   * Used by {@link MemoryConsolidator.compactHnsw} to rebuild the index with
+   * matching parameters.
+   */
+  getConfig(): Readonly<HNSWConfig> {
+    return this.config;
+  }
+
   // ===== Persistence (ADR-125 Phase 3) =====
 
   /**

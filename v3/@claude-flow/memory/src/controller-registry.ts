@@ -358,6 +358,24 @@ export interface RuntimeConfig {
   /** Backend instance to use (if pre-created) */
   backend?: IMemoryBackend;
 
+  /**
+   * Pre-initialized AgentDB instance to use. When provided, the
+   * registry skips its own dynamic-import / initialize cycle and uses
+   * this instance as-is — useful for testing, multi-registry sharing,
+   * and consumers that already hold an AgentDB they want governed by
+   * the registry. Issue #2019 added the regression tests that depend
+   * on this injection point.
+   */
+  agentdb?: unknown;
+
+  /**
+   * `MemoryService` (or compatible) used to back the `nightlyLearner`
+   * controller. When provided, ADR-125 Phase 4 wraps it with
+   * `MemoryConsolidator.runAll()` instead of delegating directly to AgentDB's
+   * `NightlyLearner`. Accepts `any` to avoid a circular import.
+   */
+  memoryService?: any;
+
   /** ADR-0045: D1 TelemetryManager exporters (default: ['console']) */
   telemetryExporters?: string[];
   /** ADR-0045: A9 EnhancedEmbeddingService providers */
@@ -1142,7 +1160,6 @@ export class ControllerRegistry extends EventEmitter {
       case 'causalRecall':
       case 'learningSystem':
       case 'explainableRecall':
-      case 'nightlyLearner':
       case 'graphAdapter':
       case 'gnnService':
       case 'memoryConsolidation':
@@ -1150,6 +1167,15 @@ export class ControllerRegistry extends EventEmitter {
       case 'contextSynthesizer':
       case 'rvfOptimizer':
       case 'mmrDiversityRanker':
+        return this.agentdb !== null;
+
+      // ADR-125 Phase 4 — nightlyLearner is enabled when EITHER an AgentDB
+      // is present (legacy path) OR a MemoryService is registered (new path
+      // backed by MemoryConsolidator.runAll).
+      case 'nightlyLearner':
+        return this.agentdb !== null || !!this.config.memoryService;
+
+      // SemanticRouter — auto-enable if agentdb available (exported since alpha.10)
       case 'semanticRouter':
         return this.agentdb !== null;
 
@@ -1656,6 +1682,25 @@ export class ControllerRegistry extends EventEmitter {
       }
 
       case 'nightlyLearner': {
+        // ADR-125 Phase 4 — prefer the MemoryConsolidator when a
+        // MemoryService is registered. The consolidator's `runAll()` is the
+        // documented entry point for sweep + dedup + compact and replaces the
+        // thin delegate to AgentDB's NightlyLearner.
+        const memSvc = this.config.memoryService;
+        if (memSvc && typeof memSvc.getConsolidator === 'function') {
+          try {
+            const consolidator = await memSvc.getConsolidator();
+            return {
+              run: () => consolidator.runAll(),
+              runAll: () => consolidator.runAll(),
+              sweepExpired: () => consolidator.sweepExpired(),
+              dedup: (s?: any) => consolidator.dedup(s),
+              compactHnsw: () => consolidator.compactHnsw(),
+              source: 'memory-consolidator' as const,
+            };
+          } catch { /* fall through to AgentDB */ }
+        }
+
         // ADR-0068 W2-3: Delegate to AgentDB first, fall back to direct construction
         // only when AgentDB does not yet expose nightlyLearner.
         //

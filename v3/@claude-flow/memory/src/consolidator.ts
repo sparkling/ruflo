@@ -222,13 +222,13 @@ export class MemoryConsolidator {
     const t0 = Date.now();
 
     // Build a fresh HNSW from current entries that have embeddings.
-    const dims = (index as any).config?.dimensions ?? 0;
+    const cfg = index.getConfig();
     const fresh = new HNSWIndex({
-      dimensions: dims,
-      M: (index as any).config?.M,
-      efConstruction: (index as any).config?.efConstruction,
-      maxElements: (index as any).config?.maxElements,
-      metric: (index as any).config?.metric,
+      dimensions: cfg.dimensions,
+      M: cfg.M,
+      efConstruction: cfg.efConstruction,
+      maxElements: cfg.maxElements,
+      metric: cfg.metric,
     });
 
     for (const entry of entries.values()) {
