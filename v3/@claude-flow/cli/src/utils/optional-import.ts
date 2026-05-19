@@ -8,16 +8,16 @@
  * including ESM/CJS interop failures, syntax errors in the imported
  * module, or anything else — propagates.
  *
- * The historical pattern `try { await import('pkg') } catch { /* not
- * available */ }` swallowed the 2026-05-19 ESM/CJS regression that
- * motivated ADR-0190/0191. Using this helper makes that class of bug
- * visible while still tolerating a missing optionalDependency.
+ * The legacy `try await import(pkg) catch swallow-with-comment` pattern
+ * (the comment was a literal "not available" tag) swallowed the
+ * 2026-05-19 ESM/CJS regression that motivated ADR-0190/0191. Using
+ * this helper makes that class of bug visible while still tolerating a
+ * missing optionalDependency.
  *
  * Use ONLY for entries that are actually in `optionalDependencies` of
- * the consuming package's `package.json`. For same-package internal
- * imports, required deps, or paths that cannot legitimately fail to
- * resolve, delete the catch entirely — see ADR-0191's per-callsite
- * disposition table.
+ * the consuming package's manifest. For same-package internal imports,
+ * required deps, or paths that cannot legitimately fail to resolve,
+ * delete the catch entirely — see ADR-0191's per-callsite disposition.
  */
 export async function tryOptionalImport<T = unknown>(spec: string): Promise<T | null> {
   try {
