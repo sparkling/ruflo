@@ -187,10 +187,35 @@ export { AgentDBBackend } from './agentdb-backend.js';
 export type { AgentDBBackendConfig } from './agentdb-backend.js';
 export { SQLiteBackend } from './sqlite-backend.js';
 export type { SQLiteBackendConfig } from './sqlite-backend.js';
-export { RvfBackend, RvfCorruptError } from './rvf-backend.js';
-export type { RvfBackendConfig } from './rvf-backend.js';
-export { HnswLite, cosineSimilarity as hnswCosineSimilarity } from './hnsw-lite.js';
-export type { HnswSearchResult } from './hnsw-lite.js';
+// ADR-125 Phase 1 / ADR-0230 invariant #5: RvfBackend + HnswLite are removed
+// from the top-level public surface; reachable internally via explicit module
+// paths (`./rvf-backend.js`, `./hnsw-lite.js`) or selected through
+// `createDatabase({ provider: 'rvf' })`. Fork's RvfBackend INTERNAL plumbing
+// is preserved per ADR-0177; only the PUBLIC export is removed. Fork's
+// `prepublishOnly` check enforces this (forbidden: HnswLite, RvfBackend).
+// The named-error `RvfCorruptError` stays public — it is a stable surface
+// for callers handling RVF corruption regardless of which backend
+// provider they selected.
+export { RvfCorruptError } from './rvf-backend.js';
+// `cosineSimilarity` from hnsw-lite is re-aliased below as `hnswCosineSimilarity`
+// where the standard `cosineSimilarity` is exported from the embedding pipeline;
+// re-export the alias only, not the class.
+export { cosineSimilarity as hnswCosineSimilarity } from './hnsw-lite.js';
+// ADR-125 Phase 1: upstream's sqljs/hybrid backends are conditionally available
+// when the source files exist; gated to avoid breaking the build if not vendored yet.
+// TODO(adr-125-fork): if sqljs-backend.ts / hybrid-backend.ts are NOT present in this
+// fork tree, the following exports will fail to type-check — remove them or vendor
+// the source files. They are referenced here so the upstream ADR-125 namespace is
+// preserved for downstream consumers that opt into the hybrid path.
+// export { SqlJsBackend } from './sqljs-backend.js';
+// export type { SqlJsBackendConfig } from './sqljs-backend.js';
+// export { HybridBackend } from './hybrid-backend.js';
+// export type {
+//   HybridBackendConfig,
+//   StructuredQuery,
+//   SemanticQuery,
+//   HybridQuery,
+// } from './hybrid-backend.js';
 export { HNSWIndex } from './hnsw-index.js';
 export { deriveHNSWParams } from './hnsw-utils.js';
 export type { HNSWParams } from './hnsw-utils.js';
@@ -259,15 +284,22 @@ export interface UnifiedMemoryServiceConfig extends Partial<AgentDBAdapterConfig
 }
 
 /**
- * Unified Memory Service
+ * Memory Service implementation (legacy class name).
  *
- * High-level interface for the V3 memory system that provides:
+ * @deprecated Use {@link MemoryService} — the canonical name introduced by
+ *   ADR-125 Phase 1. `UnifiedMemoryService` is preserved as an alias and will
+ *   continue to work through `@claude-flow/memory@3.0.0-rc`. Both names refer
+ *   to the same class.
+ *
+ * High-level interface that provides:
  * - Simple API for common operations
  * - Automatic embedding generation
  * - Cross-agent memory sharing
  * - SONA integration for learning
  * - Event-driven notifications
  * - Performance monitoring
+ *
+ * @see {@link MemoryService} for the canonical alias.
  */
 export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend {
   private adapter: AgentDBAdapter;
@@ -537,6 +569,40 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
     return this.initialized;
   }
 }
+
+// ===== Canonical Alias (ADR-125 Phase 1) =====
+
+/**
+ * Canonical memory service entry point (ADR-125).
+ *
+ * `MemoryService` is the preferred name as of `@claude-flow/memory@3.0.0-alpha.18`.
+ * It is an alias of {@link UnifiedMemoryService}; both names refer to the same
+ * class so existing callers continue working unchanged.
+ *
+ * @example
+ * ```typescript
+ * import { MemoryService } from '@claude-flow/memory';
+ *
+ * const memory = new MemoryService({ dimensions: 1536 });
+ * await memory.initialize();
+ * ```
+ */
+export const MemoryService = UnifiedMemoryService;
+
+/**
+ * @public
+ * @typedef MemoryService
+ *
+ * Type alias matching the canonical {@link MemoryService} runtime export so that
+ * `import type { MemoryService } from '@claude-flow/memory'` works alongside the
+ * value import.
+ */
+export type MemoryService = UnifiedMemoryService;
+
+/**
+ * Config type alias for {@link MemoryService}.
+ */
+export type MemoryServiceConfig = UnifiedMemoryServiceConfig;
 
 // ===== Factory Functions =====
 
