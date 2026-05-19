@@ -313,10 +313,11 @@ export function calculateReward(iterations: number, durationMs: number): number 
 
 export async function tryLoadLearning(): Promise<{ initialize: () => Promise<boolean>; [key: string]: unknown } | null> {
   // ADR-0191 Cluster A: `agentic-flow` is in cli/package.json:optionalDependencies
-  // AND this points at an internal-dist subpath whose presence varies by version.
-  // The inner `.catch(() => null)` swallows MODULE_NOT_FOUND from the import;
-  // the outer try discriminates so any other thrown error (e.g. an init bug in
-  // a present-but-broken AutopilotLearning) propagates instead of getting hidden.
+  // AND this points at an internal-dist subpath that varies by version. The
+  // `.catch` arm discriminates MODULE_NOT_FOUND (legitimate optional-absent) from
+  // every other thrown error (e.g. an init bug in a present-but-broken
+  // AutopilotLearning), which propagates. `instance.initialize()` is intentionally
+  // unwrapped — a failing init is a real bug operators need to see.
   const modPath = 'agentic-flow/dist/coordination/autopilot-learning.js';
   const mod = await import(/* webpackIgnore: true */ modPath).catch((e: unknown) => {
     const code = (e as { code?: string } | null)?.code;
