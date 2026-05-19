@@ -312,13 +312,20 @@ export function calculateReward(iterations: number, durationMs: number): number 
 // ── Learning Integration ──────────────────────────────────────
 
 export async function tryLoadLearning(): Promise<{ initialize: () => Promise<boolean>; [key: string]: unknown } | null> {
-  try {
-    const modPath = 'agentic-flow/dist/coordination/autopilot-learning.js';
-    const mod = await import(/* webpackIgnore: true */ modPath).catch(() => null);
-    if (mod?.AutopilotLearning) {
-      const instance = new mod.AutopilotLearning();
-      if (await instance.initialize()) return instance;
-    }
-  } catch { /* not available */ }
+  // ADR-0191 Cluster A: `agentic-flow` is in cli/package.json:optionalDependencies
+  // AND this points at an internal-dist subpath whose presence varies by version.
+  // The inner `.catch(() => null)` swallows MODULE_NOT_FOUND from the import;
+  // the outer try discriminates so any other thrown error (e.g. an init bug in
+  // a present-but-broken AutopilotLearning) propagates instead of getting hidden.
+  const modPath = 'agentic-flow/dist/coordination/autopilot-learning.js';
+  const mod = await import(/* webpackIgnore: true */ modPath).catch((e: unknown) => {
+    const code = (e as { code?: string } | null)?.code;
+    if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') return null;
+    throw e;
+  });
+  if (mod?.AutopilotLearning) {
+    const instance = new mod.AutopilotLearning();
+    if (await instance.initialize()) return instance;
+  }
   return null;
 }

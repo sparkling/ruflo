@@ -27,6 +27,8 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { type MCPTool, findProjectRoot } from './types.js';
+import { tryOptionalImport } from '../utils/optional-import.js';
+import { withTimeoutLogged } from '../utils/timeout.js';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
@@ -386,22 +388,25 @@ async function getSemanticRouter() {
       let vdbHnswM = 23;
       let vdbEfConstruction = 100;
       let vdbEfSearch = 50;
-      try {
-        const agentdbModule: any = await import('@claude-flow/agentdb');
-        if (typeof agentdbModule.getEmbeddingConfig === 'function') {
-          const embCfg = agentdbModule.getEmbeddingConfig();
-          vdbDimensions = embCfg.dimension || vdbDimensions;
-          try {
-            const memModule: any = await import('@claude-flow/memory');
-            if (typeof memModule.deriveHNSWParams === 'function') {
-              const hnsw = memModule.deriveHNSWParams(vdbDimensions);
-              vdbHnswM = hnsw.M;
-              vdbEfConstruction = hnsw.efConstruction;
-              vdbEfSearch = hnsw.efSearch;
-            }
-          } catch { /* @claude-flow/memory not available */ }
+      // ADR-0191: `@claude-flow/agentdb` was a dead path (not in package.json,
+      // not codemod-aliased). The correct package is `agentdb` — a required
+      // dep — so the import cannot legitimately fail and needs no catch.
+      // `@claude-flow/memory` IS in optionalDependencies and uses the
+      // discriminating helper.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const agentdbModule: any = await import('agentdb');
+      if (typeof agentdbModule.getEmbeddingConfig === 'function') {
+        const embCfg = agentdbModule.getEmbeddingConfig();
+        vdbDimensions = embCfg.dimension || vdbDimensions;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const memModule = await tryOptionalImport<any>('@claude-flow/memory');
+        if (memModule && typeof memModule.deriveHNSWParams === 'function') {
+          const hnsw = memModule.deriveHNSWParams(vdbDimensions);
+          vdbHnswM = hnsw.M;
+          vdbEfConstruction = hnsw.efConstruction;
+          vdbEfSearch = hnsw.efSearch;
         }
-      } catch { /* agentdb not available -- use fallback */ }
+      }
       const db = new router.VectorDb({
         dimensions: vdbDimensions,
         distanceMetric: router.DistanceMetric.Cosine,
@@ -987,107 +992,109 @@ export const hooksRoute: MCPTool = {
     // Mutable metadata that controllers can enrich
     let routingMetadata: Record<string, unknown> = {};
 
-    // Phase 2: Try SolverBandit first (learned routing) — ADR-0084 Phase 3: via memory-router
-    try {
-      const { getController } = await import('../memory/memory-router.js');
-      const solver = await getController<any>('solverBandit');
-      if (solver && typeof solver.selectArm === 'function') {
-        const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
-        const taskType = task;
-        const banditResult = await Promise.race([
-          solver.selectArm(taskType, agents),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SolverBandit timeout')), 2000)),
-        ]);
-        if (banditResult.confidence > 0.6 && banditResult.controller !== 'fallback') {
+    // Phase 2: Try SolverBandit first (learned routing) — ADR-0084 Phase 3: via memory-router.
+    // ADR-0191 Cluster B: getController() is race-protected and returns undefined on miss;
+    // the typeof guard handles absence. Outer try/catch removed — method-body throws are
+    // real bugs that must surface; timeouts log via withTimeoutLogged + return null so the
+    // existing if-result-truthy guard falls through cleanly.
+    const { getController } = await import('../memory/memory-router.js');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const solver = await getController<any>('solverBandit');
+    if (solver && typeof solver.selectArm === 'function') {
+      const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
+      const taskType = task;
+      const banditResult = await withTimeoutLogged(
+        solver.selectArm(taskType, agents),
+        2000,
+        'SolverBandit.selectArm',
+      );
+      if (banditResult && banditResult.confidence > 0.6 && banditResult.controller !== 'fallback') {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              recommended_agent: banditResult.arm,
+              confidence: banditResult.confidence,
+              routing_method: 'solverBandit',
+              task_type: taskType,
+            }),
+          }],
+        };
+      }
+    }
+
+    // Phase 4: SkillLibrary — check for learned skills matching this task (P4-A: ADR-0033)
+    // ADR-0191 Cluster B: see SolverBandit comment above.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const skills = await getController<any>('skills');
+    if (skills && typeof skills.search === 'function') {
+      const taskType = (params.task_type as string) || task || 'default';
+      const skillResult = await withTimeoutLogged(
+        skills.search(taskType, 3),
+        2000,
+        'SkillLibrary.search',
+      );
+      if (skillResult && Array.isArray(skillResult) && skillResult.length > 0) {
+        const bestSkill = skillResult[0];
+        if (bestSkill.confidence > 0.7 || bestSkill.score > 0.7) {
           return {
             content: [{
               type: 'text' as const,
               text: JSON.stringify({
-                recommended_agent: banditResult.arm,
-                confidence: banditResult.confidence,
-                routing_method: 'solverBandit',
+                recommended_agent: bestSkill.agent || bestSkill.pattern || bestSkill.name,
+                confidence: bestSkill.confidence || bestSkill.score,
+                routing_method: 'skillLibrary',
+                skill: bestSkill.name || bestSkill.pattern,
                 task_type: taskType,
               }),
             }],
           };
         }
       }
-    } catch { /* SolverBandit unavailable — fall through to patterns */ }
-
-    // Phase 4: SkillLibrary — check for learned skills matching this task (P4-A: ADR-0033)
-    try {
-      const { getController: getCtrl } = await import('../memory/memory-router.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const skills = await getCtrl<any>('skills');
-      if (skills && typeof skills.search === 'function') {
-        const taskType = (params.task_type as string) || task || 'default';
-        const skillResult = await Promise.race([
-          skills.search(taskType, 3),
-          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('SkillLibrary.search timeout')), 2000))
-        ]);
-        if (skillResult && Array.isArray(skillResult) && skillResult.length > 0) {
-          const bestSkill = skillResult[0];
-          if (bestSkill.confidence > 0.7 || bestSkill.score > 0.7) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: JSON.stringify({
-                  recommended_agent: bestSkill.agent || bestSkill.pattern || bestSkill.name,
-                  confidence: bestSkill.confidence || bestSkill.score,
-                  routing_method: 'skillLibrary',
-                  skill: bestSkill.name || bestSkill.pattern,
-                  task_type: taskType,
-                }),
-              }],
-            };
-          }
-        }
-      }
-    } catch { /* SkillLibrary unavailable — fall through */ }
+    }
 
     // Phase 4: LearningSystem algorithm recommendation
-    try {
-      const { getController: getCtrlLS } = await import('../memory/memory-router.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ls = await getCtrlLS<any>('learningSystem');
-      if (ls && typeof ls.recommendAlgorithm === 'function') {
-        const taskType = task;
-        const recommendation = await Promise.race([
-          ls.recommendAlgorithm(taskType),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('LearningSystem timeout')), 2000)),
-        ]);
-        if (recommendation?.algorithm) {
-          // Merge into routing metadata (don't override agent selection)
-          routingMetadata = { ...routingMetadata, learningSystem: recommendation };
-        }
+    // ADR-0191 Cluster B.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ls = await getController<any>('learningSystem');
+    if (ls && typeof ls.recommendAlgorithm === 'function') {
+      const taskType = task;
+      const recommendation = await withTimeoutLogged(
+        ls.recommendAlgorithm(taskType),
+        2000,
+        'LearningSystem.recommendAlgorithm',
+      );
+      if (recommendation?.algorithm) {
+        // Merge into routing metadata (don't override agent selection)
+        routingMetadata = { ...routingMetadata, learningSystem: recommendation };
       }
-    } catch { /* LearningSystem unavailable */ }
+    }
 
     // Phase 5: Use SemanticRouter when available (replaces static TASK_PATTERNS) — ADR-0084 Phase 3: via memory-router
-    try {
-      const { getController: getCtrlSR } = await import('../memory/memory-router.js');
-      const semantic = await getCtrlSR<any>('semanticRouter');
-      if (semantic && typeof semantic.route === 'function') {
-        const routeResult = await Promise.race([
-          semantic.route({ input: task }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SemanticRouter timeout')), 2000)),
-        ]);
-        if (routeResult?.route && !routeResult.error) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                recommended_agent: routeResult.route,
-                confidence: routeResult.confidence || 0.7,
-                routing_method: 'semanticRouter',
-                task_type: task,
-                ...routingMetadata,
-              }),
-            }],
-          };
-        }
+    // ADR-0191 Cluster B.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const semantic = await getController<any>('semanticRouter');
+    if (semantic && typeof semantic.route === 'function') {
+      const routeResult = await withTimeoutLogged(
+        semantic.route({ input: task }),
+        2000,
+        'SemanticRouter.route',
+      );
+      if (routeResult?.route && !routeResult.error) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              recommended_agent: routeResult.route,
+              confidence: routeResult.confidence || 0.7,
+              routing_method: 'semanticRouter',
+              task_type: task,
+              ...routingMetadata,
+            }),
+          }],
+        };
       }
-    } catch { /* SemanticRouter unavailable — fall through to patterns */ }
+    }
 
     // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first — ADR-0084 Phase 3: via memory-router
     if (useSemanticRouter) {
@@ -2060,19 +2067,18 @@ export const hooksSessionEnd: MCPTool = {
       // Router not available
     }
 
-    // Phase 3: Trigger NightlyLearner consolidation on session end (ADR-0084 Phase 3: via memory-router)
-    try {
-      const { getController: getCtrlNL } = await import('../memory/memory-router.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const registry = await getCtrlNL<any>('nightlyLearner');
-      if (registry && typeof registry.consolidate === 'function') {
-        // Fire-and-forget — consolidation is background work
-        Promise.race([
-          registry.consolidate(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('NightlyLearner timeout')), 2000)),
-        ]).catch(() => {});
-      }
-    } catch { /* NightlyLearner unavailable */ }
+    // Phase 3: Trigger NightlyLearner consolidation on session end (ADR-0084 Phase 3: via memory-router).
+    // ADR-0191 Cluster B: getController is race-protected; typeof guard handles absence.
+    // The consolidation call is intentionally fire-and-forget (background work) so
+    // withTimeoutLogged is the right primitive — its in-promise .catch() arm logs
+    // the timeout signal and swallows it (single intentional async edge), while
+    // non-timeout errors propagate via the unhandled rejection (visible in logs).
+    const { getController: getCtrlNL } = await import('../memory/memory-router.js');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registry = await getCtrlNL<any>('nightlyLearner');
+    if (registry && typeof registry.consolidate === 'function') {
+      void withTimeoutLogged(registry.consolidate(), 2000, 'NightlyLearner.consolidate');
+    }
 
     return {
       sessionId,
@@ -2957,17 +2963,16 @@ export const hooksIntelligenceStats: MCPTool = {
     }
 
     // Phase 5: SonaTrajectory stats (P5-F: ADR-0033)
+    // ADR-0191 Cluster B: see other B sites in this file.
     let sonaTrajectoryStats: Record<string, unknown> | null = null;
-    try {
-      const trajectory = await getSonaTrajectory();
-      if (trajectory && typeof trajectory.getStats === 'function') {
-        const tStats = await Promise.race([
-          trajectory.getStats(),
-          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-        ]);
-        sonaTrajectoryStats = tStats;
-      }
-    } catch { /* stats unavailable */ }
+    const trajectory = await getSonaTrajectory();
+    if (trajectory && typeof trajectory.getStats === 'function') {
+      sonaTrajectoryStats = await withTimeoutLogged(
+        trajectory.getStats(),
+        2000,
+        'SonaTrajectory.getStats',
+      );
+    }
 
     const stats = {
       sona: sonaStats,

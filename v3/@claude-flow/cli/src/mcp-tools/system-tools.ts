@@ -162,66 +162,69 @@ export const systemTools: MCPTool[] = [
       let taskCounts = { pending: 0, completed: 0, failed: 0 };
       let _metricsSource: 'agentdb' | 'json-store' | 'none' = 'none';
 
-      // Primary: AgentDB (SQLite + HNSW)
-      try {
-        const router = await import('../memory/memory-router.js');
-        const agentResults = await router.routeMemoryOp({ type: 'list', namespace: 'agents', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
-        const agentEntries = agentResults?.entries;
-        if (agentEntries && agentEntries.length > 0) {
-          let active = 0;
-          for (const a of agentEntries) {
-            try {
-              const meta = a.metadata ? JSON.parse(a.metadata) : (a.value ? JSON.parse(a.value) : {});
-              if (meta.status === 'active' || meta.status === 'running') active++;
-            } catch { /* skip unparseable */ }
-          }
-          agentCounts = { total: agentEntries.length, active };
-          _metricsSource = 'agentdb';
+      // Primary: AgentDB (SQLite + HNSW).
+      // ADR-0191 Cluster D: outer try removed. `memory-router.js` is a same-package
+      // import (cannot fail); `routeMemoryOp` returns a typed `{entries, ...}` result
+      // rather than throwing. A throw here is a real bug and must surface — the
+      // legacy "fall back to JSON" path is for the "empty agentdb" case (gated by
+      // `_metricsSource === 'none'`), not for the "broken agentdb" case.
+      const router = await import('../memory/memory-router.js');
+      const agentResults = await router.routeMemoryOp({ type: 'list', namespace: 'agents', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
+      const agentEntries = agentResults?.entries;
+      if (agentEntries && agentEntries.length > 0) {
+        let active = 0;
+        for (const a of agentEntries) {
+          try {
+            const meta = a.metadata ? JSON.parse(a.metadata) : (a.value ? JSON.parse(a.value) : {});
+            if (meta.status === 'active' || meta.status === 'running') active++;
+          } catch { /* skip unparseable */ }
         }
-        const taskResults = await router.routeMemoryOp({ type: 'list', namespace: 'tasks', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
-        const taskEntries = taskResults?.entries;
-        if (taskEntries && taskEntries.length > 0) {
-          let pending = 0, completed = 0, failed = 0;
-          for (const t of taskEntries) {
-            try {
-              const meta = t.metadata ? JSON.parse(t.metadata) : (t.value ? JSON.parse(t.value) : {});
-              if (meta.status === 'pending' || meta.status === 'assigned') pending++;
-              else if (meta.status === 'completed') completed++;
-              else if (meta.status === 'failed') failed++;
-            } catch { /* skip */ }
-          }
-          taskCounts = { pending, completed, failed };
-          _metricsSource = 'agentdb';
+        agentCounts = { total: agentEntries.length, active };
+        _metricsSource = 'agentdb';
+      }
+      const taskResults = await router.routeMemoryOp({ type: 'list', namespace: 'tasks', limit: 10000 }) as { entries?: Array<{ metadata?: string; value?: string }> } | null;
+      const taskEntries = taskResults?.entries;
+      if (taskEntries && taskEntries.length > 0) {
+        let pending = 0, completed = 0, failed = 0;
+        for (const t of taskEntries) {
+          try {
+            const meta = t.metadata ? JSON.parse(t.metadata) : (t.value ? JSON.parse(t.value) : {});
+            if (meta.status === 'pending' || meta.status === 'assigned') pending++;
+            else if (meta.status === 'completed') completed++;
+            else if (meta.status === 'failed') failed++;
+          } catch { /* skip */ }
         }
-      } catch { /* AgentDB not available, try JSON fallback */ }
+        taskCounts = { pending, completed, failed };
+        _metricsSource = 'agentdb';
+      }
 
-      // Fallback: JSON store files (backward compatibility)
+      // Fallback: JSON store files (backward compatibility).
+      // ADR-0191 Cluster D: outer catches removed. existsSync gates first-run
+      // absence; the remaining failure modes are SyntaxError on corrupt JSON
+      // and ENOENT-after-existsSync race — both are real events the operator
+      // needs to know about.
       if (_metricsSource === 'none') {
-        try {
-          const agentStorePath = join(findProjectRoot(), STORAGE_DIR, 'agents', 'store.json');
-          if (existsSync(agentStorePath)) {
-            const agentStore = JSON.parse(readFileSync(agentStorePath, 'utf-8'));
-            const agents = Object.values(agentStore.agents || {}) as Array<{ status: string }>;
-            agentCounts = {
-              total: agents.length,
-              active: agents.filter(a => a.status === 'active' || a.status === 'running').length,
-            };
-            _metricsSource = 'json-store';
-          }
-        } catch { /* agent store not available */ }
-        try {
-          const taskStorePath = join(findProjectRoot(), STORAGE_DIR, 'tasks', 'store.json');
-          if (existsSync(taskStorePath)) {
-            const taskStore = JSON.parse(readFileSync(taskStorePath, 'utf-8'));
-            const tasks = Object.values(taskStore.tasks || {}) as Array<{ status: string }>;
-            taskCounts = {
-              pending: tasks.filter(t => t.status === 'pending' || t.status === 'assigned').length,
-              completed: tasks.filter(t => t.status === 'completed').length,
-              failed: tasks.filter(t => t.status === 'failed').length,
-            };
-            _metricsSource = 'json-store';
-          }
-        } catch { /* task store not available */ }
+        const agentStorePath = join(findProjectRoot(), STORAGE_DIR, 'agents', 'store.json');
+        if (existsSync(agentStorePath)) {
+          const agentStore = JSON.parse(readFileSync(agentStorePath, 'utf-8'));
+          const agents = Object.values(agentStore.agents || {}) as Array<{ status: string }>;
+          agentCounts = {
+            total: agents.length,
+            active: agents.filter(a => a.status === 'active' || a.status === 'running').length,
+          };
+          _metricsSource = 'json-store';
+        }
+        const taskStorePath = join(findProjectRoot(), STORAGE_DIR, 'tasks', 'store.json');
+        if (existsSync(taskStorePath)) {
+          const taskStore = JSON.parse(readFileSync(taskStorePath, 'utf-8'));
+          const tasks = Object.values(taskStore.tasks || {}) as Array<{ status: string }>;
+          taskCounts = {
+            pending: tasks.filter(t => t.status === 'pending' || t.status === 'assigned').length,
+            completed: tasks.filter(t => t.status === 'completed').length,
+            failed: tasks.filter(t => t.status === 'failed').length,
+          };
+          _metricsSource = 'json-store';
+        }
       }
 
       const currentMetrics: SystemMetrics = {

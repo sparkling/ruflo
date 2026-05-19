@@ -1364,34 +1364,37 @@ const cacheCommand: Command = {
       }
     } catch { /* file access error */ }
 
-    // Get in-memory HNSW stats if available
+    // Get in-memory HNSW stats if available.
+    // ADR-0191 Cluster E: `routeEmbeddingOp` (memory-router.ts:1845) already
+    // returns typed `{success, error?, available?, entryCount?, dimensions?}` and
+    // does not throw — the "Storage not initialized" case is `{success: false}`.
+    // The `hnswStatus.success` guard handles it cleanly; the legacy catch was
+    // paranoia about an import that's same-package and cannot fail.
     let memoryEntries = 0;
     let memorySize = '0 B';
-    try {
-      // ADR-0086 T2.6: import from router (was memory-initializer)
-      const { routeEmbeddingOp } = await import('../memory/memory-router.js');
-      const hnswStatus = await routeEmbeddingOp({ type: 'hnswStatus' });
-      if (hnswStatus && hnswStatus.success) {
-        memoryEntries = Number(hnswStatus.entryCount) || 0;
-        const memBytes = memoryEntries * (Number(hnswStatus.dimensions) || EMBEDDING_DIM) * 4; // Float32 = 4 bytes per dimension; ADR-0052: matches embedding config default
-        if (memBytes >= 1024 * 1024) {
-          memorySize = `${(memBytes / 1024 / 1024).toFixed(1)} MB`;
-        } else if (memBytes >= 1024) {
-          memorySize = `${(memBytes / 1024).toFixed(1)} KB`;
-        } else {
-          memorySize = `${memBytes} B`;
-        }
+    // ADR-0086 T2.6: import from router (was memory-initializer)
+    const { routeEmbeddingOp } = await import('../memory/memory-router.js');
+    const hnswStatus = await routeEmbeddingOp({ type: 'hnswStatus' });
+    if (hnswStatus && hnswStatus.success) {
+      memoryEntries = Number(hnswStatus.entryCount) || 0;
+      const memBytes = memoryEntries * (Number(hnswStatus.dimensions) || EMBEDDING_DIM) * 4; // Float32 = 4 bytes per dimension; ADR-0052: matches embedding config default
+      if (memBytes >= 1024 * 1024) {
+        memorySize = `${(memBytes / 1024 / 1024).toFixed(1)} MB`;
+      } else if (memBytes >= 1024) {
+        memorySize = `${(memBytes / 1024).toFixed(1)} KB`;
+      } else {
+        memorySize = `${memBytes} B`;
       }
-    } catch { /* HNSW not initialized */ }
+    }
 
     if (action === 'clear') {
       try {
-        // Clear via router first
-        try {
-          const { routeMemoryOp, ensureRouter } = await import('../memory/memory-router.js');
-          await ensureRouter();
-          await routeMemoryOp({ type: 'clearNamespace', namespace: 'default' });
-        } catch { /* router not available */ }
+        // Clear via router first.
+        // ADR-0191 singleton: same-package import + typed routeMemoryOp; the
+        // legacy catch was paranoia. A throw here is a real bug that must surface.
+        const { routeMemoryOp, ensureRouter } = await import('../memory/memory-router.js');
+        await ensureRouter();
+        await routeMemoryOp({ type: 'clearNamespace', namespace: 'default' });
 
         // Also remove the on-disk file
         if (fs.existsSync(resolvedDbPath)) {

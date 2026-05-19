@@ -351,20 +351,31 @@ const threatsCommand: Command = {
       { pattern: /Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req|request)\./g, category: 'Elevation', severity: 'medium', description: 'Object.assign from request — prototype pollution risk' },
     ];
 
-    // Check for .env files committed to git
+    // Check for .env files committed to git.
+    // ADR-0191 singleton: git is environment-conditional (reason #5 — genuine
+    // platform conditional). Discriminate the two legitimately-absent cases
+    // (binary missing → ENOENT from spawn; not a git repo → exit 128/129);
+    // anything else (permission denied, malformed output, etc.) propagates.
     const checkEnvInGit = () => {
+      let tracked: string;
       try {
-        const tracked = execSync('git ls-files --cached', { cwd: rootDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-        const envFiles = tracked.split('\n').filter((f: string) => /(?:^|\/)\.env(?:\.|$)/.test(f));
-        for (const envFile of envFiles) {
-          findings.push({
-            category: 'Info Disclosure',
-            severity: output.error('CRITICAL'),
-            location: envFile,
-            description: '.env file tracked in git — secrets may be exposed',
-          });
+        tracked = execSync('git ls-files --cached', { cwd: rootDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch (e: unknown) {
+        const err = e as { code?: string; status?: number };
+        if (err.code === 'ENOENT' || err.status === 128 || err.status === 129) {
+          return; // git binary missing or not in a git repo — expected
         }
-      } catch { /* not a git repo or git not available */ }
+        throw e;
+      }
+      const envFiles = tracked.split('\n').filter((f: string) => /(?:^|\/)\.env(?:\.|$)/.test(f));
+      for (const envFile of envFiles) {
+        findings.push({
+          category: 'Info Disclosure',
+          severity: output.error('CRITICAL'),
+          location: envFile,
+          description: '.env file tracked in git — secrets may be exposed',
+        });
+      }
     };
 
     // Recursive file scanner

@@ -222,15 +222,16 @@ async function checkMemoryDatabase(): Promise<HealthCheck> {
 // CF-003: Check memory backend dependencies
 // ADR-0086: RVF is primary storage — check @claude-flow/memory (no native better-sqlite3 needed)
 async function checkMemoryBackend(): Promise<HealthCheck> {
-  // Read configured backend from config.json
+  // Read configured backend from config.json.
+  // ADR-0191 Cluster D: existsSync gates first-run absence; SyntaxError on
+  // a malformed config.json MUST surface — doctor exists precisely to flag
+  // config issues, so silently using defaults defeats its purpose.
   let configuredBackend = 'hybrid';
-  try {
-    const cfgPath = join(process.cwd(), '.claude-flow', 'config.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    if (existsSync(cfgPath)) {
-      const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
-      if (cfg.memory && cfg.memory.backend) configuredBackend = cfg.memory.backend;
-    }
-  } catch { /* T4: config.json may not exist */ }
+  const cfgPath = join(process.cwd(), '.claude-flow', 'config.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  if (existsSync(cfgPath)) {
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+    if (cfg.memory && cfg.memory.backend) configuredBackend = cfg.memory.backend;
+  }
 
   // Check package availability using dynamic import
   const packages: Record<string, boolean> = {};

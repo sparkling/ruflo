@@ -414,15 +414,15 @@ const metricsCommand: Command = {
     const cpuUserMs = (cpuUsage.user / 1000).toFixed(0);
     const cpuSystemMs = (cpuUsage.system / 1000).toFixed(0);
 
-    // Try to get HNSW/cache stats from real data
+    // Try to get HNSW/cache stats from real data.
+    // ADR-0191 Cluster E: see commands/embeddings.ts for the same pattern.
+    // `routeEmbeddingOp` returns a typed result; the legacy catch was paranoia.
     let cacheHitRate = 'N/A';
-    let hnswEntries = 0;
-    try {
-      // ADR-0086 T2.6: import from router (was memory-initializer)
-      const { routeEmbeddingOp: hnswOp } = await import('../memory/memory-router.js');
-      const status = await hnswOp({ type: 'hnswStatus' });
-      hnswEntries = (status as any)?.totalEntries || 0;
-    } catch { /* HNSW not initialized */ }
+    // ADR-0086 T2.6: import from router (was memory-initializer)
+    const { routeEmbeddingOp: hnswOp } = await import('../memory/memory-router.js');
+    const status = await hnswOp({ type: 'hnswStatus' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hnswEntries = (status as any)?.totalEntries || 0;
 
     // Try to get real cache stats
     let cacheEntries = 0;

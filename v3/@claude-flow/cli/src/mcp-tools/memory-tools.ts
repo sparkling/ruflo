@@ -58,6 +58,7 @@ import { findProjectRoot } from './types.js';
 import { routeMemoryOp, getController, ensureRouter } from '../memory/memory-router.js';
 import { validateIdentifier } from './validate-input.js';
 import { getProcessArchivist, ensureRvfWired } from '../memory/archivist-init.js';
+import { withTimeoutLogged } from '../utils/timeout.js';
 
 // ADR-0181 Phase 5 (F4-3) cli delegation summary (full rationale in the file
 // header @module docblock):
@@ -482,17 +483,17 @@ export const memoryTools: MCPTool[] = [
 
       validateMemoryInput(undefined, undefined, query);
 
-      // ADR-0043: QueryOptimizer (B6) — check cache before searching
-      try {
-        const qo = await getController('queryOptimizer');
-        if (qo && typeof (qo as Record<string, unknown>).getCached === 'function') {
-          const cacheKey = JSON.stringify({ q: query, ns: namespace, limit, threshold });
-          const cached = (qo as { getCached: (k: string) => Record<string, unknown> | null }).getCached(cacheKey);
-          if (cached) {
-            return { ...cached, cached: true };
-          }
+      // ADR-0043: QueryOptimizer (B6) — check cache before searching.
+      // ADR-0191 Cluster B: getController returns undefined on miss; typeof
+      // guard handles absence. Method-body throws are real bugs and surface.
+      const qo = await getController('queryOptimizer');
+      if (qo && typeof (qo as Record<string, unknown>).getCached === 'function') {
+        const cacheKey = JSON.stringify({ q: query, ns: namespace, limit, threshold });
+        const cached = (qo as { getCached: (k: string) => Record<string, unknown> | null }).getCached(cacheKey);
+        if (cached) {
+          return { ...cached, cached: true };
         }
-      } catch { /* QueryOptimizer cache unavailable — proceed with search */ }
+      }
 
       const startTime = performance.now();
 
@@ -561,24 +562,25 @@ export const memoryTools: MCPTool[] = [
           }
         }
 
-        // WM-103b: Apply MMRDiversityRanker for diversity re-ranking (ADR-068)
+        // WM-103b: Apply MMRDiversityRanker for diversity re-ranking (ADR-068).
+        // ADR-0191 Cluster B: withTimeoutLogged returns null on timeout (logged) and
+        // lets method-body throws propagate. Caller's array-shape check handles null.
         let outputResults = filteredResults;
-        try {
-          const mmr = await getController('mmrDiversityRanker');
-          if (mmr && typeof (mmr as Record<string, unknown>).selectDiverse === 'function' && outputResults.length > 1) {
-            const lambda = (input.mmr_lambda as number) ?? 0.5;
-            const diverseResults = await Promise.race([
-              Promise.resolve(
-                (mmr as { selectDiverse: (r: typeof outputResults, q: string, opts: { lambda: number; k: number }) => typeof outputResults })
-                  .selectDiverse(outputResults, query, { lambda, k: limit })
-              ),
-              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('MMR timeout')), 2000)),
-            ]);
-            if (Array.isArray(diverseResults) && diverseResults.length > 0) {
-              outputResults = diverseResults;
-            }
+        const mmr = await getController('mmrDiversityRanker');
+        if (mmr && typeof (mmr as Record<string, unknown>).selectDiverse === 'function' && outputResults.length > 1) {
+          const lambda = (input.mmr_lambda as number) ?? 0.5;
+          const diverseResults = await withTimeoutLogged(
+            Promise.resolve(
+              (mmr as { selectDiverse: (r: typeof outputResults, q: string, opts: { lambda: number; k: number }) => typeof outputResults })
+                .selectDiverse(outputResults, query, { lambda, k: limit })
+            ),
+            2000,
+            'MMRDiversityRanker.selectDiverse',
+          );
+          if (Array.isArray(diverseResults) && diverseResults.length > 0) {
+            outputResults = diverseResults;
           }
-        } catch { /* MMR diversity re-ranking unavailable — continue with unranked results */ }
+        }
 
         // WM-114c: Boost results with attention scores when available
         let attentionApplied = false;
@@ -599,34 +601,35 @@ export const memoryTools: MCPTool[] = [
           // AttentionService re-ranking is non-fatal -- continue with unranked results
         }
 
-        // Phase 4: AgentMemoryScope — filter results by scope
-        try {
-          if (input.scope) {
-            const scopeCtrl: any = await getController('agentMemoryScope');
-            if (scopeCtrl && typeof scopeCtrl.filterByScope === 'function') {
-              outputResults = scopeCtrl.filterByScope(
-                outputResults,
-                input.scope as 'agent' | 'session' | 'global',
-                (input.scope_id || input.agent_id || input.session_id) as string | undefined,
-              );
-            }
+        // Phase 4: AgentMemoryScope — filter results by scope.
+        // ADR-0191 Cluster B: getController + typeof guard already covers
+        // absence; filterByScope is synchronous so no timeout primitive needed.
+        if (input.scope) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const scopeCtrl: any = await getController('agentMemoryScope');
+          if (scopeCtrl && typeof scopeCtrl.filterByScope === 'function') {
+            outputResults = scopeCtrl.filterByScope(
+              outputResults,
+              input.scope as 'agent' | 'session' | 'global',
+              (input.scope_id || input.agent_id || input.session_id) as string | undefined,
+            );
           }
-        } catch { /* scope filtering unavailable */ }
+        }
 
-        // Context synthesis when requested (ADR-0033)
+        // Context synthesis when requested (ADR-0033).
+        // ADR-0191 Cluster B.
         let synthesis: unknown = undefined;
         if (input.synthesize && outputResults.length > 0) {
-          try {
-            const ctx = await getController('contextSynthesizer');
-            if (ctx && typeof (ctx as Record<string, unknown>).synthesize === 'function') {
-              synthesis = await Promise.race([
-                Promise.resolve(
-                  (ctx as { synthesize: (r: typeof outputResults) => unknown }).synthesize(outputResults)
-                ),
-                new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ContextSynthesizer timeout')), 2000)),
-              ]);
-            }
-          } catch { /* context synthesis unavailable */ }
+          const ctx = await getController('contextSynthesizer');
+          if (ctx && typeof (ctx as Record<string, unknown>).synthesize === 'function') {
+            synthesis = await withTimeoutLogged(
+              Promise.resolve(
+                (ctx as { synthesize: (r: typeof outputResults) => unknown }).synthesize(outputResults)
+              ),
+              2000,
+              'ContextSynthesizer.synthesize',
+            );
+          }
         }
 
         // ADR-0180 §102: Provenance shape branching.

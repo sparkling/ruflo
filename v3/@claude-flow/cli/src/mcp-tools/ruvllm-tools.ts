@@ -113,29 +113,27 @@ export const ruvllmWasmTools: MCPTool[] = [
         const mod = await loadRuvllmWasm();
         const wasmStatus = await mod.getRuvllmStatus();
 
-        // Also include native ruvllm CJS backend status (ADR-086)
-        let nativeBackend: Record<string, unknown> = { available: false };
-        try {
-          const { getIntelligenceStats } = await import('../memory/intelligence.js');
-          const iStats = getIntelligenceStats();
-          const { getSONAStats } = await import('../memory/sona-optimizer.js');
-          const sStats = await getSONAStats();
-          nativeBackend = {
-            available: iStats._ruvllmBackend === 'active',
-            coordinator: iStats._ruvllmBackend || 'unavailable',
-            trajectories: iStats._ruvllmTrajectories || 0,
-            contrastiveTrainer: sStats._contrastiveTrainer !== 'unavailable' ? 'active' : 'unavailable',
-            trainingBackend: iStats._trainingBackend || 'unknown',
-          };
-        } catch { /* not initialized yet */ }
+        // Also include native ruvllm CJS backend status (ADR-086).
+        // ADR-0191 Cluster A: these are same-package internal imports —
+        // MODULE_NOT_FOUND is impossible. Any throw here is a real init bug
+        // (state read inside getIntelligenceStats/getSONAStats) and must
+        // surface, not get folded into "not initialized yet".
+        const { getIntelligenceStats } = await import('../memory/intelligence.js');
+        const iStats = getIntelligenceStats();
+        const { getSONAStats } = await import('../memory/sona-optimizer.js');
+        const sStats = await getSONAStats();
+        const nativeBackend: Record<string, unknown> = {
+          available: iStats._ruvllmBackend === 'active',
+          coordinator: iStats._ruvllmBackend || 'unavailable',
+          trajectories: iStats._ruvllmTrajectories || 0,
+          contrastiveTrainer: sStats._contrastiveTrainer !== 'unavailable' ? 'active' : 'unavailable',
+          trainingBackend: iStats._trainingBackend || 'unknown',
+        };
 
-        // Graph database status (ADR-087)
-        let graphStatus: Record<string, unknown> = { available: false };
-        try {
-          const { getGraphStats } = await import('../ruvector/graph-backend.js');
-          const gs = await getGraphStats();
-          graphStatus = { available: gs.backend === 'graph-node', ...gs };
-        } catch { /* not loaded */ }
+        // Graph database status (ADR-087). Same-package internal import.
+        const { getGraphStats } = await import('../ruvector/graph-backend.js');
+        const gs = await getGraphStats();
+        const graphStatus: Record<string, unknown> = { available: gs.backend === 'graph-node', ...gs };
 
         return { content: [{ type: 'text', text: JSON.stringify({ wasm: wasmStatus, native: nativeBackend, graph: graphStatus }, null, 2) }] };
       } catch (err) {

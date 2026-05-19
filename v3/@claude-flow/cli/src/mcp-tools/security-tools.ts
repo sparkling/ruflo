@@ -162,8 +162,10 @@ const aidefenceScanTool: MCPTool = {
         // Audit-flagged: quickScan focuses on prompt-injection/jailbreak
         // patterns and missed obvious PII (email + API key). Layer a fast
         // PII check so quick mode catches both threat classes.
-        let piiPresent = false;
-        try { piiPresent = !!defender.hasPII(input); } catch { /* hasPII unavailable */ }
+        // ADR-0191 Cluster C: AIDefence interface declares `hasPII(input: string): boolean`
+        // as required at @claude-flow/aidefence/src/index.ts:96. The legacy catch was
+        // paranoia about a guaranteed method.
+        const piiPresent = !!defender.hasPII(input);
         const threatDetected = result.threat || piiPresent;
         wrapperStats.quickScanCalls++;
         if (threatDetected) wrapperStats.quickScanThreats++;
@@ -471,8 +473,8 @@ const aidefenceIsSafeTool: MCPTool = {
       const defender = await getAIDefence();
       const { isSafe } = await import('@claude-flow/aidefence');
       const promptSafe = isSafe(input);
-      let piiPresent = false;
-      try { piiPresent = !!defender.hasPII(input); } catch { /* hasPII unavailable */ }
+      // ADR-0191 Cluster C: hasPII is contract-required on AIDefence.
+      const piiPresent = !!defender.hasPII(input);
       const safe = promptSafe && !piiPresent;
       wrapperStats.isSafeCalls++;
       if (!safe) wrapperStats.isSafeUnsafeVerdicts++;

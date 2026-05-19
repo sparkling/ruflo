@@ -391,12 +391,14 @@ function _resolveDatabasePath(configuredPath: string): string {
 }
 
 function _readProjectConfig(): Record<string, unknown> {
-  try {
-    const cfgPath = path.join(findProjectRoot(), '.claude-flow', 'config.json');
-    if (fs.existsSync(cfgPath)) {
-      return JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    }
-  } catch { /* config.json may not exist or may be malformed — use defaults */ }
+  // ADR-0191 Cluster D: existsSync gates first-run absence; SyntaxError on
+  // a malformed config.json (corruption) MUST propagate — operators need
+  // to know their config file is broken rather than silently getting
+  // defaults that mask the real settings they tried to set.
+  const cfgPath = path.join(findProjectRoot(), '.claude-flow', 'config.json');
+  if (fs.existsSync(cfgPath)) {
+    return JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+  }
   return {};
 }
 
@@ -587,16 +589,18 @@ async function initControllerRegistry(dbPath?: string): Promise<any | null> {
         console.log = (..._args: unknown[]) => { /* suppress all during init */ };
         console.warn = (..._args: unknown[]) => { /* suppress all during init */ };
 
-        // Get dimension + model from agentdb embedding config
+        // Get dimension + model from agentdb embedding config.
+        // ADR-0191 Cluster A: `agentdb` is in cli/package.json:dependencies
+        // (required). The legacy catch was paranoia about a required dep —
+        // absence cannot happen in a healthy install. Drop it; an error
+        // here is a real install bug that must surface.
         let _embDimension = 768;
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const _agentdbCfg: any = await import('agentdb');
-          if (_agentdbCfg.getEmbeddingConfig) {
-            const _ec = _agentdbCfg.getEmbeddingConfig();
-            _embDimension = _ec.dimension;
-          }
-        } catch { /* agentdb not available, use default */ }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const _agentdbCfg: any = await import('agentdb');
+        if (_agentdbCfg.getEmbeddingConfig) {
+          const _ec = _agentdbCfg.getEmbeddingConfig();
+          _embDimension = _ec.dimension;
+        }
 
         try {
           const { config: cfgJson, embeddings: embJson } = _getProjectConfig();

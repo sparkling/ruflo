@@ -1050,11 +1050,13 @@ export class WorkerDaemon extends EventEmitter {
     }
 
     this.running = false;
-    // ADR-0084 Phase 4: shut down via router (replaces direct bridge dependency)
-    try {
-      const router = await import('../memory/memory-router.js');
-      if (router.shutdownRouter) await router.shutdownRouter();
-    } catch { /* router may not be loaded */ }
+    // ADR-0084 Phase 4: shut down via router (replaces direct bridge dependency).
+    // ADR-0191 singleton: same-package import cannot fail; if `shutdownRouter`
+    // throws, that's a real shutdown bug that must surface, not get hidden
+    // behind a "router may not be loaded" comment that is factually wrong
+    // about its trigger (the import is internal).
+    const router = await import('../memory/memory-router.js');
+    if (router.shutdownRouter) await router.shutdownRouter();
 
     // ADR-0181 Phase 1: drop the per-process Archivist reference. With a
     // projectRoot-only config the Archivist holds no closeable handle of its

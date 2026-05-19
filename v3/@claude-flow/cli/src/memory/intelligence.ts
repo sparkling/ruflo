@@ -1136,30 +1136,31 @@ export function getIntelligenceStats(): IntelligenceStats & {
   // "Training Pipeline" row as Active.
   let contrastiveTrainer: { triplets: number; agents: number } | string = 'unavailable';
   let trainingBackend = 'unavailable';
-  try {
-    // Synchronous check — contrastiveTrainer is module-level in sona-optimizer
-    // We read it via the SONAOptimizer singleton if available
-    const sonaModule = (globalThis as any).__claudeFlowSonaStats;
-    if (sonaModule) {
-      contrastiveTrainer = sonaModule._contrastiveTrainer || 'unavailable';
+  // ADR-0191 Cluster A: removed the outer undiscriminating catch. Property
+  // reads on globalThis cannot throw; the only throw point is `requireCjs`
+  // resolving `@ruvector/ruvllm` (an optionalDependency). Discriminate
+  // MODULE_NOT_FOUND there; anything else (ESM/CJS error, broken install)
+  // MUST propagate — that class of error is exactly what the legacy catch
+  // hid in the 2026-05-19 regression that drove ADR-0190/0191.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sonaModule = (globalThis as any).__claudeFlowSonaStats;
+  if (sonaModule) {
+    contrastiveTrainer = sonaModule._contrastiveTrainer || 'unavailable';
+  }
+  if (ruvllmCoordinator) {
+    const requireCjs = createRequire(import.meta.url);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let ruvllm: any = null;
+    try {
+      ruvllm = requireCjs('@ruvector/ruvllm');
+    } catch (e: unknown) {
+      const code = (e as { code?: string } | null)?.code;
+      if (code !== 'MODULE_NOT_FOUND') throw e;
     }
-    // Detect TrainingPipeline via the same module we already loaded for
-    // SonaCoordinator. ruvllmCoordinator presence means @ruvector/ruvllm
-    // resolved cleanly, but we need to probe the module itself for the
-    // TrainingPipeline export. Sync require — this function isn't async.
-    if (ruvllmCoordinator) {
-      // Use the already-imported `createRequire` from `node:module` (line 16).
-      // Earlier attempt used `require('module')` which throws in ESM
-      // context and was swallowed by this try/catch → trainingBackend
-      // stayed 'unavailable'. The top-level import is the correct pattern.
-      const requireCjs = createRequire(import.meta.url);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ruvllm: any = requireCjs('@ruvector/ruvllm');
-      if (ruvllm && typeof ruvllm.TrainingPipeline === 'function') {
-        trainingBackend = 'ruvllm';
-      }
+    if (ruvllm && typeof ruvllm.TrainingPipeline === 'function') {
+      trainingBackend = 'ruvllm';
     }
-  } catch { /* not available */ }
+  }
 
   return {
     sonaEnabled: !!sonaCoordinator,
