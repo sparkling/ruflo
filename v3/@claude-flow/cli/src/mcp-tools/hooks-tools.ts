@@ -992,108 +992,131 @@ export const hooksRoute: MCPTool = {
     // Mutable metadata that controllers can enrich
     let routingMetadata: Record<string, unknown> = {};
 
-    // Phase 2: Try SolverBandit first (learned routing) — ADR-0084 Phase 3: via memory-router.
-    // ADR-0191 Cluster B: getController() is race-protected and returns undefined on miss;
-    // the typeof guard handles absence. Outer try/catch removed — method-body throws are
-    // real bugs that must surface; timeouts log via withTimeoutLogged + return null so the
-    // existing if-result-truthy guard falls through cleanly.
-    const { getController } = await import('../memory/memory-router.js');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const solver = await getController<any>('solverBandit');
-    if (solver && typeof solver.selectArm === 'function') {
-      const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
-      const taskType = task;
-      const banditResult = await withTimeoutLogged(
-        solver.selectArm(taskType, agents),
-        2000,
-        'SolverBandit.selectArm',
-      );
-      if (banditResult && banditResult.confidence > 0.6 && banditResult.controller !== 'fallback') {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              recommended_agent: banditResult.arm,
-              confidence: banditResult.confidence,
-              routing_method: 'solverBandit',
-              task_type: taskType,
-            }),
-          }],
-        };
-      }
-    }
+    // ADR-0191 Cluster B (revised): route_task implements a documented
+    // graceful-degradation contract — try SolverBandit, fall through to
+    // SkillLibrary, then LearningSystem, then SemanticRouter, then static
+    // patterns. On a cold start, controller methods can throw because
+    // their internal state hasn't been populated yet; the contract is to
+    // fall through to the next strategy, not propagate. The wrappers
+    // below preserve that contract but LOG the fall-through via
+    // console.error so the signal is observable (no-squelch rule
+    // satisfied via telemetry, not exception propagation). Long-term
+    // fix per the absence-not-accepted rule: controller methods should
+    // return typed "not-ready" results instead of throwing, at which
+    // point these try/catches can become a typed-result check.
 
-    // Phase 4: SkillLibrary — check for learned skills matching this task (P4-A: ADR-0033)
-    // ADR-0191 Cluster B: see SolverBandit comment above.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const skills = await getController<any>('skills');
-    if (skills && typeof skills.search === 'function') {
-      const taskType = (params.task_type as string) || task || 'default';
-      const skillResult = await withTimeoutLogged(
-        skills.search(taskType, 3),
-        2000,
-        'SkillLibrary.search',
-      );
-      if (skillResult && Array.isArray(skillResult) && skillResult.length > 0) {
-        const bestSkill = skillResult[0];
-        if (bestSkill.confidence > 0.7 || bestSkill.score > 0.7) {
+    const { getController } = await import('../memory/memory-router.js');
+
+    // Phase 2: SolverBandit (learned routing) — ADR-0084 Phase 3
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const solver = await getController<any>('solverBandit');
+      if (solver && typeof solver.selectArm === 'function') {
+        const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
+        const taskType = task;
+        const banditResult = await withTimeoutLogged(
+          solver.selectArm(taskType, agents),
+          2000,
+          'SolverBandit.selectArm',
+        );
+        if (banditResult && banditResult.confidence > 0.6 && banditResult.controller !== 'fallback') {
           return {
             content: [{
               type: 'text' as const,
               text: JSON.stringify({
-                recommended_agent: bestSkill.agent || bestSkill.pattern || bestSkill.name,
-                confidence: bestSkill.confidence || bestSkill.score,
-                routing_method: 'skillLibrary',
-                skill: bestSkill.name || bestSkill.pattern,
+                recommended_agent: banditResult.arm,
+                confidence: banditResult.confidence,
+                routing_method: 'solverBandit',
                 task_type: taskType,
               }),
             }],
           };
         }
       }
+    } catch (e) {
+      console.error(`[hooks_route] SolverBandit fall-through: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Phase 4: SkillLibrary (P4-A: ADR-0033)
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const skills = await getController<any>('skills');
+      if (skills && typeof skills.search === 'function') {
+        const taskType = (params.task_type as string) || task || 'default';
+        const skillResult = await withTimeoutLogged(
+          skills.search(taskType, 3),
+          2000,
+          'SkillLibrary.search',
+        );
+        if (skillResult && Array.isArray(skillResult) && skillResult.length > 0) {
+          const bestSkill = skillResult[0];
+          if (bestSkill.confidence > 0.7 || bestSkill.score > 0.7) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: JSON.stringify({
+                  recommended_agent: bestSkill.agent || bestSkill.pattern || bestSkill.name,
+                  confidence: bestSkill.confidence || bestSkill.score,
+                  routing_method: 'skillLibrary',
+                  skill: bestSkill.name || bestSkill.pattern,
+                  task_type: taskType,
+                }),
+              }],
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`[hooks_route] SkillLibrary fall-through: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // Phase 4: LearningSystem algorithm recommendation
-    // ADR-0191 Cluster B.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ls = await getController<any>('learningSystem');
-    if (ls && typeof ls.recommendAlgorithm === 'function') {
-      const taskType = task;
-      const recommendation = await withTimeoutLogged(
-        ls.recommendAlgorithm(taskType),
-        2000,
-        'LearningSystem.recommendAlgorithm',
-      );
-      if (recommendation?.algorithm) {
-        // Merge into routing metadata (don't override agent selection)
-        routingMetadata = { ...routingMetadata, learningSystem: recommendation };
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ls = await getController<any>('learningSystem');
+      if (ls && typeof ls.recommendAlgorithm === 'function') {
+        const taskType = task;
+        const recommendation = await withTimeoutLogged(
+          ls.recommendAlgorithm(taskType),
+          2000,
+          'LearningSystem.recommendAlgorithm',
+        );
+        if (recommendation?.algorithm) {
+          // Merge into routing metadata (don't override agent selection)
+          routingMetadata = { ...routingMetadata, learningSystem: recommendation };
+        }
       }
+    } catch (e) {
+      console.error(`[hooks_route] LearningSystem fall-through: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Phase 5: Use SemanticRouter when available (replaces static TASK_PATTERNS) — ADR-0084 Phase 3: via memory-router
-    // ADR-0191 Cluster B.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const semantic = await getController<any>('semanticRouter');
-    if (semantic && typeof semantic.route === 'function') {
-      const routeResult = await withTimeoutLogged(
-        semantic.route({ input: task }),
-        2000,
-        'SemanticRouter.route',
-      );
-      if (routeResult?.route && !routeResult.error) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              recommended_agent: routeResult.route,
-              confidence: routeResult.confidence || 0.7,
-              routing_method: 'semanticRouter',
-              task_type: task,
-              ...routingMetadata,
-            }),
-          }],
-        };
+    // Phase 5: SemanticRouter (replaces static TASK_PATTERNS) — ADR-0084 Phase 3
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const semantic = await getController<any>('semanticRouter');
+      if (semantic && typeof semantic.route === 'function') {
+        const routeResult = await withTimeoutLogged(
+          semantic.route({ input: task }),
+          2000,
+          'SemanticRouter.route',
+        );
+        if (routeResult?.route && !routeResult.error) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                recommended_agent: routeResult.route,
+                confidence: routeResult.confidence || 0.7,
+                routing_method: 'semanticRouter',
+                task_type: task,
+                ...routingMetadata,
+              }),
+            }],
+          };
+        }
       }
+    } catch (e) {
+      console.error(`[hooks_route] SemanticRouter fall-through: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first — ADR-0084 Phase 3: via memory-router
@@ -2068,16 +2091,21 @@ export const hooksSessionEnd: MCPTool = {
     }
 
     // Phase 3: Trigger NightlyLearner consolidation on session end (ADR-0084 Phase 3: via memory-router).
-    // ADR-0191 Cluster B: getController is race-protected; typeof guard handles absence.
-    // The consolidation call is intentionally fire-and-forget (background work) so
-    // withTimeoutLogged is the right primitive — its in-promise .catch() arm logs
-    // the timeout signal and swallows it (single intentional async edge), while
-    // non-timeout errors propagate via the unhandled rejection (visible in logs).
-    const { getController: getCtrlNL } = await import('../memory/memory-router.js');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const registry = await getCtrlNL<any>('nightlyLearner');
-    if (registry && typeof registry.consolidate === 'function') {
-      void withTimeoutLogged(registry.consolidate(), 2000, 'NightlyLearner.consolidate');
+    // ADR-0191 Cluster B (revised): session_end is a graceful-degradation flow
+    // — consolidation is best-effort background work. Cold-start errors are
+    // expected; catch + log via the in-promise `.catch` arm so signal is
+    // observable. Non-timeout errors get logged but don't bubble (session_end
+    // must not fail because consolidation hit a transient).
+    try {
+      const { getController: getCtrlNL } = await import('../memory/memory-router.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const registry = await getCtrlNL<any>('nightlyLearner');
+      if (registry && typeof registry.consolidate === 'function') {
+        void withTimeoutLogged(registry.consolidate(), 2000, 'NightlyLearner.consolidate')
+          .catch((e) => console.error(`[session_end] NightlyLearner consolidation error: ${e instanceof Error ? e.message : String(e)}`));
+      }
+    } catch (e) {
+      console.error(`[session_end] NightlyLearner fall-through: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     return {
@@ -2963,15 +2991,21 @@ export const hooksIntelligenceStats: MCPTool = {
     }
 
     // Phase 5: SonaTrajectory stats (P5-F: ADR-0033)
-    // ADR-0191 Cluster B: see other B sites in this file.
+    // ADR-0191 Cluster B (revised): stats are best-effort observability —
+    // a cold start can throw; catch + log so the signal is observable and
+    // the surrounding stats call still returns the other metrics.
     let sonaTrajectoryStats: Record<string, unknown> | null = null;
-    const trajectory = await getSonaTrajectory();
-    if (trajectory && typeof trajectory.getStats === 'function') {
-      sonaTrajectoryStats = await withTimeoutLogged(
-        trajectory.getStats(),
-        2000,
-        'SonaTrajectory.getStats',
-      );
+    try {
+      const trajectory = await getSonaTrajectory();
+      if (trajectory && typeof trajectory.getStats === 'function') {
+        sonaTrajectoryStats = await withTimeoutLogged(
+          trajectory.getStats(),
+          2000,
+          'SonaTrajectory.getStats',
+        );
+      }
+    } catch (e) {
+      console.error(`[hooks_intelligence_stats] SonaTrajectory fall-through: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const stats = {

@@ -313,15 +313,25 @@ export function calculateReward(iterations: number, durationMs: number): number 
 
 export async function tryLoadLearning(): Promise<{ initialize: () => Promise<boolean>; [key: string]: unknown } | null> {
   // ADR-0191 Cluster A: `agentic-flow` is in cli/package.json:optionalDependencies
-  // AND this points at an internal-dist subpath that varies by version. The
-  // `.catch` arm discriminates MODULE_NOT_FOUND (legitimate optional-absent) from
-  // every other thrown error (e.g. an init bug in a present-but-broken
-  // AutopilotLearning), which propagates. `instance.initialize()` is intentionally
-  // unwrapped — a failing init is a real bug operators need to see.
+  // AND this points at an internal-dist subpath that varies by version. The `.catch`
+  // arm uses `tryOptionalImport`'s discrimination set: MODULE_NOT_FOUND (package
+  // absent), ERR_PACKAGE_PATH_NOT_EXPORTED (package present, subpath not in
+  // `exports` map — observed in agentic-flow ≥2.0.2 where `dist/coordination/*`
+  // is no longer exported). Anything else (init bug in present-and-exported
+  // AutopilotLearning, ESM/CJS interop failure) propagates.
+  // `instance.initialize()` is intentionally unwrapped — a failing init is a
+  // real bug operators need to see.
   const modPath = 'agentic-flow/dist/coordination/autopilot-learning.js';
   const mod = await import(/* webpackIgnore: true */ modPath).catch((e: unknown) => {
     const code = (e as { code?: string } | null)?.code;
-    if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') return null;
+    if (
+      code === 'ERR_MODULE_NOT_FOUND' ||
+      code === 'MODULE_NOT_FOUND' ||
+      code === 'ERR_PACKAGE_PATH_NOT_EXPORTED' ||
+      code === 'ERR_PACKAGE_IMPORT_NOT_DEFINED'
+    ) {
+      return null;
+    }
     throw e;
   });
   if (mod?.AutopilotLearning) {
