@@ -187,26 +187,24 @@ export { AgentDBBackend } from './agentdb-backend.js';
 export type { AgentDBBackendConfig } from './agentdb-backend.js';
 export { SQLiteBackend } from './sqlite-backend.js';
 export type { SQLiteBackendConfig } from './sqlite-backend.js';
-// ADR-125 Phase 1 / ADR-0230 invariant #5: RvfBackend + HnswLite are removed
-// from the top-level public surface; reachable internally via explicit module
-// paths (`./rvf-backend.js`, `./hnsw-lite.js`) or selected through
-// `createDatabase({ provider: 'rvf' })`. Fork's RvfBackend INTERNAL plumbing
-// is preserved per ADR-0177; only the PUBLIC export is removed. Fork's
-// `prepublishOnly` check enforces this (forbidden: HnswLite, RvfBackend).
-// The named-error `RvfCorruptError` stays public — it is a stable surface
-// for callers handling RVF corruption regardless of which backend
-// provider they selected.
-export { RvfCorruptError } from './rvf-backend.js';
-// `cosineSimilarity` from hnsw-lite is re-aliased below as `hnswCosineSimilarity`
-// where the standard `cosineSimilarity` is exported from the embedding pipeline;
-// re-export the alias only, not the class.
-export { cosineSimilarity as hnswCosineSimilarity } from './hnsw-lite.js';
-// ADR-0230 step F (Phase 2 adapter, cherry-pick 11eaef851) will wire the
-// hybrid SQLite+AgentDB tier; until then, upstream's hybrid/sqljs modules
-// are intentionally NOT exposed at the top-level surface on the fork
-// (per the ADR-0065 + ADR-0076 source-form invariants asserted by
+// ADR-125 Phase 1/3 + ADR-0230 invariant #5: `RvfBackend` is removed from
+// the top-level public surface; reachable internally via the explicit module
+// path (`./rvf-backend.js`) or selected through `createDatabase({ provider:
+// 'rvf' })`. The legacy `hnsw-lite.ts` module was deleted by ADR-125 Phase 3;
+// its brute-force-degrading code is inlined into `rvf-backend.ts` as a
+// private helper. Fork's RvfBackend INTERNAL plumbing is preserved per
+// ADR-0177; only the PUBLIC export is removed. Fork's `prepublishOnly`
+// check enforces this (forbidden: HnswLite, RvfBackend). The named-error
+// `RvfCorruptError` stays public — it is a stable surface for callers
+// handling RVF corruption regardless of which backend provider they
+// selected. Upstream's `sqljs-backend.ts` / `hybrid-backend.ts` modules
+// are not vendored on the fork yet; the hybrid SQLite+AgentDB tier wiring
+// (Phase 2) lands via ADR-0230 step F (cherry-pick 11eaef851). The fork
+// keeps these intentionally OFF the top-level surface (per the ADR-0065
+// + ADR-0076 source-form invariants asserted by
 // `tests/unit/config-centralization-adr0065.test.mjs:362` and
 // `tests/unit/adr0076-phase0-1.test.mjs:70`).
+export { RvfCorruptError } from './rvf-backend.js';
 export { HNSWIndex } from './hnsw-index.js';
 export { deriveHNSWParams } from './hnsw-utils.js';
 export type { HNSWParams } from './hnsw-utils.js';
@@ -272,6 +270,28 @@ export interface UnifiedMemoryServiceConfig extends Partial<AgentDBAdapterConfig
 
   /** Embedding generator function */
   embeddingGenerator?: EmbeddingGenerator;
+
+  /**
+   * Take an HNSW + metadata snapshot every N successful `store()` calls.
+   * Set to `0` (or `Infinity`) to disable interval-based snapshots — `close()`
+   * still flushes. Default: 1000.
+   *
+   * Only takes effect when `persistenceEnabled === true` and `persistencePath`
+   * is set. Added by ADR-125 Phase 3.
+   */
+  snapshotInterval?: number;
+
+  /**
+   * Configuration for the background {@link MemoryConsolidator}. Added by
+   * ADR-125 Phase 4. When `autoRun: true`, the service starts a `setInterval`
+   * timer (default 6h) that runs sweep + dedup + compact and emits the
+   * result via `'consolidation:complete'`.
+   */
+  consolidator?: {
+    autoRun?: boolean;
+    intervalMs?: number;
+    dedupStrategy?: 'keep-newest' | 'keep-oldest' | 'merge-tags';
+  };
 }
 
 /**
@@ -297,6 +317,29 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
   private config: UnifiedMemoryServiceConfig;
   private initialized: boolean = false;
 
+  /** Total successful `store()` calls since last snapshot trigger (ADR-125 Phase 3). */
+  private storeCountSinceSnapshot: number = 0;
+
+  /** Resolved snapshot interval — see {@link UnifiedMemoryServiceConfig.snapshotInterval}. */
+  private readonly snapshotInterval: number;
+
+  /** Background consolidator timer (ADR-125 Phase 4). */
+  private consolidatorTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Lazy-loaded consolidator instance (ADR-125 Phase 4). */
+  private consolidator: any | null = null;
+
+  /**
+   * The active memory backend. Defaults to the `AgentDBAdapter` created from
+   * config, but can be any `IMemoryBackend` implementation (e.g. the hybrid
+   * SQLite+AgentDB backend when constructed via `createHybridService` per
+   * ADR-009 / ADR-125 Phase 2 — fork wires that via ADR-0230 step F).
+   *
+   * Public so consumers can introspect the backend type without reaching for
+   * `getAdapter()` (which is AgentDB-specific).
+   */
+  public backend: IMemoryBackend;
+
   constructor(config: UnifiedMemoryServiceConfig = {}) {
     super();
     this.config = {
@@ -305,6 +348,11 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
       autoEmbed: true,
       ...config,
     };
+
+    // ADR-125 Phase 3 — snapshot every Nth store. 0/Infinity = disabled.
+    const raw = this.config.snapshotInterval;
+    this.snapshotInterval =
+      raw === undefined ? 1000 : raw === 0 ? Infinity : raw;
 
     this.adapter = new AgentDBAdapter({
       dimensions: this.config.dimensions,
@@ -319,6 +367,11 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
       persistencePath: this.config.persistencePath,
       maxEntries: this.config.maxEntries,
     });
+
+    // Default backend is the AgentDB adapter — ADR-125 Phase 2 (fork's ADR-0230
+    // step F) introduces the ability to replace it via `withBackend()` /
+    // `createHybridService`.
+    this.backend = this.adapter;
 
     // Forward adapter events
     this.adapter.on('entry:stored', (data) => this.emit('entry:stored', data));
@@ -335,20 +388,126 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
     if (this.initialized) return;
     await this.adapter.initialize();
     this.initialized = true;
+
+    // ADR-125 Phase 4 — start background consolidator if requested.
+    this.startConsolidatorTimer();
+
     this.emit('initialized');
   }
 
   async shutdown(): Promise<void> {
     if (!this.initialized) return;
-    await this.adapter.shutdown();
+
+    // ADR-125 Phase 4 — stop consolidator timer first to prevent a sweep
+    // from racing the snapshot below.
+    if (this.consolidatorTimer) {
+      clearInterval(this.consolidatorTimer);
+      this.consolidatorTimer = null;
+    }
+
+    // ADR-125 Phase 3 — flush a final HNSW + meta snapshot before tearing the
+    // backend down. Only meaningful when the AgentDBAdapter is the active
+    // backend and persistence is enabled.
+    if (this.backend === this.adapter) {
+      try {
+        await this.adapter.saveSnapshot();
+      } catch {
+        // saveToDisk already emits failure events; do not throw from shutdown.
+      }
+    }
+
+    await this.backend.shutdown();
     this.initialized = false;
     this.emit('shutdown');
+  }
+
+  /**
+   * Alias for {@link shutdown}. Matches the lifecycle name expected by callers
+   * who treat `MemoryService` like a connection — referenced from ADR-125
+   * Phase 3 (snapshot on close()) and Phase 4 (consolidator timer cleanup).
+   */
+  async close(): Promise<void> {
+    return this.shutdown();
+  }
+
+  /**
+   * Start the background consolidator timer if configured.
+   * @internal
+   */
+  private startConsolidatorTimer(): void {
+    const cfg = this.config.consolidator;
+    if (!cfg?.autoRun) return;
+    const intervalMs = cfg.intervalMs ?? 6 * 60 * 60 * 1000; // default 6h
+    if (intervalMs <= 0) return;
+
+    this.consolidatorTimer = setInterval(() => {
+      void this.runAutoConsolidation();
+    }, intervalMs);
+    // Don't block process exit on the timer (Node-only; no-op elsewhere).
+    if (typeof (this.consolidatorTimer as any).unref === 'function') {
+      (this.consolidatorTimer as any).unref();
+    }
+  }
+
+  /**
+   * Run a single consolidator cycle on the active adapter. Emits a
+   * `consolidation:complete` event with the {@link ConsolidationResult}.
+   * @internal
+   */
+  private async runAutoConsolidation(): Promise<void> {
+    try {
+      const consolidator = await this.getConsolidator();
+      const result = await consolidator.runAll();
+      this.emit('consolidation:complete', result);
+    } catch (err) {
+      this.emit('consolidation:failed', {
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Get (and lazily construct) the {@link MemoryConsolidator} bound to this
+   * service. Added by ADR-125 Phase 4.
+   */
+  async getConsolidator(): Promise<any> {
+    if (this.consolidator) return this.consolidator;
+    const { MemoryConsolidator } = await import('./consolidator.js');
+    // The consolidator reaches into AgentDBAdapter private state. Cast through
+    // any to bypass TS's view of those fields (the runtime structure is stable
+    // and tested by consolidator.test.ts).
+    this.consolidator = new MemoryConsolidator(this as any, {
+      dedupStrategy: this.config.consolidator?.dedupStrategy ?? 'keep-newest',
+      intervalMs: this.config.consolidator?.intervalMs,
+    });
+    return this.consolidator;
   }
 
   // ===== IMemoryBackend Implementation =====
 
   async store(entry: MemoryEntry): Promise<void> {
-    return this.adapter.store(entry);
+    await this.backend.store(entry);
+    this.maybeSnapshot();
+  }
+
+  /**
+   * If a snapshot interval is configured and the threshold is hit, fire a
+   * snapshot in the background. Only meaningful when the active backend is
+   * the AgentDBAdapter with persistence enabled.
+   *
+   * @internal — ADR-125 Phase 3
+   */
+  private maybeSnapshot(): void {
+    if (!Number.isFinite(this.snapshotInterval)) return;
+    if (this.backend !== this.adapter) return;
+    if (!this.config.persistenceEnabled || !this.config.persistencePath) return;
+
+    this.storeCountSinceSnapshot += 1;
+    if (this.storeCountSinceSnapshot >= this.snapshotInterval) {
+      this.storeCountSinceSnapshot = 0;
+      // Fire and forget — saveSnapshot emits its own lifecycle events.
+      void this.adapter.saveSnapshot();
+    }
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
@@ -376,7 +535,11 @@ export class UnifiedMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
-    return this.adapter.bulkInsert(entries);
+    await this.backend.bulkInsert(entries);
+    // Count each entry toward the snapshot threshold (ADR-125 Phase 3).
+    for (let i = 0; i < entries.length; i++) {
+      this.maybeSnapshot();
+    }
   }
 
   async bulkDelete(ids: string[]): Promise<number> {

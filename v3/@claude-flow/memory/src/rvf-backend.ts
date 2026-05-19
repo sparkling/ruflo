@@ -12,6 +12,9 @@ import type {
   HealthCheckResult,
   MemoryType,
 } from './types.js';
+// Fork keeps explicit hnsw-lite + extracted types/errors imports.
+// Upstream ADR-125 Phase 3 inlined HnswLite into this file and deleted hnsw-lite.ts;
+// fork retains the separate module (other call sites depend on it).
 import { HnswLite, cosineSimilarity } from './hnsw-lite.js';
 import { deriveHNSWParams } from './hnsw-utils.js';
 import {
