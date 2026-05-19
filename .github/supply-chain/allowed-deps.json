@@ -1,0 +1,61 @@
+{
+  "$schema": "./allowed-deps.schema.json",
+  "version": 1,
+  "comment": "Top-level dependency allowlist for ruflo. Adding any new top-level (non-transitive) dependency to any package.json under plugins/* or v3/@claude-flow/* MUST be matched by an entry here. CI enforces. Transitive deps are out of scope. Maintained per ADR-123 supply-chain hardening.",
+  "policies": {
+    "rejectInRegistry": [
+      "ruflo-graph-intellligence",
+      "ruflo-graph-intelligance",
+      "sublinear-time-solvor",
+      "sublinear-time-server",
+      "agent-browse",
+      "agent-browsr",
+      "agentic-fl0w",
+      "agentic-flo"
+    ],
+    "comment": "rejectInRegistry blocks installation of these known typosquats even if a future maintainer is fooled into adding them"
+  },
+  "packages": {
+    "ruflo-graph-intelligence": {
+      "comment": "ADR-123 plugin",
+      "dependencies": [
+        "sublinear-time-solver",
+        "zod"
+      ],
+      "peerDependencies": [
+        "@claude-flow/cli"
+      ],
+      "devDependencies": [
+        "@types/node",
+        "typescript",
+        "vitest"
+      ]
+    },
+    "@claude-flow/browser": {
+      "comment": "ADR-122 substrate",
+      "dependencies": [
+        "agent-browser",
+        "agentic-flow",
+        "zod"
+      ],
+      "peerDependencies": [
+        "@claude-flow/cli"
+      ],
+      "devDependencies": [
+        "@types/node",
+        "typescript",
+        "vitest"
+      ]
+    }
+  },
+  "publisherTrust": {
+    "comment": "We rely on npm publisher identity for these critical upstream deps. If a publisher account changes or unpublishes, supply-chain-audit alerts.",
+    "criticalUpstreamPackages": [
+      "sublinear-time-solver",
+      "agent-browser",
+      "agentic-flow",
+      "zod",
+      "@modelcontextprotocol/sdk"
+    ]
+  }
+}

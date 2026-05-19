@@ -1,0 +1,25 @@
+{
+  "$schema": "./accepted-findings.schema.json",
+  "version": 1,
+  "comment": "Triaged supply-chain findings that the audit currently tolerates. Every entry must cite a tracking issue or ADR. Entries WITHOUT a tracking link fail audit. Adding to this file requires CODEOWNER review per .github/CODEOWNERS.",
+  "cve": [
+    {
+      "package": "v3/@claude-flow/browser",
+      "depName": "agentic-flow",
+      "severity": "high",
+      "via": ["@xenova/transformers", "agentdb"],
+      "tracking": "ADR-121 Phase 4 — migration to ruvector-onnx-embeddings-wasm",
+      "trackingIssue": "https://github.com/ruvnet/ruflo/issues/2036",
+      "expiresAt": "2026-08-19",
+      "rationale": "Transitive via @xenova/transformers (upstream-retired, migration to ruvector-onnx-embeddings-wasm tracked in ADR-121 Phase 4). Browser package does not invoke the vulnerable code path. Re-audit when ADR-121 Phase 4 lands or expires."
+    }
+  ],
+  "lockfile": [
+    {
+      "package": "v3/@claude-flow/browser",
+      "pattern": "/node_modules/.pnpm/",
+      "reason": "pnpm-store symlinked shadow entries inside an npm lockfile do not carry SHA-512 integrity hashes. The real integrity is enforced by pnpm in /v3/pnpm-lock.yaml separately.",
+      "tracking": "not-a-vuln — out-of-scope by construction"
+    }
+  ]
+}
