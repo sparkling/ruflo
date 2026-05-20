@@ -138,7 +138,6 @@ const IMPORT_ALIASES: Record<string, string> = {
   'claude-flow/memory': '@claude-flow/memory',
   'claude-flow/agents': '@claude-flow/agent-lifecycle',
   'claude-flow/tasks': '@claude-flow/task-execution',
-  'claude-flow/hooks': '@claude-flow/hooks',
   'claude-flow/config': '@claude-flow/config',
   'claude-flow': '@claude-flow/core',
 };

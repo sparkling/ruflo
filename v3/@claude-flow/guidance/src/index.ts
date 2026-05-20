@@ -75,11 +75,6 @@ export { ShardRetriever, createRetriever, HashEmbeddingProvider } from './retrie
 export type { IEmbeddingProvider } from './retriever.js';
 export { EnforcementGates, createGates } from './gates.js';
 export {
-  GuidanceHookProvider,
-  createGuidanceHooks,
-  gateResultsToHookResult,
-} from './hooks.js';
-export {
   RunLedger,
   createLedger,
   TestsPassEvaluator,

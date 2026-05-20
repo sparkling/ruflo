@@ -140,7 +140,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claude-flow/hooks": "3.0.0-alpha.7-patch.764",
     "@claude-flow/memory": "3.0.0-alpha.15-patch.237",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.520"
   },
