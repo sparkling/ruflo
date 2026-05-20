@@ -45,6 +45,7 @@ claude mcp add neural-trader -- npx neural-trader mcp start
 | `trader-regime` | `/trader-regime [--symbol SPY]` | Market regime detection and classification |
 | `trader-train` | `/trader-train lstm --symbol TSLA` | Train neural prediction models |
 | `trader-risk` | `/trader-risk [--symbol AAPL]` | VaR, position sizing, circuit breaker status |
+| `trader-portfolio-cg` | `/trader-portfolio-cg [--portfolio-id ID]` | Conjugate-Gradient mean-variance solve via `mcp__ruflo-sublinear__solve` — 40-60× faster than the legacy Neumann path ([ADR-126 Phase 3](../../v3/docs/adr/ADR-126-neural-trader-substrate-integration.md), [ADR-123 Wedge 8](../../v3/docs/adr/ADR-123-sublinear-integration.md)) |
 
 ## Commands
 
@@ -182,6 +183,26 @@ This plugin relies on `@claude-flow/memory@3.0.0-alpha.18` for the lifecycle gua
 - **Signal TTL (24h)** — `trader-signal` writes to `trading-signals` with `expiresAt: now + 24h`. The `MemoryConsolidator.sweepExpired()` pass (ADR-125 Phase 4) removes them from all indexes — including HNSW — when they expire. Long-running ruflo sessions no longer accumulate stale intraday signals.
 - **Backtest dedup** — `trader-backtest` proactively deletes prior entries for the same `(strategyId, paramsHash)` before storing a fresh one. The same outcome is also produced asynchronously by the `MemoryConsolidator.dedup('keep-newest')` background pass that runs every 6 hours.
 - **Consolidator schedule** — the consolidator runs every 6 hours by default (`sweepExpired` + `dedup` + `compactHnsw`), and also on `MemoryService.close()`. No plugin-side wiring is required.
+
+### Portfolio CG path (ADR-126 Phase 3 / ADR-123 Wedge 8)
+
+The new `trader-portfolio-cg` skill solves the mean-variance problem `Σ · x = μ` via Conjugate Gradient instead of the legacy Neumann series. CG is provably optimal for symmetric positive-definite inputs (covariance matrices are SPD by construction), and the upstream `sublinear-time-solver@1.7.0` benchmark shows **~816 ns CG vs ~50 µs Neumann at n=256 — a measured 40-60× speedup** ([ADR-123 §162 Row 8](../../v3/docs/adr/ADR-123-sublinear-integration.md)).
+
+**When it's used**: any time the team wants optimal portfolio weights — call `/trader-portfolio-cg` instead of `/trader-portfolio`. The skill reads the current covariance and expected-return vector from `npx neural-trader --portfolio current --json`, dispatches to `mcp__ruflo-sublinear__solve` (when the `ruflo-sublinear` plugin is registered), and writes weights with provenance metadata (`method: 'cg-sublinear' | 'cg-local' | 'neumann-fallback'`) to the `trading-risk` namespace.
+
+**How to disable**: set `RUFLO_NEURAL_TRADER_DISABLE_CG=1` to skip the CG path entirely and fall back to the legacy `npx neural-trader --portfolio optimize` route. Useful for A/B validation or when an upstream covariance regression breaks SPD.
+
+**Parity guarantee**: `||cg_solution − neumann_solution||_∞ < 1e-4` on every benchmark seed — verified by `benchmarks/portfolio-cg.bench.mjs` and asserted by `scripts/smoke-neural-trader-portfolio-cg.mjs`.
+
+**Local fallback**: the adapter (`src/sublinear-adapter.ts` + `.mjs` mirror) ships a self-contained ~50-LOC CG kernel so the skill works even before the `ruflo-sublinear` plugin lands on the IPFS registry. The same call site picks up the full native-WASM speedup automatically once `mcp__ruflo-sublinear__solve` is registered in the runtime.
+
+```bash
+# Run the bench yourself:
+node plugins/ruflo-neural-trader/benchmarks/portfolio-cg.bench.mjs
+
+# Run the contract smoke:
+node scripts/smoke-neural-trader-portfolio-cg.mjs
+```
 
 ## Verification
 
