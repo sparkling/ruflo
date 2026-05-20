@@ -51,10 +51,10 @@ grep -q "ruflo-agentdb" "$ROOT/README.md" \
   && grep -q "Namespace convention" "$ROOT/README.md" \
   && ok || bad "namespace coordination block incomplete"
 
-step "8. all 4 namespaces claimed (trading-strategies/-backtests/-risk/-analysis)"
+step "8. all 5 canonical namespaces claimed (trading-strategies/-backtests/-risk/-analysis/-signals per ADR-126)"
 F="$ROOT/README.md"
 miss=""
-for ns in trading-strategies trading-backtests trading-risk trading-analysis; do
+for ns in trading-strategies trading-backtests trading-risk trading-analysis trading-signals; do
   grep -q "$ns" "$F" || miss="$miss $ns"
 done
 [[ -z "$miss" ]] && ok || bad "missing namespace claims:$miss"

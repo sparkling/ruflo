@@ -159,14 +159,15 @@ neural-trader uses Rust/NAPI bindings for zero-overhead performance:
 
 ## Namespace coordination
 
-This plugin owns four AgentDB namespaces (kebab-case, follows the convention from [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md)):
+This plugin owns five AgentDB namespaces (kebab-case, follows the convention from [ruflo-agentdb ADR-0001 §"Namespace convention"](../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md)). The canonical five-namespace set is defined by [ADR-126](../../v3/docs/adr/ADR-126-neural-trader-substrate-integration.md) Phase 1:
 
 | Namespace | Purpose |
 |-----------|---------|
-| `trading-strategies` | Strategy definitions (loaded by `trader-backtest`, `trader-signal`) |
-| `trading-backtests` | Backtest results indexed by strategy + timestamp |
-| `trading-risk` | Risk metrics per portfolio |
-| `trading-analysis` | Regime detection + market analysis history |
+| `trading-strategies` | Strategy definitions, parameters, regime-condition mappings (loaded by `trader-backtest`, `trader-signal`) |
+| `trading-backtests` | Historical backtest results indexed by strategy + timestamp (long-lived; signed in ADR-126 Phase 4) |
+| `trading-risk` | Risk model state, VaR/CVaR snapshots, circuit-breaker triggers |
+| `trading-analysis` | Market-analyst output — regime classifications, technical-indicator summaries, model-training results |
+| `trading-signals` | Short-lived signal events (intraday; TTL applied in ADR-126 Phase 2) |
 
 Note: the namespace prefix is `trading-` (the actual intent) rather than `neural-trader-` (the plugin stem). This is a deliberate ergonomic choice — `trading` is the load-bearing concern downstream consumers reason about. Reserved namespaces (`pattern`, `claude-memories`, `default`) MUST NOT be shadowed.
 
