@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/cli",
-  "version": "3.7.0-alpha.10-patch.237",
+  "version": "3.7.0-alpha.10-patch.238",
   "type": "module",
   "description": "Ruflo CLI - Enterprise AI agent orchestration with 60+ specialized agents, swarm coordination, MCP server, self-learning hooks, and vector memory for Claude Code",
   "main": "dist/src/index.js",
@@ -98,20 +98,20 @@
   },
   "dependencies": {
     "@claude-flow/cli-core": "3.7.0-alpha.5-patch.85",
-    "@claude-flow/mcp": "3.0.0-alpha.8-patch.529",
-    "@claude-flow/neural": "3.0.0-alpha.8-patch.237",
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.520",
+    "@claude-flow/mcp": "3.0.0-alpha.8-patch.530",
+    "@claude-flow/neural": "3.0.0-alpha.8-patch.238",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.521",
     "@noble/ed25519": "^2.1.0",
-    "agentdb": "3.0.0-alpha.14-patch.249",
+    "agentdb": "3.0.0-alpha.14-patch.250",
     "semver": "^7.6.0"
   },
   "optionalDependencies": {
-    "@claude-flow/aidefence": "3.0.2-patch.760",
-    "@claude-flow/codex": "3.0.0-alpha.9-patch.805",
-    "@claude-flow/embeddings": "3.0.0-alpha.15-patch.237",
-    "@claude-flow/guidance": "3.0.0-alpha.3-patch.237",
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.237",
-    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.761",
+    "@claude-flow/aidefence": "3.0.2-patch.761",
+    "@claude-flow/codex": "3.0.0-alpha.9-patch.806",
+    "@claude-flow/embeddings": "3.0.0-alpha.15-patch.238",
+    "@claude-flow/guidance": "3.0.0-alpha.3-patch.238",
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.238",
+    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.762",
     "@claude-flow/security": "3.0.0-alpha.7-patch.74",
     "@ruvector/attention": "0.1.4-patch.128",
     "@ruvector/attention-darwin-arm64": "0.1.1-patch.101",
@@ -125,7 +125,7 @@
     "@ruvector/ruvllm-wasm": "^2.0.2",
     "@ruvector/rvagent-wasm": "0.2.1-patch.123",
     "@ruvector/sona": "0.1.6-patch.101",
-    "agentic-flow": "2.0.2-alpha-patch.785",
+    "agentic-flow": "2.0.2-alpha-patch.786",
     "better-sqlite3": "^12.9.0"
   },
   "publishConfig": {

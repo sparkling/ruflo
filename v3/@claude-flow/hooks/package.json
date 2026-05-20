@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/hooks",
-  "version": "3.0.0-alpha.7-patch.764",
+  "version": "3.0.0-alpha.7-patch.765",
   "description": "V3 Hooks System - Event-driven lifecycle hooks with ReasoningBank learning integration",
   "type": "module",
   "main": "./dist/index.js",
@@ -60,10 +60,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.237",
-    "@claude-flow/neural": "3.0.0-alpha.8-patch.237",
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.520",
-    "agentdb": "3.0.0-alpha.14-patch.249",
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.238",
+    "@claude-flow/neural": "3.0.0-alpha.8-patch.238",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.521",
+    "agentdb": "3.0.0-alpha.14-patch.250",
     "zod": "^3.23.0"
   },
   "optionalDependencies": {
@@ -76,7 +76,7 @@
     "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.520"
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.521"
   },
   "engines": {
     "node": ">=20.0.0"
