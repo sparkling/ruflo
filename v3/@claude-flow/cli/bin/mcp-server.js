@@ -36,6 +36,26 @@ const sessionId = `mcp-${Date.now()}-${randomUUID().slice(0, 8)}`;
 console.error(
   `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
 );
+
+// ADR-0204 (a) F-09-011: Archivist bootstrap — mirror the three-step ordering
+// in src/mcp-server.ts:478-543. Must complete before the stdin listener is
+// attached so no tool-call path (the only route to archivist.dispatch()) can
+// run before the substrate is wired. Gated on ADR-0202 per-op RVF release.
+const { initProcessArchivist, ensureRvfWired } = await import('../dist/src/memory/archivist-init.js');
+await initProcessArchivist();
+
+// Eager RVF warm-up with bounded retry-with-backoff (mirrors mcp-server.ts:505-510).
+const { warmUpRvfWithRetry } = await import('../dist/src/mcp-server.js');
+try {
+  await warmUpRvfWithRetry(sessionId, ensureRvfWired);
+} catch {
+  // FATAL diagnosis already emitted by warmUpRvfWithRetry's log sink.
+  process.exit(1);
+}
+
+// ADR-0204 (b) F-09-001: import validateSchema for tools/call pre-validation.
+const { validateSchema } = await import('@claude-flow/mcp/schema-validator');
+
 console.error(JSON.stringify({
   arch: process.arch,
   mode: 'mcp-stdio',
@@ -171,6 +191,20 @@ async function handleMessage(message) {
             id: message.id,
             error: { code: -32601, message: `Tool not found: ${toolName}` },
           };
+        }
+
+        // ADR-0204 (b) F-09-001: validate input schema before reaching the handler.
+        const toolMeta = listMCPTools().find(t => t.name === toolName);
+        if (toolMeta?.inputSchema) {
+          const vr = validateSchema(toolParams, toolMeta.inputSchema);
+          if (!vr.valid) {
+            const diag = vr.errors.map(e => `${e.path ? e.path + ': ' : ''}${e.message}`).join('; ');
+            return {
+              jsonrpc: '2.0',
+              id: message.id,
+              error: { code: -32602, message: `Invalid params: ${diag}` },
+            };
+          }
         }
 
         try {

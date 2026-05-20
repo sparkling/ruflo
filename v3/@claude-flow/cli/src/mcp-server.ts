@@ -664,6 +664,28 @@ export class MCPServerManager extends EventEmitter {
             };
           }
 
+          // ADR-0204 (b) F-09-001: validate input schema before reaching the handler.
+          {
+            const { validateSchema } = await import('@claude-flow/mcp/schema-validator');
+            const toolMeta = listMCPTools().find(t => t.name === toolName);
+            if (toolMeta?.inputSchema) {
+              // MCPToolInputSchema is structurally a JSON-Schema subset; the
+              // package's validateSchema types its 2nd arg as JSONSchema.
+              const vr = validateSchema(
+                toolParams,
+                toolMeta.inputSchema as unknown as Parameters<typeof validateSchema>[1],
+              );
+              if (!vr.valid) {
+                const diag = vr.errors.map(e => `${e.path ? e.path + ': ' : ''}${e.message}`).join('; ');
+                return {
+                  jsonrpc: '2.0',
+                  id: message.id,
+                  error: { code: -32602, message: `Invalid params: ${diag}` },
+                };
+              }
+            }
+          }
+
           try {
             const result = await callMCPTool(toolName, toolParams, { sessionId });
             trackRequest(toolName, true);
@@ -748,6 +770,15 @@ export class MCPServerManager extends EventEmitter {
       },
       logger
     );
+
+    // ADR-0204 (c) F-09-002 / F-08-001: register the CLI tool registry into the
+    // HTTP MCPServer so both transports expose the same tool surface.
+    // TOOL_REGISTRY_WITH_HANDLERS is the full Map (with handlers); listMCPTools()
+    // strips handlers and cannot bridge. Registration before start() so the first
+    // tools/list over HTTP returns the full surface.
+    const { TOOL_REGISTRY_WITH_HANDLERS } = await import('./mcp-client.js');
+    const toolsForHttp = Array.from(TOOL_REGISTRY_WITH_HANDLERS.values()) as Parameters<typeof mcpServer.registerTools>[0];
+    mcpServer.registerTools(toolsForHttp);
 
     await mcpServer.start();
 

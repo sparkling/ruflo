@@ -115,6 +115,11 @@ registerTools([
   ...autopilotTools,
 ]);
 
+// ADR-0204 (c): export the full registry (with handlers) so the HTTP MCPServer
+// can register the same tool surface as stdio via registerTools(...).
+// listMCPTools() strips handlers; this export preserves them.
+export { TOOL_REGISTRY as TOOL_REGISTRY_WITH_HANDLERS };
+
 /**
  * MCP Client Error
  */
@@ -260,50 +265,11 @@ export function getToolCategories(): string[] {
   return Array.from(categories).sort();
 }
 
-/**
- * Validate tool input against schema
- *
- * @param toolName - Name of the MCP tool
- * @param input - Input to validate
- * @returns Validation result with errors if any
- */
-export function validateToolInput(
-  toolName: string,
-  input: Record<string, unknown>
-): { valid: boolean; errors?: string[] } {
-  const tool = TOOL_REGISTRY.get(toolName);
-
-  if (!tool) {
-    return {
-      valid: false,
-      errors: [`Tool '${toolName}' not found`],
-    };
-  }
-
-  // Basic validation - check required fields
-  const schema = tool.inputSchema;
-  const errors: string[] = [];
-
-  if (schema.required && Array.isArray(schema.required)) {
-    for (const requiredField of schema.required) {
-      if (!(requiredField in input)) {
-        errors.push(`Missing required field: ${requiredField}`);
-      }
-    }
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors: errors.length > 0 ? errors : undefined,
-  };
-}
-
 export default {
   callMCPTool,
   getToolMetadata,
   listMCPTools,
   hasTool,
   getToolCategories,
-  validateToolInput,
   MCPClientError,
 };

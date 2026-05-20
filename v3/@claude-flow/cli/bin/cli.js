@@ -54,6 +54,29 @@ if (isMCPMode) {
     `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
   );
 
+  // ADR-0204 (a) F-09-011: Archivist bootstrap — mirror the three-step ordering
+  // in src/mcp-server.ts:478-543. Must complete before the stdin listener is
+  // attached so no tool-call path (the only route to archivist.dispatch()) can
+  // run before the substrate is wired. Gated on ADR-0202 per-op RVF release.
+  const { initProcessArchivist, ensureRvfWired } = await import('../dist/src/memory/archivist-init.js');
+  await initProcessArchivist();
+
+  // Eager RVF warm-up with bounded retry-with-backoff (mirrors mcp-server.ts:505-510).
+  // Non-recoverable faults abort startup loudly; transient FS errors (EBUSY/EAGAIN)
+  // get bounded retries. Per feedback-best-effort-must-rethrow-fatals: never swallow
+  // a fatal as if it were recoverable.
+  const { warmUpRvfWithRetry } = await import('../dist/src/mcp-server.js');
+  try {
+    await warmUpRvfWithRetry(sessionId, ensureRvfWired);
+  } catch {
+    // FATAL diagnosis already emitted by warmUpRvfWithRetry's log sink.
+    process.exit(1);
+  }
+
+  // ADR-0204 (b) F-09-001: import validateSchema for tools/call pre-validation.
+  // Uses the package subpath export "./*" -> "./dist/*.js" from @claude-flow/mcp/package.json.
+  const { validateSchema } = await import('@claude-flow/mcp/schema-validator');
+
   // Audit-flagged DoS protection (audit_1776483149979): cap the
   // newline-buffered stdin parser so a malicious client cannot pipe
   // gigabytes of un-newlined data and exhaust memory before
@@ -167,6 +190,21 @@ if (isMCPMode) {
             id: message.id,
             error: { code: -32601, message: `Tool not found: ${toolName}` },
           };
+        }
+
+        // ADR-0204 (b) F-09-001: validate input schema before reaching the handler.
+        // Surface validation failures as JSON-RPC errors, not swallowed tool results.
+        const toolMeta = listMCPTools().find(t => t.name === toolName);
+        if (toolMeta?.inputSchema) {
+          const vr = validateSchema(toolParams, toolMeta.inputSchema);
+          if (!vr.valid) {
+            const diag = vr.errors.map(e => `${e.path ? e.path + ': ' : ''}${e.message}`).join('; ');
+            return {
+              jsonrpc: '2.0',
+              id: message.id,
+              error: { code: -32602, message: `Invalid params: ${diag}` },
+            };
+          }
         }
 
         try {

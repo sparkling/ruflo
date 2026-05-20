@@ -611,6 +611,8 @@ declare module '@claude-flow/mcp' {
   export interface MCPServer {
     start(): Promise<void>;
     stop?(): Promise<void>;
+    // ADR-0204 (c): HTTP transport bridges the CLI tool registry via registerTools.
+    registerTools(tools: unknown[]): { registered: number; failed: string[] };
   }
   export function createMCPServer(config: MCPServerConfig, logger?: MCPServerLogger): MCPServer;
 }
