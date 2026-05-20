@@ -33,7 +33,7 @@ function main() {
   const r = spawnSync('npx', [
     '@sparkleideas/cli@latest', 'hooks', 'model-outcome',
     '-t', task, '-m', model, '-o', outcome,
-  ], { stdio: 'inherit' });
+  ], { stdio: 'inherit', shell: process.platform === 'win32' });
   if (r.status !== 0) {
     console.error(`emit failed (exit ${r.status})`);
     process.exit(r.status || 1);

@@ -25,7 +25,7 @@ function memoryList() {
   const r = spawnSync('npx', [
     '@sparkleideas/cli@latest', 'memory', 'list',
     '--namespace', NS, '--format', 'json',
-  ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
+  ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8', shell: process.platform === 'win32' });
   if (r.status !== 0) return [];
   const m = /\[[\s\S]*\]/.exec(r.stdout || '');
   if (!m) return [];
@@ -35,7 +35,7 @@ function memoryRetrieve(key) {
   const r = spawnSync('npx', [
     '@sparkleideas/cli@latest', 'memory', 'retrieve',
     '--namespace', NS, '--key', key,
-  ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
+  ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8', shell: process.platform === 'win32' });
   if (r.status !== 0) return null;
   const m = /\{[\s\S]*\}/.exec(r.stdout || '');
   if (!m) return null;

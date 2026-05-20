@@ -120,7 +120,7 @@ function persistToMemory(summary) {
     '--namespace', ns,
     '--key', key,
     '--value', JSON.stringify(summary),
-  ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
+  ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8', shell: process.platform === 'win32' });
   if (r.status !== 0) {
     return { ok: false, reason: r.stderr?.slice(0, 300) || `exit ${r.status}` };
   }
