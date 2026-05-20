@@ -47,9 +47,15 @@ export function generateSettings(options: InitOptions): object {
   // line into the user's commits — that pattern silently inflated GitHub
   // contributor graphs and was hard to undo without rewriting history. Pass
   // `--attribution` (or `attribution: true` in InitOptions) to enable.
+  //
+  // #2078 — when the user DOES opt in, write a no-reply bot email so GitHub
+  // treats this as a tool, not a personal contribution. Personal emails get
+  // added to user repos' contributor graphs even when the trailer is opt-in.
+  // `ruflo-bot@users.noreply.github.com` is GitHub's no-reply convention and
+  // is excluded from contributor graphs / mapped to a tool identity.
   if (options.attribution === true) {
     settings.attribution = {
-      commit: 'Co-Authored-By: RuFlo <ruv@ruv.net>',
+      commit: 'Co-Authored-By: ruflo-bot <ruflo-bot@users.noreply.github.com>',
       pr: '🤖 Generated with [RuFlo](https://github.com/ruvnet/ruflo)',
     };
   }

@@ -232,7 +232,7 @@ Use MCP tools for coordination, then keep coding:
 
 [optional body]
 
-Co-Authored-By: claude-flow <ruv@ruv.net>
+Co-Authored-By: ruflo-bot <ruflo-bot@users.noreply.github.com>
 \`\`\`
 
 Types: \`feat\`, \`fix\`, \`docs\`, \`style\`, \`refactor\`, \`perf\`, \`test\`, \`chore\`
