@@ -865,6 +865,16 @@ export class WorkerDaemon extends EventEmitter {
     this.writePidFile();
     this.emit('started', { pid: process.pid, startedAt: this.startedAt });
 
+    // ADR-0202: mark the memory-router as non-persistent so worker ticks
+    // release the RVF flock after each op, allowing hook/MCP processes to
+    // acquire it between ticks. Must be called before any worker tick fires.
+    {
+      const router = await import('../memory/memory-router.js');
+      if (typeof router.setRouterPersistent === 'function') {
+        router.setRouterPersistent(false);
+      }
+    }
+
     // ADR-0088: IPC server stays up for future non-memory RPC methods, but
     // memory.* handlers and the pre-warm step are gone — memory ops are
     // in-process only per ADR-050/ADR-0086. No handlers are currently
@@ -931,8 +941,11 @@ export class WorkerDaemon extends EventEmitter {
    * `memory/archivist-init.ts`), the daemon's dispatch surface is unchanged —
    * `archivist.dispatch(...)` is called nowhere in this file. Adding the cli's
    * substrate handles here would mean either reusing them across processes
-   * (the W1 RVF adapter wraps memory-router's `_storage`, which is per-cli;
-   * the daemon has no memory-router) or opening a second `archivist.db`
+   * (the W1 RVF adapter wraps memory-router's `_storage` — note: the daemon
+   * DOES call memory-router via its consolidate/preload workers, but the
+   * Archivist here is FS-JSON only and does NOT hold the RVF lock; ADR-0202
+   * handles per-op release for the workers' memory-router calls) or opening
+   * a second `archivist.db`
    * handle the daemon never reads from. Both are dead wiring. The daemon
    * stays projectRoot-only until it gains a dispatched store needing RVF or
    * SQLite carve-out.

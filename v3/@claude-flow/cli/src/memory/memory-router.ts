@@ -192,6 +192,11 @@ let _initialized = false;
 let _initPromise: Promise<void> | null = null;
 let _initFailed = false; // ADR-0086 I2: prevent retry storm on persistent failure
 
+// ADR-0202: per-op acquire/release for daemon scope.
+// Default true = persistent (CLI hook processes, short-lived, kernel auto-releases).
+// Set to false by the daemon so each op releases the RVF flock between ticks.
+let _isPersistent = true;
+
 // ADR-0170 Phase C.3: split init into storage-only vs full registry. The
 // memory_* axis (routeMemoryOp / routeEmbeddingOp) only needs `_storage`
 // (RVF); the agentdb_* axis (controller-touching routes + getController)
@@ -1025,6 +1030,78 @@ export async function ensureRegistry(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// ADR-0202: Per-op acquire/release helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Configure whether the router caches the RVF backend across calls.
+ *
+ * ADR-0202: CLI hook processes (short-lived) keep persistent=true so the
+ * backend is cached for the process lifetime and released by kernel on exit.
+ * The daemon sets persistent=false so each worker tick releases the flock
+ * after the op, allowing hook/MCP processes to acquire it between ticks.
+ */
+export function setRouterPersistent(persistent: boolean): void {
+  _isPersistent = persistent;
+}
+
+/**
+ * ADR-0202: Run a memory-router op and release the RVF backend after,
+ * when in non-persistent (daemon) scope.
+ *
+ * In persistent scope (CLI hook processes), the backend stays cached —
+ * identical to the pre-ADR-0202 behaviour.
+ *
+ * The finally-shutdown is wrapped in its own try/catch that re-throws the
+ * *original* op error (feedback-best-effort-must-rethrow-fatals): a
+ * shutdown error must not silently replace the real failure.
+ */
+async function withRouter<T>(fn: () => Promise<T>): Promise<T> {
+  let opError: unknown;
+  try {
+    return await fn();
+  } catch (e) {
+    opError = e;
+    throw e;
+  } finally {
+    if (!_isPersistent && _storage) {
+      try {
+        await _storage.shutdown();
+      } catch (shutdownErr) {
+        // Best-effort cleanup: the op's outcome is authoritative — whether it
+        // returned a value (incl. a {success:false} envelope) or threw (already
+        // re-thrown in the catch above). A shutdown failure must NEVER override
+        // that outcome, so we log it to stderr (observable, never on the stdout
+        // JSON-RPC channel) and swallow it. (feedback-best-effort-must-rethrow-fatals:
+        // the fatal here is the op error, which already propagates; the cleanup
+        // error is the best-effort one.)
+        // eslint-disable-next-line no-console
+        console.error(
+          `[ADR-0202] best-effort backend shutdown failed (op ${opError ? 'errored' : 'succeeded'}): ` +
+            (shutdownErr instanceof Error ? shutdownErr.message : String(shutdownErr)),
+        );
+      }
+      // Reset the full storage + registry init state so the next op
+      // re-acquires cleanly. The registry's this.backend is the same
+      // shared RvfBackend (path-dedup) — leaving _registryInitialized=true
+      // with a closed backend would cause a loud failure on the next
+      // registry call; resetting here is safer and cheaper.
+      _storage = null;
+      _initialized = false;
+      _initPromise = null;
+      _initFailed = false;
+      _registryInstance = null;
+      _registryPromise = null;
+      _registryAvailable = null;
+      _registryInitialized = false;
+      _registryInitPromise = null;
+      // Do NOT reset _registryInitFailed — a persistent failure at
+      // registry init (broken install) should still fast-fail on retry.
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Core: routeMemoryOp
 // ---------------------------------------------------------------------------
 
@@ -1032,7 +1109,12 @@ export async function ensureRegistry(): Promise<void> {
  * Single entry point for CRUD memory operations.
  * ADR-0086 T2.3: Routes through IStorageContract (RvfBackend).
  */
+// ADR-0202: exported wrapper — applies per-op acquire/release in daemon scope.
 export async function routeMemoryOp(op: MemoryOp): Promise<MemoryResult> {
+  return withRouter(() => _routeMemoryOpImpl(op));
+}
+
+async function _routeMemoryOpImpl(op: MemoryOp): Promise<MemoryResult> {
   await ensureRouter();
   // ADR-0086 B4: defense-in-depth null guard
   if (!_storage) {
@@ -1797,7 +1879,12 @@ export async function healthCheck(): Promise<unknown> {
  * Single entry point for embedding and HNSW operations.
  * Mirrors routeMemoryOp but for vector/index operations.
  */
+// ADR-0202: exported wrapper — applies per-op acquire/release in daemon scope.
 export async function routeEmbeddingOp(op: EmbeddingOp): Promise<MemoryResult> {
+  return withRouter(() => _routeEmbeddingOpImpl(op));
+}
+
+async function _routeEmbeddingOpImpl(op: EmbeddingOp): Promise<MemoryResult> {
   await ensureRouter();
 
   switch (op.type) {
@@ -2190,7 +2277,12 @@ export async function routeSessionOp(op: SessionOp): Promise<MemoryResult> {
  * Route self-learning search and memory consolidation.
  * ADR-0084 Phase 4: controller-direct — uses getController('selfLearningRvfBackend') + getController('memoryConsolidation').
  */
+// ADR-0202: exported wrapper — applies per-op acquire/release in daemon scope.
 export async function routeLearningOp(op: LearningOp): Promise<MemoryResult> {
+  return withRouter(() => _routeLearningOpImpl(op));
+}
+
+async function _routeLearningOpImpl(op: LearningOp): Promise<MemoryResult> {
   // ADR-0170 Phase C.3: learning ops touch selfLearningRvfBackend +
   // memoryConsolidation controllers — requires the full registry init,
   // not just storage.
@@ -2665,6 +2757,9 @@ export function resetRouter(): void {
   // ADR-0156: clear captured databasePath so a subsequent init reports
   // the freshly-resolved path, not a stale one.
   _databasePath = null;
+  // ADR-0202: reset to persistent-default so test isolation doesn't leak
+  // the daemon's non-persistent scope into subsequent tests.
+  _isPersistent = true;
 }
 
 /**
