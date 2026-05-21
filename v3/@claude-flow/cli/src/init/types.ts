@@ -509,16 +509,16 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
   agents: {
     core: true,
     consensus: true,
-    github: true,
-    hiveMind: true,
+    github: false,    // ADR-128 Phase 3: opt-in via --agents=github or --all-agents
+    hiveMind: false,  // ADR-128 Phase 3: opt-in via --all-agents
     sparc: true,
     swarm: true,
     browser: true,
-    v3: true,
-    optimization: true,
+    v3: false,        // ADR-128 Phase 3: opt-in via --agents=v3 or --all-agents
+    optimization: false, // ADR-128 Phase 3: opt-in via --all-agents
     testing: true,
     dualMode: false,  // Optional: enable with --dual flag
-    all: true,
+    all: false,       // ADR-128 Phase 3: was true; use --all-agents to restore
   },
   statusline: {
     enabled: true,
