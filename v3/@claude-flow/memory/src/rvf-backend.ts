@@ -2700,13 +2700,18 @@ export class RvfBackend implements IMemoryBackend {
             const bytesRead = readSync(fd, head, 0, 8, 0);
             if (bytesRead >= 4) {
               const peek4 = String.fromCharCode(head[0], head[1], head[2], head[3]);
-              if (peek4 === NATIVE_MAGIC) isNativeFile = true;
-              if (
-                bytesRead >= 8 &&
-                peek4 === NATIVE_ROOT_HEADER_MAGIC_PREFIX &&
-                String.fromCharCode(head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7]) ===
-                  NATIVE_ROOT_HEADER_MAGIC
-              ) {
+              // SFVR = legacy native magic; RVFR = ADR-0167 RootHeader prefix.
+              // The 4-byte RVFR prefix is dispositive on its own: a COMPLETE
+              // `RVFROOT\0` header AND a 4-7 byte peer-mid-creating partial both
+              // start with it, and it can NEVER be a pure-TS file (magic
+              // `RVF\0` → byte[3] = 0x00, not 'R'). Recognising the prefix here
+              // closes the ADR-0167 rollout gap where a short/partial RootHeader
+              // peek slipped through to the pure-TS corruption check at ~:2768
+              // and was mislabelled `bad magic bytes (got 'RVFR')` under
+              // concurrent native init (Bug-4). Mirrors tryNativeInit's
+              // partial-RootHeader deferral. The full 8-byte verification stays
+              // the native open path's job (RvfDatabase.open parses RootHeader).
+              if (peek4 === NATIVE_MAGIC || peek4 === NATIVE_ROOT_HEADER_MAGIC_PREFIX) {
                 isNativeFile = true;
               }
             }
