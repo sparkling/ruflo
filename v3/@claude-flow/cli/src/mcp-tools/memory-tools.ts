@@ -478,7 +478,13 @@ export const memoryTools: MCPTool[] = [
       const query = input.query as string;
       const namespace = (input.namespace as string) || 'all';
       const limit = (input.limit as number) || 10;
-      const threshold = (input.threshold as number) || 0.3;
+      // ADR-0167 Phase-3 retraction (2026-05-22): the `memory_search` empty-result
+      // symptom was NOT RVF snapshot staleness — it was this falsy-zero coercion.
+      // `|| 0.3` turned an explicit `threshold: 0` (caller means "no minimum") into
+      // 0.3, dropping every legitimately-related hit (scores 0.2-0.5) and surfacing
+      // only near-exact matches. Re-converge with upstream, which uses `?? 0.3`
+      // (nullish): honor `threshold: 0` while keeping 0.3 as the unset default.
+      const threshold = (input.threshold as number) ?? 0.3;
       const includeProvenance = input.includeProvenance === true;
 
       validateMemoryInput(undefined, undefined, query);
