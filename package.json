@@ -1,6 +1,6 @@
 {
   "name": "claude-flow",
-  "version": "3.7.0-alpha.11-patch.241",
+  "version": "3.7.0-alpha.11-patch.242",
   "description": "Ruflo - Enterprise AI agent orchestration for Claude Code. Deploy 60+ specialized agents in coordinated swarms with self-learning, fault-tolerant consensus, vector memory, and MCP integration",
   "main": "dist/index.js",
   "type": "module",
@@ -55,24 +55,24 @@
   },
   "dependencies": {
     "@claude-flow/cli-core": "3.7.0-alpha.5-patch.85",
-    "@claude-flow/mcp": "3.0.0-alpha.8-patch.533",
-    "@claude-flow/neural": "3.0.0-alpha.8-patch.241",
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.524",
+    "@claude-flow/mcp": "3.0.0-alpha.8-patch.534",
+    "@claude-flow/neural": "3.0.0-alpha.8-patch.242",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.525",
     "@noble/ed25519": "^2.1.0",
     "@ruvector/rabitq-wasm": "^0.1.0",
     "semver": "^7.6.0",
     "zod": "^3.22.4"
   },
   "optionalDependencies": {
-    "@claude-flow/codex": "3.0.0-alpha.9-patch.809",
-    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.765",
+    "@claude-flow/codex": "3.0.0-alpha.9-patch.810",
+    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.766",
     "@ruvector/attention": "0.1.4-patch.128",
     "@ruvector/core": "0.1.31-patch.134",
     "@ruvector/router": "0.1.30-patch.101",
     "@ruvector/router-linux-x64-gnu": "0.1.30-patch.101",
     "@ruvector/sona": "0.1.6-patch.101",
-    "agentdb": "3.0.0-alpha.14-patch.253",
-    "agentic-flow": "2.0.2-alpha-patch.789"
+    "agentdb": "3.0.0-alpha.14-patch.254",
+    "agentic-flow": "2.0.2-alpha-patch.790"
   },
   "overrides": {
     "hono": ">=4.11.4",
