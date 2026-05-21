@@ -104,6 +104,10 @@ export const SKILLS_MAP: Record<string, string[]> = {
 
 /**
  * Commands to copy based on configuration
+ * ADR-128 Phase 4: every subdirectory under .claude/commands/ now has a
+ * corresponding key. The flow-nexus/ dir was deleted (belongs to the plugin).
+ * New substrate keys default true; opt-in keys (pair, training, stream-chain,
+ * truth, verify) default false per ADR-128 §Phase 3 opt-in rationale.
  */
 // ADR-0148 C pattern (2026-05-07 wave 2): 12 command subdirs (87 .md
 // files) + 1 top-level file (agentic-jujutsu.md) + sparc.md were all
@@ -121,21 +125,21 @@ const COMMANDS_MAP: Record<string, string[]> = {
   monitoring: ['monitoring'],
   optimization: ['optimization'],
   sparc: ['sparc'],
-  // ADR-0148 C pattern (2026-05-07 follow-up): 12 missing subdirs +
-  // jujutsu top-level — wired so `init --full` ships the full slash-
-  // command surface advertised by USERGUIDE.
+  // ADR-128 Phase 4 promotions (previously orphaned)
   agents: ['agents'],
   coordination: ['coordination'],
-  flowNexus: ['flow-nexus'],
   hiveMind: ['hive-mind'],
   memory: ['memory'],
-  pair: ['pair'],
-  streamChain: ['stream-chain'],
   swarm: ['swarm'],
+  workflows: ['workflows'],
+  // Opt-in categories (non-universal; default false in CommandsConfig)
+  pair: ['pair'],
   training: ['training'],
+  streamChain: ['stream-chain'],
   truth: ['truth'],
   verify: ['verify'],
-  workflows: ['workflows'],
+  // Fork-specific (not in upstream Phase 4)
+  flowNexus: ['flow-nexus'],
   jujutsu: ['agentic-jujutsu.md'],
 };
 
@@ -1011,24 +1015,22 @@ async function copyCommands(
     if (commandsConfig.monitoring) commandsToCopy.push(...COMMANDS_MAP.monitoring);
     if (commandsConfig.optimization) commandsToCopy.push(...COMMANDS_MAP.optimization);
     if (commandsConfig.sparc) commandsToCopy.push(...COMMANDS_MAP.sparc);
-    // ADR-0148 C pattern (2026-05-07 follow-up): wire the 13 newly-added
-    // categories so opt-in flags carry every command file through to user
-    // projects. Without these, --full's `all: true` path uses
-    // Object.values(COMMANDS_MAP).flat() (which DOES ship them), but
-    // category-specific flag combinations would skip them.
-    if (commandsConfig.agents) commandsToCopy.push(...COMMANDS_MAP.agents);
-    if (commandsConfig.coordination) commandsToCopy.push(...COMMANDS_MAP.coordination);
-    if (commandsConfig.flowNexus) commandsToCopy.push(...COMMANDS_MAP.flowNexus);
-    if (commandsConfig.hiveMind) commandsToCopy.push(...COMMANDS_MAP.hiveMind);
-    if (commandsConfig.memory) commandsToCopy.push(...COMMANDS_MAP.memory);
-    if (commandsConfig.pair) commandsToCopy.push(...COMMANDS_MAP.pair);
-    if (commandsConfig.streamChain) commandsToCopy.push(...COMMANDS_MAP.streamChain);
-    if (commandsConfig.swarm) commandsToCopy.push(...COMMANDS_MAP.swarm);
-    if (commandsConfig.training) commandsToCopy.push(...COMMANDS_MAP.training);
-    if (commandsConfig.truth) commandsToCopy.push(...COMMANDS_MAP.truth);
-    if (commandsConfig.verify) commandsToCopy.push(...COMMANDS_MAP.verify);
-    if (commandsConfig.workflows) commandsToCopy.push(...COMMANDS_MAP.workflows);
-    if (commandsConfig.jujutsu) commandsToCopy.push(...COMMANDS_MAP.jujutsu);
+    // ADR-128 Phase 4 substrate promotions
+    if (commandsConfig.agents) commandsToCopy.push(...(COMMANDS_MAP.agents || []));
+    if (commandsConfig.coordination) commandsToCopy.push(...(COMMANDS_MAP.coordination || []));
+    if (commandsConfig.hiveMind) commandsToCopy.push(...(COMMANDS_MAP.hiveMind || []));
+    if (commandsConfig.memory) commandsToCopy.push(...(COMMANDS_MAP.memory || []));
+    if (commandsConfig.swarm) commandsToCopy.push(...(COMMANDS_MAP.swarm || []));
+    if (commandsConfig.workflows) commandsToCopy.push(...(COMMANDS_MAP.workflows || []));
+    // ADR-128 Phase 4 opt-in categories
+    if (commandsConfig.pair) commandsToCopy.push(...(COMMANDS_MAP.pair || []));
+    if (commandsConfig.training) commandsToCopy.push(...(COMMANDS_MAP.training || []));
+    if (commandsConfig.streamChain) commandsToCopy.push(...(COMMANDS_MAP.streamChain || []));
+    if (commandsConfig.truth) commandsToCopy.push(...(COMMANDS_MAP.truth || []));
+    if (commandsConfig.verify) commandsToCopy.push(...(COMMANDS_MAP.verify || []));
+    // Fork-specific (not in upstream Phase 4)
+    if (commandsConfig.flowNexus) commandsToCopy.push(...(COMMANDS_MAP.flowNexus || []));
+    if (commandsConfig.jujutsu) commandsToCopy.push(...(COMMANDS_MAP.jujutsu || []));
   }
 
   // Find source commands directory

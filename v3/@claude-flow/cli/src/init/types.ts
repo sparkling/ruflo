@@ -104,6 +104,7 @@ export interface SkillsConfig {
 
 /**
  * Commands configuration
+ * ADR-128 Phase 4: new keys for promoted substrate dirs and opt-in categories.
  */
 export interface CommandsConfig {
   /** Include core commands */
@@ -122,24 +123,34 @@ export interface CommandsConfig {
   optimization: boolean;
   /** Include SPARC commands */
   sparc: boolean;
-  /**
-   * Categories restored 2026-05-07 (ADR-0148 C pattern, command surface).
-   * 87 .md files across 12 subdirs + agentic-jujutsu top-level were
-   * dead-code-on-disk before this — present in fork source, missing
-   * from COMMANDS_MAP, never copied to user projects on init.
-   */
+  // ADR-128 Phase 4 — substrate promotions (default true)
+  /** Include agents commands */
   agents?: boolean;
+  /** Include coordination commands */
   coordination?: boolean;
-  flowNexus?: boolean;
+  /** Include hive-mind commands */
   hiveMind?: boolean;
+  /** Include memory commands */
   memory?: boolean;
-  pair?: boolean;
-  streamChain?: boolean;
+  /** Include swarm commands */
   swarm?: boolean;
-  training?: boolean;
-  truth?: boolean;
-  verify?: boolean;
+  /** Include workflows commands */
   workflows?: boolean;
+  // ADR-128 Phase 4 — opt-in categories (default false)
+  /** Include pair programming commands (opt-in) */
+  pair?: boolean;
+  /** Include training commands (opt-in) */
+  training?: boolean;
+  /** Include stream-chain commands (opt-in) */
+  streamChain?: boolean;
+  /** Include truth commands (opt-in) */
+  truth?: boolean;
+  /** Include verify commands (opt-in) */
+  verify?: boolean;
+  // Fork-specific (not in upstream Phase 4) — preserved from ADR-0148 C pattern
+  /** Include flow-nexus commands (fork-only; may resolve via top-level .claude/) */
+  flowNexus?: boolean;
+  /** Include jujutsu (agentic-jujutsu) commands (fork-only AI-native VCS) */
   jujutsu?: boolean;
   /** Include all commands */
   all: boolean;
@@ -489,20 +500,21 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     monitoring: true,
     optimization: true,
     sparc: true,
-    // ADR-0148 C pattern (2026-05-07 wave 2): default-enable every
-    // category so the 87 previously-dead command files actually ship.
+    // ADR-128 Phase 4 substrate promotions (default true — core swarm substrate)
     agents: true,
     coordination: true,
-    flowNexus: true,
     hiveMind: true,
     memory: true,
-    pair: true,
-    streamChain: true,
     swarm: true,
-    training: true,
-    truth: true,
-    verify: true,
     workflows: true,
+    // ADR-128 Phase 4 opt-in (default false — not universal)
+    pair: false,
+    training: false,
+    streamChain: false,
+    truth: false,
+    verify: false,
+    // Fork-specific (not in upstream Phase 4) — preserved from ADR-0148 C pattern
+    flowNexus: true,
     jujutsu: true,
     all: false,
   },
