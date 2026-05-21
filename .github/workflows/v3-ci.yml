@@ -10,17 +10,178 @@ on:
       # path filter keeps CI in sync with their changes.
       - 'plugins/ruflo-core/scripts/witness/**'
       - 'plugins/ruflo-core/scripts/test-hooks.mjs'
-      - 'plugins/ruflo-core/hooks/hooks.json'
+      - 'verification/**'
+      # Fork-specific loose verification files (not under verification/ dir)
       - 'verification.md.json'
       - 'verification-history.jsonl'
       - 'witness-fixes.json'
+      # scripts/*.mjs audits (tool-descriptions, plugin-packages, hook-commands)
+      - 'scripts/**'
+      # hook-command audit (#1921) — every plugin hooks.json + the ruflo-hook shims
+      - '**/hooks/hooks.json'
+      - '**/scripts/ruflo-hook.sh'
+      # pre-bash hook safety (#2017) — both handler copies trigger the smoke
+      - '**/.claude/helpers/hook-handler.cjs'
+      # ruflo-browser rvf create flag (#2015) — TS source, plugin shell
+      # scripts, agent-facing recipes all guarded by the same smoke.
+      - 'v3/@claude-flow/cli/src/mcp-tools/browser-session-tools.ts'
+      - 'plugins/ruflo-browser/**'
+      # ruflo-graph-intelligence (#2044, ADR-123) — outside v3 workspace,
+      # has its own lockfile + tests; needs to be CI-guarded on every change.
+      - 'plugins/ruflo-graph-intelligence/**'
+      # Supply-chain hardening (#2046) — every package.json + lockfile +
+      # allowlist edit triggers the supply-chain audit.
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '**/pnpm-lock.yaml'
+      - '.github/supply-chain/**'
+      - 'scripts/audit-supply-chain.mjs'
+      # Knowledge-graph plugin (#2049) — kg-extract type-import classifier
+      # + kg-traverse controller wiring drift fast when SKILL.md edits
+      # silently revert the bug-fix shape.
+      - 'plugins/ruflo-knowledge-graph/**'
+      - 'scripts/smoke-kg-extract-type-imports.mjs'
+      # Neural-trader portfolio CG (#2068, ADR-126 Phase 3) — drift fast
+      # when the adapter, skill, or runtime mirror diverge from the
+      # ADR-123 Wedge 8 contract.
+      - 'plugins/ruflo-neural-trader/src/sublinear-adapter.ts'
+      - 'plugins/ruflo-neural-trader/src/sublinear-adapter.mjs'
+      - 'plugins/ruflo-neural-trader/skills/trader-portfolio-cg/**'
+      - 'scripts/smoke-neural-trader-portfolio-cg.mjs'
+      # Neural-trader backtest signing (#2068, ADR-126 Phase 4) — Ed25519
+      # tamper-evidence for paper→live promotion; verifier MUST pin to a
+      # trusted key (CWE-347 / #1922 pattern).
+      - 'plugins/ruflo-neural-trader/src/signed-artifact.ts'
+      - 'plugins/ruflo-neural-trader/src/signed-artifact.mjs'
+      - 'plugins/ruflo-neural-trader/skills/trader-backtest/**'
+      - 'plugins/ruflo-neural-trader/skills/trader-cloud-backtest/**'
+      - 'scripts/smoke-neural-trader-backtest-signing.mjs'
+      # Neural-trader SendMessage risk-gate pipeline (#2068, ADR-126 Phase 5) —
+      # structural gate: trading-strategist refuses --broker without an
+      # explicit risk-analyst RiskDecision approval.
+      - 'plugins/ruflo-neural-trader/src/pipeline-messages.ts'
+      - 'plugins/ruflo-neural-trader/agents/market-analyst.md'
+      - 'plugins/ruflo-neural-trader/agents/trading-strategist.md'
+      - 'plugins/ruflo-neural-trader/agents/risk-analyst.md'
+      - 'plugins/ruflo-neural-trader/agents/backtest-engineer.md'
+      - 'scripts/smoke-neural-trader-pipeline.mjs'
+      # Neural-trader feature attribution (#2068, ADR-126 Phase 6) —
+      # regulator-grade interpretability via single-entry PageRank.
+      # Same signing scheme as Phase 4; ranking is seed-reproducible.
+      - 'plugins/ruflo-neural-trader/src/signed-attribution.ts'
+      - 'plugins/ruflo-neural-trader/src/signed-attribution.mjs'
+      - 'plugins/ruflo-neural-trader/skills/trader-explain/**'
+      - 'scripts/smoke-neural-trader-feature-attribution.mjs'
+      # Plugin-registry CWE-347 regression smoke (#1922) — `discovery.ts`
+      # signature verifier + the smoke fixture must stay in lockstep.
+      - 'v3/@claude-flow/cli/src/plugins/store/discovery.ts'
+      - 'v3/@claude-flow/cli/src/transfer/ipfs/client.ts'
+      - 'v3/@claude-flow/cli/scripts/publish-registry.ts'
+      - 'scripts/smoke-plugin-registry-signature.mjs'
+      # ruvllm WASM auto-init regression smoke (#2086) — the
+      # `loadRuvllmWasm()` helper in `ruvllm-tools.ts` and the
+      # `ruvllm_status` un-init diagnostic path must stay in lockstep.
+      - 'v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts'
+      - 'v3/@claude-flow/cli/src/ruvector/ruvllm-wasm.ts'
+      - 'scripts/smoke-ruvllm-wasm-auto-init.mjs'
+      # GitHub skills/agents/helpers surface (#2089, ADR-127) — injection
+      # smoke + actions pin smoke gate every change to the .github surface.
+      - '.claude/agents/github/**'
+      - '.claude/skills/github-*/**'
+      - 'v3/@claude-flow/cli/.claude/commands/github/**'
+      - '.claude/helpers/github-safe.js'
+      - 'v3/@claude-flow/cli/.claude/helpers/github-safe.js'
+      - 'scripts/smoke-github-safe-injection.mjs'
+      - 'scripts/smoke-github-actions-pins.mjs'
+      - 'scripts/smoke-deprecated-actions.mjs'
+      - 'scripts/smoke-attribution-opt-in.mjs'
+      - '.github/supply-chain/allowed-deps.json'
+      # Init-bundle invariants smoke (#2095, ADR-128) — orphan dirs, SKILLS_MAP
+      # completeness, and plugin-init agent dedup are all guarded by Phase 5.
+      - 'v3/@claude-flow/cli/.claude/**'
+      - 'v3/@claude-flow/cli/src/init/**'
+      - 'plugins/*/agents/**'
+      - 'plugins/*/skills/**'
+      - 'plugins/*/commands/**'
+      - 'scripts/smoke-init-bundle-invariants.mjs'
   pull_request:
     branches: [main]
     paths:
       - 'v3/**'
       - 'plugins/ruflo-core/scripts/witness/**'
       - 'plugins/ruflo-core/scripts/test-hooks.mjs'
-      - 'plugins/ruflo-core/hooks/hooks.json'
+      - 'scripts/**'
+      - '**/hooks/hooks.json'
+      - '**/scripts/ruflo-hook.sh'
+      - '**/.claude/helpers/hook-handler.cjs'
+      # ruflo-browser rvf create flag (#2015)
+      - 'v3/@claude-flow/cli/src/mcp-tools/browser-session-tools.ts'
+      - 'plugins/ruflo-browser/**'
+      # ruflo-graph-intelligence (#2044, ADR-123)
+      - 'plugins/ruflo-graph-intelligence/**'
+      # Supply-chain hardening (#2046) — every dep + lockfile change is
+      # CVE-audited, allowlist-checked, integrity-checked.
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '**/pnpm-lock.yaml'
+      - '.github/supply-chain/**'
+      - 'scripts/audit-supply-chain.mjs'
+      # Knowledge-graph plugin (#2049)
+      - 'plugins/ruflo-knowledge-graph/**'
+      - 'scripts/smoke-kg-extract-type-imports.mjs'
+      # Neural-trader portfolio CG (#2068, ADR-126 Phase 3)
+      - 'plugins/ruflo-neural-trader/src/sublinear-adapter.ts'
+      - 'plugins/ruflo-neural-trader/src/sublinear-adapter.mjs'
+      - 'plugins/ruflo-neural-trader/skills/trader-portfolio-cg/**'
+      - 'scripts/smoke-neural-trader-portfolio-cg.mjs'
+      # Neural-trader backtest signing (#2068, ADR-126 Phase 4)
+      - 'plugins/ruflo-neural-trader/src/signed-artifact.ts'
+      - 'plugins/ruflo-neural-trader/src/signed-artifact.mjs'
+      - 'plugins/ruflo-neural-trader/skills/trader-backtest/**'
+      - 'plugins/ruflo-neural-trader/skills/trader-cloud-backtest/**'
+      - 'scripts/smoke-neural-trader-backtest-signing.mjs'
+      # Neural-trader SendMessage risk-gate pipeline (#2068, ADR-126 Phase 5)
+      - 'plugins/ruflo-neural-trader/src/pipeline-messages.ts'
+      - 'plugins/ruflo-neural-trader/agents/market-analyst.md'
+      - 'plugins/ruflo-neural-trader/agents/trading-strategist.md'
+      - 'plugins/ruflo-neural-trader/agents/risk-analyst.md'
+      - 'plugins/ruflo-neural-trader/agents/backtest-engineer.md'
+      - 'scripts/smoke-neural-trader-pipeline.mjs'
+      # Neural-trader feature attribution (#2068, ADR-126 Phase 6)
+      - 'plugins/ruflo-neural-trader/src/signed-attribution.ts'
+      - 'plugins/ruflo-neural-trader/src/signed-attribution.mjs'
+      - 'plugins/ruflo-neural-trader/skills/trader-explain/**'
+      - 'scripts/smoke-neural-trader-feature-attribution.mjs'
+      # Plugin-registry CWE-347 regression (#1922)
+      - 'v3/@claude-flow/cli/src/plugins/store/discovery.ts'
+      - 'v3/@claude-flow/cli/src/transfer/ipfs/client.ts'
+      - 'v3/@claude-flow/cli/scripts/publish-registry.ts'
+      - 'scripts/smoke-plugin-registry-signature.mjs'
+      # ruvllm WASM auto-init regression (#2086)
+      - 'v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts'
+      - 'v3/@claude-flow/cli/src/ruvector/ruvllm-wasm.ts'
+      - 'scripts/smoke-ruvllm-wasm-auto-init.mjs'
+      # GitHub skills/agents/helpers surface (#2089, ADR-127)
+      - '.claude/agents/github/**'
+      - '.claude/skills/github-*/**'
+      - 'v3/@claude-flow/cli/.claude/commands/github/**'
+      - '.claude/helpers/github-safe.js'
+      - 'v3/@claude-flow/cli/.claude/helpers/github-safe.js'
+      - 'scripts/smoke-github-safe-injection.mjs'
+      - 'scripts/smoke-github-actions-pins.mjs'
+      - 'scripts/smoke-deprecated-actions.mjs'
+      - 'scripts/smoke-attribution-opt-in.mjs'
+      - '.github/supply-chain/allowed-deps.json'
+      # Init-bundle invariants smoke (#2095, ADR-128)
+      - 'v3/@claude-flow/cli/.claude/**'
+      - 'v3/@claude-flow/cli/src/init/**'
+      - 'plugins/*/agents/**'
+      - 'plugins/*/skills/**'
+      - 'plugins/*/commands/**'
+      - 'scripts/smoke-init-bundle-invariants.mjs'
+      # witness manifests / fix list — so witness-verify runs on PRs that
+      # touch them (otherwise a stale per-OS manifest only fails post-merge).
+      - 'verification/**'
   workflow_dispatch:
 
 env:
@@ -660,3 +821,35 @@ jobs:
         run: pnpm publish:alpha
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  init-bundle-invariants-smoke:
+    # Regression guard for ruvnet/ruflo#2095 — ADR-128 Phase 5.
+    #
+    # Statically asserts three invariants of the @claude-flow/cli init bundle:
+    #
+    #   1. NO ORPHANED DIRECTORIES — every subdirectory under
+    #      v3/@claude-flow/cli/.claude/{commands,agents}/ is reachable from
+    #      COMMANDS_MAP or AGENTS_MAP in executor.ts.
+    #
+    #   2. SKILLS_MAP COMPLETENESS — every skill referenced in SKILLS_MAP
+    #      has a SKILL.md (or README.md) inside the package's .claude/skills/.
+    #
+    #   3. NO INIT-PLUGIN AGENT COLLISION — no .md in the init-template
+    #      agents/ shares a basename with any plugin agent. Enforces the
+    #      "plugin is canonical" dedup rule from ADR-128 Phase 2.
+    #
+    # Zero runtime deps; pure Node.js readFileSync + readdirSync.
+    name: init-bundle invariants smoke (#2095, ADR-128 Phase 5)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run init-bundle invariants smoke
+        run: node scripts/smoke-init-bundle-invariants.mjs
