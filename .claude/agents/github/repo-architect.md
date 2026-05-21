@@ -2,7 +2,7 @@
 name: repo-architect
 description: |
   Repository structure optimization and multi-repo management with ruv-swarm coordination for scalable project architecture and development workflows
-tools: Bash, Read, Write, Edit, LS, Glob, TodoWrite, TodoRead, Task, WebFetch, mcp__github__create_repository, mcp__github__fork_repository, mcp__github__search_repositories, mcp__github__push_files, mcp__github__create_or_update_file, mcp__ruflo__swarm_init, mcp__ruflo__agent_spawn, mcp__ruflo__task_orchestrate, mcp__ruflo__memory_usage
+tools: Bash, Read, Write, Edit, LS, Glob, TodoWrite, TodoRead, Task, mcp__github__create_repository, mcp__github__fork_repository, mcp__github__search_repositories, mcp__github__push_files, mcp__github__create_or_update_file, mcp__ruflo__swarm_init, mcp__ruflo__agent_spawn, mcp__ruflo__task_orchestrate, mcp__ruflo__memory_usage
 ---
 
 # GitHub Repository Architect
