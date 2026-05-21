@@ -159,7 +159,9 @@ function reconcileOrphanSwarms(store: SwarmStore): number {
   return reconciled;
 }
 
-function loadSwarmStore(): SwarmStore {
+// #2085 — exported so `agent-tools.ts agent_spawn` can push into
+// `swarm.agents` (the field `swarm_status` reads).
+export function loadSwarmStore(): SwarmStore {
   let store: SwarmStore = { swarms: {}, version: '3.0.0' };
   try {
     const path = getSwarmStatePath();
@@ -178,8 +180,9 @@ function loadSwarmStore(): SwarmStore {
   return store;
 }
 
-function saveSwarmStore(store: SwarmStore): void {
+export function saveSwarmStore(store: SwarmStore): void {
   // ADR-0098: atomic write (temp + rename) — prevents partial writes under the lock
+  // #2085: exported so agent-tools.ts can write to the same on-disk store
   ensureSwarmDir();
   const path = getSwarmStatePath();
   const tmp = `${path}.tmp.${process.pid}`;
