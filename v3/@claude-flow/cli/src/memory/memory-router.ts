@@ -1089,14 +1089,18 @@ async function withRouter<T>(fn: () => Promise<T>): Promise<T> {
       _storage = null;
       _initialized = false;
       _initPromise = null;
-      _initFailed = false;
+      // NB: the ADR-0086 retry-storm breaker flag is intentionally NOT cleared
+      // here — resetRouter() is its sanctioned reset point. The breaker is only
+      // raised in the _doInit catch (alongside nulling _storage), so this block
+      // — gated on a truthy _storage — never runs while the breaker is open.
+      // Clearing the breaker here would defeat the retry-storm guard.
       _registryInstance = null;
       _registryPromise = null;
       _registryAvailable = null;
       _registryInitialized = false;
       _registryInitPromise = null;
-      // Do NOT reset _registryInitFailed — a persistent failure at
-      // registry init (broken install) should still fast-fail on retry.
+      // Do NOT reset the registry-init failure flag either — a persistent
+      // failure at registry init (broken install) should still fast-fail.
     }
   }
 }
