@@ -10,7 +10,7 @@
 
 The `.github`-related surface in ruflo ships in two layers:
 
-1. **Dogfood layer** — `.claude/skills/github-*/SKILL.md` (4 skills), `.claude/agents/github/*.md` (13 agents), `.claude/helpers/github-{safe.js,setup.sh}`. These drive our own workflow daily.
+1. **Dogfood layer** — `.claude/skills/github-*/SKILL.md` (5 skills: code-review, multi-repo, project-management, release-management, workflow-automation), `.claude/agents/github/*.md` (13 agents), `.claude/helpers/github-{safe.js,setup.sh}`. These drive our own workflow daily.
 
 2. **Init-template layer** — `v3/@claude-flow/cli/.claude/commands/github/*.md` (19 command files), `v3/@claude-flow/cli/.claude/helpers/github-{safe.js,setup.sh}`. These are materialized verbatim into every user project by `ruflo init`.
 
