@@ -54,24 +54,31 @@ if (isMCPMode) {
     `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
   );
 
-  // ADR-0204 (a) F-09-011: Archivist bootstrap — mirror the three-step ordering
-  // in src/mcp-server.ts:478-543. Must complete before the stdin listener is
-  // attached so no tool-call path (the only route to archivist.dispatch()) can
-  // run before the substrate is wired. Gated on ADR-0202 per-op RVF release.
+  // ADR-0204 (a) F-09-011: wire the archivist substrate before any tool call
+  // (the only route to archivist.dispatch()), but do NOT block the JSON-RPC
+  // handshake on it. `initialize`/`tools/list` need no archivist; only the
+  // `tools/call` handler awaits `archivistReady` below before dispatching.
+  //
+  // Why not block here: making the RVF warm-up a precondition of attaching the
+  // stdin listener regressed the `initialize` round-trip — a slow cold-start or
+  // transient lock contention left the server unable to answer the handshake
+  // and it was SIGKILLed at the client timeout. Backgrounding the warm-up keeps
+  // the handshake instant while preserving the F-09-011 guarantee (tool
+  // dispatch still waits for, and fails loud on, the substrate). Gated on
+  // ADR-0202 per-op RVF release.
   const { initProcessArchivist, ensureRvfWired } = await import('../dist/src/memory/archivist-init.js');
-  await initProcessArchivist();
-
-  // Eager RVF warm-up with bounded retry-with-backoff (mirrors mcp-server.ts:505-510).
-  // Non-recoverable faults abort startup loudly; transient FS errors (EBUSY/EAGAIN)
-  // get bounded retries. Per feedback-best-effort-must-rethrow-fatals: never swallow
-  // a fatal as if it were recoverable.
   const { warmUpRvfWithRetry } = await import('../dist/src/mcp-server.js');
-  try {
+  let archivistFatal = null;
+  const archivistReady = (async () => {
+    await initProcessArchivist();
+    // Bounded retry-with-backoff (mirrors mcp-server.ts:505-510): transient FS
+    // errors get retries; a non-recoverable fault rejects and is surfaced at the
+    // tools/call boundary (feedback-best-effort-must-rethrow-fatals — never
+    // swallowed into a silent success).
     await warmUpRvfWithRetry(sessionId, ensureRvfWired);
-  } catch {
-    // FATAL diagnosis already emitted by warmUpRvfWithRetry's log sink.
-    process.exit(1);
-  }
+  })().catch((err) => {
+    archivistFatal = err instanceof Error ? err : new Error(String(err));
+  });
 
   // ADR-0204 (b) F-09-001: import validateSchema for tools/call pre-validation.
   // Uses the package subpath export "./*" -> "./dist/*.js" from @claude-flow/mcp/package.json.
@@ -205,6 +212,18 @@ if (isMCPMode) {
               error: { code: -32602, message: `Invalid params: ${diag}` },
             };
           }
+        }
+
+        // ADR-0204 (a) F-09-011: ensure the archivist substrate is wired before
+        // dispatch (the route to archivist.dispatch()). The handshake above did
+        // not wait for this; tool calls do. A fatal warm-up surfaces loudly here.
+        await archivistReady;
+        if (archivistFatal) {
+          return {
+            jsonrpc: '2.0',
+            id: message.id,
+            error: { code: -32603, message: `Archivist substrate failed to initialize: ${archivistFatal.message}` },
+          };
         }
 
         try {

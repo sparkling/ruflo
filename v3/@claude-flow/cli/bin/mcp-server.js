@@ -37,21 +37,21 @@ console.error(
   `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
 );
 
-// ADR-0204 (a) F-09-011: Archivist bootstrap — mirror the three-step ordering
-// in src/mcp-server.ts:478-543. Must complete before the stdin listener is
-// attached so no tool-call path (the only route to archivist.dispatch()) can
-// run before the substrate is wired. Gated on ADR-0202 per-op RVF release.
+// ADR-0204 (a) F-09-011: wire the archivist substrate before any tool call (the
+// only route to archivist.dispatch()), but do NOT block the JSON-RPC handshake
+// on it — `initialize`/`tools/list` need no archivist; only `tools/call` awaits
+// `archivistReady` below. Blocking the stdin listener on the RVF warm-up
+// regressed the initialize round-trip (slow cold-start / lock contention →
+// SIGKILL before the handshake answered). Gated on ADR-0202 per-op RVF release.
 const { initProcessArchivist, ensureRvfWired } = await import('../dist/src/memory/archivist-init.js');
-await initProcessArchivist();
-
-// Eager RVF warm-up with bounded retry-with-backoff (mirrors mcp-server.ts:505-510).
 const { warmUpRvfWithRetry } = await import('../dist/src/mcp-server.js');
-try {
+let archivistFatal = null;
+const archivistReady = (async () => {
+  await initProcessArchivist();
   await warmUpRvfWithRetry(sessionId, ensureRvfWired);
-} catch {
-  // FATAL diagnosis already emitted by warmUpRvfWithRetry's log sink.
-  process.exit(1);
-}
+})().catch((err) => {
+  archivistFatal = err instanceof Error ? err : new Error(String(err));
+});
 
 // ADR-0204 (b) F-09-001: import validateSchema for tools/call pre-validation.
 const { validateSchema } = await import('@claude-flow/mcp/schema-validator');
@@ -205,6 +205,17 @@ async function handleMessage(message) {
               error: { code: -32602, message: `Invalid params: ${diag}` },
             };
           }
+        }
+
+        // ADR-0204 (a) F-09-011: ensure the archivist substrate is wired before
+        // dispatch (the handshake did not wait for it). Fatal warm-up → loud error.
+        await archivistReady;
+        if (archivistFatal) {
+          return {
+            jsonrpc: '2.0',
+            id: message.id,
+            error: { code: -32603, message: `Archivist substrate failed to initialize: ${archivistFatal.message}` },
+          };
         }
 
         try {
