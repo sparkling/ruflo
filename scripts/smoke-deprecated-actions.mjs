@@ -28,9 +28,16 @@ import { join } from 'node:path';
 
 const REPO_ROOT = process.cwd();
 
+// #2089 — initial Phase 3 commit only scanned 3 of the 6 in-scope trees
+// (dogfood agents + dogfood skills + init-template commands). It missed
+// the init-template agents and the dogfood commands, both of which still
+// shipped `actions/checkout@v3` after the Phase 3 merge. Post-publish
+// validation against alpha.74 caught this and added the two missing trees.
 const SCAN_TREES = [
   join(REPO_ROOT, '.claude', 'agents', 'github'),
   join(REPO_ROOT, '.claude', 'skills'),
+  join(REPO_ROOT, '.claude', 'commands', 'github'),
+  join(REPO_ROOT, 'v3', '@claude-flow', 'cli', '.claude', 'agents', 'github'),
   join(REPO_ROOT, 'v3', '@claude-flow', 'cli', '.claude', 'commands', 'github'),
 ];
 
