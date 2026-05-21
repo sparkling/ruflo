@@ -1882,7 +1882,8 @@ export class RvfBackend implements IMemoryBackend {
    */
   private async ensureFresh(): Promise<void> {
     // No native handle to refresh (pure-TS mode), no constructor cached, or
-    // :memory: — nothing cross-process can go stale. No-op.
+    // :memory: — nothing cross-process can go stale.
+    // silent-fallthrough-OK: pure-TS / :memory: mode has no shared native store to refresh; the snapshot-staleness bug is native-only, so a no-op here is correct (not a swallowed error).
     if (!this.nativeDb || this.config.databasePath === ':memory:') return;
 
     let st: { ino: number; size: number; mtimeMs: number };
