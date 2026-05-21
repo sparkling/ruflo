@@ -110,7 +110,18 @@ function runOne(helperPath, c) {
   }
 
   if (c.expectExit !== undefined && c.expectExit !== 'any' && r.status !== c.expectExit) {
-    fails.push(`exit ${r.status} (expected ${c.expectExit})`);
+    // Special case: a body that exceeds the kernel's MAX_ARG_STRLEN (128 KiB on
+    // most Linux kernels) gets rejected by the OS at exec time rather than by
+    // the helper itself — spawnSync returns status=null with error.code=E2BIG.
+    // For the purposes of "must be rejected before gh is invoked," that
+    // counts: the body literally cannot reach `gh`. macOS allows >1 MiB args
+    // so locally the helper's own cap fires; CI Linux trips E2BIG first.
+    const isE2BIG = r.status === null && r.error && r.error.code === 'E2BIG';
+    if (c.expectExit === 1 && isE2BIG) {
+      // Treated as rejected — no extra failure.
+    } else {
+      fails.push(`exit ${r.status} (expected ${c.expectExit})${isE2BIG ? ' [E2BIG]' : ''}`);
+    }
   }
 
   if (c.expectBodyFileFlagInArgv || c.expectBodyVerbatim) {
