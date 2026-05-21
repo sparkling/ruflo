@@ -67,6 +67,13 @@ console.error(JSON.stringify({
   version: VERSION,
 }));
 
+// Lost-reply fix: MCP stdio JSON-RPC frames MUST go to the raw stdout channel,
+// never through console.log — controller/registry init monkey-patches
+// console.log to keep controller noise off stdout, and that patch can swallow a
+// reply frame written via console.log. process.stdout.write is immune to any
+// in-process console reassignment (the same separation stderr gets via console.error).
+const writeFrame = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
+
 // Handle stdin messages
 // Audit-flagged DoS protection (audit_1776483149979): cap stdin buffer
 // to 10MB. See bin/cli.js for the same protection on the auto-detect path.
@@ -78,14 +85,14 @@ process.stdin.on('data', async (chunk) => {
   buffer += chunk;
 
   if (buffer.length > MCP_MAX_BUFFER_BYTES) {
-    console.log(JSON.stringify({
+    writeFrame({
       jsonrpc: '2.0',
       id: null,
       error: {
         code: -32700,
         message: `Buffered stdin exceeds ${MCP_MAX_BUFFER_BYTES} bytes without newline; resetting`,
       },
-    }));
+    });
     buffer = '';
     return;
   }
@@ -100,7 +107,7 @@ process.stdin.on('data', async (chunk) => {
         const message = JSON.parse(line);
         const response = await handleMessage(message);
         if (response) {
-          console.log(JSON.stringify(response));
+          writeFrame(response);
         }
       } catch (error) {
         console.error(
@@ -108,11 +115,11 @@ process.stdin.on('data', async (chunk) => {
           error instanceof Error ? error.message : String(error)
         );
         // Send parse error response
-        console.log(JSON.stringify({
+        writeFrame({
           jsonrpc: '2.0',
           id: null,
           error: { code: -32700, message: 'Parse error' },
-        }));
+        });
       }
     }
   }

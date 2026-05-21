@@ -54,6 +54,18 @@ if (isMCPMode) {
     `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
   );
 
+  // Lost-reply fix: MCP stdio JSON-RPC frames MUST go to the raw stdout
+  // channel, never through console.log. Controller/registry init monkey-patches
+  // console.log to a blanket no-op (memory/memory-router.ts ~:594) to keep
+  // controller noise off stdout during init; the first memory_store triggers
+  // that patch (via getController('memoryGraph')) AFTER its work completes, and
+  // it was swallowing the reply frame written here. process.stdout.write is
+  // immune to any in-process console reassignment, which is exactly the
+  // separation the protocol channel requires (stderr already uses console.error
+  // for the same reason). The console no-op keeps doing its job — keeping
+  // controller logs off stdout — but can no longer eat a protocol frame.
+  const writeFrame = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
+
   // ADR-0204 (a) F-09-011: wire the archivist substrate before any tool call
   // (the only route to archivist.dispatch()), but do NOT block the JSON-RPC
   // handshake on it. `initialize`/`tools/list` need no archivist; only the
@@ -98,14 +110,14 @@ if (isMCPMode) {
     if (buffer.length > MCP_MAX_BUFFER_BYTES) {
       // Drop the buffer + emit a protocol-level error so the client
       // sees the rejection rather than a silent OOM.
-      console.log(JSON.stringify({
+      writeFrame({
         jsonrpc: '2.0',
         id: null,
         error: {
           code: -32700,
           message: `Buffered stdin exceeds ${MCP_MAX_BUFFER_BYTES} bytes without newline; resetting`,
         },
-      }));
+      });
       buffer = '';
       return;
     }
@@ -118,25 +130,25 @@ if (isMCPMode) {
         try {
           message = JSON.parse(line);
         } catch {
-          console.log(JSON.stringify({
+          writeFrame({
             jsonrpc: '2.0',
             id: null,
             error: { code: -32700, message: 'Parse error' },
-          }));
+          });
           continue;
         }
         try {
           const response = await handleMessage(message);
           if (response) {
-            console.log(JSON.stringify(response));
+            writeFrame(response);
           }
         } catch (error) {
           // #1606: Return proper internal error instead of parse error
-          console.log(JSON.stringify({
+          writeFrame({
             jsonrpc: '2.0',
             id: message.id ?? null,
             error: { code: -32603, message: error instanceof Error ? error.message : 'Internal error' },
-          }));
+          });
         }
       }
     }
