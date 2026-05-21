@@ -206,7 +206,7 @@ export class RvfBackend implements IMemoryBackend {
   //
   // `_freshStat` is the cached file identity from the last load/reopen.
   // `_RvfDatabaseCtor` caches the native binding's RvfDatabase constructor
-  // (resolved lazily in tryNativeInit) so the reopen needs no second import().
+  // — resolved lazily during native init so the reopen needs no second import.
   private _freshStat: { ino: number; size: number; mtimeMs: number } | null = null;
   private _RvfDatabaseCtor: any = null;
 
