@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { readFile, writeFile, mkdir, rename, appendFile, unlink, open } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type {
@@ -183,6 +183,33 @@ export class RvfBackend implements IMemoryBackend {
   private _pendingNativeIngest: Array<{ id: string; embedding: Float32Array }> = [];
   private _nativeRehydrated = false;
 
+  // ADR-0167 Amendment 2026-05-21b (Phase 3): read-side reader convergence.
+  //
+  // The native RvfStore loads `self.vectors` from the active manifest exactly
+  // once in boot() and serves query() as a brute-force scan over that frozen
+  // in-memory map — it never re-reads the RootHeader after open. A handle held
+  // open across ANOTHER process's commits is therefore stuck on its boot-epoch
+  // snapshot: memory_search returns total:0 against entries that accumulated
+  // post-open, while memory_retrieve/stats (which read the TS `entries` Map)
+  // still work. RVF is snapshot-isolated by design and the spec delegates
+  // "explicit refresh" to the caller (re-read Level 0 to see new data); the
+  // fork is the caller. `ensureFresh()` implements that contract purely in TS:
+  //   - capture {ino,size,mtimeMs} at load; before a semantic read, stat again
+  //   - size grows monotonically on append (reliable even at coarse mtime);
+  //     ino changes on a compaction inode-swap → either signals new data
+  //   - on a detected change, close + reopen the native handle (existing
+  //     RvfDatabase.open API, NO native-core change) and re-hydrate
+  //     `entries` + `nativeReverseMap` via the existing loadFromNativeSegments
+  //     path, then update the cached stat
+  // No change → one stat per search in steady state. Whole thing no-ops when
+  // nativeDb is absent (pure-TS mode) or path is :memory:.
+  //
+  // `_freshStat` is the cached file identity from the last load/reopen.
+  // `_RvfDatabaseCtor` caches the native binding's RvfDatabase constructor
+  // (resolved lazily in tryNativeInit) so the reopen needs no second import().
+  private _freshStat: { ino: number; size: number; mtimeMs: number } | null = null;
+  private _RvfDatabaseCtor: any = null;
+
   // ADR-0090 Tier B2 (ruflo-patch): deferred corruption signal from
   // tryNativeInit.
   //
@@ -356,6 +383,11 @@ export class RvfBackend implements IMemoryBackend {
       }, this.config.autoPersistInterval);
       if (this.persistTimer.unref) this.persistTimer.unref();
     }
+
+    // ADR-0167 Phase 3: snapshot the file identity at boot so a long-lived
+    // semantic read can detect another process's commits and refresh. No-op
+    // in pure-TS / :memory: mode (no native handle to refresh).
+    this._captureFreshStat();
 
     this.initialized = true;
     if (this.config.verbose) {
@@ -623,6 +655,14 @@ export class RvfBackend implements IMemoryBackend {
   async query(q: MemoryQuery): Promise<MemoryEntry[]> {
     this.requireInitialized('query');
     this.noteNativeFallbackUse('query');
+    // ADR-0167 Phase 3: for the semantic path, refresh the read snapshot
+    // BEFORE snapshotting `entries` so a cross-process commit is reflected in
+    // both the native query AND the entries-Map filter. Scoped to semantic so
+    // pure prefix/filter queries pay no stat. (query(semantic) is folded into
+    // ensureNativeSemanticReady downstream; this is the freshness gate.)
+    if (q.type === 'semantic' && q.embedding) {
+      await this.ensureFresh();
+    }
     const start = performance.now();
     let results = Array.from(this.entries.values());
 
@@ -689,6 +729,9 @@ export class RvfBackend implements IMemoryBackend {
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
     this.requireInitialized('search');
     this.noteNativeFallbackUse('search');
+    // ADR-0167 Phase 3: refresh the read snapshot if another process committed
+    // since this handle opened (no-op when there's nothing to refresh).
+    await this.ensureFresh();
     const start = performance.now();
     let results: SearchResult[];
 
@@ -748,7 +791,33 @@ export class RvfBackend implements IMemoryBackend {
         // entries were silently dropped. New trigger: if more than half of native
         // hits were dropped as orphans, supplement with pureTsSearch over all
         // entries, dedupe by entry.id, sort by score-DESC, then slice to k.
-        if (raw.length > 0 && (orphanHits / Math.max(raw.length, 1)) > 0.5 && this.entries.size > 0) {
+        // ADR-0167 Amendment 2026-05-21b (Phase 3): stale-native-index backstop.
+        // The native scan returned ZERO hits while the authoritative `entries`
+        // Map is non-empty — the exact warm-handle staleness signature
+        // (snapshot frozen at boot; another process's vectors invisible to the
+        // native scan). ensureFresh() reopens on a detected file change; this
+        // covers the residual window where the native handle is still serving
+        // an empty/stale scan after a refresh attempt. It is NOT a silent
+        // fallback (feedback-no-fallbacks): converting a silent wrong-empty
+        // into a logged correct answer is a correctness guarantee. Warn LOUDLY
+        // (unconditionally, not gated on verbose) and supplement from `entries`.
+        if (raw.length === 0 && this.entries.size > 0) {
+          console.warn(
+            `[RvfBackend] ADR-0167 Phase 3: native semantic scan returned 0 hits ` +
+            `but ${this.entries.size} entries are loaded (stale warm-handle snapshot). ` +
+            `Refreshed and supplementing from the authoritative entries Map. If this ` +
+            `persists across searches, run \`ruflo memory rebuild\` to compact the SFVR file.`,
+          );
+          const supplemental = this.pureTsSearch(embedding, options);
+          const seen = new Set(results.map(r => r.entry.id));
+          for (const s of supplemental) {
+            if (seen.has(s.entry.id)) continue;
+            results.push(s);
+            seen.add(s.entry.id);
+          }
+          results.sort((a, b) => b.score - a.score);
+          results = results.slice(0, options.k);
+        } else if (raw.length > 0 && (orphanHits / Math.max(raw.length, 1)) > 0.5 && this.entries.size > 0) {
           if (this.config.verbose) {
             console.warn(
               `[RvfBackend] Native search returned ${orphanHits} orphan numIds ` +
@@ -1112,6 +1181,10 @@ export class RvfBackend implements IMemoryBackend {
         `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
       );
     }
+
+    // ADR-0167 Phase 3: cache the RvfDatabase constructor for read-side
+    // reopen (ensureFresh) so a refresh needs no second dynamic import.
+    this._RvfDatabaseCtor = rvf?.RvfDatabase ?? null;
 
     const { existsSync: fileExists, openSync, readSync, closeSync, statSync } = await import('node:fs');
     const nativeMetric = this.config.metric === 'euclidean' ? 'l2'
@@ -1767,6 +1840,141 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
     this._pendingNativeIngest = []; // release memory
+  }
+
+  /** ADR-0167 Phase 3: cache the on-disk file identity {ino,size,mtimeMs}.
+   *
+   *  Called at boot (initialize) and after every reopen (ensureFresh). Pure
+   *  JS, best-effort: a missing file (cold start, :memory:) leaves the cache
+   *  null so the first ensureFresh() sees "no baseline" and skips reopen
+   *  rather than thrashing.
+   */
+  private _captureFreshStat(): void {
+    if (this.config.databasePath === ':memory:') return;
+    try {
+      const st = statSync(this.config.databasePath);
+      this._freshStat = { ino: Number(st.ino), size: Number(st.size), mtimeMs: st.mtimeMs };
+    } catch {
+      // silent-fallthrough-OK: file may not exist yet (cold start) or be a
+      // sentinel path; leaving _freshStat as-is means ensureFresh() treats the
+      // next stat as the baseline. No data correctness depends on this — it is
+      // a staleness HINT; the loud backstop (search d8) is the safety net.
+      this._freshStat = null;
+    }
+  }
+
+  /** ADR-0167 Amendment 2026-05-21b (Phase 3): read-side reader refresh.
+   *
+   *  Detects whether another process committed to the .rvf since this handle
+   *  loaded its snapshot and, if so, reopens the native handle and re-hydrates
+   *  the TS view (`entries` + `nativeReverseMap`) via the existing
+   *  loadFromNativeSegments path. This implements the RVF substrate's
+   *  caller-side "explicit refresh" contract WITHOUT any native-core change
+   *  (uses the existing RvfDatabase.open/close API). No-ops cleanly when there
+   *  is no native handle (pure-TS mode) or in :memory: mode.
+   *
+   *  Staleness signal (pure JS, one stat per search in steady state):
+   *    - size grows monotonically on append (reliable even at coarse mtime
+   *      granularity — the symptom case)
+   *    - ino changes on a compaction inode-swap (open() + atomic-rename)
+   *  Either ⇒ refresh. mtimeMs is captured for diagnostics but not the sole
+   *  trigger (coarse-granularity filesystems can miss sub-second appends).
+   */
+  private async ensureFresh(): Promise<void> {
+    // No native handle to refresh (pure-TS mode), no constructor cached, or
+    // :memory: — nothing cross-process can go stale. No-op.
+    if (!this.nativeDb || this.config.databasePath === ':memory:') return;
+
+    let st: { ino: number; size: number; mtimeMs: number };
+    try {
+      const s = statSync(this.config.databasePath);
+      st = { ino: Number(s.ino), size: Number(s.size), mtimeMs: s.mtimeMs };
+    } catch {
+      // silent-fallthrough-OK: stat failed (TOCTOU unlink, transient). Serve
+      // the current snapshot; the loud d8 backstop covers a genuinely-stale
+      // empty result. Re-statting on the next search recovers.
+      return;
+    }
+
+    // First steady-state stat after a cold load where the baseline couldn't
+    // be captured: adopt it as the baseline rather than forcing a reopen.
+    if (!this._freshStat) {
+      this._freshStat = st;
+      return;
+    }
+
+    const grew = st.size > this._freshStat.size;
+    const inodeSwapped = st.ino !== this._freshStat.ino;
+    if (!grew && !inodeSwapped) return; // unchanged — common path, just one stat
+
+    // Change detected → reopen + re-hydrate. Guard every native call so a
+    // missing API or absent handle no-ops cleanly (older @latest binary).
+    const Ctor = this._RvfDatabaseCtor;
+    if (!Ctor || typeof Ctor.open !== 'function') {
+      // Can't reopen without the constructor; refresh the cached stat so we
+      // don't spin, and lean on the loud d8 backstop for correctness.
+      this._freshStat = st;
+      return;
+    }
+
+    if (this.config.verbose) {
+      console.warn(
+        `[RvfBackend] ADR-0167 Phase 3: detected external commit ` +
+        `(size ${this._freshStat.size}→${st.size}, ino ${this._freshStat.ino}` +
+        `${inodeSwapped ? `→${st.ino} (compaction)` : ''}); refreshing read snapshot.`,
+      );
+    }
+
+    try {
+      // Close the stale handle, reopen at the current on-disk state. Reopening
+      // the SHARED handle (per ADR Decision step 2 — "start with reopening the
+      // shared handle for simplicity"); openReadonly is the documented escape
+      // hatch only if writer-lock churn shows up.
+      if (typeof this.nativeDb.close === 'function') {
+        try { this.nativeDb.close(); } catch { /* best-effort close of stale handle */ }
+      }
+      this.nativeDb = Ctor.open(this.config.databasePath);
+    } catch (err) {
+      // Reopen failed — keep serving the prior snapshot (do NOT null the
+      // handle and silently degrade reads). Surface loudly; the d8 backstop
+      // supplements from the authoritative `entries` Map on the empty result.
+      if (this.config.verbose) {
+        console.warn(
+          `[RvfBackend] ADR-0167 Phase 3: reopen failed (${(err as Error).message}); ` +
+          `serving prior snapshot, see backstop.`,
+        );
+      }
+      this._freshStat = st;
+      return;
+    }
+
+    // Re-hydrate the TS view from the freshly-reopened native segments. Reset
+    // the per-process maps + the lazy-rehydrate gate so loadFromNativeSegments
+    // re-populates entries/keyIndex/seenIds/nativeIdMap/nativeReverseMap, then
+    // ensureNativeSemanticReady re-runs on the next search.
+    this.entries.clear();
+    this.keyIndex.clear();
+    this.seenIds.clear();
+    this.nativeIdMap.clear();
+    this.nativeReverseMap.clear();
+    this.nextNativeId = 1;
+    this._pendingNativeIngest = [];
+    this._nativeRehydrated = false;
+    try {
+      await this.loadFromNativeSegments();
+      await this.replayWalIfPresent();
+    } catch (err) {
+      if (this.config.verbose) {
+        console.warn(
+          `[RvfBackend] ADR-0167 Phase 3: re-hydrate after reopen failed: ` +
+          `${(err as Error).message}`,
+        );
+      }
+    }
+
+    // Update the cached identity AFTER the reopen so the next search compares
+    // against the post-refresh state.
+    this._captureFreshStat();
   }
 
   /** Acquire advisory lock (PID-based lockfile).
