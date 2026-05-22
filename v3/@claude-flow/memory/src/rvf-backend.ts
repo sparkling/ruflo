@@ -714,13 +714,28 @@ export class RvfBackend implements IMemoryBackend {
           if (options.filters?.namespace && entry.namespace !== options.filters.namespace) continue;
           if (options.filters?.tags && !options.filters.tags.every(t => entry.tags.includes(t))) continue;
           if (options.filters?.memoryType && entry.type !== options.filters.memoryType) continue;
-          // Convert distance → similarity score, metric-aware
-          const score = this.config.metric === 'cosine' ? 1 - r.distance
-            : this.config.metric === 'dot' ? r.distance // dot product: higher = more similar
-            : 1 / (1 + r.distance); // euclidean: map [0,∞) → (0,1]
+          // ADR-0073 amendment (2026-05-22): compute cosine DIRECTLY from the
+          // stored + query vectors instead of converting `r.distance`.
+          // WHY: RVF's `open()` does NOT persist the distance metric — RuVector
+          // rvf-runtime `try_open_once` rebuilds `RvfOptions { ..Default::default() }`
+          // (metric → L2), so every *reopened* store computes L2 regardless of the
+          // `metric: 'cosine'` passed at create(). For the unit-normalized mpnet
+          // embeddings an L2² distance is `2 - 2cos`, so the old `1 - r.distance`
+          // cosine formula yielded `2cos - 1` (negative for merely-related content),
+          // and the threshold gate then dropped everything → memory_search total:0.
+          // Computing cosine directly is metric-independent, matches pureTsSearch /
+          // bruteForceSearch and upstream agentic-flow's ruvector-backend, and removes
+          // the dependency on the non-persisted store metric. Native ANN still drives
+          // candidate *ranking* (L2 and cosine are rank-equivalent for unit vectors);
+          // we re-score only for the absolute similarity the threshold gate compares.
+          if (!entry.embedding) continue;
+          const score = cosineSimilarity(embedding, entry.embedding);
           if (options.threshold && score < options.threshold) continue;
-          results.push({ entry, score, distance: r.distance });
+          results.push({ entry, score, distance: 1 - score });
         }
+        // Exact cosine re-scoring can reorder vs the native ANN distance order;
+        // sort score-DESC before the top-k slice (parity with bruteForceSearch).
+        results.sort((a, b) => b.score - a.score);
         results = results.slice(0, options.k);
 
         // ADR-0094 d8 follow-up (Bug 1, 2026-05-05): orphan-segment self-heal.
