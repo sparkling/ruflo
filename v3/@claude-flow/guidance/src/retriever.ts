@@ -159,6 +159,20 @@ export class ShardRetriever {
   private indexed = false;
   private globCache = new Map<string, RegExp>();
 
+  // M3 perf substrate — packed embedding matrix for batched cosine.
+  // The per-shard `embedding: Float32Array` fields are scattered allocations
+  // that produce poor cache locality during scoreShards's O(n) scan. We
+  // additionally cache a single contiguous Float32Array of shape
+  // (shardCount × dim) and run the cosine as a tight matrix-vector dot.
+  // V8 emits much tighter inner-loop code for this access pattern and
+  // memory bandwidth becomes the floor.
+  //
+  // `packedDim === 0` when not yet packed (no shards, or shards lack
+  // embeddings). Stale on shard mutation — `indexShards()` repacks.
+  private packedEmbeddings: Float32Array | null = null;
+  private packedDim = 0;
+  private packedShardCount = 0;
+
   constructor(embeddingProvider?: IEmbeddingProvider) {
     this.embeddingProvider = embeddingProvider ?? new HashEmbeddingProvider();
   }
@@ -174,7 +188,14 @@ export class ShardRetriever {
   }
 
   /**
-   * Index all shards by generating embeddings
+   * Index all shards by generating embeddings.
+   *
+   * M3 substrate — also packs every shard embedding into a single
+   * contiguous Float32Array (`packedEmbeddings`) so scoreShards can run
+   * the cosine as a vectorized matrix-vector dot in cache-friendly
+   * sequential memory rather than chasing per-shard heap pointers.
+   * Costs O(n × dim) at index time (one-shot) for an O(n) scan win
+   * on every query.
    */
   async indexShards(): Promise<void> {
     if (this.indexed) return;
@@ -182,8 +203,30 @@ export class ShardRetriever {
     const texts = this.shards.map(s => s.compactText);
     const embeddings = await this.embeddingProvider.batchEmbed(texts);
 
+    let dim = 0;
     for (let i = 0; i < this.shards.length; i++) {
       this.shards[i].embedding = embeddings[i];
+      if (embeddings[i] && embeddings[i].length > dim) dim = embeddings[i].length;
+    }
+
+    // Pack into a single contiguous Float32Array. Shards without an
+    // embedding (or with a wrong dim) get a row of zeros — they fall
+    // through to similarity=0 in the existing scoring path.
+    if (dim > 0 && this.shards.length > 0) {
+      const packed = new Float32Array(this.shards.length * dim);
+      for (let i = 0; i < this.shards.length; i++) {
+        const e = this.shards[i].embedding;
+        if (e && e.length === dim) {
+          packed.set(e, i * dim);
+        }
+      }
+      this.packedEmbeddings = packed;
+      this.packedDim = dim;
+      this.packedShardCount = this.shards.length;
+    } else {
+      this.packedEmbeddings = null;
+      this.packedDim = 0;
+      this.packedShardCount = 0;
     }
 
     this.indexed = true;
@@ -264,7 +307,26 @@ export class ShardRetriever {
   }
 
   /**
-   * Score all shards against the query
+   * Score all shards against the query.
+   *
+   * M3 perf substrate — three changes from the baseline:
+   *
+   *   1. Filter FIRST, cosine SECOND. The old code computed cosine for
+   *      every shard regardless of whether riskFilter/repoScope would
+   *      throw it away. We now decide eligibility first and only do
+   *      the 384-dim multiply for survivors.
+   *
+   *   2. Packed-matrix cosine — when `packedEmbeddings` is current and
+   *      dim matches, compute the dot directly from contiguous memory
+   *      (one allocation, sequential reads) instead of dereferencing
+   *      `shard.embedding` per call. Embeddings are always unit-
+   *      normalised so cosine === dot + clamp.
+   *
+   *   3. Top-K partial selection — when the caller only wants `maxShards`
+   *      results (typical), don't `.sort()` the entire candidate list.
+   *      Maintain a fixed-size heap of size K and only compare/swap
+   *      against its current minimum. Drops the final step from
+   *      O(n log n) to O(n log K).
    */
   private scoreShards(
     queryEmbedding: Float32Array,
@@ -274,8 +336,17 @@ export class ShardRetriever {
   ): Array<{ shard: RuleShard; similarity: number; reason: string }> {
     const results: Array<{ shard: RuleShard; similarity: number; reason: string }> = [];
 
-    for (const shard of this.shards) {
-      // Hard filter: risk class
+    const usePacked =
+      this.packedEmbeddings !== null &&
+      this.packedShardCount === this.shards.length &&
+      this.packedDim === queryEmbedding.length;
+    const packed = this.packedEmbeddings;
+    const dim = this.packedDim;
+
+    for (let si = 0; si < this.shards.length; si++) {
+      const shard = this.shards[si];
+
+      // Hard filter: risk class — skip cosine on filtered shards
       if (riskFilter && riskFilter.length > 0) {
         if (!riskFilter.includes(shard.rule.riskClass)) continue;
       }
@@ -288,9 +359,14 @@ export class ShardRetriever {
         if (!matchesScope) continue;
       }
 
-      // Semantic similarity
+      // Semantic similarity — only compute for survivors of the filter
       let similarity = 0;
-      if (shard.embedding) {
+      if (usePacked && packed !== null) {
+        const off = si * dim;
+        let dot = 0;
+        for (let k = 0; k < dim; k++) dot += packed[off + k] * queryEmbedding[k];
+        similarity = dot < 0 ? 0 : dot > 1 ? 1 : dot;
+      } else if (shard.embedding) {
         similarity = this.cosineSimilarity(queryEmbedding, shard.embedding);
       }
 

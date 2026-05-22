@@ -101,12 +101,21 @@ for (const N of [10, 100, 500, 1000]) {
   const r = createRetriever();
   await r.loadBundle(makeBundle(N));
   const query = 'I need to commit a secret-scan fix in the auth module';
-  const result = await bench(
-    `retriever.retrieve(N=${N} shards)`,
+  // Unfiltered query — every shard passes through cosine.
+  const unfiltered = await bench(
+    `retrieve(N=${N}, unfiltered)`,
     () => r.retrieve({ taskDescription: query, maxShards: 5 }),
     Math.max(50, Math.floor(2000 / Math.sqrt(N))),
   );
-  results.push({ N, ...result });
+  // Filtered query — riskFilter restricts to ~20% of shards (critical
+  // only). With M3's filter-then-cosine ordering, this should be ~5x
+  // cheaper than the unfiltered case at N=1000. Without it, identical.
+  const filtered = await bench(
+    `retrieve(N=${N}, riskFilter=[critical])`,
+    () => r.retrieve({ taskDescription: query, maxShards: 5, riskFilter: ['critical'] }),
+    Math.max(50, Math.floor(2000 / Math.sqrt(N))),
+  );
+  results.push({ N, unfiltered, filtered });
 }
 
 const out = {
@@ -122,10 +131,11 @@ const outPath = resolve(OUT_DIR, `guidance-retriever-scale-${TAG}.json`);
 writeFileSync(outPath, JSON.stringify(out, null, 2));
 
 console.log(`\nWrote ${outPath}\n`);
-console.log('| N shards | retrieve ops/sec | latency µs | scaling vs N=10 |');
-console.log('|---------:|-----------------:|-----------:|----------------:|');
-const base = results[0].opsPerSec;
+console.log('| N shards | unfiltered ops/s | filtered ops/s | filter speedup |');
+console.log('|---------:|-----------------:|---------------:|---------------:|');
 for (const r of results) {
-  const scaling = (base / r.opsPerSec).toFixed(2);
-  console.log(`| ${String(r.N).padStart(8)} | ${String(r.opsPerSec).padStart(16)} | ${String(r.avgMicros).padStart(10)} | ${scaling.padStart(15)}x |`);
+  const ratio = (r.filtered.opsPerSec / r.unfiltered.opsPerSec).toFixed(2);
+  console.log(
+    `| ${String(r.N).padStart(8)} | ${String(r.unfiltered.opsPerSec).padStart(16)} | ${String(r.filtered.opsPerSec).padStart(14)} | ${ratio.padStart(14)}x |`,
+  );
 }
