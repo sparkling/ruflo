@@ -69,6 +69,8 @@ export interface ConsolidateResult {
   patternsLearned: number;
   entriesUpdated: number;
   durationMs: number;
+  /** ADR-0220 F-05-016: trajectoryIds whose completeTask() failed (undefined if none) */
+  errors?: Array<{ trajectoryId: string; error: string }>;
 }
 
 /** A single pattern match returned by findSimilarPatterns() */
@@ -256,6 +258,8 @@ export class LearningBridge extends EventEmitter {
     let completed = 0;
     let patternsLearned = 0;
     const toRemove: string[] = [];
+    // ADR-0220 F-05-016: track failed completions instead of silently dropping
+    const failedTrajectories: Array<{ trajectoryId: string; error: string }> = [];
 
     const entries = Array.from(this.activeTrajectories.entries());
     for (const [entryId, trajectoryId] of entries) {
@@ -264,8 +268,12 @@ export class LearningBridge extends EventEmitter {
         completed++;
         patternsLearned++;
         toRemove.push(entryId);
-      } catch {
-        // Skip failed completions
+      } catch (err: any) {
+        // ADR-0220 F-05-016: log + counter the failure; do not silently drop.
+        // The trajectory stays in activeTrajectories for retry on next cycle.
+        const msg = err?.message ?? String(err);
+        console.error('[LearningBridge] completeTask failed for trajectory', trajectoryId, ':', msg);
+        failedTrajectories.push({ trajectoryId, error: msg });
       }
     }
 
@@ -281,6 +289,7 @@ export class LearningBridge extends EventEmitter {
       patternsLearned,
       entriesUpdated: completed,
       durationMs: Date.now() - startTime,
+      errors: failedTrajectories.length > 0 ? failedTrajectories : undefined,
     };
 
     this.emit('consolidation:completed', result);
