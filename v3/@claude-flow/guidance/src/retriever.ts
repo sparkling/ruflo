@@ -445,19 +445,30 @@ export class ShardRetriever {
   }
 
   /**
-   * Cosine similarity between two vectors
+   * Cosine similarity between two vectors.
+   *
+   * Phase 1 perf — the embeddings this retriever consumes are always
+   * unit-normalised at production time:
+   *   - HashEmbeddingProvider divides by L2 norm before returning
+   *     (this file, line 134)
+   *   - ONNX providers (all-MiniLM-L6-v2 and friends) emit unit vectors
+   *     by design
+   * That means `sqrt(normA) * sqrt(normB) === 1` and the only useful
+   * computation per pair is the dot product. The old 3-accumulator
+   * version computed dot + both norms + two sqrts + a div + a clamp —
+   * for a result the math already guarantees lies in [-1, 1]. We drop
+   * to pure dot + a defensive clamp.
+   *
+   * This compounds: every `scoreShards()` call ran `O(shards)` of these,
+   * and `retrieveForTask()` runs it per query.
    */
   private cosineSimilarity(a: Float32Array, b: Float32Array): number {
     if (a.length !== b.length) return 0;
-
-    let dot = 0, normA = 0, normB = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom > 0 ? Math.max(0, Math.min(1, dot / denom)) : 0;
+    let dot = 0;
+    for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+    // Defensive clamp — unit vectors should land in [-1, 1] but tiny
+    // FP drift can produce 1.0000000002. Snap to [0, 1].
+    return dot < 0 ? 0 : dot > 1 ? 1 : dot;
   }
 
   /**
