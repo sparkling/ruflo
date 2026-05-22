@@ -21,7 +21,8 @@ function behavioralRules(): string {
 - NEVER save working files, text/mds, or tests to the root folder
 - Never continuously check status after spawning a swarm — wait for results
 - ALWAYS read a file before editing it
-- NEVER commit secrets, credentials, or .env files`;
+- NEVER commit secrets, credentials, or .env files
+- NEVER add a \`Co-Authored-By\` trailer to user commits unless this project's \`.claude/settings.json\` has \`attribution.commit\` set (#2078). The Claude Code Bash tool may suggest one in its default commit-message template — ignore it. \`Co-Authored-By\` is semantic authorship attribution under git/GitHub convention; the tool is the facilitator, not a co-author.`;
 }
 
 function fileOrganization(): string {
