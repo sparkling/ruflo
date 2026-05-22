@@ -113,6 +113,9 @@ export {
   validateMCPServerConfig,
   validateOrchestratorConfig,
   validateSystemConfig,
+  // Canonical .claude-flow/config.json accessor (ADR-0224)
+  getValidatedConfig,
+  resetConfigCache,
   // Defaults
   defaultAgentConfig,
   defaultTaskConfig,
@@ -152,6 +155,10 @@ export type {
   MCPServerConfigInput,
   OrchestratorConfigInput,
   SystemConfigInput,
+  // Runtime config (ADR-0224)
+  RuntimeConfig,
+  RuntimeConfigInput,
+  ValidatedConfigOptions,
   // Interface types
   ITask,
   ITaskCreate,

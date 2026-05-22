@@ -11,6 +11,7 @@
  * - Integration with agentic-flow attention mechanisms
  */
 
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type {
   Threat,
   ThreatType,
@@ -175,8 +176,9 @@ export class ThreatLearningService {
       namespace: this.namespace,
       query,
       k: options.k ?? 10,
-      // ADR-0069 A7: config-chain similarity threshold
-      minSimilarity: options.minSimilarity ?? (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); return c?.memory?.similarityThreshold; } catch { return undefined; } })() ?? 0.7,
+      // ADR-0069 A7 / ADR-0224: config-chain similarity threshold via
+      // canonical validated accessor (no try/catch, no require).
+      minSimilarity: options.minSimilarity ?? getValidatedConfig().memory?.similarityThreshold ?? 0.7,
     });
 
     return results.map(r => r.value as LearnedThreatPattern);

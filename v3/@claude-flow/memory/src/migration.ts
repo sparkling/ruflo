@@ -8,8 +8,9 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { promises as fs, readFileSync as _readFileSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import {
   MigrationConfig,
   MigrationProgress,
@@ -27,16 +28,12 @@ import { AgentDBAdapter } from './agentdb-adapter.js';
 /**
  * Default migration configuration
  */
-// ADR-0069 A10: aligned batch size with rvf-migration.ts (500 is more efficient
-// for bulk operations). Override via config.json memory.migrationBatchSize.
+// ADR-0069 A10 / ADR-0224: aligned batch size with rvf-migration.ts (500 is
+// more efficient for bulk operations). Override via config.json
+// memory.migrationBatchSize. Read through the canonical validated accessor.
 const _configBatchSize = (() => {
-  try {
-    const cfg = JSON.parse(_readFileSync(
-      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    const val = cfg?.memory?.migrationBatchSize;
-    if (typeof val === 'number' && val > 0) return val;
-  } catch { /* use default */ }
-  return 500;
+  const val = getValidatedConfig().memory?.migrationBatchSize;
+  return typeof val === 'number' && val > 0 ? val : 500;
 })();
 
 const DEFAULT_MIGRATION_CONFIG: Partial<MigrationConfig> = {

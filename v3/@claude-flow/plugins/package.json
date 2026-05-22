@@ -47,6 +47,7 @@
   },
   "peerDependencies": {
     "@claude-flow/memory": "3.0.0-alpha.15-patch.259",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.526",
     "@ruvector/learning-wasm": "0.1.29-patch.123",
     "@ruvector/wasm": "0.1.1-patch.124"
   },

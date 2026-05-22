@@ -9,8 +9,7 @@
  * @module v3/memory/memory-graph
  */
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type { IMemoryBackend, MemoryEntry, SearchResult } from './types.js';
 
 // ===== Types =====
@@ -59,15 +58,12 @@ export interface GraphStats {
   minPageRank: number;
 }
 
-// ADR-0069 A7: read similarity threshold from config chain
+// ADR-0069 A7 / ADR-0224: read similarity threshold via canonical validated
+// accessor. Missing config.json → returns fallback; malformed config (string
+// where number expected) throws loud via Zod, not silently five layers down.
 function getConfigSimilarityThreshold(fallback: number): number {
-  try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    if (typeof cfg?.memory?.similarityThreshold === 'number') {
-      return cfg.memory.similarityThreshold;
-    }
-  } catch { /* use fallback */ }
-  return fallback;
+  const val = getValidatedConfig().memory?.similarityThreshold;
+  return typeof val === 'number' ? val : fallback;
 }
 
 const DEFAULT_CONFIG: Required<MemoryGraphConfig> = {

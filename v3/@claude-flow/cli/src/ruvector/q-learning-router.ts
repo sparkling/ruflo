@@ -16,16 +16,12 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 
-// ADR-0069 A8: read RL learning rate from config chain
+// ADR-0069 A8 / ADR-0224: read RL learning rate via canonical validated accessor.
 function getConfigQLearningRate(fallback: number): number {
-  try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-    if (typeof cfg?.neural?.learningRates?.qLearning === 'number') {
-      return cfg.neural.learningRates.qLearning;
-    }
-  } catch { /* use fallback */ }
-  return fallback;
+  const val = getValidatedConfig().neural?.learningRates?.qLearning;
+  return typeof val === 'number' ? val : fallback;
 }
 
 /**

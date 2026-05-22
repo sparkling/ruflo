@@ -15,8 +15,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type {
   SONAConfiguration,
   SONALearningMode,
@@ -61,14 +60,11 @@ interface AgenticFlowSONAReference {
   endTrajectory?(params: unknown): Promise<unknown>;
 }
 
-// ADR-0069 A8: config-chain learning rate
+// ADR-0069 A8 / ADR-0224: config-chain learning rate via canonical validated
+// accessor.
 function readBaseLearningRate(fallback: number): number {
-  try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-    const val = cfg?.neural?.defaultLearningRate;
-    if (typeof val === 'number' && val > 0) return val;
-  } catch { /* use fallback */ }
-  return fallback;
+  const val = getValidatedConfig().neural?.defaultLearningRate;
+  return typeof val === 'number' && val > 0 ? val : fallback;
 }
 
 const baseLR = readBaseLearningRate(0.001);
@@ -693,13 +689,9 @@ export class SONAAdapter extends EventEmitter {
           patternsArray[j].pattern
         );
 
-        // ADR-0069 A11: config-chain dedup threshold
-        let _sonaDedupThreshold = 0.95;
-        try {
-          const _cfg = JSON.parse(readFileSync(
-            join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-          _sonaDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
-        } catch { /* use default */ }
+        // ADR-0069 A11 / ADR-0224: config-chain dedup threshold via canonical
+        // validated accessor.
+        const _sonaDedupThreshold = getValidatedConfig().memory?.dedupThreshold ?? 0.95;
         if (similarity > _sonaDedupThreshold) { // ADR-0069 A11: was hardcoded 0.95
           // Merge into pattern with higher confidence
           if (patternsArray[i].confidence >= patternsArray[j].confidence) {

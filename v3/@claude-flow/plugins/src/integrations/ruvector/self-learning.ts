@@ -9,8 +9,7 @@
  * @version 1.0.0
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type {
   VectorIndexType,
   DistanceMetric,
@@ -19,31 +18,19 @@ import type {
   VectorSearchOptions,
 } from './types.js';
 
-// ADR-0069 A5: config-chain EWC lambda
-// This module uses normalized [0,1] scale, not absolute weight.
+// ADR-0069 A5 / ADR-0224: config-chain EWC lambda via canonical validated
+// accessor. This module uses normalized [0,1] scale, not absolute weight.
 // config.json neural.ewcLambda is absolute (e.g. 2000).
-// Conversion: normalized = absolute / 4000
+// Conversion: normalized = absolute / 4000.
 function readNormalizedEwcLambda(fallback: number): number {
-  try {
-    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
-    const raw = readFileSync(configPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    const val = parsed?.neural?.ewcLambda;
-    if (typeof val === 'number' && val > 0) return val / 4000;
-  } catch {
-    // Config not found or unreadable — use fallback
-  }
-  return fallback;
+  const val = getValidatedConfig().neural?.ewcLambda;
+  return typeof val === 'number' && val > 0 ? val / 4000 : fallback;
 }
 
-// ADR-0069 A8: config-chain learning rate
+// ADR-0069 A8 / ADR-0224: config-chain learning rate.
 function readLearningRate(fallback: number): number {
-  try {
-    const cfg = JSON.parse(readFileSync(resolve(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-    const val = cfg?.neural?.defaultLearningRate;
-    if (typeof val === 'number' && val > 0) return val;
-  } catch { /* use fallback */ }
-  return fallback;
+  const val = getValidatedConfig().neural?.defaultLearningRate;
+  return typeof val === 'number' && val > 0 ? val : fallback;
 }
 
 // ============================================================================

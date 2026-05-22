@@ -8,8 +8,7 @@
  * @version 3.0.0-alpha.1
  */
 
-import { readFileSync } from 'node:fs';
-import * as path from 'node:path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 
 // ===== SONA Learning Mode Types =====
 
@@ -441,15 +440,11 @@ export type IntegrationErrorCode =
 
 // ===== Default Configurations =====
 
-// ADR-0069 A8: config-chain learning rate for DEFAULT_SONA_CONFIG
+// ADR-0069 A8 / ADR-0224: config-chain learning rate for DEFAULT_SONA_CONFIG
+// via canonical validated accessor.
 function _readDefaultLearningRate(): number {
-  try {
-    const cfg = JSON.parse(readFileSync(
-      path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-    const val = cfg?.neural?.defaultLearningRate;
-    if (typeof val === 'number' && val > 0) return val;
-  } catch { /* use fallback */ }
-  return 0.001;
+  const val = getValidatedConfig().neural?.defaultLearningRate;
+  return typeof val === 'number' && val > 0 ? val : 0.001;
 }
 
 export const DEFAULT_SONA_CONFIG: SONAConfiguration = {

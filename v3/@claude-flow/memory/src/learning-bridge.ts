@@ -10,8 +10,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type { IMemoryBackend, MemoryEntry, SONAMode } from './types.js';
 import type { MemoryInsight, InsightCategory } from './auto-memory-bridge.js';
 
@@ -88,18 +87,11 @@ type ResolvedConfig = Required<Omit<LearningBridgeConfig, 'neuralLoader' | 'embe
   embeddingDim: number;
 };
 
-// ADR-0069 A5: config-chain EWC lambda
+// ADR-0069 A5 / ADR-0224: config-chain EWC lambda via canonical validated
+// accessor.
 function readEwcLambdaFromConfig(fallback: number): number {
-  try {
-    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    const raw = readFileSync(configPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    const val = parsed?.neural?.ewcLambda;
-    if (typeof val === 'number' && val > 0) return val;
-  } catch {
-    // Config not found or unreadable — use fallback
-  }
-  return fallback;
+  const val = getValidatedConfig().neural?.ewcLambda;
+  return typeof val === 'number' && val > 0 ? val : fallback;
 }
 
 const DEFAULT_CONFIG: ResolvedConfig = {

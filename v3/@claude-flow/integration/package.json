@@ -24,6 +24,7 @@
     "swarm"
   ],
   "peerDependencies": {
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.526",
     "agentic-flow": "2.0.2-alpha-patch.807"
   },
   "devDependencies": {

@@ -74,16 +74,22 @@ export function generateMCPConfig(options: InitOptions): object {
   };
 
   // Claude Flow MCP server (core) — uses ruflo wrapper for portable npm-resolved invocation
-  // ADR-0104 §4a: prefer directly-resolved binary path over npx cold-start
+  // ADR-0104 §4a: prefer directly-resolved binary path over npx cold-start.
+  //
+  // ADR-0214 (Option A, corrected): theatrical env vars dropped — `MODE`,
+  // `HOOKS_ENABLED` had zero consumers in shipping code. Surviving emissions
+  // are renamed to the loader's reader names (`TOPOLOGY` →
+  // `SWARM_TOPOLOGY`, `MEMORY_BACKEND` → `MEMORY_TYPE`), which is value-safe
+  // (init defaults ∈ the loader's Zod allowed sets at
+  // `shared/src/core/config/loader.ts:105,144`). `MAX_AGENTS` was already
+  // canonical.
   if (config.claudeFlow) {
     mcpServers['ruflo'] = createRufloEntry(
       {
         ...npmEnv,
-        CLAUDE_FLOW_MODE: 'v3',
-        CLAUDE_FLOW_HOOKS_ENABLED: 'true',
-        CLAUDE_FLOW_TOPOLOGY: options.runtime.topology,
         CLAUDE_FLOW_MAX_AGENTS: String(options.runtime.maxAgents),
-        CLAUDE_FLOW_MEMORY_BACKEND: options.runtime.memoryBackend,
+        CLAUDE_FLOW_SWARM_TOPOLOGY: options.runtime.topology,
+        CLAUDE_FLOW_MEMORY_TYPE: options.runtime.memoryBackend,
       },
       { autoStart: config.autoStart }
     );

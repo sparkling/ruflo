@@ -166,6 +166,75 @@ export const SystemConfigSchema = z.object({
   swarm: SwarmConfigSchema.optional(),
 }).passthrough();
 
+// =============================================================================
+// Runtime config schema (ADR-0224) — `.claude-flow/config.json` shape
+// =============================================================================
+//
+// Distinct from SystemConfigSchema above (which models the CLI's
+// `--config <file>` shape with a required `orchestrator` block). The init
+// command writes a different shape under `.claude-flow/config.json` via
+// `getMinimalConfigTemplate()` / `getFullConfigTemplate()`, and ~17 substrate
+// callsites historically read that file directly via `JSON.parse(readFileSync)`
+// with hardcoded try/catch fallbacks (the no-fallbacks anti-pattern at the
+// config layer; see ADR-0224 + [[feedback-no-fallbacks]]).
+//
+// This schema captures the substrate-consumed leaf keys as strictly typed
+// (string-where-number-expected throws at the accessor, not five layers down)
+// while passing through every other key the init template emits.
+
+/** Per-factory worker timeout (workers.factory.<type>.timeout). */
+const WorkerFactoryTimeoutSchema = z.object({
+  timeout: z.number().positive().optional(),
+}).passthrough();
+
+/** Memory-substrate runtime keys (see ADR-0224 callsite table). */
+const RuntimeMemorySchema = z.object({
+  similarityThreshold: z.number().optional(),
+  cleanupIntervalMs: z.number().positive().optional(),
+  dedupThreshold: z.number().optional(),
+  embeddingCacheSize: z.number().positive().optional(),
+  migrationBatchSize: z.number().positive().optional(),
+  persistPath: z.string().optional(),
+  path: z.string().optional(),
+  swarmDir: z.string().optional(),
+}).passthrough();
+
+/** Neural-substrate runtime keys. */
+const RuntimeNeuralSchema = z.object({
+  ewcLambda: z.number().optional(),
+  defaultLearningRate: z.number().positive().optional(),
+  learningRates: z.object({
+    qLearning: z.number().positive().optional(),
+    sarsa: z.number().positive().optional(),
+    moe: z.number().positive().optional(),
+    sona: z.number().positive().optional(),
+    lora: z.number().positive().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+/** Worker-substrate runtime keys. */
+const RuntimeWorkersSchema = z.object({
+  factory: z.record(WorkerFactoryTimeoutSchema).optional(),
+}).passthrough();
+
+/**
+ * Runtime configuration schema for `.claude-flow/config.json`.
+ *
+ * The init template emits a freeform object with version/swarm/memory/neural/
+ * embedding/index/mcp/ports/hooks at minimum (and controllers/rateLimiter/
+ * workers/daemon in --full mode). We validate only the substrate-consumed
+ * leaves strictly; everything else passes through.
+ */
+export const RuntimeConfigSchema = z.object({
+  version: z.string().optional(),
+  memory: RuntimeMemorySchema.optional(),
+  neural: RuntimeNeuralSchema.optional(),
+  workers: RuntimeWorkersSchema.optional(),
+}).passthrough();
+
+export type RuntimeConfig = z.output<typeof RuntimeConfigSchema>;
+export type RuntimeConfigInput = z.input<typeof RuntimeConfigSchema>;
+
 /**
  * Export schema types
  * Using z.output to get post-default types (fields with defaults are required in output)

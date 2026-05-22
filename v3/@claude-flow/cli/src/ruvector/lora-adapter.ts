@@ -20,20 +20,19 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
-// ADR-0069 A8: read gradient descent learning rate from config chain
-// ADR-0069: wire neural.learningRates.lora consumer — prefer LoRA-specific rate, fall back to default
+// ADR-0069 A8 / ADR-0224: read gradient descent learning rate via canonical
+// validated accessor. Prefer LoRA-specific rate, fall back to default.
 function getConfigDefaultLearningRate(fallback: number): number {
-  try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-    const loraLR = cfg?.neural?.learningRates?.lora;
-    if (typeof loraLR === 'number' && loraLR > 0) return loraLR;
-    if (typeof cfg?.neural?.defaultLearningRate === 'number') {
-      return cfg.neural.defaultLearningRate;
-    }
-  } catch { /* use fallback */ }
+  const neural = getValidatedConfig().neural;
+  const loraLR = neural?.learningRates?.lora;
+  if (typeof loraLR === 'number' && loraLR > 0) return loraLR;
+  if (typeof neural?.defaultLearningRate === 'number') {
+    return neural.defaultLearningRate;
+  }
   return fallback;
 }
 

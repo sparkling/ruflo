@@ -19,6 +19,7 @@
 
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type { HeadlessWorkerType, HeadlessExecutionResult, WorkerPriority } from './headless-worker-executor.js';
 
 // ============================================
@@ -155,8 +156,9 @@ class InMemoryStore {
    */
   startCleanup(): void {
     if (this.cleanupTimer) return;
-    // ADR-0069 A13: configurable cleanup interval
-    const cleanupMs = (() => { try { const c = JSON.parse(require('fs').readFileSync(require('path').join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); return c?.memory?.cleanupIntervalMs ?? 60000; } catch { return 60000; } })();
+    // ADR-0069 A13 / ADR-0224: configurable cleanup interval via canonical
+    // validated accessor (no require, no try/catch).
+    const cleanupMs = getValidatedConfig().memory?.cleanupIntervalMs ?? 60000;
     this.cleanupTimer = setInterval(() => this.cleanupExpired(), cleanupMs);
     this.cleanupTimer.unref();
   }

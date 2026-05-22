@@ -333,13 +333,19 @@ function mergeSettingsForUpgrade(existing: Record<string, unknown>): Record<stri
   // TeammateIdle/TaskCompleted are not valid Claude Code hook events and caused warnings.
   // Agent Teams hook config lives in claudeFlow.agentTeams.hooks instead.
 
-  // 1. Merge env vars (preserve existing, add new)
+  // 1. Merge env vars (preserve existing, add new).
+  //
+  // ADR-0214 (Option A, corrected): the previous merge block hardcoded
+  // `CLAUDE_FLOW_V3_ENABLED` / `CLAUDE_FLOW_HOOKS_ENABLED` independently of
+  // the fresh-init `generateSettings()` path — both zero-consumer (audit
+  // F-14-001). Removed here so an upgrade-init no longer re-injects the
+  // theatrical vars after `generateSettings()` cleaned them out.
+  // `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` is the only survivor (Claude
+  // Code's own namespace, not ruflo's).
   const existingEnv = (existing.env as Record<string, string>) || {};
   merged.env = {
     ...existingEnv,
     CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-    CLAUDE_FLOW_V3_ENABLED: existingEnv.CLAUDE_FLOW_V3_ENABLED || 'true',
-    CLAUDE_FLOW_HOOKS_ENABLED: existingEnv.CLAUDE_FLOW_HOOKS_ENABLED || 'true',
   };
 
   // 2. Merge hooks (preserve existing, add new Agent Teams + auto-memory hooks)

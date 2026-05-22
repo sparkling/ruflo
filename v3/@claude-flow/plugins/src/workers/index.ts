@@ -6,8 +6,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type {
   WorkerDefinition,
   WorkerType,
@@ -35,20 +34,14 @@ const FACTORY_TIMEOUT_DEFAULTS: Record<string, number> = {
 };
 
 /**
- * ADR-0069 A3: Resolve a factory worker timeout from config chain.
- * Checks .claude-flow/config.json  workers.factory.<type>.timeout,
- * then falls back to FACTORY_TIMEOUT_DEFAULTS.
+ * ADR-0069 A3 / ADR-0224: Resolve a factory worker timeout from config chain
+ * via the canonical validated accessor. Checks
+ * `.claude-flow/config.json -> workers.factory.<type>.timeout`, then falls
+ * back to FACTORY_TIMEOUT_DEFAULTS.
  */
 function resolveFactoryTimeout(type: string, fallback?: number): number {
-  try {
-    const configPath = resolve(process.cwd(), '.claude-flow', 'config.json');
-    const raw = readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(raw);
-    const val = config?.workers?.factory?.[type]?.timeout;
-    if (typeof val === 'number' && val > 0) return val;
-  } catch {
-    // Config absent — use defaults
-  }
+  const val = getValidatedConfig().workers?.factory?.[type]?.timeout;
+  if (typeof val === 'number' && val > 0) return val;
   return fallback ?? FACTORY_TIMEOUT_DEFAULTS[type] ?? 60000;
 }
 

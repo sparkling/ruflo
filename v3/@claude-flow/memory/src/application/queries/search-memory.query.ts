@@ -7,8 +7,7 @@
  * @module v3/memory/application/queries
  */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import { MemoryEntry, MemoryType, MemoryStatus } from '../../domain/entities/memory-entry.js';
 import {
   IMemoryRepository,
@@ -16,15 +15,11 @@ import {
   MemoryQueryOptions,
 } from '../../domain/repositories/memory-repository.interface.js';
 
-// ADR-0069: wire similarityThreshold consumer — read from config chain at module level
+// ADR-0069 / ADR-0224: read similarityThreshold via canonical validated
+// accessor. Missing config.json → fallback; malformed → throws loud.
 function getConfigSimilarityThreshold(fallback: number): number {
-  try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    if (typeof cfg?.memory?.similarityThreshold === 'number') {
-      return cfg.memory.similarityThreshold;
-    }
-  } catch { /* use fallback */ }
-  return fallback;
+  const val = getValidatedConfig().memory?.similarityThreshold;
+  return typeof val === 'number' ? val : fallback;
 }
 
 /**

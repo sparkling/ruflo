@@ -12,8 +12,7 @@
  * @module @claude-flow/memory/persistent-sona
  */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import {
   RvfLearningStore,
 } from './rvf-learning-store.js';
@@ -41,15 +40,11 @@ export interface PersistentSonaConfig {
 
 // ===== Constants =====
 
-// ADR-0069 A7: read pattern threshold from config chain, fall back to 0.85
+// ADR-0069 A7 / ADR-0224: read pattern threshold via canonical validated
+// accessor, fall back to 0.85 when memory.similarityThreshold isn't set.
 function getDefaultPatternThreshold(): number {
-  try {
-    const cfg = JSON.parse(readFileSync(join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    if (typeof cfg?.memory?.similarityThreshold === 'number') {
-      return cfg.memory.similarityThreshold;
-    }
-  } catch { /* use fallback */ }
-  return 0.85;
+  const val = getValidatedConfig().memory?.similarityThreshold;
+  return typeof val === 'number' ? val : 0.85;
 }
 
 const DEFAULT_PATTERN_THRESHOLD = getDefaultPatternThreshold();

@@ -122,6 +122,7 @@
   ],
   "dependencies": {
     "@claude-flow/memory": "3.0.0-alpha.15-patch.259",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.526",
     "@ruvector/sona": "0.1.6-patch.101"
   },
   "optionalDependencies": {

@@ -58,23 +58,21 @@ export function generateSettings(options: InitOptions): object {
   // Model preferences are stored in claudeFlow settings instead
   // settings.model = 'claude-sonnet-4-5-20250929'; // Uncomment if you want to set a default model
 
-  // Add Agent Teams configuration (experimental feature)
+  // Add Agent Teams configuration (experimental feature).
+  //
+  // ADR-0214 (Option A, corrected): the previous block injected 11
+  // additional zero-consumer env vars into the Claude Code session env:
+  //   - `CLAUDE_FLOW_V3_ENABLED` / `CLAUDE_FLOW_HOOKS_ENABLED` (audit
+  //     F-14-001, upstream-inherited theatre).
+  //   - 9 `GUIDANCE_*` vars (fork-introduced in `0cd9c4a39`, the SG-012 port;
+  //     zero consumers anywhere in the fork, including the `guidance`
+  //     package). No live ADR owner, so ADR-0214 absorbs their removal —
+  //     one block, one owner, gate self-satisfiable at merge.
+  // Only `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` survives because Claude Code
+  // itself reads it (foreign namespace, out of CLAUDE_FLOW_* scope).
   settings.env = {
     // Enable Claude Code Agent Teams for multi-agent coordination
     CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-    // Claude Flow specific environment
-    CLAUDE_FLOW_V3_ENABLED: 'true',
-    CLAUDE_FLOW_HOOKS_ENABLED: 'true',
-    // GUIDANCE autopilot environment
-    GUIDANCE_EVENT_WIRING_ENABLED: 'true',
-    GUIDANCE_PRE_EDIT_HOOK: 'true',
-    GUIDANCE_POST_COMMAND_SENTINEL: 'true',
-    GUIDANCE_TEAMMATE_IDLE_HOOK: 'true',
-    GUIDANCE_POST_TOOL_FAILURE: 'true',
-    GUIDANCE_SESSION_SENTINEL: 'true',
-    GUIDANCE_AUTO_MEMORY: 'true',
-    GUIDANCE_LEARNING_BRIDGE: 'true',
-    GUIDANCE_STATUS_LINE: 'true',
   };
 
   // Detect platform for platform-aware configuration

@@ -31,6 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.526",
     "agentdb": "3.0.0-alpha.14-patch.271"
   },
   "peerDependenciesMeta": {

@@ -170,7 +170,14 @@ export function getFullConfigTemplate(
       embeddings: {
         model: 'Xenova/all-mpnet-base-v2',
         dimension: 768,
-        provider: 'transformers.js',
+        // ADR-0224 F-14-009: unify with `embedding.provider` (above, line 85)
+        //   so `ruflo config get embedding.provider` and
+        //   `ruflo config get memory.embeddings.provider` return the same
+        //   value. `config-chain/src/index.ts:176` continues to normalise
+        //   any existing on-disk `transformers.js` to `onnx` at runtime;
+        //   this change stops emitting the divergent default into NEW
+        //   config.json files.
+        provider: 'onnx',
         hnsw: {
           metric: 'cosine',
           maxElements: 100000,

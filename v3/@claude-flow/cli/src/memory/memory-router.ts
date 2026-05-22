@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type { IStorageContract } from '@claude-flow/memory/storage.js';
 import { findProjectRoot } from '../mcp-tools/types.js';
 // ADR-0181 task #100 (2026-05-17): the memory_* read cases below (`get`,
@@ -396,15 +397,14 @@ function _resolveDatabasePath(configuredPath: string): string {
 }
 
 function _readProjectConfig(): Record<string, unknown> {
-  // ADR-0191 Cluster D: existsSync gates first-run absence; SyntaxError on
-  // a malformed config.json (corruption) MUST propagate — operators need
-  // to know their config file is broken rather than silently getting
-  // defaults that mask the real settings they tried to set.
-  const cfgPath = path.join(findProjectRoot(), '.claude-flow', 'config.json');
-  if (fs.existsSync(cfgPath)) {
-    return JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-  }
-  return {};
+  // ADR-0191 Cluster D / ADR-0224: read through the canonical validated
+  // accessor. Missing config.json → empty config (operator-friendly); malformed
+  // config.json → throws loud via Zod (operators need to know their config
+  // file is broken rather than silently getting defaults that mask the real
+  // settings they tried to set). The previous `JSON.parse(readFileSync)`
+  // bypass returned the parsed object as `unknown`; the validated accessor
+  // is structurally compatible since the Zod schema uses `.passthrough()`.
+  return getValidatedConfig({ cwd: findProjectRoot() }) as Record<string, unknown>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -424,17 +424,17 @@ function _readJsonFile(filePath: string): Record<string, any> {
 function _getProjectConfig(): { config: Record<string, any>; embeddings: Record<string, any> } {
   const root = _findProjectRoot();
   return {
-    config: _readJsonFile(path.join(root, '.claude-flow', 'config.json')),
+    // ADR-0224: config.json read via validated accessor; embeddings.json is a
+    // separate file handled by `_readJsonFile` (config-chain owns it).
+    config: getValidatedConfig({ cwd: root }) as Record<string, unknown>,
     embeddings: _readJsonFile(path.join(root, '.claude-flow', 'embeddings.json')),
   };
 }
 
 function _getConfigSwarmDir(): string {
-  try {
-    const root = _findProjectRoot();
-    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.claude-flow', 'config.json'), 'utf-8'));
-    return cfg?.memory?.swarmDir ?? '.swarm';
-  } catch { return '.swarm'; }
+  // ADR-0224: read via canonical validated accessor (project-root walk-up).
+  const root = _findProjectRoot();
+  return getValidatedConfig({ cwd: root }).memory?.swarmDir ?? '.swarm';
 }
 
 /**
@@ -466,14 +466,14 @@ function _getMemoryRoot(): string {
   }
 
   const root = findProjectRoot();
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.claude-flow', 'config.json'), 'utf-8'));
-    const persistPath = cfg?.memory?.persistPath ?? cfg?.memory?.path;
-    if (typeof persistPath === 'string' && persistPath.trim().length > 0) {
-      _memoryRootCache = path.isAbsolute(persistPath) ? persistPath : path.resolve(root, persistPath);
-      return _memoryRootCache;
-    }
-  } catch { /* fall through */ }
+  // ADR-0224: read via canonical validated accessor — malformed config.json
+  // throws loud, missing config falls back to swarmDir resolution below.
+  const memCfg = getValidatedConfig({ cwd: root }).memory;
+  const persistPath = memCfg?.persistPath ?? memCfg?.path;
+  if (typeof persistPath === 'string' && persistPath.trim().length > 0) {
+    _memoryRootCache = path.isAbsolute(persistPath) ? persistPath : path.resolve(root, persistPath);
+    return _memoryRootCache;
+  }
 
   _memoryRootCache = path.resolve(root, _getConfigSwarmDir());
   return _memoryRootCache;

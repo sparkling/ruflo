@@ -7,6 +7,7 @@
  * @module v3/memory/domain/services
  */
 
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import { MemoryEntry, MemoryType, MemoryEntryProps } from '../entities/memory-entry.js';
 import { IMemoryRepository, VectorSearchResult } from '../repositories/memory-repository.interface.js';
 
@@ -231,15 +232,9 @@ export class MemoryDomainService {
     entries: MemoryEntry[],
     options: ConsolidationOptions
   ): Promise<DeduplicationResult> {
-    // ADR-0069 A11: config-chain dedup threshold
-    let _cfgDedupThreshold = 0.95;
-    try {
-      const fs = await import('node:fs');
-      const path = await import('node:path');
-      const _cfg = JSON.parse(fs.readFileSync(
-        path.join(process.cwd(), '.claude-flow', 'config.json'), 'utf-8')); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      _cfgDedupThreshold = _cfg.memory?.dedupThreshold ?? 0.95;
-    } catch { /* use default */ }
+    // ADR-0069 A11 / ADR-0224: config-chain dedup threshold via canonical
+    // validated accessor (sync, no dynamic-import needed).
+    const _cfgDedupThreshold = getValidatedConfig().memory?.dedupThreshold ?? 0.95;
     const threshold = options.threshold ?? _cfgDedupThreshold; // ADR-0069 A11: config-chain-aware
     const duplicates: string[] = [];
     const processed = new Set<string>();

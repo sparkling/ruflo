@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@claude-flow/config-chain": "3.0.0-alpha.1-patch.125",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.526",
     "agentdb": "3.0.0-alpha.14-patch.271",
     "sql.js": "^1.10.3"
   },

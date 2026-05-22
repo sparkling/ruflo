@@ -14,6 +14,7 @@
  * Created with ❤️ by ruv.io
  */
 
+import { getValidatedConfig } from '@claude-flow/shared/core';
 import type {
   WasmMicroLoRA,
   WasmScopedLoRA,
@@ -307,17 +308,14 @@ export async function initializeTraining(config: TrainingConfig = {}): Promise<{
 }> {
   const features: string[] = [];
   const dim = Math.min(config.dim || 256, 256); // Max 256 for WASM
-  // ADR-0069 A8: try config chain for learning rate, then caller config, then fallback
+  // ADR-0069 A8 / ADR-0224: try config chain for learning rate via canonical
+  // validated accessor, then caller config, then fallback.
   let lr = config.learningRate || 0.01;
   if (!config.learningRate) {
-    try {
-      const { readFileSync: rfs } = await import('fs');
-      const { join: pjoin } = await import('path');
-      const cfg = JSON.parse(rfs(pjoin(process.cwd(), '.claude-flow', 'config.json'), 'utf-8'));
-      if (typeof cfg?.neural?.defaultLearningRate === 'number') {
-        lr = cfg.neural.defaultLearningRate;
-      }
-    } catch { /* use fallback */ }
+    const cfgLR = getValidatedConfig().neural?.defaultLearningRate;
+    if (typeof cfgLR === 'number') {
+      lr = cfgLR;
+    }
   }
   const alpha = config.alpha || 0.1;
 
