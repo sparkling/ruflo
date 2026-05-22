@@ -478,13 +478,14 @@ export const memoryTools: MCPTool[] = [
       const query = input.query as string;
       const namespace = (input.namespace as string) || 'all';
       const limit = (input.limit as number) || 10;
-      // ADR-0167 Phase-3 retraction (2026-05-22): the `memory_search` empty-result
-      // symptom was NOT RVF snapshot staleness — it was this falsy-zero coercion.
-      // `|| 0.3` turned an explicit `threshold: 0` (caller means "no minimum") into
-      // 0.3, dropping every legitimately-related hit (scores 0.2-0.5) and surfacing
-      // only near-exact matches. Re-converge with upstream, which uses `?? 0.3`
-      // (nullish): honor `threshold: 0` while keeping 0.3 as the unset default.
-      const threshold = (input.threshold as number) ?? 0.3;
+      // ADR-0227 (2026-05-22): do NOT hardcode a default here. Pass `undefined`
+      // through so the router resolves it via getAdaptiveThreshold (the fork's
+      // FB-004 adaptive layer), which floors real ONNX/mpnet at 0.15 (measured
+      // related content scores ~0.25-0.65; the old hardcoded 0.3 cut into recall
+      // AND defeated the adaptive layer for the MCP path). An explicit
+      // `threshold: 0` is still honored end-to-end (router `?? 0.3` keeps 0, then
+      // getAdaptiveThreshold returns an explicit value as-is).
+      const threshold = input.threshold as number | undefined;
       const includeProvenance = input.includeProvenance === true;
 
       validateMemoryInput(undefined, undefined, query);

@@ -179,8 +179,10 @@ export async function generateBatchEmbeddings(
  * Return the appropriate similarity threshold for the current embedding model.
  *
  * Hash fallback embeddings produce similarity ~0.05-0.28 (not semantic).
- * ONNX embeddings produce meaningful similarity 0.3-0.95.
- * FB-004: Adaptive thresholds prevent silent empty results with hash embeddings.
+ * ONNX (mpnet, ADR-0069) RELATED content scores ~0.25-0.65 cosine; UNRELATED ~0
+ * (measured 2026-05-22, ADR-0227). The earlier "ONNX 0.3-0.95" assumption was
+ * wrong for mpnet — a 0.3 floor cut into the related band and dropped recall.
+ * FB-004: Adaptive thresholds prevent silent empty results across providers.
  */
 export async function getAdaptiveThreshold(explicitThreshold?: number): Promise<number> {
   if (explicitThreshold !== undefined && explicitThreshold !== null) {
@@ -194,7 +196,13 @@ export async function getAdaptiveThreshold(explicitThreshold?: number): Promise<
   }
 
   if (pipeline) {
-    return pipeline.getProvider() === 'hash-fallback' ? 0.05 : 0.3;
+    // ADR-0227 (2026-05-22): 0.15 for real ONNX, not 0.3. Measured mpnet
+    // (ADR-0069) cosine: RELATED content ~0.25-0.65 (e.g. 0.28/0.38/0.52/0.62),
+    // UNRELATED ~0 (e.g. -0.01/0.04). The separating gap is ~0.05-0.25, so 0.15
+    // admits related (>=0.28) and rejects unrelated (<=0.04). The old 0.3 assumed
+    // "ONNX 0.3-0.95" (wrong for mpnet) and cut into the related band, dropping
+    // weak-but-genuine matches. Supersedes ADR-0167's "keep 0.3" stance.
+    return pipeline.getProvider() === 'hash-fallback' ? 0.05 : 0.15;
   }
 
   return 0.05; // Permissive fallback
