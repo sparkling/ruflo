@@ -4057,7 +4057,7 @@ Skills are **reusable workflows** that combine agents, hooks, and patterns into 
 | `agentdb-memory-patterns` | Session memory, persistent storage, context management | Stateful agents, chat systems |
 | `agentdb-learning` | 9 RL algorithms (PPO, DQN, SARSA, etc.) | Self-learning agents, behavior optimization |
 | `agentdb-optimization` | Quantization (4-32x memory reduction), HNSW indexing | Scaling to millions of vectors |
-| `agentdb-advanced` | QUIC sync, multi-database, custom distance metrics | Distributed AI systems |
+| `agentdb-advanced` | Multi-database, custom distance metrics (QUIC sync deferred per ADR-0217) | Distributed AI systems |
 
 ```bash
 # Example: Initialize vector search
@@ -4866,7 +4866,7 @@ claude mcp add agentic-flow -- npx agentic-flow mcp start
 | **ONNX Embeddings** | Local vector generation | faster with ONNX runtime than Transformers.js |
 | **Embedding Geometry** | Geometric intelligence layer | <3ms latency |
 | **Multi-Model Router** | Intelligent model selection | 30-50% cost savings |
-| **QUIC Transport** | High-performance transport | Ultra-low latency |
+| **QUIC Transport** **[deferred — ADR-0217]** | High-performance transport | Ultra-low latency (multi-writer build quarantined; CLI handlers throw deferred-status error) |
 
 <details>
 <summary>⚡ <strong>Agent Booster</strong> — 352x Faster Code Transformations</summary>
