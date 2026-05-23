@@ -197,13 +197,12 @@ export type { SQLiteBackendConfig } from './sqlite-backend.js';
 // check enforces this (forbidden: HnswLite, RvfBackend). The named-error
 // `RvfCorruptError` stays public — it is a stable surface for callers
 // handling RVF corruption regardless of which backend provider they
-// selected. Upstream's `sqljs-backend.ts` / `hybrid-backend.ts` modules
-// are not vendored on the fork yet; the hybrid SQLite+AgentDB tier wiring
-// (Phase 2) lands via ADR-0230 step F (cherry-pick 11eaef851). The fork
-// keeps these intentionally OFF the top-level surface (per the ADR-0065
-// + ADR-0076 source-form invariants asserted by
-// `tests/unit/config-centralization-adr0065.test.mjs:362` and
-// `tests/unit/adr0076-phase0-1.test.mjs:70`).
+// selected. Upstream's sql.js + hybrid-tier modules are not vendored on
+// the fork yet; the SQLite+AgentDB tier wiring (Phase 2) lands via
+// ADR-0230 step F (cherry-pick 11eaef851). The fork keeps these
+// intentionally OFF the top-level surface (per the ADR-0065 +
+// ADR-0076 + ADR-0065-P3-1 source-form invariants asserted by
+// the corresponding tests/unit/*.test.mjs files).
 export { RvfCorruptError } from './rvf-backend.js';
 export { HNSWIndex } from './hnsw-index.js';
 export { deriveHNSWParams } from './hnsw-utils.js';
