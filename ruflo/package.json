@@ -56,7 +56,19 @@
     "make-fetch-happen": ">=15.0.0",
     "express-rate-limit": ">=8.4.1",
     "protobufjs": ">=7.5.5",
-    "uuid": ">=14.0.0"
+    "uuid": ">=14.0.0",
+    "@opentelemetry/core": "1.25.1",
+    "@opentelemetry/resources": "1.25.1",
+    "@opentelemetry/sdk-trace-base": "1.25.1",
+    "@opentelemetry/sdk-node": ">=0.218.0",
+    "@opentelemetry/auto-instrumentations-node": ">=0.75.0",
+    "@opentelemetry/exporter-prometheus": ">=0.217.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "0.52.1",
+    "@opentelemetry/exporter-trace-otlp-http": "0.52.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.52.1",
+    "@opentelemetry/otlp-exporter-base": "0.52.1",
+    "@opentelemetry/otlp-grpc-exporter-base": "0.52.1",
+    "@opentelemetry/otlp-transformer": "0.52.1"
   },
   "engines": {
     "node": ">=20.0.0"
