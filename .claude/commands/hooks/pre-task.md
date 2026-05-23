@@ -11,10 +11,6 @@ npx claude-flow hook pre-task [options]
 ## Options
 
 - `--description, -d <text>` - Task description for context
-- `--auto-spawn-agents` - Automatically spawn required agents (default: true)
-- `--load-memory` - Load relevant memory from previous sessions
-- `--optimize-topology` - Select optimal swarm topology
-- `--estimate-complexity` - Analyze task complexity
 
 ## Examples
 
@@ -23,54 +19,6 @@ npx claude-flow hook pre-task [options]
 ```bash
 npx claude-flow hook pre-task --description "Implement user authentication"
 ```
-
-### With memory loading
-
-```bash
-npx claude-flow hook pre-task -d "Continue API development" --load-memory
-```
-
-### Manual agent control
-
-```bash
-npx claude-flow hook pre-task -d "Debug issue #123" --auto-spawn-agents false
-```
-
-### Full optimization
-
-```bash
-npx claude-flow hook pre-task -d "Refactor codebase" --optimize-topology --estimate-complexity
-```
-
-## Features
-
-### Auto Agent Assignment
-
-- Analyzes task requirements
-- Determines needed agent types
-- Spawns agents automatically
-- Configures agent parameters
-
-### Memory Loading
-
-- Retrieves relevant past decisions
-- Loads previous task contexts
-- Restores agent configurations
-- Maintains continuity
-
-### Topology Optimization
-
-- Analyzes task structure
-- Selects best swarm topology
-- Configures communication patterns
-- Optimizes for performance
-
-### Complexity Estimation
-
-- Evaluates task difficulty
-- Estimates time requirements
-- Suggests agent count
-- Identifies dependencies
 
 ## Integration
 

@@ -11,10 +11,6 @@ npx claude-flow hook post-task [options]
 ## Options
 
 - `--task-id, -t <id>` - Task identifier for tracking
-- `--analyze-performance` - Generate performance metrics (default: true)
-- `--store-decisions` - Save task decisions to memory
-- `--export-learnings` - Export neural pattern learnings
-- `--generate-report` - Create task completion report
 
 ## Examples
 
@@ -24,39 +20,7 @@ npx claude-flow hook post-task [options]
 npx claude-flow hook post-task --task-id "auth-implementation"
 ```
 
-### With full analysis
-
-```bash
-npx claude-flow hook post-task -t "api-refactor" --analyze-performance --generate-report
-```
-
-### Memory storage
-
-```bash
-npx claude-flow hook post-task -t "bug-fix-123" --store-decisions --export-learnings
-```
-
-### Quick cleanup
-
-```bash
-npx claude-flow hook post-task -t "minor-update" --analyze-performance false
-```
-
 ## Features
-
-### Performance Analysis
-
-- Measures execution time
-- Tracks token usage
-- Identifies bottlenecks
-- Suggests optimizations
-
-### Decision Storage
-
-- Saves key decisions made
-- Records implementation choices
-- Stores error resolutions
-- Maintains knowledge base
 
 ### Neural Learning
 
@@ -64,13 +28,6 @@ npx claude-flow hook post-task -t "minor-update" --analyze-performance false
 - Updates coordination models
 - Improves future performance
 - Trains on task outcomes
-
-### Report Generation
-
-- Creates completion summary
-- Documents changes made
-- Lists files modified
-- Tracks metrics achieved
 
 ## Integration
 
@@ -85,7 +42,7 @@ Manual usage in agents:
 
 ```bash
 # In agent coordination
-npx claude-flow hook post-task --task-id "your-task-id" --analyze-performance true
+npx claude-flow hook post-task --task-id "your-task-id"
 ```
 
 ## Output
