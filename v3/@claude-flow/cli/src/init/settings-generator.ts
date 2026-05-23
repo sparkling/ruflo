@@ -406,11 +406,13 @@ function generateHooksConfig(config: HooksConfig): object {
             command: hookHandlerCmd('route'),
             timeout: 10000,
           },
-          {
-            type: 'command',
-            command: hookHandlerCmd('user-prompt'),
-            timeout: 5000,
-          },
+          // ADR-0211 step 4 — `user-prompt` trimmed. The prior wire duplicated
+          // the already-handled `route` handler on the same UserPromptSubmit
+          // event; a second handler for the same trigger would be a no-op on
+          // a slot already doing real work, and `user-prompt` had no
+          // backing handler in helpers-generator's handlers map either
+          // (F-02-008). Trim re-converges fork↔upstream and reverts the
+          // SG-012 over-reach (0cd9c4a39, 2026-03-14).
         ],
       },
     ];
@@ -535,31 +537,23 @@ function generateHooksConfig(config: HooksConfig): object {
     },
   ];
 
-  // SubagentStop — teammate idle handler
-  hooks.SubagentStop = [
-    {
-      hooks: [
-        {
-          type: 'command',
-          command: hookHandlerCmd('teammate-idle'),
-          timeout: 5000,
-        },
-      ],
-    },
-  ];
-
-  // PostToolUseFailure — error tracking
-  hooks.PostToolUseFailure = [
-    {
-      hooks: [
-        {
-          type: 'command',
-          command: hookHandlerCmd('post-tool-failure'),
-          timeout: 5000,
-        },
-      ],
-    },
-  ];
+  // ADR-0211 step 4 — SubagentStop wire for `teammate-idle` TRIMMED.
+  // The real `TeammateIdle` key is rejected by Claude Code's settings.json
+  // validator (per the existing fork comment block below). SG-012
+  // (0cd9c4a39) re-wired it under `SubagentStop` instead — a misnamed
+  // no-op that displaced the slot upstream uses for the handled
+  // `post-task`. Trim re-converges with upstream.
+  //
+  // ADR-0211 step 4 — PostToolUseFailure wire for `post-tool-failure`
+  // TRIMMED (disposition: OPEN-then-trim). The SDK types define
+  // `PostToolUseFailure` with an explicit `error: string`, but the
+  // upstream analyst found the key is a peer of validator-rejected
+  // settings.json keys that may never fire. Defaulting to TRIM (the
+  // safe disposition) until an empirical sandbox test proves
+  // `PostToolUseFailure` is invoked from a fresh init'd settings.json.
+  // If/when that proof lands, re-introduce here AND add a handler in
+  // helpers-generator (the build-time subset test will then enforce
+  // it).
 
   // Notification — capture Claude Code notifications for logging
   if (config.notification) {
