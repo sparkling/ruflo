@@ -226,7 +226,19 @@ export class WorkerDaemon extends EventEmitter {
 
     // CPU-proportional smart default instead of hardcoded 2.0
     const cpuCount = WorkerDaemon.getEffectiveCpuCount();
-    const smartMaxCpuLoad = Math.max(cpuCount * 0.8, 2.0); // Floor of 2.0 for single-CPU machines
+    let smartMaxCpuLoad = Math.max(cpuCount * 0.8, 2.0); // Floor of 2.0 for single-CPU machines
+
+    // #2110 — WSL2 reports `/proc/loadavg` values that include Windows-side
+    // process counts mapped into the Linux kernel. Real load on a 4-CPU
+    // WSL2 host can be 200-400 even when the Linux side is idle. The
+    // default gate of `cpuCount * 0.8` always trips, deferring every
+    // worker as "CPU load too high" while the daemon reports healthy.
+    // Bump the floor to 1000 when WSL is detected so the gate is
+    // effectively disabled (real load on Linux side rarely exceeds 100
+    // even under heavy contention).
+    if (WorkerDaemon.isWslEnvironment()) {
+      smartMaxCpuLoad = Math.max(smartMaxCpuLoad, 1000);
+    }
 
     // Platform-aware default: macOS os.freemem() excludes reclaimable file cache,
     // so reported "free" is much lower than actually available memory.
@@ -387,6 +399,26 @@ export class WorkerDaemon extends EventEmitter {
    * cgroup v2 / v1 quota files first so the maxCpuLoad threshold stays
    * meaningful under resource-limited containers.
    */
+  /**
+   * #2110 — detect WSL2 / WSL1 so the CPU-load gate can use a sane
+   * default. `/proc/loadavg` on WSL maps in Windows-side process counts
+   * and routinely reports values 100-1000x larger than real Linux load.
+   *
+   * Detection order:
+   *   1. `WSL_DISTRO_NAME` env var (set by Microsoft's WSL launcher)
+   *   2. `WSL_INTEROP` env var (set by recent WSL2)
+   *   3. `/proc/sys/kernel/osrelease` contains "microsoft" or "WSL"
+   *      (kernel build marker; survives env stripping)
+   */
+  static isWslEnvironment(): boolean {
+    if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+    try {
+      const osrelease = readFileSync('/proc/sys/kernel/osrelease', 'utf8').toLowerCase();
+      if (osrelease.includes('microsoft') || osrelease.includes('wsl')) return true;
+    } catch { /* not on Linux or /proc inaccessible */ }
+    return false;
+  }
+
   static getEffectiveCpuCount(): number {
     // 1. Try cgroup v2: /sys/fs/cgroup/cpu.max
     try {
@@ -1336,33 +1368,55 @@ export class WorkerDaemon extends EventEmitter {
   private async runWorkerLogic(workerConfig: WorkerConfig): Promise<unknown> {
     // Check if this is a headless worker type and headless execution is available
     if (isHeadlessWorker(workerConfig.type) && this.headlessAvailable && this.headlessExecutor) {
-      let result: HeadlessExecutionResult;
       try {
         this.log('info', `Running ${workerConfig.type} in headless mode (Claude Code AI)`);
-        result = await this.headlessExecutor.execute(workerConfig.type as HeadlessWorkerType);
-        // #1793: persist the headless result to the same metrics files the
-        // local workers write to. Without this, AI-mode runs produced rich
-        // parsedOutput that lived only in `.claude-flow/logs/headless/*` and
-        // never reached `.claude-flow/metrics/<name>.json` — `memory stats`
-        // and downstream consumers saw nothing despite successful runs.
-        try {
-          this.persistHeadlessResult(workerConfig.type as HeadlessWorkerType, result);
-        } catch (persistError) {
-          this.log('warn', `Failed to persist headless result for ${workerConfig.type}: ${(persistError as Error).message}`);
+        const result = await this.headlessExecutor.execute(workerConfig.type as HeadlessWorkerType);
+
+        // #2110 — `HeadlessWorkerExecutor.execute()` returns
+        // `createErrorResult(...)` with `success: false` when
+        // `isAvailable()` is false, instead of throwing. The previous
+        // try/catch never fired in that path, and the result was
+        // persisted as mode:"headless" despite being a stub. Downstream
+        // dashboards / `memory stats` couldn't distinguish a real AI
+        // run from a fallback. Treat falsy success the same as throw:
+        // log warn, emit headless:fallback, and fall through to the
+        // local switch below.
+        const ok = (result as { success?: unknown })?.success === true;
+        if (!ok) {
+          const reason =
+            (result as { error?: unknown })?.error ||
+            (result as { note?: unknown })?.note ||
+            'headless executor reported success=false';
+          this.log('warn', `Headless ${workerConfig.type} returned success=false (${String(reason).slice(0, 200)}); falling back to local mode`);
+          this.emit('headless:fallback', {
+            type: workerConfig.type,
+            error: String(reason).slice(0, 500),
+          });
+          // Fall through to local switch.
+        } else {
+          // #1793: persist the headless result to the same metrics files the
+          // local workers write to. Without this, AI-mode runs produced rich
+          // parsedOutput that lived only in `.claude-flow/logs/headless/*` and
+          // never reached `.claude-flow/metrics/<name>.json` — `memory stats`
+          // and downstream consumers saw nothing despite successful runs.
+          try {
+            this.persistHeadlessResult(workerConfig.type as HeadlessWorkerType, result);
+          } catch (persistError) {
+            this.log('warn', `Failed to persist headless result for ${workerConfig.type}: ${(persistError as Error).message}`);
+          }
+          return {
+            mode: 'headless',
+            ...result,
+          };
         }
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         this.log('warn', `Headless execution threw for ${workerConfig.type}: ${errorMsg}`);
         this.emit('headless:fallback', { type: workerConfig.type, error: errorMsg });
-        throw error instanceof Error ? error : new Error(errorMsg);
+        // #2110 — fall through to local switch instead of re-throwing,
+        // so a transient claude --version failure can recover to local
+        // mode on the next call.
       }
-      if (result.success) {
-        return { mode: 'headless', ...result };
-      }
-      const errorMsg = result.error || 'Unknown headless failure';
-      this.log('warn', `Headless failed for ${workerConfig.type}: ${errorMsg}`);
-      this.emit('headless:fallback', { type: workerConfig.type, error: errorMsg });
-      throw new Error(`Headless execution failed for ${workerConfig.type}: ${errorMsg}`);
     }
 
     // Local execution (fallback or for non-headless workers)

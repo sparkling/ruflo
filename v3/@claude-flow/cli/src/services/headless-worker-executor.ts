@@ -629,27 +629,49 @@ export class HeadlessWorkerExecutor extends EventEmitter {
   // ============================================
 
   /**
-   * Check if Claude Code CLI is available
+   * Check if Claude Code CLI is available.
+   *
+   * #2110 fix — three issues addressed:
+   *   1. Cache only `true`, never `false`. A transient failure (WSL2 cold
+   *      start, AV scanner, slow shell init) used to set
+   *      `claudeCodeAvailable = false` for the rest of the daemon
+   *      lifetime, so the daemon kept running local stubs even after the
+   *      user fixed `claude auth login`. Now: false results re-probe on
+   *      the next call.
+   *   2. Log the actual error from the catch block instead of silently
+   *      swallowing it. Operators couldn't distinguish timeout / ENOENT /
+   *      auth-failure / exit-code without this.
+   *   3. Honour `CLAUDE_CODE_AVAILABILITY_TIMEOUT_MS` for WSL2 / slow
+   *      systems where `claude --version` can take >5s on first invoke.
    */
   async isAvailable(): Promise<boolean> {
-    if (this.claudeCodeAvailable !== null) {
-      return this.claudeCodeAvailable;
+    // Only the `true` result is cached — `false` is re-probed every call
+    // so a transient failure doesn't poison the rest of the daemon's life.
+    if (this.claudeCodeAvailable === true) {
+      return true;
     }
 
+    const timeoutMs = Number.parseInt(process.env.CLAUDE_CODE_AVAILABILITY_TIMEOUT_MS || '', 10) || 5000;
     try {
       const output = execSync('claude --version', {
         encoding: 'utf-8',
         stdio: 'pipe',
-        timeout: 5000,
+        timeout: timeoutMs,
         windowsHide: true, // Prevent phantom console windows on Windows
       });
       this.claudeCodeAvailable = true;
       this.claudeCodeVersion = output.trim();
       this.emit('status', { available: true, version: this.claudeCodeVersion });
       return true;
-    } catch {
-      this.claudeCodeAvailable = false;
-      this.emit('status', { available: false });
+    } catch (err) {
+      // Don't cache false — let the next call retry. Surface the actual
+      // error via emit so operators can diagnose timeout / ENOENT / auth.
+      this.claudeCodeAvailable = null;
+      const reason =
+        err instanceof Error
+          ? `${err.name}: ${err.message}`.slice(0, 200)
+          : String(err).slice(0, 200);
+      this.emit('status', { available: false, reason });
       return false;
     }
   }
