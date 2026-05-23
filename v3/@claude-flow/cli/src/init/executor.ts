@@ -32,9 +32,20 @@ import { generateClaudeMd } from './claudemd-generator.js';
 import { getMinimalConfigTemplate, getFullConfigTemplate, type ConfigOverrides } from './config-template.js';
 
 /**
- * Skills to copy based on configuration
+ * Skills to copy based on configuration.
+ *
+ * Exported (ADR-0216) so the `ruflo skill list` CLI command and arch
+ * tests can pin the name-set. The corpus-shape acceptance check walks
+ * the emitted `.claude/skills/` tree directly (rather than re-reading
+ * this map), but pins the expected SKILLS_MAP name-set so additions /
+ * removals here trip the gate.
+ *
+ * Note: `dual-mode` has helper `.md` files but NO `SKILL.md` — it is
+ * intentionally whitelisted as a SKILL.md-less category in the corpus-
+ * shape check. All other categories MUST have a `SKILL.md` in each
+ * emitted dir.
  */
-const SKILLS_MAP: Record<string, string[]> = {
+export const SKILLS_MAP: Record<string, string[]> = {
   core: [
     'swarm-orchestration',
     'swarm-advanced',

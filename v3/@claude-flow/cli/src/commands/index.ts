@@ -77,6 +77,12 @@ const commandLoaders: Record<string, CommandLoader> = {
   'transfer-store': () => import('./transfer-store.js'),
   cleanup: () => import('./cleanup.js'),
   autopilot: () => import('./autopilot.js'),
+  // ADR-0216 Option E: closes F-15-001 — the advertised `ruflo skill list`
+  // (5 references in init.ts:529,889 + claudemd-generator.ts:154,167,179)
+  // now resolves to a real command. `skills` alias bridges the singular/
+  // plural drift.
+  skill: () => import('./skill.js'),
+  skills: () => import('./skill.js'),
 };
 
 // Cache for loaded commands
@@ -155,6 +161,7 @@ import { guidanceCommand } from './guidance.js';
 import { applianceCommand } from './appliance.js';
 import { cleanupCommand } from './cleanup.js';
 import { autopilotCommand } from './autopilot.js';
+import { skillCommand } from './skill.js';
 
 // Pre-populate cache with core commands
 loadedCommands.set('init', initCommand);
@@ -179,6 +186,8 @@ loadedCommands.set('hive-mind', hiveMindCommand);
 loadedCommands.set('guidance', guidanceCommand);
 loadedCommands.set('cleanup', cleanupCommand);
 loadedCommands.set('autopilot', autopilotCommand);
+loadedCommands.set('skill', skillCommand);
+loadedCommands.set('skills', skillCommand);
 
 // =============================================================================
 // Exports (maintain backwards compatibility)
@@ -207,6 +216,7 @@ export { guidanceCommand } from './guidance.js';
 export { applianceCommand } from './appliance.js';
 export { cleanupCommand } from './cleanup.js';
 export { autopilotCommand } from './autopilot.js';
+export { skillCommand } from './skill.js';
 
 // Lazy-loaded command re-exports (for backwards compatibility, but async-only)
 export async function getConfigCommand() { return loadCommand('config'); }
@@ -263,6 +273,7 @@ export const commands: Command[] = [
   guidanceCommand,
   cleanupCommand,
   autopilotCommand,
+  skillCommand,
 ];
 
 /**
@@ -299,6 +310,7 @@ export const commandsByCategory = {
     completionsCommand,
     migrateCommand,
     workflowCommand,
+    skillCommand,
   ],
   analysis: [
     analyzeCommand,
