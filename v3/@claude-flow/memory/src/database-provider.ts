@@ -196,8 +196,7 @@ export async function createDatabase(
     maxEntries = 100000, // ADR-0080: aligned with resolve-config DEFAULT_MAX_ENTRIES
     autoPersistInterval = 5000,
     embeddingGenerator,
-    // ADR-0068 fork standard: 768-dim (mpnet model). Upstream defaults to
-    // 1536; fork's unified embedding model is `Xenova/all-mpnet-base-v2`.
+    // ADR-0068 fork standard: 768-dim (mpnet model — `Xenova/all-mpnet-base-v2`).
     dimensions = 768,
   } = options;
 
