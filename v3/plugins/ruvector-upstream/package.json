@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/ruvector-upstream",
-  "version": "3.0.0-alpha.1-patch.529",
+  "version": "3.0.0-alpha.1-patch.530",
   "description": "RuVector WASM package bridges for Claude Flow plugins",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -81,13 +81,13 @@
   },
   "peerDependencies": {
     "@ruvector/micro-hnsw-wasm": ">=0.1.0",
-    "@ruvector/attention-wasm": "0.1.32-patch.110",
-    "@ruvector/gnn-wasm": "0.1.0-patch.110",
+    "@ruvector/attention-wasm": "0.1.32-patch.111",
+    "@ruvector/gnn-wasm": "0.1.0-patch.111",
     "@ruvector/hyperbolic-hnsw-wasm": ">=0.1.0",
-    "@ruvector/learning-wasm": "0.1.29-patch.126",
-    "@ruvector/exotic-wasm": "0.1.29-patch.104",
+    "@ruvector/learning-wasm": "0.1.29-patch.127",
+    "@ruvector/exotic-wasm": "0.1.29-patch.105",
     "@ruvector/cognitum-gate-kernel": ">=0.1.0",
-    "@ruvector/sona": "0.1.6-patch.110"
+    "@ruvector/sona": "0.1.6-patch.111"
   },
   "peerDependenciesMeta": {
     "@ruvector/micro-hnsw-wasm": {
