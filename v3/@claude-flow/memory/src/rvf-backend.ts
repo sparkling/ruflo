@@ -1112,19 +1112,22 @@ export class RvfBackend implements IMemoryBackend {
     try {
       rvf = await import('@ruvector/rvf-node' as string);
     } catch (err: any) {
-      // Benign: module not installed (optional dependency). Fall through to
-      // pure-TS without noise. Any other import failure is surfaced —
-      // MODULE_NOT_FOUND is the only shape we treat as benign here.
+      // ADR-0095 amendment (2026-05-23) — strict fail-loud, no opt-in.
+      // Per `feedback-no-fallbacks` + user directive 2026-05-23 ("fail fast
+      // and fail loud, not fall back"), the prior policy of returning false
+      // on MODULE_NOT_FOUND (treated as benign optional-dependency absence)
+      // is reversed unconditionally. The native binding IS a hard dependency
+      // in every shipped configuration; absence is a deployment/config error
+      // that must surface, not a recoverable state masked by silent pure-TS
+      // writes to the legacy `.meta` sidecar. The original ADR-0095 item (a)
+      // text labeling this case "legitimate" is superseded; see the
+      // `### Amendment 2026-05-23` block in `docs/adr/ADR-0095-*.md`.
       const code = err?.code ?? err?.cause?.code;
-      if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') {
-        if (this.config.verbose) {
-          console.log('[RvfBackend] @ruvector/rvf-node not installed, using pure-TS fallback');
-        }
-        return false;
-      }
       throw new Error(
         `[RvfBackend] Native binding @ruvector/rvf-node failed to load ` +
-        `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
+        `(code=${code ?? 'unknown'}): ${err?.message ?? err}. ` +
+        `Pure-TS fallback is removed (ADR-0095 amendment 2026-05-23, feedback-no-fallbacks). ` +
+        `Install @ruvector/rvf-node to proceed.`,
       );
     }
 
@@ -1463,15 +1466,15 @@ export class RvfBackend implements IMemoryBackend {
         return true;
       } catch (err: any) {
         const code = err?.code;
-        if (code === 'ENOENT') {
-          if (this.config.verbose) {
-            console.log('[RvfBackend] Native openOrCreate hit ENOENT (parent dir missing); using pure-TS fallback');
-          }
-          return false;
-        }
+        // ADR-0095 amendment (2026-05-23) — strict fail-loud, no opt-in.
+        // Cold-start ENOENT (parent dir missing) is a config/race surface;
+        // pure-TS fallback was the prior policy and is now unconditionally
+        // removed. Either fix the parent-dir invariant upstream or ensure
+        // the d3 mkdir-before-wx-open ran first.
         throw new Error(
           `[RvfBackend] Native RvfDatabase.openOrCreate failed at ${this.config.databasePath} ` +
-          `(code=${code ?? 'unknown'}): ${err?.message ?? err}`,
+          `(code=${code ?? 'unknown'}): ${err?.message ?? err}. ` +
+          `Pure-TS fallback is removed (ADR-0095 amendment 2026-05-23, feedback-no-fallbacks).`,
         );
       }
     }
