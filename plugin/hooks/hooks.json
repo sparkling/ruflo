@@ -39,30 +39,6 @@
             "continueOnError": true
           }
         ]
-      },
-      {
-        "matcher": "^(Grep|Glob|Read)$",
-        "description": "Pre-search hook for caching",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cat | jq -r '.tool_input.pattern // .tool_input.query // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks pre-search --query '{}'",
-            "timeout": 2000,
-            "continueOnError": true
-          }
-        ]
-      },
-      {
-        "matcher": "^mcp__claude-flow__.*$",
-        "description": "Pre-MCP hook for swarm coordination",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cat | jq -r '.tool_name // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks mcp-pre --tool '{}'",
-            "timeout": 3000,
-            "continueOnError": true
-          }
-        ]
       }
     ],
     "PostToolUse": [
@@ -84,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | jq -r '.tool_input.command // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks post-command --command '{}' --track-metrics true --store-results true",
+            "command": "cat | jq -r '.tool_input.command // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks post-command --command '{}'",
             "timeout": 3000,
             "continueOnError": true
           }
@@ -96,32 +72,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | jq -r '.tool_response.agent_id // .tool_response.task_id // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks post-task --task-id '{}' --analyze-performance",
+            "command": "cat | jq -r '.tool_response.agent_id // .tool_response.task_id // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks post-task --task-id '{}'",
             "timeout": 5000,
-            "continueOnError": true
-          }
-        ]
-      },
-      {
-        "matcher": "^(Grep|Glob|Read)$",
-        "description": "Post-search hook for caching results",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cat | jq -r '.tool_input.pattern // .tool_input.query // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks post-search --query '{}' --cache-results",
-            "timeout": 2000,
-            "continueOnError": true
-          }
-        ]
-      },
-      {
-        "matcher": "^mcp__claude-flow__.*$",
-        "description": "Post-MCP hook for coordination state",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cat | jq -r '.tool_name // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks mcp-post --tool '{}'",
-            "timeout": 3000,
             "continueOnError": true
           }
         ]
@@ -133,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | jq -r '.prompt // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks route --task '{}' --include-explanation",
+            "command": "cat | jq -r '.prompt // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks route --task '{}'",
             "timeout": 5000,
             "continueOnError": true
           }
@@ -146,7 +98,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | jq -r '.session_id // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks session-start --session-id '{}' --load-context",
+            "command": "cat | jq -r '.session_id // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks session-start --session-id '{}'",
             "timeout": 10000,
             "continueOnError": true
           }
@@ -181,7 +133,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | jq -r '.message // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks notify --message '{}' --swarm-status",
+            "command": "cat | jq -r '.message // empty' | tr '\\n' '\\0' | xargs -0 -I {} npx claude-flow@alpha hooks notify --message '{}'",
             "timeout": 3000,
             "continueOnError": true
           }
