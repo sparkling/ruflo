@@ -1789,8 +1789,13 @@ export const hooksExplain: MCPTool = {
         historicalSuccess = outcomes.filter((o) => o.success).length / outcomes.length;
         historicalNote = `Calculated from ${outcomes.length} recorded outcomes`;
       }
-    } catch {
-      // best-effort: leave null + honest note (no fabrication)
+    } catch (err: any) {
+      // ENOENT = no on-disk outcomes yet (cold start, expected) → silent.
+      // Any other failure (parse error, EACCES, etc.) must surface per
+      // feedback-no-fallbacks; the null + honest note is preserved either way.
+      if (err?.code !== 'ENOENT') {
+        console.warn('[ruflo.hooks.routing] loadRoutingOutcomes failed:', err?.message ?? err);
+      }
     }
 
     return {
@@ -1885,8 +1890,13 @@ export const hooksPretrain: MCPTool = {
                   }
                 }
               }
-            } catch {
-              // unreadable file — skip
+            } catch (err: any) {
+              // ENOENT (deleted between readdir and readFileSync) /
+              // EACCES (permission) → skip silently. Any other code must
+              // surface per feedback-no-fallbacks.
+              if (err?.code !== 'ENOENT' && err?.code !== 'EACCES') {
+                console.warn('[ruflo.hooks.pretrain] file scan skipped:', full, err?.message ?? err);
+              }
             }
           }
         }
@@ -1916,8 +1926,11 @@ export const hooksPretrain: MCPTool = {
         });
         patternsStored = patterns.length;
       }
-    } catch {
-      // store unavailable — patternsStored stays 0 (honest)
+    } catch (err: any) {
+      // Store-write failure is a real operational issue, not a benign skip.
+      // patternsStored stays 0 in the response (honest), but the failure
+      // is logged per feedback-no-fallbacks so operators can see it.
+      console.warn('[ruflo.hooks.pretrain] pattern store failed:', err?.message ?? err);
     }
 
     return {
@@ -2624,8 +2637,13 @@ export const hooksIntelligenceReset: MCPTool = {
           unlinkSync(filePath);
           cleared.dataFiles++;
           deletedFiles.push(filePath);
-        } catch {
-          // skip files that cannot be deleted
+        } catch (err: any) {
+          // ENOENT = already gone (idempotent cleanup OK) → silent.
+          // Any other code (EACCES, EBUSY, etc.) must surface per
+          // feedback-no-fallbacks.
+          if (err?.code !== 'ENOENT') {
+            console.warn('[ruflo.hooks.reset] could not delete', filePath, err?.message ?? err);
+          }
         }
       }
     }
@@ -2644,8 +2662,13 @@ export const hooksIntelligenceReset: MCPTool = {
           unlinkSync(filePath);
           cleared.neuralFiles++;
           deletedFiles.push(filePath);
-        } catch {
-          // skip files that cannot be deleted
+        } catch (err: any) {
+          // ENOENT = already gone (idempotent cleanup OK) → silent.
+          // Any other code (EACCES, EBUSY, etc.) must surface per
+          // feedback-no-fallbacks.
+          if (err?.code !== 'ENOENT') {
+            console.warn('[ruflo.hooks.reset] could not delete neural file', file, err?.message ?? err);
+          }
         }
       }
     }

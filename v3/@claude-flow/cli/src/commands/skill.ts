@@ -76,8 +76,13 @@ function enumerateSkills(skillsDir: string): SkillEntry[] {
           const fm = parseFrontmatter(content);
           description = fm.description || '';
         }
-      } catch {
-        // best-effort: leave description empty
+      } catch (err: any) {
+        // ENOENT = TOCTOU race between existsSync and statSync → silent.
+        // Any other code (EACCES, parse error, etc.) must surface per
+        // feedback-no-fallbacks; description stays empty in the response.
+        if (err?.code !== 'ENOENT') {
+          console.warn('[ruflo.skill.list] failed to read', skillMdPath, err?.message ?? err);
+        }
       }
     }
     entries.push({
