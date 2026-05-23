@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/testing",
-  "version": "3.0.0-alpha.6-patch.812",
+  "version": "3.0.0-alpha.6-patch.813",
   "type": "module",
   "description": "Testing module - TDD London School framework, test utilities, fixtures, and mock services for V3 Claude-Flow",
   "main": "dist/index.js",
@@ -42,9 +42,9 @@
     "fixtures"
   ],
   "peerDependencies": {
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.285",
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.286",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.545",
-    "@claude-flow/swarm": "3.0.0-alpha.6-patch.794",
+    "@claude-flow/swarm": "3.0.0-alpha.6-patch.795",
     "vitest": ">=4.0.16"
   },
   "devDependencies": {
