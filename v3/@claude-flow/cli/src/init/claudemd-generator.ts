@@ -168,7 +168,7 @@ Install only when ALL hold:
 - User confirmed the install
 
 Discovery: \`ruflo plugins --help\`.
-Install: \`/plugin install ruflo-<name>@ruflo\` (after \`/plugin marketplace add ruvnet/ruflo\`).
+Install: \`/plugin install ruflo-<name>@ruflo\` (after \`/plugin marketplace add sparkling/ruflo\`).
 Tell user to run \`/reload-plugins\` if commands don't appear post-install.`;
 }
 
@@ -269,9 +269,17 @@ function setupAndBoundary(): string {
   // the running env, never bootstraps it. Keep only Support links here.
   // Bootstrap command preserved on a single line for the rebrand-ruflo-claudemd
   // test which gates on `claude mcp add` presence (one-time bootstrap marker).
+  //
+  // ADR-0223 grep-guard: this file MUST NOT cite `@sparkleideas/cli@latest`
+  // in user-facing emission — ADR-0143 Pass 7 promoted the canonical brand
+  // to `@sparkleideas/ruflo`. The bootstrap hint now uses `ruflo` as the
+  // server key (matching the .mcp.json entry) and the wrapper binary
+  // (`@sparkleideas/ruflo@latest`).
+  // Documentation/Issues URLs stay at ruvnet/ruflo per ADR-0223 scope note
+  // (public docs live upstream; not part of F-11-004's marketplace-source fix).
   return `## Support
 
-One-time bootstrap (user runs once, AI never): \`claude mcp add claude-flow -- npx -y @sparkleideas/cli@latest\`
+One-time bootstrap (user runs once, AI never): \`claude mcp add ruflo -- npx -y @sparkleideas/ruflo@latest\`
 
 - Documentation: https://github.com/ruvnet/ruflo
 - Issues: https://github.com/ruvnet/ruflo/issues`;

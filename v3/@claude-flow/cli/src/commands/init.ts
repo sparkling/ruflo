@@ -514,12 +514,16 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       // Next steps (only if not auto-starting)
       // ADR-0136 Q2: discovery hints append here, not as a separate function;
       // human-targeted "to add plugins, run X" lives in init output, never in CLAUDE.md.
+      // ADR-0223 F-11-005: canonicalize to `ruflo` brand (ADR-0143) — the
+      // prior block mixed `claude-flow daemon|memory|swarm|init` with `ruflo
+      // plugins|skill`, an internal inconsistency. All hints now use the
+      // canonical wrapper command.
       output.writeln(output.bold('Next steps:'));
       output.printList([
-        `Run ${output.highlight('claude-flow daemon start')} to start background workers`,
-        `Run ${output.highlight('claude-flow memory init')} to initialize memory database`,
-        `Run ${output.highlight('claude-flow swarm init')} to initialize a swarm`,
-        `Or use ${output.highlight('claude-flow init --start-all')} to do all of the above`,
+        `Run ${output.highlight('ruflo daemon start')} to start background workers`,
+        `Run ${output.highlight('ruflo memory init')} to initialize memory database`,
+        `Run ${output.highlight('ruflo swarm init')} to initialize a swarm`,
+        `Or use ${output.highlight('ruflo init --start-all')} to do all of the above`,
         options.components.settings ? `Review ${output.highlight('.claude/settings.json')} for hook configurations` : '',
         `Discover plugins: ${output.highlight('ruflo plugins --help')}`,
         `Discover skills:  ${output.highlight('ruflo skill list')}`,
@@ -873,11 +877,13 @@ export const wizardCommand: Command = {
         output.printSuccess('All services started');
       }
       else {
+        // ADR-0223 F-11-005: wizard's upgrade-flow "Next steps" mirror the
+        // init-flow block above — canonicalize to `ruflo` brand.
         output.writeln(output.bold('Next steps:'));
         output.printList([
-          `Run ${output.highlight('claude-flow daemon start')} to start background workers`,
-          `Run ${output.highlight('claude-flow memory init')} to initialize memory database`,
-          `Run ${output.highlight('claude-flow swarm init')} to initialize a swarm`,
+          `Run ${output.highlight('ruflo daemon start')} to start background workers`,
+          `Run ${output.highlight('ruflo memory init')} to initialize memory database`,
+          `Run ${output.highlight('ruflo swarm init')} to initialize a swarm`,
           `Or re-run with ${output.highlight('--start-all')} to do all of the above`,
           `Discover plugins: ${output.highlight('ruflo plugins --help')}`,
           `Discover skills:  ${output.highlight('ruflo skill list')}`,

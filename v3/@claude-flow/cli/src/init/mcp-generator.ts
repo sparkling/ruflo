@@ -96,9 +96,13 @@ export function generateMCPConfig(options: InitOptions): object {
   }
 
   // Ruv-Swarm MCP server (enhanced coordination)
+  // ADR-0223 F-11-002: pinned to @latest per ADR-0155 freshness invariant
+  // (flow-nexus already pins; this brings ruv-swarm into line — `npx`
+  // resolves from cache without @latest, the exact staleness shape ADR-0155
+  // eliminated for `ruflo`).
   if (config.ruvSwarm) {
     mcpServers['ruv-swarm'] = createMCPServerEntry(
-      ['ruv-swarm', 'mcp', 'start'],
+      ['ruv-swarm@latest', 'mcp', 'start'],
       { ...npmEnv },
       { optional: true }
     );
@@ -126,6 +130,18 @@ export function generateMCPJson(options: InitOptions): string {
 
 /**
  * Generate MCP server add commands for manual setup
+ *
+ * ADR-0223 F-11-001 (HIGH H13): canonicalize the copy-pasteable hint to
+ * the `ruflo` server key + `@sparkleideas/ruflo@latest` wrapper binary —
+ * matches the .mcp.json entry's key (mcp-generator.ts:87) and the
+ * canonical user-facing brand (ADR-0143 + feedback-always-npx-for-ruflo).
+ * The previous hint emitted `claude-flow` key + `@sparkleideas/cli@latest`
+ * (wrong key AND wrong binary), so a user copy-pasting it registered the
+ * internal package under a deprecated key and the documented
+ * `mcp__ruflo__*` tool prefixes failed to resolve.
+ *
+ * ADR-0223 F-11-002 (LOW): `ruv-swarm` now pinned to `@latest`, matching
+ * flow-nexus and the .mcp.json args above.
  */
 export function generateMCPCommands(options: InitOptions): string[] {
   const commands: string[] = [];
@@ -133,20 +149,20 @@ export function generateMCPCommands(options: InitOptions): string[] {
 
   if (isWindows()) {
     if (config.claudeFlow) {
-      commands.push('claude mcp add claude-flow -- cmd /c npx -y @sparkleideas/cli@latest mcp start');
+      commands.push('claude mcp add ruflo -- cmd /c npx -y @sparkleideas/ruflo@latest mcp start');
     }
     if (config.ruvSwarm) {
-      commands.push('claude mcp add ruv-swarm -- cmd /c npx -y ruv-swarm mcp start');
+      commands.push('claude mcp add ruv-swarm -- cmd /c npx -y ruv-swarm@latest mcp start');
     }
     if (config.flowNexus) {
       commands.push('claude mcp add flow-nexus -- cmd /c npx -y flow-nexus@latest mcp start');
     }
   } else {
     if (config.claudeFlow) {
-      commands.push("claude mcp add claude-flow -- npx -y @sparkleideas/cli@latest mcp start");
+      commands.push("claude mcp add ruflo -- npx -y @sparkleideas/ruflo@latest mcp start");
     }
     if (config.ruvSwarm) {
-      commands.push("claude mcp add ruv-swarm -- npx -y ruv-swarm mcp start");
+      commands.push("claude mcp add ruv-swarm -- npx -y ruv-swarm@latest mcp start");
     }
     if (config.flowNexus) {
       commands.push("claude mcp add flow-nexus -- npx -y flow-nexus@latest mcp start");
