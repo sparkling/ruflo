@@ -138,8 +138,11 @@ const COMMANDS_MAP: Record<string, string[]> = {
   streamChain: ['stream-chain'],
   truth: ['truth'],
   verify: ['verify'],
-  // Fork-specific (not in upstream Phase 4)
-  flowNexus: ['flow-nexus'],
+  // Fork-specific (not in upstream Phase 4) — jujutsu (agentic-jujutsu)
+  // is the only surviving fork-only commands entry; flowNexus was
+  // removed because upstream Phase 4 deleted its source directory.
+  // The init-commands-map-completeness test enforces that every
+  // COMMANDS_MAP entry resolves to a real file/dir on disk.
   jujutsu: ['agentic-jujutsu.md'],
 };
 
@@ -1029,7 +1032,6 @@ async function copyCommands(
     if (commandsConfig.truth) commandsToCopy.push(...(COMMANDS_MAP.truth || []));
     if (commandsConfig.verify) commandsToCopy.push(...(COMMANDS_MAP.verify || []));
     // Fork-specific (not in upstream Phase 4)
-    if (commandsConfig.flowNexus) commandsToCopy.push(...(COMMANDS_MAP.flowNexus || []));
     if (commandsConfig.jujutsu) commandsToCopy.push(...(COMMANDS_MAP.jujutsu || []));
   }
 

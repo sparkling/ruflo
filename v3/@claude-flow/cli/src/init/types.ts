@@ -147,9 +147,9 @@ export interface CommandsConfig {
   truth?: boolean;
   /** Include verify commands (opt-in) */
   verify?: boolean;
-  // Fork-specific (not in upstream Phase 4) — preserved from ADR-0148 C pattern
-  /** Include flow-nexus commands (fork-only; may resolve via top-level .claude/) */
-  flowNexus?: boolean;
+  // Fork-specific (not in upstream Phase 4) — jujutsu (agentic-jujutsu)
+  // is the only surviving fork-only commands entry; flowNexus was
+  // removed because upstream Phase 4 deleted its source directory.
   /** Include jujutsu (agentic-jujutsu) commands (fork-only AI-native VCS) */
   jujutsu?: boolean;
   /** Include all commands */
@@ -513,8 +513,8 @@ export const DEFAULT_INIT_OPTIONS: InitOptions = {
     streamChain: false,
     truth: false,
     verify: false,
-    // Fork-specific (not in upstream Phase 4) — preserved from ADR-0148 C pattern
-    flowNexus: true,
+    // Fork-specific (not in upstream Phase 4) — jujutsu only; flowNexus
+    // was removed because upstream Phase 4 deleted its source directory.
     jujutsu: true,
     all: false,
   },
