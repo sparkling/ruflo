@@ -24,7 +24,7 @@
  * (W-hooks verdict).
  */
 
-import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, unlinkSync, readdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { type MCPTool, findProjectRoot } from './types.js';
 import { tryOptionalImport } from '../utils/optional-import.js';
@@ -1451,43 +1451,46 @@ export const hooksList: MCPTool = {
     properties: {},
   },
   handler: async () => {
-    return {
-      hooks: [
-        // Core hooks
-        { name: 'pre-edit', type: 'PreToolUse', status: 'active', enabled: false },
-        { name: 'post-edit', type: 'PostToolUse', status: 'active', enabled: false },
-        { name: 'pre-command', type: 'PreToolUse', status: 'active', enabled: false },
-        { name: 'post-command', type: 'PostToolUse', status: 'active', enabled: false },
-        { name: 'pre-task', type: 'PreToolUse', status: 'active', enabled: false },
-        { name: 'post-task', type: 'PostToolUse', status: 'active', enabled: true },
-        // Routing hooks
-        { name: 'route', type: 'intelligence', status: 'active', enabled: true },
-        { name: 'explain', type: 'intelligence', status: 'active', enabled: false },
-        // Session hooks
-        { name: 'session-start', type: 'SessionStart', status: 'active', enabled: true },
-        { name: 'session-end', type: 'SessionEnd', status: 'active', enabled: true },
-        { name: 'session-restore', type: 'SessionStart', status: 'active', enabled: false },
-        // Learning hooks
-        { name: 'pretrain', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'build-agents', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'transfer', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'metrics', type: 'analytics', status: 'active', enabled: true },
-        // System hooks
-        { name: 'init', type: 'system', status: 'active', enabled: false },
-        { name: 'notify', type: 'coordination', status: 'active', enabled: false },
-        // Intelligence subcommands
-        { name: 'intelligence', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_trajectory-start', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_trajectory-step', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_trajectory-end', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_pattern-store', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_pattern-search', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_stats', type: 'analytics', status: 'active', enabled: false },
-        { name: 'intelligence_learn', type: 'intelligence', status: 'active', enabled: false },
-        { name: 'intelligence_attention', type: 'intelligence', status: 'active', enabled: false },
-      ],
-      total: 26,
-    };
+    // ADR-0210 item 2 — derive `total` from `hooks.length` rather than
+    // shipping a hardcoded literal that silently desyncs from the array
+    // on the next edit. (The prior `total: 26` happened to agree with
+    // the array length by coincidence; an off-by-one regression would
+    // ship undetected.)
+    const hooks = [
+      // Core hooks
+      { name: 'pre-edit', type: 'PreToolUse', status: 'active', enabled: false },
+      { name: 'post-edit', type: 'PostToolUse', status: 'active', enabled: false },
+      { name: 'pre-command', type: 'PreToolUse', status: 'active', enabled: false },
+      { name: 'post-command', type: 'PostToolUse', status: 'active', enabled: false },
+      { name: 'pre-task', type: 'PreToolUse', status: 'active', enabled: false },
+      { name: 'post-task', type: 'PostToolUse', status: 'active', enabled: true },
+      // Routing hooks
+      { name: 'route', type: 'intelligence', status: 'active', enabled: true },
+      { name: 'explain', type: 'intelligence', status: 'active', enabled: false },
+      // Session hooks
+      { name: 'session-start', type: 'SessionStart', status: 'active', enabled: true },
+      { name: 'session-end', type: 'SessionEnd', status: 'active', enabled: true },
+      { name: 'session-restore', type: 'SessionStart', status: 'active', enabled: false },
+      // Learning hooks
+      { name: 'pretrain', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'build-agents', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'transfer', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'metrics', type: 'analytics', status: 'active', enabled: true },
+      // System hooks
+      { name: 'init', type: 'system', status: 'active', enabled: false },
+      { name: 'notify', type: 'coordination', status: 'active', enabled: false },
+      // Intelligence subcommands
+      { name: 'intelligence', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'intelligence_trajectory-start', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'intelligence_trajectory-step', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'intelligence_trajectory-end', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'intelligence_pattern-store', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'intelligence_pattern-search', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'intelligence_stats', type: 'analytics', status: 'active', enabled: false },
+      { name: 'intelligence_learn', type: 'intelligence', status: 'active', enabled: false },
+      { name: 'intelligence_attention', type: 'intelligence', status: 'active', enabled: false },
+    ];
+    return { hooks, total: hooks.length };
   },
 };
 
@@ -1680,6 +1683,37 @@ export const hooksPostTask: MCPTool = {
 
     const duration = Date.now() - startTime;
 
+    // ADR-0210 F-02-007 — surface a REAL trajectoryId from the
+    // active-trajectory registry (the same in-process Map
+    // `hooks_intelligence_trajectory-start` populates), NOT the
+    // synthesized `traj-${Date.now()}` literal. The active-trajectory
+    // lookup is by-task-id: pick the most recently started trajectory
+    // whose `task` field matches this `taskId` (or null when none).
+    // This re-establishes the linkage the prior fabrication broke; the
+    // init-handler post-task layer (ADR-0211 territory) consumes the
+    // real id from the same registry.
+    let realTrajectoryId: string | null = null;
+    try {
+      // activeTrajectories is module-scoped above; iterate to find a
+      // running trajectory matching this taskId. (Most usage spawns one
+      // trajectory per task; in the multi-trajectory case we pick the
+      // most recently-started.)
+      const matches: Array<{ id: string; startedAt: string }> = [];
+      for (const traj of activeTrajectories.values()) {
+        if (traj.task === taskId || (params.task && traj.task === params.task)) {
+          matches.push({ id: traj.id, startedAt: traj.startedAt });
+        }
+      }
+      if (matches.length > 0) {
+        matches.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+        realTrajectoryId = matches[0].id;
+      }
+    } catch {
+      // best-effort: registry lookup failure leaves realTrajectoryId
+      // null, which honestly surfaces "no trajectory linkage" via _note.
+      realTrajectoryId = null;
+    }
+
     return {
       taskId,
       success,
@@ -1687,9 +1721,14 @@ export const hooksPostTask: MCPTool = {
       learningUpdates: {
         patternsUpdated: feedbackResult?.updated || (success ? 2 : 1),
         newPatterns: success ? 1 : 0,
-        trajectoryId: `traj-${Date.now()}`,
+        // Real id when a trajectory exists; null otherwise (no
+        // fabrication). The init-handler layer (ADR-0211) consumes this.
+        trajectoryId: realTrajectoryId,
         controller: feedbackResult?.controller || 'none',
         outcomePersisted,
+        ...(realTrajectoryId === null
+          ? { _note: 'No active trajectory matched this taskId; trajectoryId is null. Call hooks_intelligence_trajectory-start before post-task to link them.' }
+          : {}),
       },
       quality,
       feedback: feedbackResult ? {
@@ -1716,20 +1755,42 @@ export const hooksExplain: MCPTool = {
     required: ['task'],
   },
   handler: async (params: Record<string, unknown>) => {
+    // ADR-0210 item 1 — hand-port from upstream `ruvnet/ruflo` HEAD.
+    // The prior fork code returned `matchScore: 0.85 + Math.random()*0.1`
+    // (non-deterministic fabrication) and `Historical Success: 0.87`
+    // (a literal pretending to be a learned rate). Upstream computes
+    // both honestly: matchScore is the keyword/task-length ratio;
+    // Historical Success is read from the on-disk routing-outcomes.json
+    // when present.
     const task = params.task as string;
     const suggestion = suggestAgentsForTask(task);
     const taskLower = task.toLowerCase();
 
-    // Determine matched patterns
+    // Real matchScore: pattern length divided by max(taskLower length, 1).
+    // Deterministic — two calls with the same task produce identical scores.
     const matchedPatterns: Array<{ pattern: string; matchScore: number; examples: string[] }> = [];
     for (const [pattern, _result] of Object.entries(TASK_PATTERNS)) {
       if (taskLower.includes(pattern)) {
         matchedPatterns.push({
           pattern,
-          matchScore: 0.85 + Math.random() * 0.1,
-          examples: [`Previous ${pattern} task completed successfully`, `${pattern} patterns from repository analysis`],
+          matchScore: pattern.length / Math.max(taskLower.length, 1),
+          examples: [`Keyword "${pattern}" matched in task description`],
         });
       }
+    }
+
+    // Real historical-success rate from on-disk routing outcomes when
+    // available; null + honest note otherwise.
+    let historicalSuccess: number | null = null;
+    let historicalNote = 'No historical data yet';
+    try {
+      const outcomes = loadRoutingOutcomes();
+      if (outcomes.length > 0) {
+        historicalSuccess = outcomes.filter((o) => o.success).length / outcomes.length;
+        historicalNote = `Calculated from ${outcomes.length} recorded outcomes`;
+      }
+    } catch {
+      // best-effort: leave null + honest note (no fabrication)
     }
 
     return {
@@ -1738,8 +1799,8 @@ export const hooksExplain: MCPTool = {
         `The task contains keywords that match the "${suggestion.agents[0]}" specialization with ${(suggestion.confidence * 100).toFixed(0)}% confidence.`,
       factors: [
         { factor: 'Keyword Match', weight: 0.4, value: suggestion.confidence, impact: 'Primary routing signal' },
-        { factor: 'Historical Success', weight: 0.3, value: 0.87, impact: 'Past task success rate' },
-        { factor: 'Agent Availability', weight: 0.2, value: 0.95, impact: 'All suggested agents available' },
+        { factor: 'Historical Success', weight: 0.3, value: historicalSuccess, impact: historicalNote },
+        { factor: 'Agent Availability', weight: 0.2, value: null, impact: 'Agent availability tracking not implemented' },
         { factor: 'Task Complexity', weight: 0.1, value: task.length > 100 ? 0.8 : 0.3, impact: 'Complexity assessment' },
       ],
       patterns: matchedPatterns.length > 0 ? matchedPatterns : [
@@ -1751,7 +1812,9 @@ export const hooksExplain: MCPTool = {
         reasoning: [
           `Task analysis identified ${matchedPatterns.length || 1} relevant patterns`,
           `"${suggestion.agents[0]}" has highest capability match for this task type`,
-          `Historical success rate for similar tasks: 87%`,
+          historicalSuccess !== null
+            ? `Historical success rate for similar tasks: ${(historicalSuccess * 100).toFixed(0)}%`
+            : `No historical outcome data available yet`,
           `Confidence threshold met (${(suggestion.confidence * 100).toFixed(0)}% >= 70%)`,
         ],
       },
@@ -1772,30 +1835,102 @@ export const hooksPretrain: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
-    const path = (params.path as string) || '.';
+    // ADR-0210 item 1 — hand-port from upstream HEAD. The prior fork
+    // code returned `filesAnalyzed: 42 * multiplier` etc. — fabricated
+    // scaling literals dressed as scan results. Upstream's real impl
+    // walks the path, counts files by extension, extracts import lines
+    // from source files; this port re-converges the FS-scan half. The
+    // store half differs (upstream uses `memory-bridge`, deleted in the
+    // fork per ADR-0085); we route through the in-file
+    // `getRealStoreFunction()` (the fork's drop-in via
+    // `routeMemoryOp({type:'store',…})`).
+    const repoPath = resolve((params.path as string) || '.');
     const depth = (params.depth as string) || 'medium';
     const startTime = Date.now();
 
-    // Scale analysis results by depth level
-    const multiplier = depth === 'deep' ? 3 : depth === 'shallow' ? 1 : 2;
+    const extCounts: Record<string, number> = {};
+    let filesAnalyzed = 0;
+    let totalLines = 0;
+    const maxDepth = depth === 'shallow' ? 2 : depth === 'deep' ? 6 : 4;
+    const patterns: string[] = [];
+
+    const scan = (dir: string, currentDepth: number) => {
+      if (currentDepth > maxDepth) return;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return; // unreadable dir — skip
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist') continue;
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scan(full, currentDepth + 1);
+        } else if (entry.isFile()) {
+          const ext = entry.name.includes('.') ? entry.name.slice(entry.name.lastIndexOf('.')) : '';
+          if (ext) extCounts[ext] = (extCounts[ext] || 0) + 1;
+          filesAnalyzed++;
+          if (['.ts', '.js', '.py', '.go', '.rs', '.java'].includes(ext)) {
+            try {
+              const content = readFileSync(full, 'utf-8');
+              const lines = content.split('\n');
+              totalLines += lines.length;
+              if (filesAnalyzed <= 50) {
+                for (const line of lines.slice(0, 30)) {
+                  if (line.startsWith('import ') || line.startsWith('from ') || (line.startsWith('const ') && line.includes('require('))) {
+                    const trimmed = line.trim();
+                    if (trimmed.length < 120 && !patterns.includes(trimmed)) patterns.push(trimmed);
+                    if (patterns.length >= 100) break;
+                  }
+                }
+              }
+            } catch {
+              // unreadable file — skip
+            }
+          }
+        }
+      }
+    };
+
+    scan(repoPath, 0);
+    const elapsed = Date.now() - startTime;
+
+    // Store extracted patterns via the fork's in-file drop-in
+    // (routeMemoryOp); the upstream `memory-bridge` import was deleted
+    // by ADR-0085 and `getRealStoreFunction` is its replacement.
+    let patternsStored = 0;
+    try {
+      const storeFn = await getRealStoreFunction();
+      if (storeFn) {
+        await storeFn({
+          key: `pretrain-${Date.now()}`,
+          value: JSON.stringify({
+            filesAnalyzed,
+            totalLines,
+            topExtensions: Object.entries(extCounts).sort((a, b) => b[1] - a[1]).slice(0, 10),
+            importPatterns: patterns.slice(0, 20),
+          }),
+          namespace: 'pretrain',
+          tags: ['pretrain', depth],
+        });
+        patternsStored = patterns.length;
+      }
+    } catch {
+      // store unavailable — patternsStored stays 0 (honest)
+    }
 
     return {
-      path,
+      path: repoPath,
       depth,
       stats: {
-        filesAnalyzed: 42 * multiplier,
-        patternsExtracted: 15 * multiplier,
-        strategiesLearned: 8 * multiplier,
-        trajectoriesEvaluated: 23 * multiplier,
-        contradictionsResolved: 3,
+        filesAnalyzed,
+        totalLines,
+        patternsExtracted: patterns.length,
+        patternsStored,
+        fileTypes: Object.entries(extCounts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([ext, count]) => ({ ext, count })),
       },
-      pipeline: {
-        retrieve: { status: 'completed', duration: 120 * multiplier },
-        judge: { status: 'completed', duration: 180 * multiplier },
-        distill: { status: 'completed', duration: 90 * multiplier },
-        consolidate: { status: 'completed', duration: 60 * multiplier },
-      },
-      duration: Date.now() - startTime + (500 * multiplier),
+      duration: elapsed,
     };
   },
 };
@@ -1864,7 +1999,12 @@ export const hooksBuildAgents: MCPTool = {
       agents: filteredAgents,
       stats: {
         configsGenerated: filteredAgents.length,
-        patternsApplied: filteredAgents.length * 3,
+        // ADR-0210 item 3 — surgical deletion: `patternsApplied:
+        // filteredAgents.length * 3` was a fabricated literal multiplier
+        // dressed as a metric; no patterns were "applied" by this
+        // handler. Removed outright (no marker needed; it's a delete).
+        // (Upstream still carries this fabrication at hooks-tools.ts:1679;
+        // this is a deliberate divergence per ADR-0210 Consequences.)
         optimizationsIncluded: filteredAgents.reduce((acc, a) => acc + a.optimizations.length, 0),
       },
     };
@@ -2023,9 +2163,30 @@ export const hooksSessionStart: MCPTool = {
       // Router not available
     }
 
+    // ADR-0210 F-03-013 sibling — persist the session-start timestamp
+    // so `hooks_session-end` can compute a real duration. Best-effort
+    // file write under the project root; failure to persist degrades
+    // session-end to `_note`-marked unknown rather than the fabricated
+    // 3600000ms.
+    const startedAtMs = Date.now();
+    const startedAtIso = new Date(startedAtMs).toISOString();
+    try {
+      const cwd = findProjectRoot();
+      const dataDir = join(cwd, '.claude-flow', 'data');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(
+        join(dataDir, 'session-state.json'),
+        JSON.stringify({ sessionId, startedAtMs, startedAtIso }, null, 2),
+        'utf-8',
+      );
+    } catch (e) {
+      // Persist is best-effort; session-end will _note-mark.
+      console.error(`[hooks_session-start] session-state persist failed: ${(e as Error)?.message || e}`);
+    }
+
     return {
       sessionId,
-      started: new Date().toISOString(),
+      started: startedAtIso,
       restored: restoreLatest,
       config: {
         intelligenceEnabled: true,
@@ -2035,11 +2196,15 @@ export const hooksSessionStart: MCPTool = {
       },
       daemon: daemonStatus,
       sessionMemory: sessionMemory || { controller: 'none', restoredPatterns: 0 },
-      previousSession: restoreLatest ? {
-        id: `session-${Date.now() - 86400000}`,
-        tasksRestored: sessionMemory?.restoredPatterns || 3,
-        memoryRestored: sessionMemory?.restoredPatterns || 15,
-      } : null,
+      // ADR-0210 F-01-004 sibling — drop the `session-${Date.now()-86400000}`
+      // synthesis for `previousSession`. Real previous-session restoration
+      // requires a ledger this build does not have; honest null when
+      // requested-but-absent.
+      previousSession: restoreLatest
+        ? (sessionMemory && sessionMemory.restoredPatterns > 0
+            ? { tasksRestored: sessionMemory.restoredPatterns, memoryRestored: sessionMemory.restoredPatterns, _note: 'Restored from session memory; original session id not preserved in this build.' }
+            : null)
+        : null,
     };
   },
 };
@@ -2060,6 +2225,31 @@ export const hooksSessionEnd: MCPTool = {
     const saveState = params.saveState !== false;
     const shouldStopDaemon = params.stopDaemon !== false;
     const sessionId = (params.sessionId as string) || `session-${Date.now()}`; // WM-107d: accept real session ID (ADR-073 Gap C)
+
+    // ADR-0210 F-03-013 — compute real duration from the session-start
+    // timestamp persisted by `hooks_session-start`. If absent, _note-mark
+    // honest rather than fabricate `duration: 3600000` (the prior 1h
+    // literal returned regardless of actual session length).
+    let durationMs: number | null = null;
+    let durationNote: string | undefined;
+    try {
+      const cwd = findProjectRoot();
+      const statePath = join(cwd, '.claude-flow', 'data', 'session-state.json');
+      if (existsSync(statePath)) {
+        const state = JSON.parse(readFileSync(statePath, 'utf-8')) as { startedAtMs?: number };
+        if (typeof state.startedAtMs === 'number' && Number.isFinite(state.startedAtMs)) {
+          durationMs = Date.now() - state.startedAtMs;
+        } else {
+          durationNote = 'session-state.json found but startedAtMs missing or invalid; duration unknown.';
+        }
+      } else {
+        durationNote = 'No session-state.json from hooks_session-start; duration unknown. The fabricated 3600000ms placeholder was removed (ADR-0210 F-03-013).';
+      }
+    } catch (e) {
+      // Parsing/IO failure — _note honestly, never fall back to a
+      // fabricated number.
+      durationNote = `session-state.json read failed: ${(e as Error)?.message || e}; duration unknown.`;
+    }
 
     // Stop daemon if enabled
     let daemonStopped = false;
@@ -2114,23 +2304,18 @@ export const hooksSessionEnd: MCPTool = {
 
     return {
       sessionId,
-      duration: 3600000, // 1 hour in ms
+      // ADR-0210 F-03-013 — real duration when session-start timestamp
+      // was persisted; null otherwise (with _note explaining why). The
+      // fabricated 3600000ms literal is gone.
+      duration: durationMs,
       statePath: saveState ? `.claude/sessions/${sessionId}.json` : undefined,
       daemon: { stopped: daemonStopped },
       sessionPersistence: sessionPersistence || { controller: 'none', persisted: false },
-      summary: {
-        tasksExecuted: 12,
-        tasksSucceeded: 10,
-        tasksFailed: 2,
-        commandsExecuted: 45,
-        filesModified: 23,
-        agentsSpawned: 5,
-      },
-      learningUpdates: {
-        patternsLearned: 8,
-        trajectoriesRecorded: 12,
-        confidenceImproved: 0.05,
-      },
+      // ADR-0210 — the `summary` and `learningUpdates` blocks previously
+      // carried fully fabricated literals (tasksExecuted:12, patternsLearned:8,
+      // etc.). Reduced to a _note so callers cannot mistake them for real
+      // counts; building real telemetry is out of scope for this remediation.
+      _note: durationNote ?? 'Per-session summary metrics (tasksExecuted, patternsLearned, …) are not persisted in this build; the previous fabricated counts were removed (ADR-0210).',
     };
   },
 };
@@ -2152,8 +2337,15 @@ export const hooksSessionRestore: MCPTool = {
     const restoreAgents = params.restoreAgents !== false;
     const restoreTasks = params.restoreTasks !== false;
 
-    const originalSessionId = requestedId === 'latest' ? `session-${Date.now() - 86400000}` : requestedId;
+    // ADR-0210 F-01-004 — drop the faked `session-${Date.now()-86400000}`
+    // synthesis (a fabricated "yesterday" timestamp dressed as a real
+    // prior session). When the caller asks for 'latest', we have no
+    // backing session-state ledger in this build; the honest disposition
+    // is `originalSessionId: null` + an `_note` explaining the gap.
+    // When the caller passes an explicit id, echo it back.
     const newSessionId = `session-${Date.now()}`;
+    const originalSessionId: string | null =
+      requestedId === 'latest' ? null : requestedId;
 
     // Get real memory entry count
     const store = loadMemoryStore();
@@ -2173,6 +2365,9 @@ export const hooksSessionRestore: MCPTool = {
       },
       warnings: restoreTasks && taskEntries > 0 ? [`${Math.min(taskEntries, 2)} tasks were in progress and may need review`] : undefined,
       dataSource: 'memory-store',
+      ...(originalSessionId === null
+        ? { _note: "No prior session state ledger is available in this build; `originalSessionId` is null when the caller asks for 'latest'. Pass an explicit `sessionId` to echo it back." }
+        : {}),
     };
   },
 };
@@ -2180,7 +2375,9 @@ export const hooksSessionRestore: MCPTool = {
 // Notify hook - cross-agent notifications
 export const hooksNotify: MCPTool = {
   name: 'hooks_notify',
-  description: 'Send cross-agent notification',
+  // ADR-0210 item 6 (description honesty): advertise the limitation so
+  // the LLM does not select this tool expecting cross-agent delivery.
+  description: 'Record a cross-agent notification request (no delivery backend; see _note in the response)',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2192,6 +2389,12 @@ export const hooksNotify: MCPTool = {
     required: ['message'],
   },
   handler: async (params: Record<string, unknown>) => {
+    // ADR-0210 item 4 — honest `_note`-pending marker. Upstream HEAD
+    // itself still hardcodes `delivered:true` with no transport (no
+    // delivery backend to restore); building transport is net-new infra
+    // out of this ADR's scope. The honest disposition is to record the
+    // request and surface `_note` so callers cannot mistake the no-op
+    // for a real cross-agent send.
     const message = params.message as string;
     const target = (params.target as string) || 'all';
     const priority = (params.priority as string) || 'normal';
@@ -2201,9 +2404,9 @@ export const hooksNotify: MCPTool = {
       message,
       target,
       priority,
-      delivered: true,
-      recipients: target === 'all' ? ['coder', 'architect', 'tester', 'reviewer'] : [target],
+      recorded: true,
       timestamp: new Date().toISOString(),
+      _note: 'hooks_notify has no delivery backend in this build — the request was recorded but no cross-agent transport was invoked. Use a real coordination channel (CLI hooks, AgentDB pubsub) for delivery semantics.',
     };
   },
 };
@@ -2221,30 +2424,62 @@ export const hooksInit: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    // ADR-0210 item 2 — implement: real `mkdirSync` + `writeFileSync`
+    // for `.claude/settings.json`, matching the `hooks_build-agents`
+    // idiom already in this file. Prior handler returned a fabricated
+    // envelope with a path string that never landed on disk; callers
+    // observing a green response thought init succeeded.
     const path = (params.path as string) || '.';
     const template = (params.template as string) || 'standard';
     const force = params.force as boolean;
 
-    const hooksConfigured = template === 'minimal' ? 4 : template === 'full' ? 16 : 9;
+    const projectRoot = resolve(path);
+    const claudeDir = join(projectRoot, '.claude');
+    const hooksDir = join(claudeDir, 'hooks');
+    const settingsPath = join(claudeDir, 'settings.json');
+
+    // Templates encode the minimum-honest hook surface. The full
+    // helpers/settings emission is owned by `ruflo init` /
+    // settings-generator.ts; this MCP tool ships a *minimal*
+    // bootstrap that callers can extend.
+    const hookEvents: Record<string, string[]> = {
+      minimal: ['PreToolUse', 'PostToolUse'],
+      standard: ['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd'],
+      full: ['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Notification'],
+    };
+    const types = hookEvents[template] ?? hookEvents.standard;
+
+    const hooksBlock: Record<string, unknown[]> = {};
+    for (const t of types) hooksBlock[t] = [];
+    const settings = { hooks: hooksBlock };
+
+    // Real disk effect.
+    const alreadyExists = existsSync(settingsPath);
+    if (alreadyExists && !force) {
+      return {
+        path,
+        template,
+        created: { settingsJson: settingsPath, hooksDir },
+        hooks: { configured: 0, types },
+        overwritten: false,
+        _note: `Settings already exist at ${settingsPath}; pass force:true to overwrite.`,
+      };
+    }
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
 
     return {
       path,
       template,
       created: {
-        settingsJson: `${path}/.claude/settings.json`,
-        hooksDir: `${path}/.claude/hooks`,
+        settingsJson: settingsPath,
+        hooksDir,
       },
       hooks: {
-        configured: hooksConfigured,
-        types: ['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd'],
+        configured: types.length,
+        types,
       },
-      intelligence: {
-        enabled: template !== 'minimal',
-        sona: template === 'full',
-        moe: template === 'full',
-        hnsw: template !== 'minimal',
-      },
-      overwritten: force,
+      overwritten: alreadyExists && force === true,
     };
   },
 };
@@ -2363,13 +2598,66 @@ export const hooksIntelligenceReset: MCPTool = {
     properties: {},
   },
   handler: async () => {
+    // ADR-0210 item 1 — hand-port from upstream HEAD. The prior fork
+    // code returned `cleared: { trajectories: 156, patterns: 89,
+    // hnswIndex: 12500 }` — fabricated literals with no real deletion.
+    // Upstream's real impl deletes data files via unlinkSync and
+    // clears the in-memory activeTrajectories Map. Substitution from
+    // upstream: `getProjectCwd()` -> `findProjectRoot()` (ADR-0100).
+    const cwd = findProjectRoot();
+    const cleared: { trajectories: number; patterns: number; dataFiles: number; neuralFiles: number } = {
+      trajectories: 0,
+      patterns: 0,
+      dataFiles: 0,
+      neuralFiles: 0,
+    };
+    const deletedFiles: string[] = [];
+
+    const dataFiles = [
+      join(cwd, '.claude-flow', 'data', 'auto-memory-store.json'),
+      join(cwd, '.claude-flow', 'data', 'graph-state.json'),
+      join(cwd, '.claude-flow', 'data', 'ranked-context.json'),
+    ];
+    for (const filePath of dataFiles) {
+      if (existsSync(filePath)) {
+        try {
+          unlinkSync(filePath);
+          cleared.dataFiles++;
+          deletedFiles.push(filePath);
+        } catch {
+          // skip files that cannot be deleted
+        }
+      }
+    }
+
+    const neuralDir = join(cwd, '.claude-flow', 'neural');
+    if (existsSync(neuralDir)) {
+      let files: string[];
+      try {
+        files = readdirSync(neuralDir);
+      } catch {
+        files = [];
+      }
+      for (const file of files) {
+        try {
+          const filePath = join(neuralDir, file);
+          unlinkSync(filePath);
+          cleared.neuralFiles++;
+          deletedFiles.push(filePath);
+        } catch {
+          // skip files that cannot be deleted
+        }
+      }
+    }
+
+    // Clear in-memory trajectories (real count)
+    cleared.trajectories = activeTrajectories.size;
+    activeTrajectories.clear();
+
     return {
       reset: true,
-      cleared: {
-        trajectories: 156,
-        patterns: 89,
-        hnswIndex: 12500,
-      },
+      cleared,
+      deletedFiles,
       timestamp: new Date().toISOString(),
     };
   },
@@ -3884,33 +4172,45 @@ export const hooksWorkerDetect: MCPTool = {
       }));
 
       if (autoDispatch) {
-        const dispatched: string[] = [];
+        // ADR-0210 F-03-007 — delete the fake setTimeout(1500) completion
+        // flip. The prior code recorded a worker as `running`, then 1.5s
+        // later mutated it to `completed` with no real work performed.
+        // Honest disposition: route auto-detected workers through the
+        // ADR-0218 daemon-queue producer (a real durable dispatch the
+        // daemon consumes) when a daemon is present; otherwise fall
+        // back to honest `no-daemon` state so callers cannot mistake
+        // a no-op for completion.
+        const dispatched: Array<{ workerId: string; status: string; note?: string }> = [];
         for (const trigger of detection.triggers) {
-          const workerId = `worker_${trigger}_${++workerIdCounter}_${Date.now().toString(36)}`;
-          activeWorkers.set(workerId, {
-            id: workerId,
-            trigger,
-            context: prompt.slice(0, 100),
-            status: 'running',
-            progress: 0,
-            phase: 'initializing',
-            startedAt: new Date(),
+          // Reuse the canonical worker-dispatch producer (the same
+          // four-state ladder used by hooks_worker-dispatch). This both
+          // de-duplicates the queue-file shape and guarantees that
+          // auto-detected workers go through the same honest path as
+          // explicitly-dispatched ones — no fake completion possible.
+          let dispatchResult: { workerId?: string; status?: string; note?: string };
+          try {
+            dispatchResult = await hooksWorkerDispatch.handler({
+              trigger,
+              context: prompt.slice(0, 100),
+              background: true,
+            }) as { workerId?: string; status?: string; note?: string };
+          } catch (e) {
+            dispatchResult = {
+              status: 'failed',
+              note: `dispatch threw: ${(e as Error)?.message || e}`,
+            };
+          }
+          dispatched.push({
+            workerId: dispatchResult.workerId || `auto_${trigger}_${++workerIdCounter}`,
+            status: dispatchResult.status || 'unknown',
+            ...(dispatchResult.note ? { note: dispatchResult.note } : {}),
           });
-          dispatched.push(workerId);
-
-          // Mark worker completion after processing
-          setTimeout(() => {
-            const w = activeWorkers.get(workerId);
-            if (w) {
-              w.progress = 100;
-              w.phase = 'completed';
-              w.status = 'completed';
-              w.completedAt = new Date();
-            }
-          }, 1500);
         }
         result.autoDispatched = true;
-        result.workerIds = dispatched;
+        result.dispatchedWorkers = dispatched;
+        // Preserve legacy `workerIds` field for any caller that read
+        // only the ids; reflect the honest dispatch lifecycle.
+        result.workerIds = dispatched.map((d) => d.workerId);
       }
     }
 
