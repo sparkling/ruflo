@@ -7,7 +7,6 @@
   "types": "dist/src/index.d.ts",
   "sideEffects": false,
   "bin": {
-    "ruflo": "./bin/cli.js",
     "ruflo-mcp": "./bin/mcp-server.js",
     "cli": "./bin/cli.js",
     "claude-flow": "./bin/cli.js",
