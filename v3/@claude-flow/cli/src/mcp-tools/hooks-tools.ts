@@ -29,6 +29,10 @@ import { dirname, join, resolve } from 'path';
 import { type MCPTool, findProjectRoot } from './types.js';
 import { tryOptionalImport } from '../utils/optional-import.js';
 import { withTimeoutLogged } from '../utils/timeout.js';
+// ADR-0218 / #1845: producer wires validateText for the dispatch context.
+// (validate-input.ts also exports an unrelated 11-member agent WorkerType —
+// do NOT import it; the daemon's 12-member WorkerType lives in this file.)
+import { validateText } from './validate-input.js';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); 768 = all-mpnet-base-v2 output
 const EMBEDDING_DIM = 768;
 
@@ -3655,6 +3659,14 @@ export const hooksWorkerDispatch: MCPTool = {
     const priority = (params.priority as string) || WORKER_CONFIGS[trigger]?.priority || 'normal';
     const background = params.background !== false;
 
+    // ADR-0218 / upstream #1845: validate context. validateText strips null
+    // bytes and rejects oversize input; scoped to `context` only (priority +
+    // trigger are enum-checked already).
+    if (params.context !== undefined && params.context !== null) {
+      const v = validateText(params.context, 'context');
+      if (!v.valid) return { success: false, error: v.error };
+    }
+
     if (!WORKER_CONFIGS[trigger]) {
       return {
         success: false,
@@ -3705,23 +3717,55 @@ export const hooksWorkerDispatch: MCPTool = {
 
     activeWorkers.set(workerId, worker);
 
-    // ADR-093 F2 (ADR-0162 Batch E hand-port): determine honest status
-    // instead of fake setTimeout-driven simulation. Pre-batch-E this branch
-    // reported `dispatched/completed` after a hardcoded 1500ms timer
-    // regardless of whether any daemon picked the work up — exactly the
-    // #1700-item-1 audit finding.
-    let reportedStatus: 'queued' | 'no-daemon' | 'synthetic-completed';
-    let note: string;
+    // ADR-0218 / upstream #1845: four-state honest ladder. The original
+    // 3-state fork ladder (ADR-093 F2, ADR-0162 Batch E hand-port) replaced
+    // the fake setTimeout-driven simulation but kept the in-process Map as
+    // the cross-process channel — a lie because the daemon runs in a
+    // separate process and never reads that Map. The producer write below
+    // re-converges with upstream: the queue file is the durable, inspectable
+    // proof of `queued` status; without it we honestly say `mcp-only`.
+    let reportedStatus: 'queued' | 'no-daemon' | 'synthetic-completed' | 'mcp-only';
+    let note = '';
     if (!daemonAlive) {
       reportedStatus = 'no-daemon';
       note = 'No worker daemon detected. Run `claude-flow daemon start` to enable real worker execution. The dispatch was recorded in-process but no actual work will run.';
     } else if (background) {
-      // Daemon is alive — record the queued worker. The daemon polls activeWorkers
-      // via its own state file, so this constitutes a real queue entry.
-      reportedStatus = 'queued';
-      note = `Worker queued for daemon (pid ${daemonPid}). Poll hooks_worker-status to track progression — do not assume completion until status === "completed".`;
+      // #1845: write the durable queue file the daemon polls every 5s under
+      // `.claude-flow/daemon-queue/<workerId>.json`. The consumer
+      // (worker-daemon.ts:processDispatchQueue) reads `trigger` + `workerId`
+      // and moves the entry into `.processed/` after triggerWorker runs.
+      //
+      // Root-mismatch safety: we write under findProjectRoot()'s cwd, the
+      // same root the daemon writes its PID file + reads its queue under
+      // (`this.projectRoot` injected via startDaemon(projectRoot, …)).
+      // Reaching this branch already proved a live PID exists at
+      // `${cwd}/.claude-flow/daemon.pid`, so the roots coincide whenever a
+      // write happens — a genuine mismatch degrades to `no-daemon`, never a
+      // silent `queued`. (Avoids the upstream getProjectCwd / ADR-0100 trap.)
+      const queueDir = join(cwd, '.claude-flow', 'daemon-queue');
+      const queuePath = join(queueDir, `${workerId}.json`);
+      let queueWritten = false;
+      try {
+        if (!existsSync(queueDir)) mkdirSync(queueDir, { recursive: true });
+        writeFileSync(
+          queuePath,
+          JSON.stringify({ workerId, trigger, context, priority, enqueuedAt: new Date().toISOString() }, null, 2),
+        );
+        queueWritten = true;
+      } catch (err) {
+        // Write failed (read-only fs, permission denied, …). Fall back to
+        // mcp-only rather than claim queued without proof.
+        note = `Daemon detected (pid ${daemonPid}) but queue write to ${queuePath} failed: ${(err as Error).message}. Worker recorded in-process only; use \`claude-flow daemon trigger -w ${trigger}\` to run synchronously.`;
+      }
+      if (queueWritten) {
+        reportedStatus = 'queued';
+        note = `Worker queued for daemon (pid ${daemonPid}) at ${queuePath}. Daemon polls every 5s; processed entries move to .claude-flow/daemon-queue/.processed/. Poll hooks_worker-status until status === "completed".`;
+      } else {
+        reportedStatus = 'mcp-only';
+      }
     } else {
-      // Synchronous mode without a runner — be honest about it
+      // Synchronous mode without a runner — be honest about it (unchanged
+      // from the prior fork ladder; ADR-0218 keeps this state).
       reportedStatus = 'synthetic-completed';
       worker.progress = 100;
       worker.phase = 'completed';
