@@ -83,7 +83,7 @@ Findings:
 No actual `spawn` / `execSync` / `spawnSync` invocations exist in the
 plugin code. The plugin shells out to `npx neural-trader` only via skill
 bash blocks (which run under the Claude Code permission model), and to
-`npx @claude-flow/cli` via documented memory-store commands. Both go
+`npx @sparkleideas/cli` via documented memory-store commands. Both go
 through the same shell that Claude Code itself executes, with no
 shell-string-injection vector.
 
