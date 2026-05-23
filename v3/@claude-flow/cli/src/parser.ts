@@ -551,5 +551,15 @@ export class CommandParser {
   }
 }
 
-// Export singleton parser instance
-export const commandParser = new CommandParser({ allowUnknownFlags: true });
+// Export singleton parser instance.
+// ADR-0208: flipped from `allowUnknownFlags: true` to the class default
+// (false). The class itself has defaulted `false` since `parser.ts:34`;
+// the singleton's `true` override was an unexamined upstream wiring
+// artifact that silently accepted undeclared flags. The flip surfaces
+// `Unknown option:` errors via `validateFlags` → `index.ts:257` →
+// `process.exit(1)`, matching the same loud-failure path the existing
+// `Required option missing` and `Invalid value … Must be one of`
+// validators take. Dynamic-flag callsites use documented passthrough
+// (per-command `knownFlags` allowlists like `mcp.ts:638`), not parser
+// permissiveness.
+export const commandParser = new CommandParser({ allowUnknownFlags: false });

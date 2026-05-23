@@ -844,13 +844,19 @@ describe('CommandParser', () => {
       expect(commandParser).toBeInstanceOf(CommandParser);
     });
 
-    it('commandParser should have allowUnknownFlags enabled', () => {
-      // It should not report errors for unknown flags
+    it('commandParser should reject unknown flags (ADR-0208)', () => {
+      // ADR-0208 flipped the singleton's `allowUnknownFlags` from true to
+      // false. Undeclared flags must surface as `Unknown option:` errors
+      // through `validateFlags` → dispatch (`index.ts:257`) →
+      // `process.exit(1)`. A regression that re-introduces permissive
+      // behavior would silently accept mistyped flags and manifest-vs-CLI
+      // drift — exactly the no-fallbacks violation ADR-0208 closes.
       const flags: ParsedFlags = { _: [], someRandomFlag: 'value' };
       const errors = commandParser.validateFlags(flags);
-      // With allowUnknownFlags, no error for unknown flags
       const unknownErrors = errors.filter((e) => e.includes('Unknown option'));
-      expect(unknownErrors).toEqual([]);
+      expect(unknownErrors.length).toBeGreaterThan(0);
+      // Parser emits the normalized camelCase key, not the kebab original.
+      expect(unknownErrors[0]).toMatch(/Unknown option:\s*--someRandomFlag/);
     });
   });
 });
