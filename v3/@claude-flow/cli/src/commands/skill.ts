@@ -28,6 +28,7 @@
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
+import { findProjectRoot } from '../mcp-tools/types.js';
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 
@@ -107,7 +108,9 @@ const listCommand: Command = {
     { command: 'ruflo skill list --format json', description: 'Emit JSON for scripts' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const cwd = (ctx.flags.cwd as string | undefined) ?? process.cwd();
+    // ADR-0100 §1: anchor on findProjectRoot(), never process.cwd().
+    // The `--cwd` flag remains an explicit override for scripts/tests.
+    const cwd = (ctx.flags.cwd as string | undefined) ?? findProjectRoot();
     const skillsDir = join(cwd, '.claude', 'skills');
 
     if (!existsSync(skillsDir)) {

@@ -1265,6 +1265,18 @@ export const initCommand: Command = {
       default: false,
     },
     {
+      name: 'yes',
+      short: 'y',
+      // Convention alias for "non-interactive, accept defaults". The CLI is
+      // already non-interactive when stdin is not a TTY (the usual case in
+      // scripts and CI). Declaring `--yes` makes the contract explicit so
+      // callers using the npm/apt convention don't get `Unknown option: --yes`
+      // from the parser (ADR-0143 acceptance test contract).
+      description: 'Non-interactive: accept defaults (alias for the npm/apt --yes convention)',
+      type: 'boolean',
+      default: false,
+    },
+    {
       name: 'start-all',
       description: 'Auto-start daemon, memory, and swarm after init',
       type: 'boolean',
