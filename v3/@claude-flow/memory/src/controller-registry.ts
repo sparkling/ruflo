@@ -72,7 +72,6 @@ export type AgentDBControllerName =
   | 'multiHeadAttention'       // A3 - ADR-0044
   | 'attentionService'         // A5
   | 'enhancedEmbeddingService' // A9
-  | 'federatedLearningManager' // A11
   | 'queryOptimizer'
   | 'auditLogger';
 
@@ -104,7 +103,6 @@ export type CLIControllerName =
   | 'moeAttentionService'
   | 'nativeAccelerator'
   | 'selfLearningRvfBackend'
-  | 'federatedLearningManager'
   | 'enhancedEmbeddingService'
   | 'quantizedVectorStore'
   | 'resourceTracker'
@@ -511,7 +509,7 @@ export const INIT_LEVELS: InitLevel[] = [
   // Level 4: Routing & self-learning
   { level: 4, controllers: [
     'causalRecall', 'nightlyLearner', 'learningSystem', 'semanticRouter',
-    'selfLearningRvfBackend', 'federatedLearningManager', 'indexHealthMonitor',
+    'selfLearningRvfBackend', 'indexHealthMonitor',
   ] as ControllerName[] },
   // Level 5: Advanced services
   { level: 5, controllers: [
@@ -1175,10 +1173,6 @@ export class ControllerRegistry extends EventEmitter {
       case 'flashAttentionService': // ADR-0081: was missing — fell to default:false
       case 'moeAttentionService': // ADR-0081: was missing — fell to default:false
         return this.agentdb !== null;
-
-      // Federated learning -- only useful in multi-agent swarms
-      case 'federatedLearningManager':
-        return false;
 
       // Security infrastructure -- always enabled (ADR-0061 Phase 6)
       case 'resourceTracker':
@@ -2032,15 +2026,6 @@ export class ControllerRegistry extends EventEmitter {
           const IHM = agentdbModule.IndexHealthMonitor;
           if (!IHM) return null;
           return getOrCreate(name, () => new IHM());
-        } catch { return null; }
-      }
-
-      case 'federatedLearningManager': {
-        try {
-          const agentdbModule: any = await import('agentdb');
-          const FLM = agentdbModule.FederatedLearningManager;
-          if (!FLM) return null;
-          return getOrCreate(name, () => new FLM({ agentId: this.config.agentId || `agent-${Date.now().toString(36)}` }));
         } catch { return null; }
       }
 
