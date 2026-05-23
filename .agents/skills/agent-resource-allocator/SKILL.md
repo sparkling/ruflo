@@ -191,7 +191,7 @@ class PredictiveScaler {
     if (validation.accuracy > 0.85) {
       await mcp.model_save({
         modelId: model.modelId,
-        path: '$models$scaling_predictor.model'
+        path: '/models/scaling_predictor.model'
       });
       
       return {

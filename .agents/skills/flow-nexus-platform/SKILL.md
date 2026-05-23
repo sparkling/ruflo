@@ -162,7 +162,7 @@ mcp__flow-nexus__sandbox_execute({
   sandbox_id: "sandbox_id",
   code: `
     console.log('Hello from sandbox!');
-    const result = await fetch('https:/$api.example.com$data');
+    const result = await fetch('https://api.example.com/data');
     const data = await result.json();
     return data;
   `,
@@ -196,7 +196,7 @@ mcp__flow-nexus__sandbox_status({
 ```javascript
 mcp__flow-nexus__sandbox_upload({
   sandbox_id: "sandbox_id",
-  file_path: "$app$config$database.json",
+  file_path: "/app/config/database.json",
   content: JSON.stringify(databaseConfig, null, 2)
 })
 ```
@@ -356,7 +356,7 @@ mcp__flow-nexus__app_store_publish_app({
   metadata: {
     author: "Your Name",
     license: "MIT",
-    repository: "github.com$username$repo",
+    repository: "github.com/username/repo",
     homepage: "https:/$yourapp.com",
     documentation: "https:/$docs.yourapp.com"
   }
@@ -809,7 +809,7 @@ mcp__flow-nexus__execution_files_list({
 ```javascript
 mcp__flow-nexus__execution_file_get({
   file_id: "file_id",
-  file_path: "$path$to$file.js" // alternative
+  file_path: "/path/to/file.js" // alternative
 })
 ```
 
@@ -1029,11 +1029,11 @@ mcp__flow-nexus__challenge_submit({
 ## Support & Resources
 
 - **Documentation**: https:/$docs.flow-nexus.ruv.io
-- **API Reference**: https:/$api.flow-nexus.ruv.io$docs
+- **API Reference**: https://api.flow-nexus.ruv.io/docs
 - **Status Page**: https:/$status.flow-nexus.ruv.io
 - **Community Forum**: https:/$community.flow-nexus.ruv.io
-- **GitHub Issues**: https:/$github.com$ruvnet$flow-nexus$issues
-- **Discord**: https:/$discord.gg$flow-nexus
+- **GitHub Issues**: https://github.com/ruvnet/flow-nexus/issues
+- **Discord**: https://discord.gg/flow-nexus
 - **Email Support**: support@flow-nexus.ruv.io (Pro/Enterprise only)
 
 ---
@@ -1051,7 +1051,7 @@ mcp__flow-nexus__sandbox_create({
   startup_script: `
     apt-get update
     apt-get install -y custom-package
-    git clone https:/$github.com$user$repo
+    git clone https://github.com/user/repo
     cd repo && npm install
   `
 })
@@ -1069,7 +1069,7 @@ mcp__flow-nexus__sandbox_execute({
 mcp__flow-nexus__sandbox_execute({
   sandbox_id: "id",
   code: "npm start",
-  working_dir: "$app$dist"
+  working_dir: "/app/dist"
 })
 ```
 

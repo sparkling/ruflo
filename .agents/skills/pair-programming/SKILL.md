@@ -1,6 +1,6 @@
 ---
 name: Pair Programming
-description: AI-assisted pair programming with multiple modes (driver$navigator$switch), real-time verification, quality monitoring, and comprehensive testing. Supports TDD, debugging, refactoring, and learning sessions. Features automatic role switching, continuous code review, security scanning, and performance optimization with truth-score verification.
+description: AI-assisted pair programming with multiple modes (driver/navigator/switch), real-time verification, quality monitoring, and comprehensive testing. Supports TDD, debugging, refactoring, and learning sessions. Features automatic role switching, continuous code review, security scanning, and performance optimization with truth-score verification.
 ---
 
 # Pair Programming
@@ -865,11 +865,11 @@ claude-flow pair --start \
 
 $design REST API for blog platform
 > AI designs endpoints:
-  POST   $api$posts
-  GET    $api$posts
-  GET    $api$posts/:id
-  PUT    $api$posts/:id
-  DELETE $api$posts/:id
+  POST   /api/posts
+  GET    /api/posts
+  GET    /api/posts/:id
+  PUT    /api/posts/:id
+  DELETE /api/posts/:id
 
 $implement CRUD endpoints with validation
 > AI implements with Express + Joi validation
@@ -956,7 +956,7 @@ Next Switch: in 3 minutes
 └── Commits: 3
 
 🎯 Focus: Implementation
-📝 Current File: src$auth$login.js
+📝 Current File: src/auth/login.js
 ```
 
 #### Session History

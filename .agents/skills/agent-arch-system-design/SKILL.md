@@ -115,7 +115,7 @@ hooks:
   post_execution: |
     echo "✅ Architecture design completed"
     echo "📄 Architecture documents created:"
-    find docs$architecture -name "*.md" -newer $tmp$arch_timestamp 2>$dev$null || echo "See above for details"
+    find docs$architecture -name "*.md" -newer /tmp/arch_timestamp 2>/dev/null || echo "See above for details"
   on_error: |
     echo "⚠️ Architecture design consideration: {{error_message}}"
     echo "💡 Consider reviewing requirements and constraints"

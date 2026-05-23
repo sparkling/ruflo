@@ -22,7 +22,7 @@ hooks:
     echo "Starting github-modes..."
     echo "Initializing GitHub workflow coordination"
     gh auth status || (echo "GitHub CLI authentication required" && exit 1)
-    git status > $dev$null || (echo "Not in a git repository" && exit 1)
+    git status > /dev/null || (echo "Not in a git repository" && exit 1)
   post: |
     echo "Completed github-modes"
     echo "GitHub operations synchronized"

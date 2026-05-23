@@ -113,10 +113,10 @@ components:
     
     interfaces:
       rest:
-        - POST $auth$login
-        - POST $auth$logout
-        - POST $auth$refresh
-        - GET $auth$verify
+        - POST /auth/login
+        - POST /auth/logout
+        - POST /auth/refresh
+        - GET /auth/verify
       
       grpc:
         - VerifyToken(token) -> User
@@ -215,9 +215,9 @@ info:
   description: Authentication and authorization service
 
 servers:
-  - url: https:/$api.example.com$v1
+  - url: https://api.example.com/v1
     description: Production
-  - url: https:/$staging-api.example.com$v1
+  - url: https://staging-api.example.com/v1
     description: Staging
 
 components:
@@ -245,7 +245,7 @@ components:
         roles:
           type: array
           items:
-            $ref: '#$components$schemas/Role'
+            $ref: '#/components/schemas/Role'
     
     Error:
       type: object
@@ -259,7 +259,7 @@ components:
           type: object
 
 paths:
-  $auth$login:
+  /auth/login:
     post:
       summary: User login
       operationId: login
@@ -289,7 +289,7 @@ paths:
                   refreshToken:
                     type: string
                   user:
-                    $ref: '#$components$schemas/User'
+                    $ref: '#/components/schemas/User'
 ```
 
 ### 5. Infrastructure Architecture

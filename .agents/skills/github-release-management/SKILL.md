@@ -130,7 +130,7 @@ gh release create $(npm pkg get version) \
   Edit("package.json", { old: '"version": "1.0.0"', new: '"version": "2.0.0"' })
 
   // Generate changelog
-  Bash("gh api repos/:owner/:repo$compare$v1.0.0...HEAD --jq '.commits[].commit.message' > CHANGELOG.md")
+  Bash("gh api repos/:owner/:repo/compare/v1.0.0...HEAD --jq '.commits[].commit.message' > CHANGELOG.md")
 
   // Create release branch
   Bash("git checkout -b release$v2.0.0")
@@ -169,7 +169,7 @@ gh release create $(npm pkg get version) \
 ```javascript
 [Single Message - Full Release Coordination]:
   // Create release branch
-  Bash("gh api repos/:owner/:repo$git$refs --method POST -f ref='refs$heads$release$v2.0.0' -f sha=$(gh api repos/:owner/:repo$git$refs$heads$main --jq '.object.sha')")
+  Bash("gh api repos/:owner/:repo/git/refs --method POST -f ref='refs/heads/release/v2.0.0' -f sha=$(gh api repos/:owner/:repo/git/refs/heads/main --jq '.object.sha')")
 
   // Orchestrate release preparation
   mcp__claude-flow__task_orchestrate {
@@ -206,7 +206,7 @@ gh release create $(npm pkg get version) \
   // Store release state
   mcp__claude-flow__memory_usage {
     action: "store",
-    key: "release$v2.0.0$status",
+    key: "release/v2.0.0/status",
     value: JSON.stringify({
       version: "2.0.0",
       stage: "validation_complete",
@@ -225,7 +225,7 @@ PRS=$(gh pr list --state merged --base main --json number,title,labels,author,me
   --jq ".[] | select(.mergedAt > \"$(gh release view v1.0.0 --json publishedAt -q .publishedAt)\")")
 
 # Get commit history
-COMMITS=$(gh api repos/:owner/:repo$compare$v1.0.0...HEAD \
+COMMITS=$(gh api repos/:owner/:repo/compare/v1.0.0...HEAD \
   --jq '.commits[].commit.message')
 
 # Generate categorized changelog
@@ -318,8 +318,8 @@ npx claude-flow github release-deploy \
   Task("Version Coordinator", "Align dependencies and versions", "coordinator")
 
   // Update all packages simultaneously
-  Write("packages$claude-flow$package.json", "[v1.0.72 content]")
-  Write("packages$ruv-swarm$package.json", "[v1.0.12 content]")
+  Write("packages/claude-flow/package.json", "[v1.0.72 content]")
+  Write("packages/ruv-swarm/package.json", "[v1.0.12 content]")
   Write("CHANGELOG.md", "[consolidated changelog]")
 
   // Run cross-package validation
@@ -403,9 +403,9 @@ npx claude-flow github multi-release \
   Task("Compatibility Checker", "Validate cross-repo compatibility", "researcher")
 
   // Coordinate version updates across repos
-  Bash("gh api repos$org$frontend$dispatches --method POST -f event_type='release' -F client_payload[version]=v2.0.0")
-  Bash("gh api repos$org$backend$dispatches --method POST -f event_type='release' -F client_payload[version]=v2.1.0")
-  Bash("gh api repos$org$cli$dispatches --method POST -f event_type='release' -F client_payload[version]=v1.5.0")
+  Bash("gh api repos/org/frontend/dispatches --method POST -f event_type='release' -F client_payload[version]=v2.0.0")
+  Bash("gh api repos/org/backend/dispatches --method POST -f event_type='release' -F client_payload[version]=v2.1.0")
+  Bash("gh api repos/org/cli/dispatches --method POST -f event_type='release' -F client_payload[version]=v1.5.0")
 
   // Monitor all releases
   mcp__claude-flow__swarm_monitor { interval: 5, duration: 300 }
@@ -504,7 +504,7 @@ release:
       platforms: [linux$amd64, linux$arm64]
 
     - name: binaries
-      build: .$scripts$build-binaries.sh
+      build: ./scripts/build-binaries.sh
       platforms: [linux, macos, windows]
       architectures: [x64, arm64]
       upload: github-release
@@ -521,7 +521,7 @@ release:
 
     post-release:
       - smoke-tests: npm run test:smoke
-      - deployment-validation: .$scripts$validate-deployment.sh
+      - deployment-validation: ./scripts/validate-deployment.sh
       - performance-baseline: npm run benchmark
 
   deployment:
@@ -686,7 +686,7 @@ npx claude-flow github release-compliance \
 
 ### Complete Release Workflow
 ```yaml
-# .github$workflows$release.yml
+# .github/workflows/release.yml
 name: Intelligent Release Workflow
 on:
   push:
@@ -733,15 +733,15 @@ jobs:
           npx claude-flow@alpha swarm init --topology hierarchical
 
           # Store release context
-          echo "$PRS" > $tmp$release-prs.json
-          echo "$COMMITS" > $tmp$release-commits.txt
+          echo "$PRS" > /tmp/release-prs.json
+          echo "$COMMITS" > /tmp/release-commits.txt
 
       - name: Generate Release Changelog
         run: |
           # Generate intelligent changelog
           CHANGELOG=$(npx claude-flow@alpha github changelog \
-            --prs "$(cat $tmp$release-prs.json)" \
-            --commits "$(cat $tmp$release-commits.txt)" \
+            --prs "$(cat /tmp/release-prs.json)" \
+            --commits "$(cat /tmp/release-commits.txt)" \
             --from $PREV_TAG \
             --to $RELEASE_TAG \
             --categorize \
@@ -823,7 +823,7 @@ jobs:
             --method POST \
             -f title="Release ${{ github.ref_name }} Now Available" \
             -f body="$(cat RELEASE_CHANGELOG.md)" \
-            -f category_id="$(gh api repos/${{ github.repository }}$discussions$categories --jq '.[] | select(.slug=="announcements") | .id')"
+            -f category_id="$(gh api repos/${{ github.repository }}/discussions/categories --jq '.[] | select(.slug=="announcements") | .id')"
 
       - name: Monitor Release
         run: |
@@ -836,7 +836,7 @@ jobs:
 
 ### Hotfix Workflow
 ```yaml
-# .github$workflows$hotfix.yml
+# .github/workflows/hotfix.yml
 name: Emergency Hotfix Workflow
 on:
   issues:
@@ -1020,10 +1020,10 @@ npx claude-flow@alpha github version-sync \
 ## Related Resources
 
 ### Documentation
-- [GitHub CLI Documentation](https:/$cli.github.com$manual/)
+- [GitHub CLI Documentation](https://cli.github.com/manual/)
 - [Semantic Versioning Spec](https:/$semver.org/)
-- [Claude Flow SPARC Guide](../..$docs$sparc-methodology.md)
-- [Swarm Coordination Patterns](../..$docs$swarm-patterns.md)
+- [Claude Flow SPARC Guide](../../docs/sparc-methodology.md)
+- [Swarm Coordination Patterns](../../docs/swarm-patterns.md)
 
 ### Related Skills
 - **github-pr-management**: PR review and merge automation
@@ -1032,9 +1032,9 @@ npx claude-flow@alpha github version-sync \
 - **deployment-orchestration**: Advanced deployment strategies
 
 ### Support & Community
-- Issues: https:/$github.com$ruvnet$claude-flow$issues
-- Discussions: https:/$github.com$ruvnet$claude-flow$discussions
-- Documentation: https:/$claude-flow.dev$docs
+- Issues: https://github.com/ruvnet/claude-flow/issues
+- Discussions: https://github.com/ruvnet/claude-flow/discussions
+- Documentation: https://claude-flow.dev/docs
 
 ---
 

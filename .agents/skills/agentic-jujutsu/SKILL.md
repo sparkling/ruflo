@@ -624,8 +624,8 @@ async function agentSwarm(taskList) {
 
 ## Related Documentation
 
-- **NPM Package**: https:/$npmjs.com$package$agentic-jujutsu
-- **GitHub**: https:/$github.com$ruvnet$agentic-flow$tree$main$packages$agentic-jujutsu
+- **NPM Package**: https://npmjs.com/package/agentic-jujutsu
+- **GitHub**: https://github.com/ruvnet/agentic-flow/tree/main/packages/agentic-jujutsu
 - **Full README**: See package README.md
 - **Validation Guide**: docs/VALIDATION_FIXES_v2.3.1.md
 - **AgentDB Guide**: docs/AGENTDB_GUIDE.md

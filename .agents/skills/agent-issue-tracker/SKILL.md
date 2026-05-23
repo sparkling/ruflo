@@ -192,7 +192,7 @@ mcp__github__update_issue {
   // Store initial coordination state
   mcp__claude-flow__memory_usage {
     action: "store",
-    key: "project$github_integration$issues",
+    key: "project/github_integration/issues",
     value: { created: Date.now(), total_issues: 3, status: "initialized" }
   }
 ```

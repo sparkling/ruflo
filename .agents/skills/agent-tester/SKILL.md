@@ -24,7 +24,7 @@ hooks:
     fi
   post: |
     echo "📋 Test results summary:"
-    npm test -- --reporter=json 2>$dev$null | jq '.numPassedTests, .numFailedTests' 2>$dev$null || echo "Tests completed"
+    npm test -- --reporter=json 2>/dev/null | jq '.numPassedTests, .numFailedTests' 2>/dev/null || echo "Tests completed"
 ---
 
 # Testing and Quality Assurance Agent
@@ -265,7 +265,7 @@ describe('Security', () => {
 // Report test status
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$tester$status",
+  key: "swarm/tester/status",
   namespace: "coordination",
   value: JSON.stringify({
     agent: "tester",
@@ -278,7 +278,7 @@ mcp__claude-flow__memory_usage {
 // Share test results
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$test-results",
+  key: "swarm/shared/test-results",
   namespace: "coordination",
   value: JSON.stringify({
     passed: 145,
@@ -291,7 +291,7 @@ mcp__claude-flow__memory_usage {
 // Check implementation status
 mcp__claude-flow__memory_usage {
   action: "retrieve",
-  key: "swarm$coder$status",
+  key: "swarm/coder/status",
   namespace: "coordination"
 }
 ```

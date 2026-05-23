@@ -56,7 +56,7 @@ mcp__claude-flow__memory_usage {
 // Share implementation details
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$implementation-[feature]",
+  key: "swarm/shared/implementation-[feature]",
   namespace: "coordination",
   value: JSON.stringify({
     type: "code",
@@ -74,7 +74,7 @@ mcp__claude-flow__memory_usage {
 // Share analysis results
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$analysis-[topic]",
+  key: "swarm/shared/analysis-[topic]",
   namespace: "coordination",
   value: JSON.stringify({
     type: "analysis",
@@ -92,7 +92,7 @@ mcp__claude-flow__memory_usage {
 // Report test results
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$test-results",
+  key: "swarm/shared/test-results",
   namespace: "coordination",
   value: JSON.stringify({
     type: "testing",
@@ -111,7 +111,7 @@ mcp__claude-flow__memory_usage {
 // CHECK dependencies before starting
 const deps = await mcp__claude-flow__memory_usage {
   action: "retrieve",
-  key: "swarm$shared$dependencies",
+  key: "swarm/shared/dependencies",
   namespace: "coordination"
 }
 

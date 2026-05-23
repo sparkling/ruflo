@@ -492,7 +492,7 @@ review:
 ### Auto-Review on PR Creation
 
 ```yaml
-# .github$workflows$auto-review.yml
+# .github/workflows/auto-review.yml
 name: Automated Code Review
 on:
   pull_request:
@@ -773,7 +773,7 @@ npx ruv-swarm github register-agent \
 ### Integration with Build Pipeline
 
 ```yaml
-# .github$workflows$build-and-review.yml
+# .github/workflows/build-and-review.yml
 name: Build and Review
 on: [pull_request]
 
@@ -976,10 +976,10 @@ npx ruv-swarm github export-metrics \
 ```markdown
 <!-- .github$pull_request_template.md -->
 ## Swarm Configuration
-- Topology: [mesh$hierarchical$ring$star]
+- Topology: [mesh/hierarchical/ring/star]
 - Max Agents: [number]
 - Auto-spawn: [yes$no]
-- Priority: [high$medium$low]
+- Priority: [high/medium/low]
 
 ## Tasks for Swarm
 - [ ] Task 1 description
@@ -1118,9 +1118,9 @@ npx ruv-swarm github review-init --pr 123 --parallel --cache-results
 - `swarm-coordination` - Advanced swarm orchestration
 
 ### Documentation
-- [GitHub CLI Documentation](https:/$cli.github.com$manual/)
-- [RUV Swarm Guide](https:/$github.com$ruvnet$ruv-swarm)
-- [Claude Flow Integration](https:/$github.com$ruvnet$claude-flow)
+- [GitHub CLI Documentation](https://cli.github.com/manual/)
+- [RUV Swarm Guide](https://github.com/ruvnet/ruv-swarm)
+- [Claude Flow Integration](https://github.com/ruvnet/claude-flow)
 
 ### Support
 - GitHub Issues: Report bugs and request features

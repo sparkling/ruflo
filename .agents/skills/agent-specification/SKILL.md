@@ -225,7 +225,7 @@ info:
   version: 1.0.0
 
 paths:
-  $auth$login:
+  /auth/login:
     post:
       summary: User login
       requestBody:

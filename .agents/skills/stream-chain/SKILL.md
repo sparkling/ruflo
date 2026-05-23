@@ -278,7 +278,7 @@ Define reusable pipelines in `.claude-flow$config.json`:
         "description": "Comprehensive security analysis",
         "prompts": [
           "Scan codebase for security vulnerabilities",
-          "Categorize issues by severity (critical$high$medium$low)",
+          "Categorize issues by severity (critical/high/medium/low)",
           "Generate fixes with priority and implementation steps",
           "Create security test suite"
         ],
@@ -444,7 +444,7 @@ claude-flow stream-chain run \
   "Design architecture" \
   --verbose
 
-# Results stored in .claude-flow$memory$stream-chain/
+# Results stored in .claude-flow/memory/stream-chain/
 ```
 
 ### Neural Pattern Training

@@ -87,7 +87,7 @@ npx claude-flow@alpha truth --format html --export report.html
 npx claude-flow@alpha truth --watch
 
 # Export metrics automatically
-npx claude-flow@alpha truth --export .claude-flow$metrics$truth-$(date +%Y%m%d).json
+npx claude-flow@alpha truth --export .claude-flow/metrics/truth-$(date +%Y%m%d).json
 ```
 
 #### Truth Score Dashboard
@@ -347,7 +347,7 @@ npx claude-flow@alpha verify dashboard --refresh 5s
 - Task history timeline
 - Rollback history viewer
 - Export to PDF/HTML
-- Filter by time period$agent$score
+- Filter by time period/agent/score
 
 ### Configuration
 
@@ -381,7 +381,7 @@ Set verification preferences in `.claude-flow$config.json`:
     "criticalThreshold": 0.75,
     "autoExport": {
       "enabled": true,
-      "path": ".claude-flow$metrics$truth-daily.json"
+      "path": ".claude-flow/metrics/truth-daily.json"
     }
   }
 }
@@ -522,18 +522,18 @@ Send metrics to external monitoring systems:
 ```bash
 # Export to Prometheus
 npx claude-flow@alpha truth --format json | \
-  curl -X POST https:/$pushgateway.example.com$metrics$job$claude-flow \
+  curl -X POST https://pushgateway.example.com/metrics/job/claude-flow \
   -d @-
 
 # Send to DataDog
 npx claude-flow@alpha verify report --format json | \
-  curl -X POST "https:/$api.datadoghq.com$api$v1$series?api_key=${DD_API_KEY}" \
+  curl -X POST "https://api.datadoghq.com/api/v1/series?api_key=${DD_API_KEY}" \
   -H "Content-Type: application$json" \
   -d @-
 
 # Custom webhook
 npx claude-flow@alpha truth --format json | \
-  curl -X POST https:/$metrics.example.com$api$truth \
+  curl -X POST https://metrics.example.com/api/truth \
   -H "Content-Type: application$json" \
   -d @-
 ```
@@ -546,11 +546,11 @@ Automatically verify before commits:
 # Install pre-commit hook
 npx claude-flow@alpha verify install-hook --pre-commit
 
-# .git$hooks$pre-commit example:
-#!$bin$bash
-npx claude-flow@alpha verify check --threshold 0.95 --json > $tmp$verify.json
+# .git/hooks/pre-commit example:
+#!/bin/bash
+npx claude-flow@alpha verify check --threshold 0.95 --json > /tmp/verify.json
 
-score=$(jq '.overallScore' $tmp$verify.json)
+score=$(jq '.overallScore' /tmp/verify.json)
 if (( $(echo "$score < 0.95" | bc -l) )); then
   echo "❌ Verification failed with score: $score"
   echo "Run 'npx claude-flow@alpha verify check --verbose' for details"
@@ -643,7 +643,7 @@ Verification commands return standard exit codes:
 
 ### Additional Resources
 
-- Truth Scoring Algorithm: See `$docs$truth-scoring.md`
-- Verification Criteria: See `$docs$verification-criteria.md`
-- Integration Examples: See `$examples$verification/`
-- API Reference: See `$docs$api$verification.md`
+- Truth Scoring Algorithm: See `/docs/truth-scoring.md`
+- Verification Criteria: See `/docs/verification-criteria.md`
+- Integration Examples: See `/examples/verification/`
+- API Reference: See `/docs/api/verification.md`

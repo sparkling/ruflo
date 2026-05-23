@@ -108,7 +108,7 @@ hooks:
     echo "📁 Checking for datasets..."
     find . -name "*.csv" -o -name "*.parquet" | grep -E "(data|dataset)" | head -5
     echo "📦 Checking ML libraries..."
-    python -c "import sklearn, pandas, numpy; print('Core ML libraries available')" 2>$dev$null || echo "ML libraries not installed"
+    python -c "import sklearn, pandas, numpy; print('Core ML libraries available')" 2>/dev/null || echo "ML libraries not installed"
   post_execution: |
     echo "✅ ML model development completed"
     echo "📊 Model artifacts:"

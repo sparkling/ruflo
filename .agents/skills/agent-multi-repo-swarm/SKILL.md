@@ -30,7 +30,7 @@ hooks:
   pre:
     - "gh auth status || (echo 'GitHub CLI not authenticated' && exit 1)"
     - "git status --porcelain || echo 'Not in git repository'"
-    - "gh repo list --limit 1 >$dev$null || (echo 'No repo access' && exit 1)"
+    - "gh repo list --limit 1 >/dev/null || (echo 'No repo access' && exit 1)"
   post:
     - "gh pr list --state open --limit 5 | grep -q . && echo 'Active PRs found'"
     - "git log --oneline -5 | head -3"
@@ -76,8 +76,8 @@ REPOS=$(gh repo list my-organization --limit 100 \
 # Analyze repository dependencies
 DEPS=$(echo "$REPOS" | jq -r '.name' | while read -r repo; do
   # Get package.json if it exists
-  if gh api repos$my-organization/$repo$contents$package.json --jq '.content' 2>$dev$null; then
-    gh api repos$my-organization/$repo$contents$package.json \
+  if gh api repos$my-organization//repo/contents/package.json --jq '.content' 2>/dev/null; then
+    gh api repos$my-organization//repo/contents/package.json \
       --jq '.content' | base64 -d | jq '{name, dependencies, devDependencies}'
   fi
 done | jq -s '.')
@@ -121,13 +121,13 @@ echo "$MATCHING_REPOS" | while read -r repo; do
       --body "Automated dependency update across services" \
       --label "dependencies,automated")
     
-    echo "$PR_URL" >> $tmp$created-prs.txt
+    echo "$PR_URL" >> /tmp/created-prs.txt
   fi
   cd -
 done
 
 # Link related PRs
-PR_URLS=$(cat $tmp$created-prs.txt)
+PR_URLS=$(cat /tmp/created-prs.txt)
 npx ruv-swarm github link-prs --urls "$PR_URLS"
 ```
 
@@ -140,17 +140,17 @@ version: 1
 organization: my-org
 repositories:
   - name: frontend
-    url: github.com$my-org$frontend
+    url: github.com/my-org/frontend
     role: ui
     agents: [coder, designer, tester]
     
   - name: backend
-    url: github.com$my-org$backend
+    url: github.com/my-org/backend
     role: api
     agents: [architect, coder, tester]
     
   - name: shared
-    url: github.com$my-org$shared
+    url: github.com/my-org/shared
     role: library
     agents: [analyst, coder]
 
@@ -202,7 +202,7 @@ TRACKING_ISSUE=$(gh issue create \
 # Get all repos with TypeScript
 TS_REPOS=$(gh repo list org --limit 100 --json name | jq -r '.[].name' | \
   while read -r repo; do
-    if gh api repos$org/$repo$contents$package.json 2>$dev$null | \
+    if gh api repos$org//repo/contents/package.json 2>/dev/null | \
        jq -r '.content' | base64 -d | grep -q '"typescript"'; then
       echo "$repo"
     fi

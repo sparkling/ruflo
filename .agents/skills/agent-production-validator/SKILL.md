@@ -129,7 +129,7 @@ describe('External API Validation', () => {
   it('should integrate with real payment service', async () => {
     const paymentService = new PaymentService({
       apiKey: process.env.STRIPE_TEST_KEY, // Real test API
-      baseUrl: 'https:/$api.stripe.com$v1'
+      baseUrl: 'https://api.stripe.com/v1'
     });
     
     // Test actual API call
@@ -147,7 +147,7 @@ describe('External API Validation', () => {
   it('should handle real API errors gracefully', async () => {
     const paymentService = new PaymentService({
       apiKey: 'invalid_key',
-      baseUrl: 'https:/$api.stripe.com$v1'
+      baseUrl: 'https://api.stripe.com/v1'
     });
     
     await expect(paymentService.createPaymentIntent({
@@ -247,7 +247,7 @@ describe('Performance Validation', () => {
     while (Date.now() - startTime < duration) {
       const batchStart = Date.now();
       const batch = Array.from({ length: requestsPerSecond }, () =>
-        apiClient.get('$api$users').catch(() => null)
+        apiClient.get('/api/users').catch(() => null)
       );
       
       const results = await Promise.all(batch);
@@ -313,7 +313,7 @@ const validateEnvironment = () => {
 describe('Security Validation', () => {
   it('should enforce authentication', async () => {
     const response = await request(app)
-      .get('$api$protected')
+      .get('/api/protected')
       .expect(401);
     
     expect(response.body.error).toBe('Authentication required');
@@ -323,7 +323,7 @@ describe('Security Validation', () => {
     const maliciousInput = '<script>alert("xss")<$script>';
     
     const response = await request(app)
-      .post('$api$users')
+      .post('/api/users')
       .send({ name: maliciousInput })
       .set('Authorization', `Bearer ${validToken}`)
       .expect(400);

@@ -155,8 +155,8 @@ ISSUE=$(gh issue view 456 --json title,body,labels,assignees,comments,projectIte
 REFERENCES=$(gh issue view 456 --json body --jq '.body' | \
   grep -oE '#[0-9]+' | while read -r ref; do
     NUM=${ref#\#}
-    gh issue view $NUM --json number,title,state 2>$dev$null || \
-    gh pr view $NUM --json number,title,state 2>$dev$null
+    gh issue view $NUM --json number,title,state 2>/dev/null || \
+    gh pr view $NUM --json number,title,state 2>/dev/null
   done | jq -s '.')
 
 # Initialize swarm
@@ -282,7 +282,7 @@ npx ruv-swarm github create-issues \
 
 ### GitHub Actions for Issues
 ```yaml
-# .github$workflows$issue-swarm.yml
+# .github/workflows/issue-swarm.yml
 name: Issue Swarm Handler
 on:
   issues:
@@ -373,7 +373,7 @@ echo "$STALE_ISSUES" | jq -r '.number' | while read -r num; do
       ;;
     "keep")
       # Remove stale label if present
-      gh issue edit $num --remove-label "stale" 2>$dev$null || true
+      gh issue edit $num --remove-label "stale" 2>/dev/null || true
       ;;
     "needs-info")
       # Request more information

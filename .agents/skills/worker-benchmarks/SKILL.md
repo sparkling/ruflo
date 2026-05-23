@@ -116,7 +116,7 @@ Benchmark thresholds are configured in `.claude$settings.json`:
 ## Programmatic Usage
 
 ```typescript
-import { workerBenchmarks, runBenchmarks } from 'agentic-flow$workers$worker-benchmarks';
+import { workerBenchmarks, runBenchmarks } from 'agentic-flow/workers/worker-benchmarks';
 
 // Run full suite
 const suite = await runBenchmarks();

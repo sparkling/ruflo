@@ -28,7 +28,7 @@ hooks:
     echo "  HIGH-2: Path traversal vulnerabilities"
 
     # Check existing security tools
-    command -v npm &>$dev$null && echo "📦 npm audit available"
+    command -v npm &>/dev/null && echo "📦 npm audit available"
 
     echo "🎯 Target: 90/100 security score, secure-by-default patterns"
 
@@ -40,7 +40,7 @@ hooks:
       --session-id "v3-security-$(date +%s)" \
       --task "Security Architecture: $TASK" \
       --agent "v3-security-architect" \
-      --priority "critical" 2>$dev$null || true
+      --priority "critical" 2>/dev/null || true
 ---
 
 # V3 Security Architect

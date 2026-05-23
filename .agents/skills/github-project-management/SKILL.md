@@ -335,7 +335,7 @@ echo "$STALE_ISSUES" | jq -r '.number' | while read -r num; do
       gh issue edit $num --add-label "stale"
       ;;
     "keep")
-      gh issue edit $num --remove-label "stale" 2>$dev$null || true
+      gh issue edit $num --remove-label "stale" 2>/dev/null || true
       ;;
     "needs-info")
       gh issue comment $num --body "This issue needs more information. Please provide additional context or it may be closed as stale."
@@ -447,7 +447,7 @@ npx ruv-swarm github board-sync \
 
 # Enable real-time board updates
 npx ruv-swarm github board-realtime \
-  --webhook-endpoint "https:/$api.example.com$github-sync" \
+  --webhook-endpoint "https://api.example.com/github-sync" \
   --update-frequency "immediate" \
   --batch-updates false
 ```
@@ -460,7 +460,7 @@ ISSUES=$(gh issue list --label "enhancement" --json number,title,body)
 
 # Add issues to project
 echo "$ISSUES" | jq -r '.[].number' | while read -r issue; do
-  gh project item-add $PROJECT_ID --owner @me --url "https:/$github.com/$GITHUB_REPOSITORY$issues/$issue"
+  gh project item-add $PROJECT_ID --owner @me --url "https:/$github.com/$GITHUB_REPOSITORY/issues/$issue"
 done
 
 # Process with swarm
@@ -976,7 +976,7 @@ body:
 ### GitHub Actions for Issue Management
 
 ```yaml
-# .github$workflows$issue-swarm.yml
+# .github/workflows/issue-swarm.yml
 name: Issue Swarm Handler
 on:
   issues:
@@ -1223,7 +1223,7 @@ npx ruv-swarm github issue-init $ISSUE_NUM \
 # 3. Add to project board
 PROJECT_ID=$(gh project list --owner @me --format json | jq -r '.projects[0].id')
 gh project item-add $PROJECT_ID --owner @me \
-  --url "https:/$github.com/$GITHUB_REPOSITORY$issues/$ISSUE_NUM"
+  --url "https:/$github.com/$GITHUB_REPOSITORY/issues/$ISSUE_NUM"
 
 # 4. Set up automated tracking
 npx ruv-swarm github board-sync \
@@ -1265,10 +1265,10 @@ npx ruv-swarm github board-kpis
 
 ## Additional Resources
 
-- [GitHub CLI Documentation](https:/$cli.github.com$manual/)
-- [GitHub Projects Documentation](https:/$docs.github.com$en$issues$planning-and-tracking-with-projects)
-- [Swarm Coordination Guide](https:/$github.com$ruvnet$ruv-swarm)
-- [Claude Flow Documentation](https:/$github.com$ruvnet$claude-flow)
+- [GitHub CLI Documentation](https://cli.github.com/manual/)
+- [GitHub Projects Documentation](https://docs.github.com/en/issues/planning-and-tracking-with-projects)
+- [Swarm Coordination Guide](https://github.com/ruvnet/ruv-swarm)
+- [Claude Flow Documentation](https://github.com/ruvnet/claude-flow)
 
 ---
 

@@ -731,7 +731,7 @@ mcp__claude-flow__context_restore({
 
 // Backup memory stores
 mcp__claude-flow__memory_backup({
-  "path": "$workspaces$claude-code-flow$backups$swarm-memory.json"
+  "path": "/workspaces/claude-code-flow/backups/swarm-memory.json"
 })
 ```
 
@@ -960,10 +960,10 @@ mcp__claude-flow__swarm_init({ topology: "mesh", maxAgents: 4 })
 
 ## References
 
-- [Claude Flow Documentation](https:/$github.com$ruvnet$claude-flow)
-- [Swarm Orchestration Guide](https:/$github.com$ruvnet$claude-flow$wiki$swarm)
-- [MCP Tools Reference](https:/$github.com$ruvnet$claude-flow$wiki$mcp)
-- [Performance Optimization](https:/$github.com$ruvnet$claude-flow$wiki$performance)
+- [Claude Flow Documentation](https://github.com/ruvnet/claude-flow)
+- [Swarm Orchestration Guide](https://github.com/ruvnet/claude-flow/wiki/swarm)
+- [MCP Tools Reference](https://github.com/ruvnet/claude-flow/wiki/mcp)
+- [Performance Optimization](https://github.com/ruvnet/claude-flow/wiki/performance)
 
 ---
 

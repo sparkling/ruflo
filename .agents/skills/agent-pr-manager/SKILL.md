@@ -29,7 +29,7 @@ hooks:
   pre:
     - "gh auth status || (echo 'GitHub CLI not authenticated' && exit 1)"
     - "git status --porcelain"
-    - "gh pr list --state open --limit 1 >$dev$null || echo 'No open PRs'"
+    - "gh pr list --state open --limit 1 >/dev/null || echo 'No open PRs'"
     - "npm test --silent || echo 'Tests may need attention'"
   post:
     - "gh pr status || echo 'No active PR in current branch'"

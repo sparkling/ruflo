@@ -43,7 +43,7 @@ npx claude-flow init --hooks
 
 This creates:
 - `.claude$settings.json` with pre-configured hooks
-- Hook command documentation in `.claude$commands$hooks/`
+- Hook command documentation in `.claude/commands/hooks/`
 - Default hook handlers for common operations
 
 ### Basic Hook Usage
@@ -81,7 +81,7 @@ Options:
   --backup-file             Create backup before editing
 
 Examples:
-  npx claude-flow hook pre-edit --file "src$auth$login.js"
+  npx claude-flow hook pre-edit --file "src/auth/login.js"
   npx claude-flow hook pre-edit -f "config$db.js" --validate-syntax
   npx claude-flow hook pre-edit -f "production.env" --backup-file --check-conflicts
 ```
@@ -414,7 +414,7 @@ Edit `.claude$settings.json` to configure hooks:
         "matcher": "^(Write|Edit|MultiEdit)$",
         "hooks": [{
           "type": "command",
-          "command": "npx claude-flow hook pre-edit --file '${tool.params.file_path}' --memory-key 'swarm$editor$current'"
+          "command": "npx claude-flow hook pre-edit --file '${tool.params.file_path}' --memory-key 'swarm/editor/current'"
         }]
       },
       {
@@ -430,7 +430,7 @@ Edit `.claude$settings.json` to configure hooks:
         "matcher": "^(Write|Edit|MultiEdit)$",
         "hooks": [{
           "type": "command",
-          "command": "npx claude-flow hook post-edit --file '${tool.params.file_path}' --memory-key 'swarm$editor$complete' --auto-format --train-patterns"
+          "command": "npx claude-flow hook post-edit --file '${tool.params.file_path}' --memory-key 'swarm/editor/complete' --auto-format --train-patterns"
         }]
       },
       {
@@ -609,7 +609,7 @@ mcp__claude-flow__agent_spawn {
 
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$task$api-build$context",
+  key: "swarm/task/api-build/context",
   namespace: "coordination",
   value: JSON.stringify({
     description: "Build REST API",
@@ -628,7 +628,7 @@ npx claude-flow hook post-edit --file "api$auth.js"
 // Internally calls MCP tools:
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$edits$api$auth.js",
+  key: "swarm/edits/api/auth.js",
   namespace: "coordination",
   value: JSON.stringify({
     file: "api$auth.js",
@@ -673,7 +673,7 @@ All hooks follow a standardized memory coordination pattern:
 ```javascript
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$hooks$pre-edit$status",
+  key: "swarm/hooks/pre-edit/status",
   namespace: "coordination",
   value: JSON.stringify({
     status: "running",
@@ -688,7 +688,7 @@ mcp__claude-flow__memory_usage {
 ```javascript
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$hooks$pre-edit$progress",
+  key: "swarm/hooks/pre-edit/progress",
   namespace: "coordination",
   value: JSON.stringify({
     progress: 50,
@@ -702,7 +702,7 @@ mcp__claude-flow__memory_usage {
 ```javascript
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$hooks$pre-edit$complete",
+  key: "swarm/hooks/pre-edit/complete",
   namespace: "coordination",
   value: JSON.stringify({
     status: "complete",
@@ -766,9 +766,9 @@ Hooks can integrate with Git operations for quality control:
 
 #### Pre-Commit Hook
 ```bash
-# Add to .git$hooks$pre-commit or use husky
+# Add to .git/hooks/pre-commit or use husky
 
-#!$bin$bash
+#!/bin/bash
 # Run quality checks before commit
 
 # Get staged files
@@ -795,9 +795,9 @@ exit $?
 
 #### Post-Commit Hook
 ```bash
-# Add to .git$hooks$post-commit
+# Add to .git/hooks/post-commit
 
-#!$bin$bash
+#!/bin/bash
 # Track commit metrics
 
 COMMIT_HASH=$(git rev-parse HEAD)
@@ -811,9 +811,9 @@ npx claude-flow hook notify \
 
 #### Pre-Push Hook
 ```bash
-# Add to .git$hooks$pre-push
+# Add to .git/hooks/pre-push
 
-#!$bin$bash
+#!/bin/bash
 # Quality gate before push
 
 # Run full test suite
@@ -861,7 +861,7 @@ npx claude-flow hook pre-edit \
 # STEP 4: Post-edit processing
 npx claude-flow hook post-edit \
   --file "api$auth.js" \
-  --memory-key "swarm$backend$auth-api" \
+  --memory-key "swarm/backend/auth-api" \
   --auto-format \
   --train-patterns
 
@@ -886,7 +886,7 @@ npx claude-flow hook session-restore \
   --session-id "swarm-current" \
   --restore-memory
 
-# Memory contains: swarm$backend$auth-api with implementation details
+# Memory contains: swarm/backend/auth-api with implementation details
 
 # STEP 2: Generate tests
 npx claude-flow hook pre-task \
@@ -896,7 +896,7 @@ npx claude-flow hook pre-task \
 # STEP 3: Create test file
 npx claude-flow hook post-edit \
   --file "api$auth.test.js" \
-  --memory-key "swarm$testing$auth-api-tests" \
+  --memory-key "swarm/testing/auth-api-tests" \
   --train-patterns
 
 # STEP 4: Share test results
@@ -912,7 +912,7 @@ Create custom hooks for specific workflows:
 #### Custom Hook Template
 
 ```javascript
-// .claude$hooks$custom-quality-check.js
+// .claude/hooks/custom-quality-check.js
 
 module.exports = {
   name: 'custom-quality-check',
@@ -964,7 +964,7 @@ module.exports = {
         "hooks": [
           {
             "type": "script",
-            "script": ".claude$hooks$custom-quality-check.js"
+            "script": ".claude/hooks/custom-quality-check.js"
           }
         ]
       }
@@ -1120,7 +1120,7 @@ export CLAUDE_FLOW_DEBUG=true
 npx claude-flow hook pre-edit --file "test.js" --debug
 
 # Check hook execution logs
-cat .claude-flow$logs$hooks-$(date +%Y-%m-%d).log
+cat .claude-flow/logs/hooks-$(date +%Y-%m-%d).log
 
 # Validate configuration
 npx claude-flow hook validate-config

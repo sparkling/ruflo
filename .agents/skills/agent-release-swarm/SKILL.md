@@ -142,7 +142,7 @@ release:
       publish: docker push app:$VERSION
       
     - name: binaries
-      build: .$scripts$build-binaries.sh
+      build: ./scripts/build-binaries.sh
       upload: github-release
       
   deployment:
@@ -174,7 +174,7 @@ PRS=$(gh pr list --state merged --base main --json number,title,labels,author,me
 CONTRIBUTORS=$(echo "$PRS" | jq -r '[.author.login] | unique | join(", ")')
 
 # Get commit messages
-COMMITS=$(gh api repos/:owner/:repo$compare$v1.0.0...HEAD \
+COMMITS=$(gh api repos/:owner/:repo/compare/v1.0.0...HEAD \
   --jq '.commits[].commit.message')
 
 # Generate categorized changelog
@@ -307,7 +307,7 @@ npx ruv-swarm github hotfix \
 
 ### Standard Release Flow
 ```yaml
-# .github$workflows$release.yml
+# .github/workflows/release.yml
 name: Release Workflow
 on:
   push:
@@ -372,7 +372,7 @@ jobs:
           # Create announcement issue
           gh issue create \
             --title "🚀 Released ${{ github.ref_name }}" \
-            --body "See [release notes](https:/$github.com/${{ github.repository }}$releases$tag/${{ github.ref_name }})" \
+            --body "See [release notes](https:/$github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }})" \
             --label "announcement"
 ```
 
@@ -490,8 +490,8 @@ Description of the fix...
 
 ## 💥 Breaking Changes
 ### API endpoint renamed
-- Before: `$api$old-endpoint`
-- After: `$api$new-endpoint`
+- Before: `/api/old-endpoint`
+- After: `/api/new-endpoint`
 - Migration: Update all client calls...
 
 ## 📈 Performance Improvements

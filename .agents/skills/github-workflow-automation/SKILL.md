@@ -46,7 +46,7 @@ npx ruv-swarm actions generate-workflow \
 ```bash
 # Optimize existing workflow
 npx ruv-swarm actions optimize \
-  --workflow ".github$workflows$ci.yml" \
+  --workflow ".github/workflows/ci.yml" \
   --suggest-parallelization
 
 # Analyze failed runs
@@ -176,7 +176,7 @@ npx ruv-swarm actions security \
 
 #### 1. Intelligent CI with Swarms
 ```yaml
-# .github$workflows$swarm-ci.yml
+# .github/workflows/swarm-ci.yml
 name: Intelligent CI with Swarms
 on: [push, pull_request]
 
@@ -202,7 +202,7 @@ jobs:
 
 #### 2. Multi-Language Detection
 ```yaml
-# .github$workflows$polyglot-swarm.yml
+# .github/workflows/polyglot-swarm.yml
 name: Polyglot Project Handler
 on: push
 
@@ -227,7 +227,7 @@ jobs:
 
 #### 3. Adaptive Security Scanning
 ```yaml
-# .github$workflows$security-swarm.yml
+# .github/workflows/security-swarm.yml
 name: Intelligent Security Scan
 on:
   schedule:
@@ -257,7 +257,7 @@ jobs:
 
 #### 4. Self-Healing Pipeline
 ```yaml
-# .github$workflows$self-healing.yml
+# .github/workflows/self-healing.yml
 name: Self-Healing Pipeline
 on: workflow_run
 
@@ -276,7 +276,7 @@ jobs:
 
 #### 5. Progressive Deployment
 ```yaml
-# .github$workflows$smart-deployment.yml
+# .github/workflows/smart-deployment.yml
 name: Smart Deployment
 on:
   push:
@@ -302,7 +302,7 @@ jobs:
 
 #### 6. Performance Regression Detection
 ```yaml
-# .github$workflows$performance-guard.yml
+# .github/workflows/performance-guard.yml
 name: Performance Guard
 on: pull_request
 
@@ -320,7 +320,7 @@ jobs:
 
 #### 7. PR Validation Swarm
 ```yaml
-# .github$workflows$pr-validation.yml
+# .github/workflows/pr-validation.yml
 name: PR Validation Swarm
 on: pull_request
 
@@ -343,7 +343,7 @@ jobs:
 
 #### 8. Intelligent Release
 ```yaml
-# .github$workflows$intelligent-release.yml
+# .github/workflows/intelligent-release.yml
 name: Intelligent Release
 on:
   push:
@@ -608,7 +608,7 @@ npx claude-flow@alpha hooks post-task \
 
 #### 1. Use Reusable Workflows
 ```yaml
-# .github$workflows$reusable-swarm.yml
+# .github/workflows/reusable-swarm.yml
 name: Reusable Swarm Workflow
 on:
   workflow_call:
@@ -868,7 +868,7 @@ jobs:
 
   deploy:
     needs: [backend, frontend, security]
-    if: github.ref == 'refs$heads$main'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy
@@ -919,9 +919,9 @@ jobs:
 # Synchronize multiple repositories
 npx claude-flow@alpha github sync-coordinator \
   "Synchronize version updates across:
-   - github.com$org$repo-a
-   - github.com$org$repo-b
-   - github.com$org$repo-c
+   - github.com/org/repo-a
+   - github.com/org/repo-b
+   - github.com/org/repo-c
 
    Update dependencies, align versions, create PRs"
 ```
@@ -1013,7 +1013,7 @@ npx ruv-swarm actions analytics [options]
 
 #### Quick Setup Script
 ```bash
-#!$bin$bash
+#!/bin/bash
 # setup-github-automation.sh
 
 # Install dependencies
@@ -1028,7 +1028,7 @@ mkdir -p .github$workflows
 # Generate initial workflow
 npx ruv-swarm actions generate-workflow \
   --analyze-codebase \
-  --create-optimal-pipeline > .github$workflows$ci.yml
+  --create-optimal-pipeline > .github/workflows/ci.yml
 
 echo "✅ GitHub workflow automation setup complete"
 ```
@@ -1044,10 +1044,10 @@ echo "✅ GitHub workflow automation setup complete"
 
 ## Support & Documentation
 
-- **GitHub CLI Docs**: https:/$cli.github.com$manual/
-- **GitHub Actions**: https:/$docs.github.com$en$actions
-- **Claude-Flow**: https:/$github.com$ruvnet$claude-flow
-- **Ruv-Swarm**: https:/$github.com$ruvnet$ruv-swarm
+- **GitHub CLI Docs**: https://cli.github.com/manual/
+- **GitHub Actions**: https://docs.github.com/en/actions
+- **Claude-Flow**: https://github.com/ruvnet/claude-flow
+- **Ruv-Swarm**: https://github.com/ruvnet/ruv-swarm
 
 ## Version History
 

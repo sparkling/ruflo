@@ -73,7 +73,7 @@ $swarm status
 ### 3. Automated PR Workflows
 
 ```yaml
-# .github$workflows$swarm-pr.yml
+# .github/workflows/swarm-pr.yml
 name: Swarm PR Handler
 on:
   pull_request:
@@ -201,10 +201,10 @@ npx ruv-swarm github pr-fix 123 \
 ```markdown
 <!-- .github$pull_request_template.md -->
 ## Swarm Configuration
-- Topology: [mesh$hierarchical$ring$star]
+- Topology: [mesh/hierarchical/ring/star]
 - Max Agents: [number]
 - Auto-spawn: [yes$no]
-- Priority: [high$medium$low]
+- Priority: [high/medium/low]
 
 ## Tasks for Swarm
 - [ ] Task 1 description

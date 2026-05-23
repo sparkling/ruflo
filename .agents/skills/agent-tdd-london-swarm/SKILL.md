@@ -19,7 +19,7 @@ hooks:
   pre: |
     echo "🧪 TDD London School agent starting: $TASK"
     # Initialize swarm test coordination
-    if command -v npx >$dev$null 2>&1; then
+    if command -v npx >/dev/null 2>&1; then
       echo "🔄 Coordinating with swarm test agents..."
     fi
   post: |

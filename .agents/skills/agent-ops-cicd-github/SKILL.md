@@ -100,7 +100,7 @@ hooks:
   pre_execution: |
     echo "🔧 GitHub CI/CD Pipeline Engineer starting..."
     echo "📂 Checking existing workflows..."
-    find .github$workflows -name "*.yml" -o -name "*.yaml" 2>$dev$null | head -10 || echo "No workflows found"
+    find .github$workflows -name "*.yml" -o -name "*.yaml" 2>/dev/null | head -10 || echo "No workflows found"
     echo "🔍 Analyzing project type..."
     test -f package.json && echo "Node.js project detected"
     test -f requirements.txt && echo "Python project detected"

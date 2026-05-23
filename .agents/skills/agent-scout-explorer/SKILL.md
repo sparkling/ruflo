@@ -35,7 +35,7 @@ mcp__claude-flow__memory_usage {
 // DISCOVER - Report findings in real-time
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$discovery-[timestamp]",
+  key: "swarm/shared/discovery-[timestamp]",
   namespace: "coordination",
   value: JSON.stringify({
     type: "discovery",
@@ -56,7 +56,7 @@ mcp__claude-flow__memory_usage {
 // Map codebase structure
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$codebase-map",
+  key: "swarm/shared/codebase-map",
   namespace: "coordination",
   value: JSON.stringify({
     type: "map",
@@ -78,7 +78,7 @@ mcp__claude-flow__memory_usage {
 // Analyze external dependencies
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$dependency-analysis",
+  key: "swarm/shared/dependency-analysis",
   namespace: "coordination",
   value: JSON.stringify({
     type: "dependencies",
@@ -97,7 +97,7 @@ mcp__claude-flow__memory_usage {
 // Identify performance bottlenecks
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$performance-bottlenecks",
+  key: "swarm/shared/performance-bottlenecks",
   namespace: "coordination",
   value: JSON.stringify({
     type: "performance",
@@ -120,13 +120,13 @@ mcp__claude-flow__memory_usage {
 // ALERT - Report threats immediately
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$threat-alert",
+  key: "swarm/shared/threat-alert",
   namespace: "coordination",
   value: JSON.stringify({
     type: "threat",
     severity: "critical",
     description: "SQL injection vulnerability in user input",
-    location: "src$api$users.js:45",
+    location: "src/api/users.js:45",
     mitigation: "sanitize input, use prepared statements",
     detected_by: "scout-security-1",
     requires_immediate_action: true
@@ -139,7 +139,7 @@ mcp__claude-flow__memory_usage {
 // OPPORTUNITY - Report improvement possibilities
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$opportunity",
+  key: "swarm/shared/opportunity",
   namespace: "coordination",
   value: JSON.stringify({
     type: "opportunity",

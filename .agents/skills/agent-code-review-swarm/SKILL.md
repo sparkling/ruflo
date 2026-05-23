@@ -262,7 +262,7 @@ npx ruv-swarm github review-batch \
 
 ### Auto-Review on Push
 ```yaml
-# .github$workflows$auto-review.yml
+# .github/workflows/auto-review.yml
 name: Automated Code Review
 on:
   pull_request:

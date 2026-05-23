@@ -49,7 +49,7 @@ Integrate AI swarms with GitHub Actions to create intelligent, self-organizing C
 
 ### 1. Swarm-Powered Actions
 ```yaml
-# .github$workflows$swarm-ci.yml
+# .github/workflows/swarm-ci.yml
 name: Intelligent CI with Swarms
 on: [push, pull_request]
 
@@ -97,7 +97,7 @@ npx ruv-swarm actions generate-workflow \
 
 ### Multi-Language Detection
 ```yaml
-# .github$workflows$polyglot-swarm.yml
+# .github/workflows/polyglot-swarm.yml
 name: Polyglot Project Handler
 on: push
 
@@ -122,7 +122,7 @@ jobs:
 
 ### Adaptive Security Scanning
 ```yaml
-# .github$workflows$security-swarm.yml
+# .github/workflows/security-swarm.yml
 name: Intelligent Security Scan
 on:
   schedule:
@@ -158,7 +158,7 @@ jobs:
 ```bash
 # Optimize existing workflows
 npx ruv-swarm actions optimize \
-  --workflow ".github$workflows$ci.yml" \
+  --workflow ".github/workflows/ci.yml" \
   --suggest-parallelization \
   --reduce-redundancy \
   --estimate-savings
@@ -537,7 +537,7 @@ mcp__claude-flow__bottleneck_analyze {
 # Store performance insights in swarm memory
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "workflow$performance$analysis",
+  key: "workflow/performance/analysis",
   value: {
     bottlenecks_identified: ["slow_test_suite", "inefficient_caching"],
     optimization_opportunities: ["parallel_matrix", "smart_caching"],
@@ -609,7 +609,7 @@ const createIntelligentWorkflow = async (repoContext) => {
 # Implement continuous workflow learning
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "workflow$learning$patterns",
+  key: "workflow/learning/patterns",
   value: {
     successful_patterns: [
       "parallel_test_execution",

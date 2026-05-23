@@ -196,6 +196,6 @@ console.log(`
 
 ## Learn More
 
-- ReasoningBank Guide: agentic-flow$src$reasoningbank/README.md
-- AgentDB Integration: packages$agentdb$docs$reasoningbank.md
-- Pattern Learning: docs$reasoning$patterns.md
+- ReasoningBank Guide: agentic-flow/src/reasoningbank/README.md
+- AgentDB Integration: packages/agentdb/docs/reasoningbank.md
+- Pattern Learning: docs/reasoning/patterns.md

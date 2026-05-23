@@ -212,7 +212,7 @@ src/
 // Report implementation status
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$coder$status",
+  key: "swarm/coder/status",
   namespace: "coordination",
   value: JSON.stringify({
     agent: "coder",
@@ -226,20 +226,20 @@ mcp__claude-flow__memory_usage {
 // Share code decisions
 mcp__claude-flow__memory_usage {
   action: "store",
-  key: "swarm$shared$implementation",
+  key: "swarm/shared/implementation",
   namespace: "coordination",
   value: JSON.stringify({
     type: "code",
     patterns: ["singleton", "factory"],
     dependencies: ["express", "jwt"],
-    api_endpoints: ["$auth$login", "$auth$logout"]
+    api_endpoints: ["/auth/login", "/auth/logout"]
   })
 }
 
 // Check dependencies
 mcp__claude-flow__memory_usage {
   action: "retrieve",
-  key: "swarm$shared$dependencies",
+  key: "swarm/shared/dependencies",
   namespace: "coordination"
 }
 ```

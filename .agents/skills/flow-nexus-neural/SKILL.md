@@ -728,10 +728,10 @@ await mcp__flow-nexus__neural_cluster_terminate({
 
 ## Resources
 
-- Flow Nexus Docs: https:/$flow-nexus.ruv.io$docs
-- Neural Network Guide: https:/$flow-nexus.ruv.io$docs$neural
-- Template Marketplace: https:/$flow-nexus.ruv.io$templates
-- API Reference: https:/$flow-nexus.ruv.io$api
+- Flow Nexus Docs: https://flow-nexus.ruv.io/docs
+- Neural Network Guide: https://flow-nexus.ruv.io/docs/neural
+- Template Marketplace: https://flow-nexus.ruv.io/templates
+- API Reference: https://flow-nexus.ruv.io/api
 
 ---
 
