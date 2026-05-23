@@ -376,6 +376,81 @@ const stopCommand: Command = {
   },
 };
 
+// Restart daemon subcommand (ADR-0207 F-10-004)
+//
+// CLI-side stop + start. Reads `oldPid` from the PID file, runs the existing
+// stop sequence (kill PID file PID + stale daemons + in-process), waits a
+// configurable grace window, then spawns a fresh background daemon and
+// reports `newPid`. No in-daemon RPC, no socket — keeps F-10-007 spawn-race
+// surface unchanged (does not introduce a self-restart-before-exit window).
+const restartCommand: Command = {
+  name: 'restart',
+  description: 'Restart the worker daemon (CLI-side stop + start)',
+  options: [
+    { name: 'quiet', short: 'Q', type: 'boolean', description: 'Suppress output' },
+    { name: 'grace-ms', type: 'string', description: 'Grace window in ms between stop and start (default 1000)' },
+    { name: 'max-cpu-load', type: 'string', description: 'Max system load before deferring workers' },
+    { name: 'min-free-memory', type: 'string', description: 'Min free memory percentage' },
+  ],
+  examples: [
+    { command: 'claude-flow daemon restart', description: 'Restart the daemon' },
+    { command: 'claude-flow daemon restart --grace-ms 2000', description: 'Wait 2s between stop and start' },
+  ],
+  action: async (ctx: CommandContext): Promise<CommandResult> => {
+    const quiet = ctx.flags.quiet as boolean;
+    const graceMsRaw = ctx.flags['grace-ms'] as string | undefined;
+    const maxCpuLoad = ctx.flags['max-cpu-load'] as string | undefined;
+    const minFreeMemory = ctx.flags['min-free-memory'] as string | undefined;
+    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+
+    const graceMs = (() => {
+      const n = graceMsRaw ? parseInt(graceMsRaw, 10) : 1000;
+      return Number.isFinite(n) && n >= 0 && n <= 60_000 ? n : 1000;
+    })();
+
+    // Capture old PID before stopping (PID file is unlinked by stop sequence).
+    const oldPid = getBackgroundDaemonPid(projectRoot);
+
+    try {
+      // Step 1 — stop. Mirrors stopCommand's path (in-process + background +
+      // stale cleanup), but doesn't spawn its own spinner so we can serialize
+      // stop/start status output coherently.
+      await stopDaemon();
+      await killBackgroundDaemon(projectRoot);
+      await killStaleDaemons(projectRoot, true);
+
+      // Step 2 — grace window. Lets sockets/file handles released by the old
+      // daemon settle before the new one binds the PID file etc.
+      if (graceMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, graceMs));
+      }
+
+      // Step 3 — start. Reuses startBackgroundDaemon (the same path as
+      // `daemon start --background`); it writes the new PID file.
+      const startResult = await startBackgroundDaemon(projectRoot, true, maxCpuLoad, minFreeMemory);
+      if (!startResult.success) {
+        if (!quiet) {
+          output.printError('Failed to start new daemon after stop');
+        }
+        return { success: false, exitCode: 1 };
+      }
+
+      const newPid = getBackgroundDaemonPid(projectRoot);
+
+      if (!quiet) {
+        output.printSuccess(
+          `Daemon restarted: oldPid=${oldPid ?? 'none'} -> newPid=${newPid ?? '?'}`
+        );
+      }
+
+      return { success: true, data: { oldPid, newPid } };
+    } catch (error) {
+      output.printError(`Failed to restart daemon: ${error instanceof Error ? error.message : String(error)}`);
+      return { success: false, exitCode: 1 };
+    }
+  },
+};
+
 /**
  * Kill background daemon process using PID file
  */
@@ -598,23 +673,52 @@ const statusCommand: Command = {
       const statusText = isRunning ? output.success('RUNNING') : output.error('STOPPED');
       const mode = bgRunning ? output.dim(' (background)') : status.running ? output.dim(' (foreground)') : '';
 
-      // ADR-0088: AI Mode replaces the old "IPC Socket: LISTENING" line
-      // (which was file-existence theatre, not a real probe). Prefer the
-      // live in-process daemon's aiMode when this process started it; when
-      // the daemon runs in the background, re-run the capability check so
-      // the answer reflects current PATH state.
+      // ADR-0207: AI Mode resolution — the daemon's boot-time aiMode is
+      // authoritative because the daemon (not the CLI's PATH) determines
+      // worker capability. Three resolution paths:
+      //
+      //   1. Foreground / in-process daemon: read the live singleton.
+      //   2. Background daemon (bgRunning): read aiMode from
+      //      .claude-flow/daemon-state.json. NO `which claude` shell-out.
+      //   3. No live daemon: fall through to the legacy live probe — a
+      //      stale state file left by a dead daemon must NOT be reported.
+      //
+      // (Replaces the prior "background → re-run `which claude` in the CLI
+      // process" logic, which produced the F-10-006 status mismatch.)
       let aiMode: 'headless' | 'local';
       if (status.running && typeof (daemon as any).aiMode === 'string') {
         aiMode = (daemon as any).aiMode;
+      } else if (bgRunning) {
+        // Read the daemon's persisted aiMode from daemon-state.json.
+        const stateFile = join(projectRoot, '.claude-flow', 'daemon-state.json');
+        let stateAiMode: 'headless' | 'local' | null = null;
+        try {
+          const raw = fs.readFileSync(stateFile, 'utf-8');
+          const parsed = JSON.parse(raw);
+          if (parsed?.aiMode === 'headless' || parsed?.aiMode === 'local') {
+            stateAiMode = parsed.aiMode;
+          }
+        } catch { /* state file unreadable — fall through to probe */ }
+        if (stateAiMode !== null) {
+          aiMode = stateAiMode;
+        } else {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { execSync } = require('node:child_process');
+            execSync('which claude', { stdio: 'ignore' });
+            aiMode = 'headless';
+          } catch { aiMode = 'local'; }
+        }
       } else {
+        // No live daemon (PID dead or stale). DO NOT trust a stale state
+        // file — fall through to the live probe so a dead daemon's
+        // historical aiMode is never reported as current.
         try {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const { execSync } = require('node:child_process');
           execSync('which claude', { stdio: 'ignore' });
           aiMode = 'headless';
-        } catch {
-          aiMode = 'local';
-        }
+        } catch { aiMode = 'local'; }
       }
 
       output.printBox(
@@ -1039,6 +1143,7 @@ export const daemonCommand: Command = {
   subcommands: [
     startCommand,
     stopCommand,
+    restartCommand,
     statusCommand,
     triggerCommand,
     enableCommand,
@@ -1086,6 +1191,7 @@ export const daemonCommand: Command = {
     output.printList([
       `${output.highlight('start')}   - Start the daemon`,
       `${output.highlight('stop')}    - Stop the daemon`,
+      `${output.highlight('restart')} - Restart the daemon (CLI-side stop + start)`,
       `${output.highlight('status')}  - Show daemon status`,
       `${output.highlight('trigger')} - Manually run a worker`,
       `${output.highlight('enable')}  - Enable/disable a worker`,

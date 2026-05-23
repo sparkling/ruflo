@@ -22,7 +22,9 @@ import {
   type HeadlessWorkerType,
   type HeadlessExecutionResult,
 } from './headless-worker-executor.js';
-import { DaemonIPCServer, getDaemonSocketPath } from './daemon-ipc.js';
+// ADR-0207: the fork-only Unix domain socket layer was removed (zero handlers,
+// zero clients, never present upstream). Daemon control is now PID file +
+// daemon-state.json + CLI orchestration, cross-platform.
 import { Archivist, type ArchivistInitConfig, setAuditLogPath } from 'agentdb/archivist';
 
 // Worker types matching hooks-tools.ts
@@ -81,7 +83,6 @@ interface DaemonStatus {
   startedAt?: Date;
   workers: Map<WorkerType, WorkerState>;
   config: DaemonConfig;
-  ipc?: { running: boolean; socketPath: string };
 }
 
 export interface DaemonConfig {
@@ -154,9 +155,6 @@ export class WorkerDaemon extends EventEmitter {
   // Headless execution support
   private headlessExecutor: HeadlessWorkerExecutor | null = null;
   private headlessAvailable: boolean = false;
-
-  // ADR-0088: IPC server kept for future non-memory RPC; memory handlers removed.
-  private ipcServer: DaemonIPCServer | null = null;
 
   // ADR-0181 Phase 1: per-process Memory Archivist. Each host process (cli,
   // ruflo daemon, hook-handler) constructs its OWN Archivist — not a global
@@ -875,22 +873,8 @@ export class WorkerDaemon extends EventEmitter {
       }
     }
 
-    // ADR-0088: IPC server stays up for future non-memory RPC methods, but
-    // memory.* handlers and the pre-warm step are gone — memory ops are
-    // in-process only per ADR-050/ADR-0086. No handlers are currently
-    // registered; add them via this.ipcServer.registerMethod() when a
-    // concrete non-memory use case arrives.
-    try {
-      this.ipcServer = new DaemonIPCServer({
-        socketPath: getDaemonSocketPath(this.projectRoot),
-        projectRoot: this.projectRoot,
-      });
-      await this.ipcServer.start();
-      this.log('info', `IPC server listening on ${this.ipcServer.socketPath}`);
-    } catch (err: any) {
-      this.log('warn', `IPC server failed to start: ${err.message}`);
-      // Non-fatal: daemon scheduler still runs without IPC
-    }
+    // ADR-0207: IPC server removed. Daemon control plane is PID file +
+    // daemon-state.json + CLI orchestration. No socket, no in-daemon RPC.
 
     // Schedule all enabled workers
     for (const workerConfig of this.config.workers) {
@@ -903,8 +887,15 @@ export class WorkerDaemon extends EventEmitter {
     // via mcp__hooks_worker-dispatch (in a separate process) actually
     // execute here. Previously the dispatch wrote to a process-local Map
     // that the daemon could never see.
+    //
+    // ADR-0207: the queuePollTimer is the daemon's only recurring 5s
+    // interval, so it doubles as the refresh cadence for the
+    // `uptimeSec`/`lastTick` fields the cli reads from daemon-state.json
+    // (replacing the deleted IPC socket as the cross-process status
+    // channel). The state write is best-effort like the queue poll.
     this.queuePollTimer = setInterval(() => {
       void this.processDispatchQueue();
+      this.saveState();
     }, 5_000);
     if (typeof this.queuePollTimer.unref === 'function') {
       this.queuePollTimer.unref();
@@ -1050,11 +1041,7 @@ export class WorkerDaemon extends EventEmitter {
     }
     this.timers.clear();
 
-    // ADR-0059 Phase 4: Stop IPC server
-    if (this.ipcServer) {
-      try { await this.ipcServer.stop(); } catch { /* ignore */ }
-      this.ipcServer = null;
-    }
+    // ADR-0207: no IPC server to stop.
 
     // #1845: stop the MCP-dispatch queue poller too.
     if (this.queuePollTimer) {
@@ -1093,9 +1080,6 @@ export class WorkerDaemon extends EventEmitter {
       startedAt: this.startedAt,
       workers: new Map(this.workers),
       config: this.config,
-      ipc: this.ipcServer
-        ? { running: this.ipcServer.isRunning, socketPath: this.ipcServer.socketPath }
-        : undefined,
     };
   }
 
@@ -1715,11 +1699,25 @@ export class WorkerDaemon extends EventEmitter {
 
   /**
    * Save daemon state to file
+   *
+   * ADR-0207: persists the daemon's boot-resolved `aiMode` (authoritative —
+   * the daemon, not the CLI's PATH, determines worker capability) plus
+   * `uptimeSec` and `lastTick`. The `daemon status` CLI reads these when the
+   * daemon is live (`bgRunning`) instead of re-running `which claude`.
    */
   private saveState(): void {
+    const now = new Date();
+    const uptimeSec = this.startedAt
+      ? Math.max(0, Math.floor((now.getTime() - this.startedAt.getTime()) / 1000))
+      : 0;
     const state = {
       running: this.running,
       startedAt: this.startedAt?.toISOString(),
+      // ADR-0207: aiMode/uptimeSec/lastTick are the cross-process signals the
+      // `daemon status` CLI reads instead of the deleted Unix socket.
+      aiMode: this._aiMode,
+      uptimeSec,
+      lastTick: now.toISOString(),
       workers: Object.fromEntries(
         Array.from(this.workers.entries()).map(([type, state]) => [
           type,
@@ -1735,7 +1733,7 @@ export class WorkerDaemon extends EventEmitter {
         ...this.config,
         workers: this.config.workers.map(w => ({ ...w })),
       },
-      savedAt: new Date().toISOString(),
+      savedAt: now.toISOString(),
     };
 
     try {
