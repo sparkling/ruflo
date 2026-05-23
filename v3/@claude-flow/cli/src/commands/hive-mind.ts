@@ -1344,6 +1344,32 @@ const spawnCommand: Command = {
       choices: [...QUEEN_TYPES],
       default: 'strategic'
     },
+    // ADR-0104 §6 / ADR-0208 follow-on: declare --topology and --consensus as
+    // known flags on spawn. The init subcommand has always declared these;
+    // spawn relied on the parser's pre-ADR-0208 `allowUnknownFlags: true`
+    // override to let them pass implicitly into `ctx.flags`, which
+    // `generateHiveMindPrompt` reads as `flags.topology` / `flags.consensus`
+    // to render the §6 parameterization headers (🔗 Topology / 🤝 Consensus
+    // Algorithm). After ADR-0208 flipped `allowUnknownFlags` to `false`, the
+    // parser rejects these with `Unknown option: --topology` before the
+    // prompt is ever generated, causing acceptance check
+    // `adr0104-meta-preserved` to fail with "prompt file not generated".
+    // Defaults match `generateHiveMindPrompt`'s fallback values so the
+    // user-visible behaviour is unchanged when the flags are omitted.
+    {
+      name: 'topology',
+      description: 'Hive topology used to render the §6 coordination-protocol block in the queen prompt',
+      type: 'string',
+      choices: TOPOLOGIES.map(t => t.value),
+      default: 'hierarchical-mesh'
+    },
+    {
+      name: 'consensus',
+      description: 'Consensus algorithm interpolated into the §6 parameterization header of the queen prompt',
+      type: 'string',
+      choices: CONSENSUS_STRATEGIES.map(s => s.value),
+      default: 'byzantine'
+    },
     {
       name: 'mcp-config',
       description: 'Path to .mcp.json for the spawned worker (auto-detects ./.mcp.json or ~/.claude.json if omitted) — fixes #1748 Issue 2',
