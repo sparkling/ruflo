@@ -201,21 +201,10 @@ export { RvfCorruptError } from './rvf-backend.js';
 // where the standard `cosineSimilarity` is exported from the embedding pipeline;
 // re-export the alias only, not the class.
 export { cosineSimilarity as hnswCosineSimilarity } from './hnsw-lite.js';
-// ADR-125 Phase 1: upstream's sqljs/hybrid backends are conditionally available
-// when the source files exist; gated to avoid breaking the build if not vendored yet.
-// TODO(adr-125-fork): if sqljs-backend.ts / hybrid-backend.ts are NOT present in this
-// fork tree, the following exports will fail to type-check — remove them or vendor
-// the source files. They are referenced here so the upstream ADR-125 namespace is
-// preserved for downstream consumers that opt into the hybrid path.
-// export { SqlJsBackend } from './sqljs-backend.js';
-// export type { SqlJsBackendConfig } from './sqljs-backend.js';
-// export { HybridBackend } from './hybrid-backend.js';
-// export type {
-//   HybridBackendConfig,
-//   StructuredQuery,
-//   SemanticQuery,
-//   HybridQuery,
-// } from './hybrid-backend.js';
+// ADR-125 Phase 2 (step F) will adapt HybridBackend wiring; until then,
+// upstream's hybrid/sqljs modules are intentionally NOT exposed at the
+// top-level surface on the fork (per the ADR-0065 source-form invariant
+// asserted by `tests/unit/config-centralization-adr0065.test.mjs:362`).
 export { HNSWIndex } from './hnsw-index.js';
 export { deriveHNSWParams } from './hnsw-utils.js';
 export type { HNSWParams } from './hnsw-utils.js';
