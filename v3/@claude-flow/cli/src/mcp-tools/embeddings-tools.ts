@@ -522,12 +522,24 @@ export const embeddingsTools: MCPTool[] = [
             resultCount: results.length
           },
         };
-      } catch {
-        // Database not available - return empty but truthful
+      } catch (e) {
+        // ADR-0209 Option E item #2 — Database not available: the prior
+        // `success: true, results: []` envelope was a dishonest-success
+        // violation: a real database/router failure is indistinguishable
+        // from a successful search that returned zero hits. The honest
+        // disposition is `success: false` with an `error` field so
+        // callers can branch on the failure (and the protocol layer can
+        // surface `isError` accordingly). This is the single genuine
+        // envelope ADR-0209's second council 2026-05-22 narrowed to;
+        // the four sister sites at `:630/:656/:686/:727` already carry
+        // honest `{enabled:false, reason}` discriminators and are NOT
+        // flipped here (their defect is protocol-level at
+        // `mcp-server.ts:695` and is out of scope for this remediation).
         const searchTime = (performance.now() - startTime).toFixed(2);
         return {
-          success: true,
+          success: false,
           query,
+          error: `Memory router unavailable: ${(e as Error)?.message || String(e)}`,
           results: [],
           metadata: {
             model: config.model,
@@ -537,7 +549,6 @@ export const embeddingsTools: MCPTool[] = [
             searchTime: `${searchTime}ms`,
             indexType: config.hyperbolic.enabled ? 'HNSW (hyperbolic)' : 'HNSW (euclidean)',
           },
-          message: 'No embeddings indexed yet. Use memory store to add documents.',
         };
       }
     },
