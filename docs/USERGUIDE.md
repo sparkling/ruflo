@@ -3226,12 +3226,12 @@ RVF validates inputs at every boundary:
 
 ```bash
 # Environment variables
-CLAUDE_FLOW_MEMORY_BACKEND=hybrid   # auto-selects RVF
+CLAUDE_FLOW_MEMORY_TYPE=hybrid      # auto-selects RVF
 CLAUDE_FLOW_MEMORY_PATH=./data/memory
 
 # Or via CLI
 ruflo memory init --force
-ruflo config set memory.backend hybrid
+ruflo config set memory.type hybrid
 ```
 
 </details>
@@ -6929,14 +6929,14 @@ Environment setup, configuration options, and platform support.
 
 ```powershell
 npx @claude-flow/security@latest audit --platform windows
-$env:CLAUDE_FLOW_MODE = "integration"
+$env:CLAUDE_FLOW_MEMORY_PATH = "./data"
 ```
 
 ### macOS (Bash/Zsh)
 
 ```bash
 npx @claude-flow/security@latest audit --platform darwin
-export CLAUDE_FLOW_SECURITY_MODE="strict"
+export CLAUDE_FLOW_MEMORY_PATH="./data"
 ```
 
 ### Linux (Bash)
@@ -6953,17 +6953,23 @@ export CLAUDE_FLOW_MEMORY_PATH="./data"
 <details>
 <summary>⚙️ <strong>Environment Variables</strong></summary>
 
+> **Loader honour status.** Entries tagged **[doc-only]** are documented
+> in this guide but **not yet read by the runtime configuration loader**
+> (`v3/@claude-flow/shared/src/core/config/loader.ts`). Untagged entries
+> are honoured. The honoured-by-loader behavioural test is tracked as
+> ADR-0214 MUST-FIX #2.
+
 ### Core Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CLAUDE_FLOW_MODE` | Operation mode (`development`, `production`, `integration`) | `development` |
-| `CLAUDE_FLOW_ENV` | Environment name for test/dev isolation | - |
+| `CLAUDE_FLOW_MODE` **[doc-only]** | Operation mode (`development`, `production`, `integration`) | `development` |
+| `CLAUDE_FLOW_ENV` **[doc-only]** | Environment name for test/dev isolation | - |
 | `CLAUDE_FLOW_DATA_DIR` | Root data directory | `./data` |
 | `CLAUDE_FLOW_MEMORY_PATH` | Directory for persistent memory storage | `./data` |
-| `CLAUDE_FLOW_MEMORY_TYPE` | Memory backend type (`json`, `sqlite`, `agentdb`, `hybrid`) | `hybrid` |
-| `CLAUDE_FLOW_SECURITY_MODE` | Security level (`strict`, `standard`, `permissive`) | `standard` |
-| `CLAUDE_FLOW_LOG_LEVEL` | Logging verbosity (`debug`, `info`, `warn`, `error`) | `info` |
+| `CLAUDE_FLOW_MEMORY_TYPE` | Memory backend type (`sqlite`, `agentdb`, `hybrid`, `redis`, `memory`) | `hybrid` |
+| `CLAUDE_FLOW_SECURITY_MODE` **[doc-only]** | Security level (`strict`, `standard`, `permissive`) | `standard` |
+| `CLAUDE_FLOW_LOG_LEVEL` **[doc-only]** | Logging verbosity (`debug`, `info`, `warn`, `error`) | `info` |
 | `CLAUDE_FLOW_CONFIG` | Path to configuration file | `./claude-flow.config.json` |
 | `NODE_ENV` | Node.js environment (`development`, `production`, `test`) | `development` |
 
@@ -6972,7 +6978,7 @@ export CLAUDE_FLOW_MEMORY_PATH="./data"
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CLAUDE_FLOW_MAX_AGENTS` | Default concurrent agent limit | `15` |
-| `CLAUDE_FLOW_TOPOLOGY` | Default swarm topology (`hierarchical`, `mesh`, `ring`, `star`) | `hierarchical` |
+| `CLAUDE_FLOW_SWARM_TOPOLOGY` | Default swarm topology (`hierarchical`, `mesh`, `ring`, `star`, `adaptive`, `hierarchical-mesh`) | `hierarchical-mesh` |
 | `CLAUDE_FLOW_HEADLESS` | Run in headless mode (no interactive prompts) | `false` |
 | `CLAUDE_CODE_HEADLESS` | Claude Code headless mode compatibility | `false` |
 
@@ -6988,10 +6994,10 @@ export CLAUDE_FLOW_MEMORY_PATH="./data"
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CLAUDE_FLOW_HNSW_M` | HNSW index M parameter (connectivity, higher = more accurate) | `16` |
-| `CLAUDE_FLOW_HNSW_EF` | HNSW search ef parameter (accuracy, higher = slower) | `200` |
-| `CLAUDE_FLOW_EMBEDDING_DIM` | Vector embedding dimensions | `384` |
-| `SQLJS_WASM_PATH` | Custom path to sql.js WASM binary | - |
+| `CLAUDE_FLOW_HNSW_M` **[doc-only]** | HNSW index M parameter (connectivity, higher = more accurate) | `23` |
+| `CLAUDE_FLOW_HNSW_EF` **[doc-only]** | HNSW search ef parameter (accuracy, higher = slower) | `50` |
+| `CLAUDE_FLOW_EMBEDDING_DIM` **[doc-only]** | Vector embedding dimensions (all-mpnet-base-v2) | `768` |
+| `SQLJS_WASM_PATH` **[doc-only]** | Custom path to sql.js WASM binary | - |
 
 ### AI Provider API Keys
 
@@ -7042,7 +7048,7 @@ export CLAUDE_FLOW_MEMORY_PATH="./data"
 | `GITHUB_TOKEN` | GitHub API token for repository operations | Optional |
 | `JWT_SECRET` | JWT secret for authentication | Production |
 | `HMAC_SECRET` | HMAC secret for request signing | Production |
-| `CLAUDE_FLOW_TOKEN` | Internal authentication token | Optional |
+| `CLAUDE_FLOW_TOKEN` **[doc-only]** | Internal authentication token | Optional |
 
 ### Output Formatting
 
@@ -7056,26 +7062,24 @@ export CLAUDE_FLOW_MEMORY_PATH="./data"
 ### Example `.env` File
 
 ```bash
-# Core
-CLAUDE_FLOW_MODE=development
-CLAUDE_FLOW_LOG_LEVEL=info
+# Core (honoured by the loader)
 CLAUDE_FLOW_MAX_AGENTS=15
+CLAUDE_FLOW_DATA_DIR=./data
 
 # AI Providers
 ANTHROPIC_API_KEY=sk-ant-api03-...
 OPENAI_API_KEY=sk-...
 
-# MCP Server
+# MCP Server (honoured by the loader)
 CLAUDE_FLOW_MCP_PORT=3000
 CLAUDE_FLOW_MCP_TRANSPORT=stdio
 
-# Memory
+# Memory (honoured by the loader)
 CLAUDE_FLOW_MEMORY_TYPE=hybrid
 CLAUDE_FLOW_MEMORY_PATH=./data
 
-# Vector Search
-CLAUDE_FLOW_HNSW_M=16
-CLAUDE_FLOW_HNSW_EF=200
+# Swarm (honoured by the loader — note `_SWARM_TOPOLOGY`, not bare `_TOPOLOGY`)
+CLAUDE_FLOW_SWARM_TOPOLOGY=hierarchical-mesh
 
 # Optional: IPFS Storage
 # PINATA_API_KEY=...
