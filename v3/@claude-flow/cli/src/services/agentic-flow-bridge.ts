@@ -64,7 +64,9 @@ export function getOrchestration() {
 export async function computeEmbedding(text: string): Promise<number[] | null> {
   const rb = await getReasoningBank();
   if (!rb?.computeEmbedding) return null;
-  return rb.computeEmbedding(text);
+  // rb.computeEmbedding returns Float32Array in the real package; this
+  // function's public contract is number[]. Materialize at the boundary.
+  return Array.from(await rb.computeEmbedding(text));
 }
 
 /**

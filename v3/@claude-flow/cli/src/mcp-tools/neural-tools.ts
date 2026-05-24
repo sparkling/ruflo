@@ -24,7 +24,13 @@ try {
   // Tier 1: agentic-flow v3 ReasoningBank (fastest — WASM-accelerated)
   const rb = await import('agentic-flow/reasoningbank').catch(() => null);
   if (rb?.computeEmbedding) {
-    realEmbeddings = { embed: (text: string) => rb.computeEmbedding(text) };
+    // The real `computeEmbedding` returns Float32Array (post-ADR-0069 unified
+    // dim); our local `realEmbeddings.embed` is typed as `number[]` for
+    // back-compat with the @claude-flow/embeddings tier below. Materialize
+    // to a plain array so both tiers share one shape.
+    realEmbeddings = {
+      embed: async (text: string) => Array.from(await rb.computeEmbedding(text)),
+    };
     embeddingServiceName = 'agentic-flow/reasoningbank';
   }
 

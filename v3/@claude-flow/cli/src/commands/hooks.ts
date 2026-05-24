@@ -4592,7 +4592,11 @@ const tokenOptimizeCommand: Command = {
       memoriesRetrieved: 0,
     };
     let agenticFlowAvailable = false;
-    let reasoningBank: { retrieveMemories: (query: string, opts: { k: number }) => Promise<unknown[]>; formatMemoriesForPrompt?: (memories: unknown[]) => string } | null = null;
+    type ReasoningBankShape = {
+      retrieveMemories: (query: string, opts: { k: number }) => Promise<unknown[]>;
+      formatMemoriesForPrompt?: (memories: unknown[]) => string;
+    };
+    let reasoningBank: ReasoningBankShape | null = null;
 
     try {
       // Check if agentic-flow v3 is available
@@ -4600,7 +4604,13 @@ const tokenOptimizeCommand: Command = {
       if (rb) {
         agenticFlowAvailable = true;
         if (typeof rb.retrieveMemories === 'function') {
-          reasoningBank = rb;
+          // rb.retrieveMemories returns a real RetrievedMemory[] (from the
+          // installed agentic-flow); the local `reasoningBank` narrows the
+          // shape to `unknown[]` so this module doesn't take a hard type-only
+          // dep on agentic-flow's RetrievedMemory. Bridge the gap with a
+          // structural cast — the runtime contract (retrieveMemories /
+          // formatMemoriesForPrompt) is what matters.
+          reasoningBank = rb as unknown as ReasoningBankShape;
         }
       } else {
         // Legacy check for older agentic-flow

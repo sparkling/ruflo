@@ -1501,7 +1501,19 @@ export async function ensureRvfWired(): Promise<void> {
     // duplication — it is the dimension hint the adapter surfaces for
     // empty-store `VectorStats`.
     const EMBEDDING_DIMENSION = 768;
-    const rvfBackend = new MemoryRvfAdapter(cliMemoryRvfBackend, {
+    // `getStorageInstance()` returns the cli's `IStorageContract` (declared
+    // as `{ [key: string]: any }` in cli/types/optional-modules.d.ts because
+    // @claude-flow/memory's real interface isn't shipped via the type-only
+    // import path). The runtime instance IS the same backend object the
+    // adapter expects (single open handle, no double-open) — but the
+    // index-signature shape doesn't structurally satisfy the strict
+    // IMemoryRvfBackend interface tsc resolves from @sparkleideas/agentdb.
+    // Cast through `unknown` per the standard "loose-shape → strict-iface"
+    // pattern; the comment at the top of this module (line ~31) tracked the
+    // aspiration of no cast — fulfilled only once the cli ships against a
+    // real IStorageContract.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rvfBackend = new MemoryRvfAdapter(cliMemoryRvfBackend as unknown as any, {
       dimension: EMBEDDING_DIMENSION,
     });
     const archivist = await getProcessArchivist();

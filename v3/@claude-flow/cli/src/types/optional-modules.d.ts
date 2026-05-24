@@ -74,6 +74,74 @@ declare module 'agentic-flow/coordination/autopilot-learning' {
   }
 }
 
+// Codemod-renamed forms (config/package-map.json: agentic-flow → @sparkleideas/agentic-flow,
+// ruvector → @sparkleideas/ruvector). The codemod rewrites import/require strings
+// in .ts but not `declare module` strings, so the post-codemod build resolves to
+// these mirrored names. Bound to `any` because they're runtime-optional.
+declare module '@sparkleideas/agentic-flow/coordination/autopilot-learning' {
+  export class AutopilotLearning {
+    constructor(...args: any[]);
+    initialize(): Promise<boolean>;
+    getMetrics(): Promise<{ available: boolean; episodes: number; patterns: number }>;
+    [key: string]: unknown;
+  }
+}
+declare module '@sparkleideas/agentic-flow' {
+  export const reasoningbank: any;
+}
+declare module '@sparkleideas/agentic-flow/reasoningbank' {
+  export const VERSION: string;
+  export const PAPER_URL: string;
+  export class ReflexionMemory { constructor(...args: any[]); }
+  export class SkillLibrary { constructor(...args: any[]); }
+  export class CausalMemoryGraph { constructor(...args: any[]); }
+  export class HybridReasoningBank { constructor(...args: any[]); }
+  export class AdvancedMemorySystem { constructor(...args: any[]); }
+  export class EmbeddingService { constructor(...args: any[]); }
+  export class NightlyLearner { constructor(...args: any[]); }
+  export function initialize(...args: any[]): Promise<any>;
+  export function retrieveMemories(query: string, opts?: any): Promise<any[]>;
+  export function formatMemoriesForPrompt(memories: any[]): string;
+  export function computeEmbedding(text: string): Promise<number[]>;
+  export function cosineSimilarity(a: number[], b: number[]): number;
+  export const db: any;
+}
+declare module '@sparkleideas/agentic-flow/orchestration' {
+  export function createOrchestrator(...args: any[]): any;
+  export function createOrchestrationClient(...args: any[]): any;
+  export function seedMemory(...args: any[]): Promise<any>;
+  export function searchMemory(...args: any[]): Promise<any>;
+  export function harvestMemory(...args: any[]): Promise<any>;
+  export function recordLearning(...args: any[]): Promise<any>;
+  export function getRunStatus(id: string): Promise<any>;
+  export function getRunArtifacts(id: string): Promise<any>;
+  export function cancelRun(id: string): Promise<any>;
+}
+declare module '@sparkleideas/agentic-flow/agent-booster' {
+  export class EnhancedAgentBooster { constructor(...args: any[]); }
+  export function getEnhancedBooster(...args: any[]): any;
+  export function enhancedApply(opts: { code: string; edit: string; language?: string }): Promise<{ confidence: number; output: string }>;
+  export function benchmark(...args: any[]): Promise<any>;
+}
+declare module '@sparkleideas/agentic-flow/router' {
+  export class ModelRouter { constructor(...args: any[]); route(prompt: string, opts?: any): Promise<any>; getStats(): any; }
+  export const CLAUDE_MODELS: any;
+  export function getModelName(id: string): string;
+  export function listModels(): any[];
+  export function mapModelId(id: string): string;
+}
+declare module '@sparkleideas/ruvector' {
+  const m: any;
+  export default m;
+  export const VectorDB: any;
+  export const VectorDb: any;
+  export function isWasm(): boolean;
+  export function initOnnxEmbedder(): Promise<void>;
+  export function isOnnxAvailable(): boolean;
+  export function getOptimizedOnnxEmbedder(): any;
+  export const AdaptiveEmbedder: any;
+}
+
 declare module 'agentic-flow/orchestration' {
   export function createOrchestrator(...args: any[]): any;
   export function createOrchestrationClient(...args: any[]): any;
