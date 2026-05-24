@@ -743,9 +743,19 @@ declare module '@ruvector/learning-wasm' {
 }
 
 declare module '@noble/ed25519' {
+  // v2.x API: sync methods are default; *Async variants exist for callers
+  // that prefer non-blocking. scripts/publish-registry.ts uses the async
+  // variants for getPublicKey and sign.
   export function verifyAsync(
     signature: Uint8Array | Buffer,
     message: Uint8Array,
     publicKey: Uint8Array | Buffer
   ): Promise<boolean>;
+  export function getPublicKeyAsync(
+    privateKey: Uint8Array | Buffer
+  ): Promise<Uint8Array>;
+  export function signAsync(
+    message: Uint8Array,
+    privateKey: Uint8Array | Buffer
+  ): Promise<Uint8Array>;
 }
