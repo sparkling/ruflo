@@ -1,4 +1,5 @@
 {
+  "_note": "#1921 — hook commands invoke scripts/ruflo-hook.sh (resilient shim): prefers a locally-installed `ruflo`/`claude-flow` binary, falls back to `npx --prefer-offline`, and always exits 0 so a CLI/install failure (e.g. arborist `Invalid Version` on npm 10.8.x) never surfaces an error in Claude Code or blocks a turn. The trailing `|| true` guards the case where $CLAUDE_PLUGIN_ROOT is unset (older Claude Code) — the hook then no-ops silently. DO NOT revert to a bare `npx <pkg>@alpha hooks …` per fire.",
   "hooks": {
     "PostToolUse": [
       {
@@ -6,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/bash -c 'INPUT=$(cat); CMD=$(printf %s \"$INPUT\" | jq -r \".tool_input.command // empty\"); [ -z \"$CMD\" ] && exit 0; EXIT=$(printf %s \"$INPUT\" | jq -r \".tool_response.exit_code // 0\"); SUCCESS=$([ \"$EXIT\" = \"0\" ] && echo true || echo false); npx claude-flow@alpha hooks post-command -c \"$CMD\" -s \"$SUCCESS\" -e \"$EXIT\"'"
+            "command": "/bin/bash -c 'INPUT=$(cat); CMD=$(printf %s \"$INPUT\" | jq -r \".tool_input.command // empty\"); [ -z \"$CMD\" ] && exit 0; EXIT=$(printf %s \"$INPUT\" | jq -r \".tool_response.exit_code // 0\"); SUCCESS=$([ \"$EXIT\" = \"0\" ] && echo true || echo false); \"${CLAUDE_PLUGIN_ROOT}/scripts/ruflo-hook.sh\" post-command -c \"$CMD\" -s \"$SUCCESS\" -e \"$EXIT\" || true'"
           }
         ]
       },
@@ -15,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/bash -c 'INPUT=$(cat); FILE=$(printf %s \"$INPUT\" | jq -r \".tool_input.file_path // .tool_input.path // empty\"); [ -z \"$FILE\" ] && exit 0; npx claude-flow@alpha hooks post-edit -f \"$FILE\" -s true'"
+            "command": "/bin/bash -c 'INPUT=$(cat); FILE=$(printf %s \"$INPUT\" | jq -r \".tool_input.file_path // .tool_input.path // empty\"); [ -z \"$FILE\" ] && exit 0; \"${CLAUDE_PLUGIN_ROOT}/scripts/ruflo-hook.sh\" post-edit -f \"$FILE\" -s true || true'"
           }
         ]
       }
@@ -45,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx claude-flow@alpha hooks session-end"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ruflo-hook.sh\" session-end || true"
           }
         ]
       }

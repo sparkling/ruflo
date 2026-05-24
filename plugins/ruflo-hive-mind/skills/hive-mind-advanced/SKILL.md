@@ -21,7 +21,7 @@ This skill covers four concrete patterns. Each is a real recipe with verified MC
 The Ruflo MCP server must be registered (one-time, in shell):
 
 ```bash
-claude mcp add claude-flow -- npx -y @sparkleideas/cli@latest mcp start
+claude mcp add ruflo -- npx -y @sparkleideas/cli@latest mcp start
 ```
 
 Tools resolve under `mcp__ruflo__*` (per ADR-0117 marketplace MCP server registration, Accepted/Implemented 2026-05-05). Use `mcp__ruflo__*` in invocations and worker contracts.
