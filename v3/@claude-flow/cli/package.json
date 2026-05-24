@@ -121,7 +121,7 @@
     "@ruvector/rabitq-wasm": "^0.1.0",
     "@ruvector/router": "0.1.30-patch.106",
     "@ruvector/ruvllm": "2.5.5-patch.108",
-    "@ruvector/ruvllm-wasm": "^2.1.0",
+    "@ruvector/ruvllm-wasm": "^2.0.2",
     "@ruvector/rvagent-wasm": "0.2.1-patch.128",
     "@ruvector/sona": "0.1.6-patch.115",
     "agentic-flow": "2.0.2-alpha-patch.842",
