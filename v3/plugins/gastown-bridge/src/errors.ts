@@ -1,27 +1,54 @@
 /**
  * Gas Town Bridge Plugin - Typed Error Classes
  *
- * Provides a hierarchy of typed error classes for the Gas Town Bridge Plugin:
- * - GasTownError: Base error class for all Gas Town errors
- * - BeadsError: Errors related to bead operations
- * - ValidationError: Input validation failures
- * - CLIExecutionError: CLI command execution failures
+ * Per ADR-0242, the base error hierarchy is now extracted to
+ * `@claude-flow/errors` (RufloError + wrapError + getErrorMessage +
+ * isRufloError + RufloErrorCode). This file re-exports those base
+ * symbols with backward-compatible `GasTown*` aliases so existing
+ * plugin code keeps working unchanged.
  *
- * All errors include:
- * - Typed error codes for programmatic handling
- * - Stack traces for debugging
- * - Contextual information about the failure
+ * The plugin-specific subclasses (`BeadsError`, `ValidationError`,
+ * `CLIExecutionError`, `FormulaError`, `ConvoyError`) and the
+ * plugin-specific `GasTownErrorCode` enum (with `GT_*` codes for
+ * beads/formulas/convoys/CLI/WASM/sync/graph) remain here — they
+ * are not part of the shared canon. They all extend `GasTownError`
+ * which now extends `RufloError`, so the chain
+ * `new BeadsError(...) instanceof GasTownError instanceof RufloError`
+ * holds and the gold-standard shape (`code`/`cause`/`context`/
+ * `timestamp`/`toJSON`/`toString`) is preserved.
  *
  * @module gastown-bridge/errors
- * @version 0.1.0
+ * @version 0.2.0 (re-export shim per ADR-0242)
  */
 
+import {
+  RufloError,
+  RufloErrorCode,
+  type RufloErrorCodeType,
+  wrapError as wrapRufloError,
+  getErrorMessage as getRufloErrorMessage,
+  isRufloError,
+} from '@claude-flow/errors';
+
 // ============================================================================
-// Error Codes
+// Base re-exports (backward-compat aliases per ADR-0242 §Decision scope #1)
+// ============================================================================
+
+export {
+  RufloError,
+  RufloErrorCode,
+  type RufloErrorCodeType,
+  isRufloError,
+  getRufloErrorMessage as getErrorMessage,
+};
+
+// ============================================================================
+// Plugin-specific Error Codes (GT_* prefix, plugin-scope)
 // ============================================================================
 
 /**
- * Gas Town error codes enumeration
+ * Gas Town error codes enumeration (plugin-specific; complements
+ * RufloErrorCode from @claude-flow/errors).
  */
 export const GasTownErrorCode = {
   // General errors
@@ -79,11 +106,13 @@ export const GasTownErrorCode = {
 export type GasTownErrorCodeType = (typeof GasTownErrorCode)[keyof typeof GasTownErrorCode];
 
 // ============================================================================
-// Base Error Class
+// Base GasTownError (extends shared RufloError; preserves plugin API)
 // ============================================================================
 
 /**
- * Base error class for all Gas Town Bridge errors
+ * Base error class for all Gas Town Bridge errors. Extends the shared
+ * `RufloError` per ADR-0242 — so `new GasTownError(...) instanceof
+ * RufloError === true` and the gold-standard shape carries through.
  *
  * @example
  * ```typescript
@@ -94,66 +123,66 @@ export type GasTownErrorCodeType = (typeof GasTownErrorCode)[keyof typeof GasTow
  * );
  * ```
  */
-export class GasTownError extends Error {
-  /** Error code for programmatic handling */
-  readonly code: GasTownErrorCodeType;
-
-  /** Timestamp when error occurred */
-  readonly timestamp: Date;
-
-  /** Additional context about the error */
-  readonly context?: Record<string, unknown>;
-
-  /** Original error if this wraps another error */
-  readonly cause?: Error;
-
+export class GasTownError extends RufloError {
   constructor(
     message: string,
     code: GasTownErrorCodeType = GasTownErrorCode.UNKNOWN,
     context?: Record<string, unknown>,
     cause?: Error
   ) {
-    super(message);
+    // RufloErrorCodeType is a string-union; GT_* strings are a disjoint
+    // string-union but assignable at runtime. The cast is the seam.
+    super(message, code as unknown as RufloErrorCodeType, context, cause);
     this.name = 'GasTownError';
-    this.code = code;
-    this.timestamp = new Date();
-    this.context = context;
-    this.cause = cause;
 
-    // Maintain proper stack trace in V8 environments
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, GasTownError);
     }
   }
+}
 
-  /**
-   * Convert error to JSON for logging/serialization
-   */
-  toJSON(): Record<string, unknown> {
-    return {
-      name: this.name,
-      message: this.message,
-      code: this.code,
-      timestamp: this.timestamp.toISOString(),
-      context: this.context,
-      cause: this.cause?.message,
-      stack: this.stack,
-    };
+/**
+ * Type-narrow predicate for matching GasTownError on a plugin-scoped code.
+ * Use instead of the bare `e.code === GasTownErrorCode.X` comparison so
+ * the GT_* string-union doesn't trip the RufloErrorCodeType narrowing
+ * inherited from the parent class.
+ *
+ * @example
+ *   if (hasGasTownCode(e, GasTownErrorCode.DEPENDENCY_CYCLE)) { … }
+ */
+export function hasGasTownCode(
+  error: unknown,
+  code: GasTownErrorCodeType
+): error is GasTownError {
+  return error instanceof GasTownError && (error.code as unknown as string) === code;
+}
+
+// ============================================================================
+// wrapError — plugin-typed wrapper around the shared adapter
+// ============================================================================
+
+/**
+ * Wrap an unknown error as a GasTownError (preserves `.cause` chain).
+ * Plugin-typed wrapper around `@claude-flow/errors`' `wrapError`.
+ */
+export function wrapError(error: unknown, code?: GasTownErrorCodeType): GasTownError {
+  if (error instanceof GasTownError) {
+    return error;
   }
 
-  /**
-   * Create a human-readable string representation
-   */
-  toString(): string {
-    let str = `[${this.code}] ${this.message}`;
-    if (this.context) {
-      str += ` | Context: ${JSON.stringify(this.context)}`;
-    }
-    if (this.cause) {
-      str += ` | Caused by: ${this.cause.message}`;
-    }
-    return str;
+  if (error instanceof Error) {
+    return new GasTownError(
+      error.message,
+      code ?? GasTownErrorCode.UNKNOWN,
+      undefined,
+      error
+    );
   }
+
+  return new GasTownError(
+    String(error),
+    code ?? GasTownErrorCode.UNKNOWN
+  );
 }
 
 // ============================================================================
@@ -635,7 +664,7 @@ export class ConvoyError extends GasTownError {
 }
 
 // ============================================================================
-// Error Utilities
+// Plugin-specific type guards (additional convenience)
 // ============================================================================
 
 /**
@@ -664,37 +693,4 @@ export function isCLIExecutionError(error: unknown): error is CLIExecutionError 
  */
 export function isBeadsError(error: unknown): error is BeadsError {
   return error instanceof BeadsError;
-}
-
-/**
- * Wrap an unknown error as a GasTownError
- */
-export function wrapError(error: unknown, code?: GasTownErrorCodeType): GasTownError {
-  if (error instanceof GasTownError) {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return new GasTownError(
-      error.message,
-      code ?? GasTownErrorCode.UNKNOWN,
-      undefined,
-      error
-    );
-  }
-
-  return new GasTownError(
-    String(error),
-    code ?? GasTownErrorCode.UNKNOWN
-  );
-}
-
-/**
- * Extract error message safely
- */
-export function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }

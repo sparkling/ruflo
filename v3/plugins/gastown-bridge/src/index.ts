@@ -84,6 +84,7 @@ import {
 import {
   GasTownError,
   GasTownErrorCode,
+  hasGasTownCode,
 } from './errors.js';
 
 // ============================================================================
@@ -1534,7 +1535,7 @@ export class GasTownBridgePlugin extends EventEmitter implements IPlugin {
             const sorted = loader.resolveStepDependencies(steps);
             return { action, sorted: sorted.map(s => s.id), hasCycle: false, cycleNodes: undefined };
           } catch (e) {
-            if (e instanceof GasTownError && e.code === GasTownErrorCode.DEPENDENCY_CYCLE) {
+            if (hasGasTownCode(e, GasTownErrorCode.DEPENDENCY_CYCLE)) {
               const cycleNodes = (e.context as { cycleNodes?: string[] })?.cycleNodes ?? [];
               return { action, sorted: [], hasCycle: true, cycleNodes };
             }

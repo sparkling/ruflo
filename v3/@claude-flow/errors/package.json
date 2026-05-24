@@ -1,0 +1,54 @@
+{
+  "name": "@claude-flow/errors",
+  "version": "3.0.0-alpha.1-patch.1",
+  "description": "Shared typed error library for ruflo — base RufloError class, RufloErrorCode enum, wrapError + getErrorMessage utilities, isRufloError type guard. Extracted from gastown-bridge/errors.ts per ADR-0242.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.16"
+  },
+  "keywords": [
+    "errors",
+    "error-handling",
+    "typed-errors",
+    "claude-flow",
+    "ruflo"
+  ],
+  "author": "rUv <hello@ruv.io>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruvnet/claude-flow.git",
+    "directory": "v3/@claude-flow/errors"
+  },
+  "bugs": {
+    "url": "https://github.com/ruvnet/claude-flow/issues"
+  },
+  "homepage": "https://github.com/ruvnet/claude-flow/tree/main/v3/@claude-flow/errors#readme",
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
