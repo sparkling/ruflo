@@ -145,7 +145,9 @@ export const HNSW_MAX_SAFE_PATTERNS = 1024;
  * Create a WASM HNSW router for semantic routing.
  * Returns an object with add/route/clear methods.
  *
- * Enforces HNSW_MAX_SAFE_PATTERNS limit (1024 in v2.0.2).
+ * Enforces HNSW_MAX_SAFE_PATTERNS limit (1024 in v2.0.2) at construction
+ * time — throws immediately if `config.maxPatterns` exceeds the limit
+ * rather than partial-loading and throwing mid-ingest (ADR-0237).
  */
 export async function createHnswRouter(config: HnswRouterConfig): Promise<{
   addPattern: (pattern: HnswPattern) => boolean;
@@ -154,6 +156,16 @@ export async function createHnswRouter(config: HnswRouterConfig): Promise<{
   patternCount: () => number;
   toJson: () => string;
 }> {
+  // ADR-0237: fail loud at construction, not mid-ingest. A caller asking
+  // for maxPatterns=5000 used to half-load the corpus before the 1025th
+  // addPattern() throw — surface the violation at the seam where the bad
+  // value entered the system.
+  if (config.maxPatterns > HNSW_MAX_SAFE_PATTERNS) {
+    throw new Error(
+      `WASM HNSW maximum is ${HNSW_MAX_SAFE_PATTERNS}, requested ${config.maxPatterns} (ADR-0237)`,
+    );
+  }
+
   await initRuvllmWasm();
   const mod = await import('@ruvector/ruvllm-wasm');
 

@@ -265,6 +265,15 @@ describe('ruvllm-wasm integration', () => {
         .toThrow(/pattern limit reached/);
     });
 
+    // ADR-0237: validate maxPatterns at construction (fail-loud) instead of
+    // mid-ingest. Used to half-load the corpus before the 1025th throw.
+    it('should reject maxPatterns > HNSW_MAX_SAFE_PATTERNS at construction (ADR-0237)', async () => {
+      const { createHnswRouter, HNSW_MAX_SAFE_PATTERNS } = await import('../../src/ruvector/ruvllm-wasm.js');
+      await expect(
+        createHnswRouter({ dimensions: 64, maxPatterns: HNSW_MAX_SAFE_PATTERNS + 1 }),
+      ).rejects.toThrow(/ADR-0237/);
+    });
+
     it('should route queries', async () => {
       const { createHnswRouter } = await import('../../src/ruvector/ruvllm-wasm.js');
       const router = await createHnswRouter({ dimensions: 64, maxPatterns: 10 });
