@@ -26,9 +26,6 @@ on:
       # scripts, agent-facing recipes all guarded by the same smoke.
       - 'v3/@claude-flow/cli/src/mcp-tools/browser-session-tools.ts'
       - 'plugins/ruflo-browser/**'
-      # ruflo-graph-intelligence (#2044, ADR-123) — outside v3 workspace,
-      # has its own lockfile + tests; needs to be CI-guarded on every change.
-      - 'plugins/ruflo-graph-intelligence/**'
       # Supply-chain hardening (#2046) — every package.json + lockfile +
       # allowlist edit triggers the supply-chain audit.
       - '**/package.json'
@@ -117,8 +114,6 @@ on:
       # ruflo-browser rvf create flag (#2015)
       - 'v3/@claude-flow/cli/src/mcp-tools/browser-session-tools.ts'
       - 'plugins/ruflo-browser/**'
-      # ruflo-graph-intelligence (#2044, ADR-123)
-      - 'plugins/ruflo-graph-intelligence/**'
       # Supply-chain hardening (#2046) — every dep + lockfile change is
       # CVE-audited, allowlist-checked, integrity-checked.
       - '**/package.json'
