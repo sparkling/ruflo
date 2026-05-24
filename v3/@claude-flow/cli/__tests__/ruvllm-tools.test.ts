@@ -152,15 +152,160 @@ describe('ruvllm-wasm MCP tools', () => {
   });
 
   describe('ruvllm_microlora_adapt', () => {
-    it('should adapt with feedback', async () => {
+    // Updated for ADR-0231 wave 2 (da975df8f): `input` is now a required
+    // schema field; handler throws if missing. The original "should adapt
+    // with feedback" case is preserved here as the happy-path test,
+    // augmented with the required `input` vector.
+    it('should adapt with feedback (with input)', async () => {
       const createTool = findTool('ruvllm_microlora_create');
       const createResult = await createTool.handler({ inputDim: 64, outputDim: 32 }) as any;
       const loraId = JSON.parse(createResult.content[0].text).loraId;
 
       const adaptTool = findTool('ruvllm_microlora_adapt');
-      const result = await adaptTool.handler({ loraId, quality: 0.9 }) as any;
+      const result = await adaptTool.handler({
+        loraId,
+        quality: 0.9,
+        input: Array(64).fill(0).map((_, i) => (i % 2 === 0 ? 0.1 : -0.1)),
+      }) as any;
       const data = JSON.parse(result.content[0].text);
       expect(data.success).toBe(true);
+    });
+
+    // -----------------------------------------------------------------
+    // Group A — schema-level + handler-validation (ADR-0231 wave 3 C1)
+    // No WASM runtime needed.
+    // -----------------------------------------------------------------
+    describe('schema (ADR-0231 wave 2)', () => {
+      const tool = findTool('ruvllm_microlora_adapt');
+      const schema = tool.inputSchema as {
+        properties: Record<string, { type: string; items?: { type: string } }>;
+        required: string[];
+      };
+
+      it('declares input as required with array-of-numbers shape', () => {
+        expect(schema.required).toContain('input');
+        const prop = schema.properties.input;
+        expect(prop).toBeDefined();
+        expect(prop.type).toBe('array');
+        expect(prop.items?.type).toBe('number');
+      });
+
+      it('declares consolidate as optional boolean (default true)', () => {
+        const prop = schema.properties.consolidate;
+        expect(prop).toBeDefined();
+        expect(prop.type).toBe('boolean');
+        expect(schema.required).not.toContain('consolidate');
+      });
+    });
+
+    it('returns isError when input is missing (handler-level validation)', async () => {
+      const createTool = findTool('ruvllm_microlora_create');
+      const createResult = await createTool.handler({ inputDim: 64, outputDim: 32 }) as any;
+      const loraId = JSON.parse(createResult.content[0].text).loraId;
+
+      const adaptTool = findTool('ruvllm_microlora_adapt');
+      // No `input` supplied — handler hits Float32Array.from(undefined) which
+      // throws synchronously, caught by the try/catch returning isError.
+      const result = await adaptTool.handler({ loraId, quality: 0.5 }) as any;
+      expect(result.isError).toBe(true);
+      const data = JSON.parse(result.content[0].text);
+      expect(data.error).toBeDefined();
+      expect(data.success).toBeUndefined();
+    });
+
+    // -----------------------------------------------------------------
+    // Group B — dispatch contract (ADR-0231 wave 3 C1)
+    //
+    // The wrapper module is mocked at the top of this file, so the
+    // *handler-level* contract (passes consolidate flag through to the
+    // wrapper's adapt() 5th arg) is verifiable here. The deeper assertion
+    // — that the wrapper's adapt() routes to MicroLoraWasm.adaptConstrained
+    // when consolidate=true — lives behind the mock and requires the
+    // republished @ruvector/ruvllm-wasm artifact (wave 4). Those tests are
+    // skipped with a citation.
+    // -----------------------------------------------------------------
+    it('handler defaults consolidate=true and forwards input to wrapper.adapt', async () => {
+      const createTool = findTool('ruvllm_microlora_create');
+      const createResult = await createTool.handler({ inputDim: 64, outputDim: 32 }) as any;
+      const loraId = JSON.parse(createResult.content[0].text).loraId;
+
+      mockLora.adapt.mockClear();
+      const adaptTool = findTool('ruvllm_microlora_adapt');
+      const inputArr = Array(64).fill(0).map((_, i) => i * 0.001);
+      await adaptTool.handler({ loraId, quality: 0.8, input: inputArr });
+
+      expect(mockLora.adapt).toHaveBeenCalledTimes(1);
+      const callArgs = mockLora.adapt.mock.calls[0];
+      // (input: Float32Array, quality, learningRate, success, consolidate)
+      expect(callArgs[0]).toBeInstanceOf(Float32Array);
+      expect(callArgs[0].length).toBe(64);
+      expect(callArgs[1]).toBe(0.8);
+      // 5th arg = consolidate; defaults to true at the handler.
+      expect(callArgs[4]).toBe(true);
+    });
+
+    it('handler forwards consolidate=false to wrapper.adapt', async () => {
+      const createTool = findTool('ruvllm_microlora_create');
+      const createResult = await createTool.handler({ inputDim: 64, outputDim: 32 }) as any;
+      const loraId = JSON.parse(createResult.content[0].text).loraId;
+
+      mockLora.adapt.mockClear();
+      const adaptTool = findTool('ruvllm_microlora_adapt');
+      await adaptTool.handler({
+        loraId,
+        quality: 0.7,
+        input: Array(64).fill(0.05),
+        consolidate: false,
+      });
+
+      expect(mockLora.adapt).toHaveBeenCalledTimes(1);
+      const callArgs = mockLora.adapt.mock.calls[0];
+      expect(callArgs[4]).toBe(false);
+    });
+
+    it.skip('wrapper dispatches to MicroLoraWasm.adaptConstrained when consolidate=true (wave-4 dependency: needs republished @ruvector/ruvllm-wasm with adaptConstrained binding)', () => {
+      // Verifies wrapper.adapt internals at ruvllm-wasm.ts lines 302-306:
+      //   if (consolidate) (lora as any).adaptConstrained(input, feedback);
+      //   else lora.adapt(input, feedback);
+      // Requires the un-mocked wrapper bound to the republished WASM.
+    });
+
+    it.skip('wrapper dispatches to MicroLoraWasm.adapt when consolidate=false (wave-4 dependency: needs republished @ruvector/ruvllm-wasm with adaptConstrained binding)', () => {
+      // Counterpart to above; same wave 4 dependency.
+    });
+
+    it.skip('wrapper throws when input.length !== config.inputDim (wave-4 dependency: needs republished @ruvector/ruvllm-wasm; strict-length check lives in the wrapper, ruvllm-wasm.ts:293-297)', () => {
+      // Validates the fail-loud guard added at wave 2 (replacing the old
+      // MICROLORA_WASM_MIN_DIM zero-padding). The mock returned by
+      // createMicroLora here bypasses that guard, so this assertion must
+      // run against the real wrapper bound to the republished WASM.
+    });
+
+    // -----------------------------------------------------------------
+    // Group C — archivist invariant integration (ADR-0231 wave 3 C1)
+    //
+    // Omitted: @sparkleideas/agentdb is not locally linked into this
+    // workspace, so the cross-fork invariant ("all-zero input rejected at
+    // archivist layer") can't be exercised in this test file. The
+    // assertion lives in forks/agentdb commit 6d53621's own test suite.
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // Static / build-time guarantees
+    // -----------------------------------------------------------------
+    it('MICROLORA_WASM_MIN_DIM zero-pad constant has been removed from the wrapper source (ADR-0231 wave 2)', async () => {
+      // Module-import probe would need vi.importActual + a different mock
+      // shape; cheaper to assert against the source file directly. The
+      // constant's removal is a hard contract — its presence would
+      // resurrect the silent zero-pad that wave 2 deleted.
+      const { readFile } = await import('node:fs/promises');
+      const { fileURLToPath } = await import('node:url');
+      const here = fileURLToPath(import.meta.url);
+      const src = await readFile(
+        new URL('../src/ruvector/ruvllm-wasm.ts', `file://${here}`),
+        'utf8',
+      );
+      expect(src).not.toContain('MICROLORA_WASM_MIN_DIM');
     });
   });
 
