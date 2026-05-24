@@ -214,10 +214,19 @@ const listCommand: Command = {
   },
 };
 
-// Install subcommand - Now fetches from IPFS registry
+// Install subcommand.
+// ADR-0234 site 5 part (a): description + example wording rewritten to match
+// what install ACTUALLY does (npm install + local path). The pre-fix wording
+// (`'Install a plugin from IPFS registry or local path'` + example
+// `'Install plugin from IPFS'`) advertised an IPFS path that was never wired
+// — the implementation unconditionally called `installFromNpm(...)` with a
+// `// Install from npm (since IPFS is demo mode)` comment. The honest
+// envelope removes the misleading advertising; the `--source ipfs` guard
+// (part b) lands in a follow-on commit. Fork-only divergence: upstream ships
+// the dishonest wording verbatim.
 const installCommand: Command = {
   name: 'install',
-  description: 'Install a plugin from IPFS registry or local path',
+  description: 'Install a plugin from npm registry or local path (IPFS path not yet implemented)',
   options: [
     { name: 'name', short: 'n', type: 'string', description: 'Plugin name or path', required: true },
     { name: 'version', short: 'v', type: 'string', description: 'Specific version to install' },
@@ -227,7 +236,7 @@ const installCommand: Command = {
     { name: 'registry', short: 'r', type: 'string', description: 'Registry to use' },
   ],
   examples: [
-    { command: 'claude-flow plugins install -n community-analytics', description: 'Install plugin from IPFS' },
+    { command: 'claude-flow plugins install -n community-analytics', description: 'Install plugin from npm' },
     { command: 'claude-flow plugins install -n ./my-plugin --dev', description: 'Install local plugin' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
@@ -308,7 +317,11 @@ const installCommand: Command = {
           }
         }
 
-        // Install from npm (since IPFS is demo mode)
+        // Install from npm. ADR-0234 site 5: the prior comment said
+        // "Install from npm (since IPFS is demo mode)" — that comment was
+        // the only place in the code that admitted the IPFS path had never
+        // been wired. The honest `description` field above advertises npm
+        // as the actual path; this comment now only documents the call.
         spinner.setText(`Installing ${name} from npm...`);
         result = await manager.installFromNpm(name, version !== 'latest' ? version : undefined);
       }
@@ -923,7 +936,7 @@ export const pluginsCommand: Command = {
   examples: [
     { command: 'claude-flow plugins list', description: 'List plugins from IPFS registry' },
     { command: 'claude-flow plugins search -q neural', description: 'Search for plugins' },
-    { command: 'claude-flow plugins install -n community-analytics', description: 'Install from IPFS' },
+    { command: 'claude-flow plugins install -n community-analytics', description: 'Install from npm (IPFS path not yet implemented; ADR-0234)' },
     { command: 'claude-flow plugins create -n my-plugin', description: 'Create new plugin' },
   ],
   action: async (): Promise<CommandResult> => {
