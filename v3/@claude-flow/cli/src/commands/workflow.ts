@@ -7,6 +7,8 @@ import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
 import { select, confirm, input } from '../prompt.js';
 import { callMCPTool, MCPClientError } from '../mcp-client.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // Workflow templates
 const WORKFLOW_TEMPLATES = [
@@ -612,18 +614,93 @@ const templateCommand: Command = {
         { name: 'workflow', short: 'w', description: 'Workflow ID to save as template', type: 'string' },
         { name: 'file', short: 'f', description: 'Workflow file to save as template', type: 'string' }
       ],
+      // ADR-0244 site #4 (F-01-004): workflow template create now writes
+      // a filesystem-backed template to `.claude-flow/templates/<name>.json`
+      // instead of printing success without performing any work.
+      // Previously the handler honoured neither --workflow nor --file
+      // and just returned `{success:true, data:{name, created:true}}`.
+      // Upstream `ruvnet/ruflo` is byte-identical at this block; the
+      // fix is fork-only merge-tax per ADR-0244.
       action: async (ctx: CommandContext): Promise<CommandResult> => {
         const name = ctx.flags.name as string;
+        const workflowId = ctx.flags.workflow as string | undefined;
+        const sourceFile = ctx.flags.file as string | undefined;
 
         if (!name) {
           output.printError('Template name is required');
           return { success: false, exitCode: 1 };
         }
 
-        output.printSuccess(`Template "${name}" created`);
+        // Resolve template payload. Order: explicit --file > --workflow
+        // (call MCP to fetch shape) > minimal placeholder envelope.
+        let templatePayload: Record<string, unknown> = {
+          name,
+          createdAt: new Date().toISOString(),
+        };
+
+        if (sourceFile) {
+          const resolved = path.resolve(ctx.cwd, sourceFile);
+          if (!fs.existsSync(resolved)) {
+            output.printError(`Source file not found: ${resolved}`);
+            return { success: false, exitCode: 1, message: `Source file not found: ${resolved}` };
+          }
+          try {
+            const raw = fs.readFileSync(resolved, 'utf-8');
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            templatePayload = { ...parsed, name, createdAt: templatePayload.createdAt };
+          } catch (err) {
+            const cause = err instanceof Error ? err.message : String(err);
+            output.printError(`Failed to read/parse ${resolved}: ${cause}`);
+            return { success: false, exitCode: 1, message: `Failed to read/parse ${resolved}: ${cause}` };
+          }
+        } else if (workflowId) {
+          // Try to fetch the workflow shape via MCP; fail-loud per
+          // feedback-no-fallbacks if the call fails (the user
+          // explicitly asked to save THIS workflow).
+          try {
+            const wfResult = await callMCPTool('workflow_status', { workflowId });
+            templatePayload = {
+              ...(wfResult as Record<string, unknown>),
+              name,
+              createdAt: templatePayload.createdAt,
+              sourceWorkflow: workflowId,
+            };
+          } catch (err) {
+            const cause = err instanceof MCPClientError ? err.message : String(err);
+            output.printError(`Could not fetch workflow ${workflowId}: ${cause}`);
+            return { success: false, exitCode: 1, message: `Could not fetch workflow ${workflowId}: ${cause}` };
+          }
+        }
+        // (No --workflow and no --file: persist a minimal placeholder
+        // so `workflow template list` surfaces the entry. This is the
+        // honest minimum; users typically refine via subsequent edits.)
+
+        // Write to `.claude-flow/templates/<name>.json` atomically.
+        const templatesDir = path.join(ctx.cwd, '.claude-flow', 'templates');
+        try {
+          fs.mkdirSync(templatesDir, { recursive: true });
+        } catch (err) {
+          const cause = err instanceof Error ? err.message : String(err);
+          output.printError(`Failed to create templates dir: ${cause}`);
+          return { success: false, exitCode: 1, message: `Failed to create templates dir: ${cause}` };
+        }
+
+        const targetPath = path.join(templatesDir, `${name}.json`);
+        try {
+          // Atomic write via temp-then-rename.
+          const tmpPath = `${targetPath}.tmp-${process.pid}`;
+          fs.writeFileSync(tmpPath, JSON.stringify(templatePayload, null, 2) + '\n', 'utf-8');
+          fs.renameSync(tmpPath, targetPath);
+        } catch (err) {
+          const cause = err instanceof Error ? err.message : String(err);
+          output.printError(`Failed to write ${targetPath}: ${cause}`);
+          return { success: false, exitCode: 1, message: `Failed to write ${targetPath}: ${cause}` };
+        }
+
+        output.printSuccess(`Template "${name}" created at ${targetPath}`);
         output.writeln(output.dim('  Use with: claude-flow workflow run -t ' + name));
 
-        return { success: true, data: { name, created: true } };
+        return { success: true, data: { name, created: true, path: targetPath } };
       }
     }
   ],
