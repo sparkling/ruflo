@@ -141,12 +141,18 @@ function renderTopologyProtocolBlock(topology: string): string {
 }
 
 // Consensus strategies
+// ADR-0238 S5: Raft entry honesty-corrected — agentdb's "raft" handler is
+// term-bucketed majority voting against a queen-elected leader, NOT real
+// Raft (no candidate state, no log replication, no RPC).
+// ADR-0238 S7: 'weighted' added to align with agentdb's `weighted.ts`
+// handler (queen 3x voting power per USERGUIDE; requires elected queen).
 const CONSENSUS_STRATEGIES = [
   { value: 'byzantine', label: 'Byzantine Fault Tolerant', hint: '2/3 majority, handles malicious actors' },
-  { value: 'raft', label: 'Raft', hint: 'Leader-based consensus' },
+  { value: 'raft', label: 'Raft-flavoured', hint: 'simple majority, no log replication (queen-elected leader, term-bucketed)' },
   { value: 'gossip', label: 'Gossip', hint: 'Eventually consistent, scalable' },
   { value: 'crdt', label: 'CRDT', hint: 'Conflict-free replicated data' },
-  { value: 'quorum', label: 'Quorum', hint: 'Simple majority voting' }
+  { value: 'quorum', label: 'Quorum', hint: 'Simple majority voting' },
+  { value: 'weighted', label: 'Queen-weighted', hint: 'queen 3x voting power (requires elected queen)' }
 ];
 
 /**

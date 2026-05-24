@@ -70,7 +70,14 @@ const HIVE_FILE = 'state.json';
 // the parameter and the state had nowhere to keep it. consensusStrategy
 // fixes both. Type added to the fork's wider HiveState (workerMeta,
 // HiveConfig, etc.) instead of the upstream-narrow shape.
-export type ConsensusStrategyName = 'raft' | 'byzantine' | 'gossip' | 'crdt' | 'quorum';
+// ADR-0238 S7: add 'weighted' to align CLI/MCP enum with the agentdb
+// dispatcher and the 277-LOC `weighted.ts` handler that already works.
+// The `weighted` strategy assigns the queen 3x voting power per USERGUIDE
+// (denominator = (N − 1) + queenWeight). Previously reachable only via
+// `{strategy: 'weighted'}` MCP payload; now reachable via
+// `claude-flow hive-mind --consensus weighted` and round-tripping through
+// state.json.
+export type ConsensusStrategyName = 'raft' | 'byzantine' | 'gossip' | 'crdt' | 'quorum' | 'weighted';
 
 // ── ADR-0122 (T4): typed memory entries with TTL ──────────────────────
 //
@@ -1518,8 +1525,10 @@ export const hiveMindTools: MCPTool[] = [
         // round-trip through `state.config`.
         consensus: {
           type: 'string',
-          enum: ['raft', 'byzantine', 'gossip', 'crdt', 'quorum'],
-          description: 'Consensus strategy. Default: raft (anti-drift). Use byzantine for f<n/3 fault tolerance.',
+          // ADR-0238 S7: 'weighted' added to align with agentdb dispatcher
+          // (handler at weighted.ts; queen 3x voting power per USERGUIDE).
+          enum: ['raft', 'byzantine', 'gossip', 'crdt', 'quorum', 'weighted'],
+          description: 'Consensus strategy. Default: raft (anti-drift). Use byzantine for f<n/3 fault tolerance. Use weighted for queen-weighted voting (requires elected queen).',
         },
         maxAgents: { type: 'number', description: 'Maximum number of worker agents' },
         persist: { type: 'boolean', description: 'Persist hive state across processes' },
