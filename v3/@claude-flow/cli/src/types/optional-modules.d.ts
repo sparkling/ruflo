@@ -62,6 +62,18 @@ declare module 'agentic-flow/router' {
   export function mapModelId(id: string): string;
 }
 
+declare module 'agentic-flow/coordination/autopilot-learning' {
+  // autopilot-state.ts:334 — `import('agentic-flow/coordination/autopilot-learning')`
+  // gated by a MODULE_NOT_FOUND catch; the export is a class with
+  // initialize() and a getMetrics() shape used by doctor.ts.
+  export class AutopilotLearning {
+    constructor(...args: any[]);
+    initialize(): Promise<boolean>;
+    getMetrics(): Promise<{ available: boolean; episodes: number; patterns: number }>;
+    [key: string]: unknown;
+  }
+}
+
 declare module 'agentic-flow/orchestration' {
   export function createOrchestrator(...args: any[]): any;
   export function createOrchestrationClient(...args: any[]): any;

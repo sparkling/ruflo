@@ -734,7 +734,10 @@ async function checkAutopilotLearning(): Promise<HealthCheck> {
         fix: 'npm install @sparkleideas/agentic-flow@latest',
       };
     }
-    const metrics = await (learning as {
+    // tryLoadLearning's return type narrows to { initialize, [key]: unknown }
+    // — getMetrics() is part of the actual AutopilotLearning instance but not
+    // surfaced in the narrow signature. Cast through `unknown` per TS2352.
+    const metrics = await (learning as unknown as {
       getMetrics(): Promise<{ available: boolean; episodes: number; patterns: number }>;
     }).getMetrics();
     return {

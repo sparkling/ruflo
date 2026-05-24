@@ -1018,7 +1018,8 @@ export const hooksRoute: MCPTool = {
       if (solver && typeof solver.selectArm === 'function') {
         const agents = ['coder', 'reviewer', 'tester', 'planner', 'researcher', 'security-architect'];
         const taskType = task;
-        const banditResult = await withTimeoutLogged(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const banditResult = await withTimeoutLogged<any>(
           solver.selectArm(taskType, agents),
           2000,
           'SolverBandit.selectArm',
@@ -1080,7 +1081,8 @@ export const hooksRoute: MCPTool = {
       const ls = await getController<any>('learningSystem');
       if (ls && typeof ls.recommendAlgorithm === 'function') {
         const taskType = task;
-        const recommendation = await withTimeoutLogged(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const recommendation = await withTimeoutLogged<any>(
           ls.recommendAlgorithm(taskType),
           2000,
           'LearningSystem.recommendAlgorithm',
@@ -1099,7 +1101,8 @@ export const hooksRoute: MCPTool = {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const semantic = await getController<any>('semanticRouter');
       if (semantic && typeof semantic.route === 'function') {
-        const routeResult = await withTimeoutLogged(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const routeResult = await withTimeoutLogged<any>(
           semantic.route({ input: task }),
           2000,
           'SemanticRouter.route',

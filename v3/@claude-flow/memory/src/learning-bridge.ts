@@ -105,6 +105,14 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   ewcLambda: readEwcLambdaFromConfig(2000), // ADR-0069 A5: config-chain EWC lambda
   consolidationThreshold: 10,
   enabled: true,
+  // Embedding dimension default (768) — used by createHashEmbedding when the
+  // per-call `dimensions` argument is absent. Required because ResolvedConfig
+  // narrows LearningBridgeConfig with Required<...>; explicit value keeps it
+  // self-documenting at the default site rather than buried in a fallback.
+  dimension: 768,
+  // embeddingDim is omitted from ResolvedConfig via Omit<> but is added back
+  // as a required `number` field on the intersection type.
+  embeddingDim: 768,
 };
 
 const MS_PER_HOUR = 3_600_000;

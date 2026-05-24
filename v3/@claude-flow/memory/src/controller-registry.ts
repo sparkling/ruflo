@@ -112,7 +112,9 @@ export type CLIControllerName =
   | 'indexHealthMonitor'         // B3
   | 'auditLogger'               // D3
   | 'telemetryManager'           // D1
-  | 'circuitBreaker';
+  | 'circuitBreaker'
+  | 'graphTransformer'           // ADR-0081
+  | 'hybridSearch';              // ADR-125 Phase 5
 
 /**
  * All controller names
@@ -1287,7 +1289,9 @@ export class ControllerRegistry extends EventEmitter {
         const resolved = getConfig();
         const lbConfig = this.config.memory?.learningBridge || {};
         const bridge = new LearningBridge(this.backend || noOpBackend, {
-          sonaMode: lbConfig.sonaMode || resolved.learning.sonaMode,
+          // resolve-config.ts widens sonaMode to string; cast back to SONAMode
+          // (the runtime value is gated to the union via resolve-config.ts).
+          sonaMode: (lbConfig.sonaMode || resolved.learning.sonaMode) as SONAMode,
           confidenceDecayRate: lbConfig.confidenceDecayRate ?? resolved.learning.confidenceDecayRate,
           accessBoostAmount: lbConfig.accessBoostAmount ?? resolved.learning.accessBoostAmount,
           consolidationThreshold: lbConfig.consolidationThreshold ?? resolved.learning.consolidationThreshold,
