@@ -322,8 +322,8 @@ export const PERFORMANCE_TARGETS = {
 /** Supported topology types */
 export const TOPOLOGY_TYPES = ['mesh', 'hierarchical', 'centralized', 'hybrid'] as const;
 
-/** Supported consensus algorithms */
-export const CONSENSUS_ALGORITHMS = ['raft', 'byzantine', 'gossip', 'paxos'] as const;
+/** Supported consensus algorithms (ADR-0238 S6: Paxos mode removed — was a silent Raft fallback). */
+export const CONSENSUS_ALGORITHMS = ['raft', 'byzantine', 'gossip'] as const;
 
 /** Default swarm configuration */
 export const DEFAULT_CONFIG = {

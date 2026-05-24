@@ -46,10 +46,13 @@ This module provides a **complete multi-agent coordination system** with hive-mi
 │   ├── Federation-wide consensus voting
 │   └── Auto-cleanup & heartbeat tracking
 │
-├── ConsensusEngines 🗳️ DISTRIBUTED AGREEMENT
-│   ├── Raft (leader election, log replication)
-│   ├── Byzantine (fault-tolerant, 2/3 supermajority)
-│   └── Gossip (epidemic protocol for large swarms)
+├── ConsensusEngines 🗳️ EXPERIMENTAL (QUARANTINED per ADR-0238 S4)
+│   ├── Raft (single-process EventEmitter simulation; no real RPC)
+│   ├── Byzantine (single-process; no malicious-actor isolation)
+│   └── Gossip (single-process; no network fanout)
+│   │
+│   └── See "Quarantine notice" below — live consensus dispatch path is
+│       `claude-flow hive-mind --consensus <mode>`, NOT this subtree.
 │
 └── SwarmHub (deprecated) - Thin facade for backward compatibility
 ```
@@ -227,6 +230,23 @@ const coordinator = createUnifiedSwarmCoordinator({
 - Best for large-scale enterprise deployments
 
 ## Consensus Algorithms
+
+> **Quarantine notice (ADR-0238 S4)**: The `ConsensusEngine` examples in this
+> section drive the `src/consensus/` subtree, which is **experimental**.
+> Implementations are local-EventEmitter simulations — peers are entries in
+> an in-process `Map`, so the protocols cannot deliver
+> distributed-consensus semantics. The subtree is retained (not deleted)
+> because upstream is actively extending it (`ruvnet/ruflo` commit
+> `22ca3b018`, ADR-095 G2 step 1 — pluggable ConsensusTransport + Ed25519
+> signing, 2026-05-11). New in-tree imports from `./consensus/` are
+> forbidden by `__tests__/no-new-consensus-imports.test.ts`.
+>
+> **Live consensus dispatch** for user-facing flows runs through
+> `claude-flow hive-mind --consensus <mode>` →
+> `cli/src/mcp-tools/hive-mind-tools.ts` → archivist →
+> `forks/agentdb/src/archivist/handlers/hive-mind/consensus/*` (per-strategy
+> threshold arithmetic, single-process state merge). Use that path for
+> production work.
 
 Choose how agents reach agreement:
 

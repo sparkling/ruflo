@@ -1,4 +1,23 @@
 /**
+ * ADR-0238 Surface 4 quarantine: NO NEW imports from this directory.
+ *
+ * Consensus implementation in this subtree is fork-internal stub state;
+ * production consensus routes through
+ * `cli/src/mcp-tools/hive-mind-tools.ts` → archivist dispatch →
+ * `forks/agentdb/src/archivist/handlers/hive-mind/consensus/*`. New code
+ * MUST import from there. Arch-test
+ * (`__tests__/no-new-consensus-imports.test.ts`) enforces no new in-tree
+ * importers beyond the baseline allowlist (`unified-coordinator.ts` +
+ * `index.ts` re-exports).
+ *
+ * Retained (not deleted) because upstream is actively extending this
+ * surface — see ruvnet/ruflo commit 22ca3b018 (ADR-095 G2 step 1 —
+ * pluggable ConsensusTransport + Ed25519 message signing, 2026-05-11).
+ * Delete-or-quarantine decision dispatched per ADR-0238 quarantine
+ * disposition (per swarm review Confirmation amendment).
+ */
+
+/**
  * V3 Byzantine Fault Tolerant Consensus
  * PBFT-style consensus for handling malicious or faulty nodes
  */

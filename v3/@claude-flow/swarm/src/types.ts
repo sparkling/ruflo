@@ -196,7 +196,12 @@ export interface TaskDefinition {
 
 // ===== CONSENSUS TYPES =====
 
-export type ConsensusAlgorithm = 'raft' | 'byzantine' | 'gossip' | 'paxos';
+// ADR-0238 S6: Paxos mode removed — the type previously advertised Paxos
+// support but `ConsensusEngine.initialize()` silently substituted Raft
+// with the comment "Fall back to Raft for similar guarantees"
+// (per [[feedback-no-fallbacks]]). The substitution is gone alongside
+// this enum trim. Re-add iff a real handler ships.
+export type ConsensusAlgorithm = 'raft' | 'byzantine' | 'gossip';
 
 export interface ConsensusConfig {
   algorithm: ConsensusAlgorithm;

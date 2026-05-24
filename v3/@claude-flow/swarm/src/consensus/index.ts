@@ -1,4 +1,23 @@
 /**
+ * ADR-0238 Surface 4 quarantine: NO NEW imports from this directory.
+ *
+ * Consensus implementation in this subtree is fork-internal stub state;
+ * production consensus routes through
+ * `cli/src/mcp-tools/hive-mind-tools.ts` → archivist dispatch →
+ * `forks/agentdb/src/archivist/handlers/hive-mind/consensus/*`. New code
+ * MUST import from there. Arch-test
+ * (`__tests__/no-new-consensus-imports.test.ts`) enforces no new in-tree
+ * importers beyond the baseline allowlist (`unified-coordinator.ts` +
+ * `index.ts` re-exports).
+ *
+ * Retained (not deleted) because upstream is actively extending this
+ * surface — see ruvnet/ruflo commit 22ca3b018 (ADR-095 G2 step 1 —
+ * pluggable ConsensusTransport + Ed25519 message signing, 2026-05-11).
+ * Delete-or-quarantine decision dispatched per ADR-0238 quarantine
+ * disposition (per swarm review Confirmation amendment).
+ */
+
+/**
  * V3 Consensus Engine Factory
  * Unified interface for different consensus algorithms
  */
@@ -74,15 +93,10 @@ export class ConsensusEngine extends EventEmitter implements IConsensusEngine {
         });
         break;
 
-      case 'paxos':
-        // Fall back to Raft for Paxos (similar guarantees)
-        this.implementation = createRaftConsensus(this.nodeId, {
-          threshold: this.config.threshold,
-          timeoutMs: this.config.timeoutMs,
-          maxRounds: this.config.maxRounds,
-          requireQuorum: this.config.requireQuorum,
-        });
-        break;
+      // ADR-0238 S6: Paxos case removed — was a silent Raft fallback per
+      // [[feedback-no-fallbacks]]. The enum (`ConsensusAlgorithm`) no
+      // longer advertises that mode, so an unknown algorithm now falls
+      // through to the default-error path below — fail loud.
 
       default:
         throw new Error(`Unknown consensus algorithm: ${this.config.algorithm}`);
