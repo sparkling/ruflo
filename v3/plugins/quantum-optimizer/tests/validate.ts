@@ -3,8 +3,8 @@
  * Tests all 5 MCP tools with valid data
  */
 
-import { quantumOptimizerTools, getTool, getToolNames } from '../dist/mcp-tools.js';
-import type { MCPToolResult } from '../dist/types.js';
+import { quantumOptimizerTools, getTool, getToolNames } from '../src/mcp-tools.js';
+import type { MCPToolResult } from '../src/types.js';
 
 // Helper to parse MCP result
 function parseResult(result: MCPToolResult): { success: boolean; data: any; error?: string } {
