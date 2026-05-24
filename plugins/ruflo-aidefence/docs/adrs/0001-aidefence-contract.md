@@ -32,10 +32,10 @@ Append three sections, retain existing content:
 
 - **Compatibility** — pin to `@sparkleideas/cli` v3.6.
 - **Namespace coordination** — `security-patterns` as the canonical namespace this plugin owns; defer to `ruflo-agentdb` ADR-0001 §"Namespace convention".
-- **The 3-gate pattern** — formalize the gates `ruflo-browser` ADR-0001 §4 already uses. Three gates, every consumer plugin handling untrusted content should apply them in this order:
-  1. **Pre-storage PII gate** (`aidefence_has_pii`) — before any AgentDB / memory_store write
-  2. **Sanitization gate** (`aidefence_scan`) — for cookies, tokens, high-entropy blobs; vault rather than embed
-  3. **Prompt-injection gate** (`aidefence_is_safe`) — for any extracted content flowing back to an LLM
+- **The 3-gate pattern (caller-opt-in)** — formalize the gates `ruflo-browser` ADR-0001 §4 already uses. **These gates are NOT enforced by the central MCP dispatch** (`mcp-client.ts::callMCPTool`, `archivist.dispatch` perform no aidefence pre-scan per ADR-0238 Surface 1). They are a caller-side convention every consumer plugin handling untrusted content **should** apply in this order; nothing in the platform forces them. Wiring real central-dispatch enforcement is deferred to a future product-bet ADR (PII consent model + redact-or-reject policy decisions):
+  1. **Pre-storage PII gate** (`aidefence_has_pii`) — caller invokes before any AgentDB / memory_store write
+  2. **Sanitization gate** (`aidefence_scan`) — caller invokes for cookies, tokens, high-entropy blobs; vault rather than embed
+  3. **Prompt-injection gate** (`aidefence_is_safe`) — caller invokes for any extracted content flowing back to an LLM
 - **Architecture Decisions** + **Verification** sections.
 
 ### 3. Plugin metadata

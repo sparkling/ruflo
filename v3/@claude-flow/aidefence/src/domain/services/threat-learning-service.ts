@@ -1,14 +1,19 @@
 /**
  * Threat Learning Service
  *
- * Self-learning threat pattern service using AgentDB for vector search
- * and ReasoningBank-style pattern storage.
+ * Optional learning service that records threat patterns into a pluggable
+ * `VectorStore` and retrieves similar ones for caller-side review.
+ * Defaults to `InMemoryVectorStore` (linear cosine scan over a `Map`); the
+ * HNSW speedup applies only when the caller passes an AgentDB-backed
+ * `VectorStore`, and comes from AgentDB's substrate — not this service.
+ * (ADR-0238 Surface 1 + ADR-0247 F-04-010 HNSW-scope clarification.)
  *
  * Features:
- * - HNSW-indexed threat pattern search (150x-12,500x faster)
- * - Pattern learning from successful detections
- * - Effectiveness tracking for adaptive mitigation
- * - Integration with agentic-flow attention mechanisms
+ * - `learnFromDetection()` writes `LearnedThreatPattern` records on
+ *   caller-provided detection results.
+ * - `searchSimilarThreats()` delegates to the pluggable `VectorStore`.
+ * - Effectiveness tracking via `recordMitigation()` and
+ *   `getBestMitigation()`.
  */
 
 import { getValidatedConfig } from '@claude-flow/shared/core';
@@ -165,8 +170,12 @@ export class ThreatLearningService {
   }
 
   /**
-   * Search for similar threat patterns using HNSW
-   * When connected to AgentDB, achieves 150x-12,500x speedup
+   * Search for similar threat patterns via the pluggable `VectorStore`.
+   *
+   * Default substrate is `InMemoryVectorStore` (linear cosine scan; no
+   * HNSW). Pass an AgentDB-backed `VectorStore` to use HNSW-indexed
+   * retrieval; the speedup is in AgentDB's substrate, not this method.
+   * (ADR-0238 Surface 1 + ADR-0247 F-04-010 HNSW-scope clarification.)
    */
   async searchSimilarThreats(
     query: string,

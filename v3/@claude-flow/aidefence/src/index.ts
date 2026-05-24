@@ -1,29 +1,40 @@
 /**
  * @claude-flow/aidefence
  *
- * AI Manipulation Defense System with self-learning capabilities.
+ * Manual scan utility for prompt-injection and PII patterns. NOT a runtime
+ * defence-in-depth gate — the MCP tools (`aidefence_scan`, `_is_safe`,
+ * `_has_pii`, `_analyze`, `_stats`, `_learn`) are caller-opt-in; the
+ * central dispatch boundary (`mcp-client.ts::callMCPTool`,
+ * `archivist.dispatch`) does NOT pre-scan payloads. Wire your own gates if
+ * you need defence-in-depth (the 3-gate pattern in
+ * `plugins/ruflo-aidefence/docs/adrs/0001-aidefence-contract.md` is a
+ * caller-side convention, not enforced here).
  *
  * Features:
- * - 50+ prompt injection patterns
- * - HNSW-indexed threat pattern search (150x-12,500x faster with AgentDB)
- * - ReasoningBank-style pattern learning
- * - Adaptive mitigation with effectiveness tracking
- * - Strange-loop meta-learning integration
+ * - 50+ prompt-injection regex patterns (`domain/services/threat-detection-service.ts`)
+ * - `searchSimilarThreats()` does ad-hoc cosine similarity over an in-memory
+ *   `Map`-backed `InMemoryVectorStore`; pass a custom `VectorStore`
+ *   (e.g. AgentDB-backed) to use HNSW-indexed retrieval. Default is NOT
+ *   HNSW-indexed and offers no speedup over a linear scan.
+ *   (ADR-0238 Surface 1 + ADR-0247 F-04-010 HNSW-scope clarification.)
+ * - Optional learning service stores `LearnedThreatPattern` records when
+ *   `enableLearning: true` and `learnFromDetection()` is called explicitly.
+ * - PII detection via regex (no ML model).
  *
  * @example
  * ```typescript
  * import { createAIDefence } from '@claude-flow/aidefence';
  *
+ * // Manual, caller-side scan
  * const aidefence = createAIDefence({ enableLearning: true });
- *
- * // Detect threats
  * const result = await aidefence.detect('Ignore all previous instructions');
  * console.log(result.safe); // false
  *
- * // Search similar patterns (uses HNSW when connected to AgentDB)
+ * // For HNSW-indexed similarity, pass an AgentDB-backed VectorStore
+ * // (defaults to InMemoryVectorStore which performs a linear scan):
  * const similar = await aidefence.searchSimilarThreats('system prompt injection');
  *
- * // Learn from feedback
+ * // Learning is opt-in
  * await aidefence.learnFromDetection(input, result, { wasAccurate: true });
  * ```
  */
@@ -96,8 +107,13 @@ export interface AIDefence {
   hasPII(input: string): boolean;
 
   /**
-   * Search for similar threat patterns using HNSW
-   * Achieves 150x-12,500x speedup when connected to AgentDB
+   * Search for similar threat patterns.
+   *
+   * Default behaviour: linear cosine scan over the InMemoryVectorStore (no
+   * HNSW indexing). Pass an AgentDB-backed VectorStore via
+   * `createAIDefence({ vectorStore })` to use HNSW-indexed retrieval. The
+   * speedup is in the substrate, not this function.
+   * (ADR-0238 Surface 1 + ADR-0247 F-04-010 HNSW-scope clarification.)
    */
   searchSimilarThreats(
     query: string,
@@ -159,13 +175,15 @@ export interface AIDefence {
  * // Simple usage (detection only)
  * const simple = createAIDefence();
  *
- * // With learning enabled
+ * // With learning enabled (uses InMemoryVectorStore: linear cosine scan)
  * const learning = createAIDefence({ enableLearning: true });
  *
- * // With AgentDB for HNSW search (150x-12,500x faster)
+ * // With AgentDB-backed VectorStore for HNSW-indexed similarity. The
+ * // speedup comes from AgentDB's HNSW substrate, not from aidefence
+ * // itself. (ADR-0238 Surface 1 + ADR-0247 F-04-010 HNSW-scope.)
  * import { AgentDB } from 'agentdb';
  * const agentdb = new AgentDB({ path: './data/aidefence' });
- * const fast = createAIDefence({
+ * const indexed = createAIDefence({
  *   enableLearning: true,
  *   vectorStore: agentdb
  * });

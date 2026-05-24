@@ -301,11 +301,17 @@ export const browserSessionTools: MCPTool[] = [
   // ==========================================================================
   // browser_cookie_use — fetch a vaulted cookie handle
   // ==========================================================================
+  // ADR-0238 S1: description honesty — this tool does not run an AIDefence
+  // scan. It reads whatever the `browser-cookies` namespace writer (e.g.
+  // browser-login) stored. The convention is that the writer attaches a
+  // vault_handle + expiry (+ optionally an aidefence_verdict the writer
+  // computed); this tool surfaces whatever is there. It does NOT verify
+  // the verdict exists or pre-scan returned content.
   {
     name: 'browser_cookie_use',
-    description: 'Fetch a vault handle for a host from the browser-cookies AgentDB namespace. Raw cookie values are NEVER returned — only the opaque handle plus expiry / AIDefence verdict.',
+    description: 'Fetch a vault handle for a host from the browser-cookies AgentDB namespace. Raw cookie values are NEVER returned — only the opaque handle plus expiry. (Whether an AIDefence verdict is attached depends on the writer; this tool does not run a scan.)',
     category: 'browser-session',
-    tags: ['cookie', 'agentdb', 'aidefence', 'auth'],
+    tags: ['cookie', 'agentdb', 'auth'],
     inputSchema: {
       type: 'object',
       properties: {
@@ -320,7 +326,10 @@ export const browserSessionTools: MCPTool[] = [
         '--namespace', 'browser-cookies',
         '--key', input.host as string], { timeout: 60000 });
       if (!r.success) return fail('cookie lookup failed', { detail: r.error, stderr: r.stderr });
-      // The contract: the value blob includes a vault_handle, expiry, aidefence_verdict.
+      // The convention: the value blob includes a vault_handle, expiry, and
+      // OPTIONALLY an aidefence_verdict attached by the writer (browser-login).
+      // This tool surfaces whatever the writer stored; it does NOT run a scan
+      // here (ADR-0238 S1 — no central-dispatch enforcement; caller-opt-in).
       // Raw values do not enter this namespace (browser-login is responsible).
       return ok({
         host: input.host,
