@@ -122,6 +122,13 @@ export class EmbeddingPipeline {
   // real values after successful init. `'uninitialized'` is the only
   // pre-init state.
   private provider: 'transformers.js' | 'ruvector' | 'uninitialized' = 'uninitialized';
+  // ADR-0239 cluster 4 step (a) / F-08-008: which transformers package
+  // satisfied the runtime. Populated by `_doInitialize` when the
+  // provider is `'transformers.js'`. Surfaced via `getProviderSource()`
+  // to feed `embeddings_status.runtime.source` so operators can verify
+  // ADR-0094 CVE mitigation (`@huggingface/transformers` preferred over
+  // legacy `@xenova/transformers`).
+  private providerSource: '@huggingface/transformers' | '@xenova/transformers' | null = null;
 
   constructor(config: EmbeddingConfig) {
     this.embeddingConfig = config;
@@ -129,11 +136,20 @@ export class EmbeddingPipeline {
 
   /**
    * Load the embedding model. Tries providers in order:
-   *   1. @xenova/transformers  (ONNX, highest quality)
-   *   2. ruvector              (bundled MiniLM)
-   *   3. hash-fallback         (deterministic, non-semantic)
+   *   1. transformers (ONNX) via the ADR-0094 CVE-mitigated loader —
+   *      prefers `@huggingface/transformers` (protobufjs >=7.5.5),
+   *      falls back to legacy `@xenova/transformers` if the new
+   *      package isn't installed.
+   *   2. ruvector (bundled MiniLM)
    *
    * Validates dimension on a probe embedding to fail loudly at startup.
+   *
+   * ADR-0239 cluster 4 step (a): the live transformers import now goes
+   * through `transformers-loader.ts` (relocated from the dead
+   * `@claude-flow/embeddings` package) so the live embedding path picks
+   * up the CVE-mitigated `@huggingface/transformers` preference.
+   * Before this change, the live path hardcoded `@xenova/transformers`
+   * and silently inherited the protobufjs <7.5.5 RCE chain.
    */
   private _initPromise: Promise<void> | null = null;
 
@@ -155,13 +171,27 @@ export class EmbeddingPipeline {
       process.env.TRANSFORMERS_CACHE = path.join(os.homedir(), '.cache', 'transformers');
     }
 
-    // Try 1: @xenova/transformers
+    // Try 1: transformers (ONNX) via the ADR-0094 CVE-mitigated loader.
+    // ADR-0239 cluster 4 step (a): prefer @huggingface/transformers, fall
+    // back to legacy @xenova/transformers if the new package isn't
+    // installed. The loader records which package satisfied the runtime
+    // on `providerSource` for surfacing via embeddings_status.
     let transformersErr: unknown = null;
     try {
-      const transformers = await import('@xenova/transformers');
-      const { pipeline } = transformers;
-      this.model = await pipeline('feature-extraction', this.embeddingConfig.model);
+      const { loadTransformersPipeline } = await import('./transformers-loader.js');
+      const handle = await loadTransformersPipeline();
+      if (!handle) {
+        // Neither @huggingface/transformers nor @xenova/transformers is
+        // installed. Surface as a typed failure so the ruvector branch
+        // can take over (or fail-loud per ADR-0234 if it also fails).
+        throw new Error(
+          '[embedding-pipeline] transformers loader returned null — neither ' +
+          '@huggingface/transformers nor @xenova/transformers is installed.',
+        );
+      }
+      this.model = await handle.pipeline('feature-extraction', this.embeddingConfig.model);
       this.provider = 'transformers.js';
+      this.providerSource = handle.source;
     } catch (e: any) {
       transformersErr = e;
       // Try 2: ruvector
@@ -237,6 +267,18 @@ export class EmbeddingPipeline {
   /** Which provider is actually active after initialize(). */
   getProvider(): string {
     return this.provider;
+  }
+
+  /**
+   * Which transformers package satisfied the runtime
+   * (`@huggingface/transformers` or `@xenova/transformers`), or `null`
+   * if `provider !== 'transformers.js'` or initialize() hasn't run.
+   *
+   * ADR-0239 cluster 4 step (a) / F-08-008: surface the ADR-0094 CVE
+   * posture (preferred vs legacy) on `embeddings_status.runtime.source`.
+   */
+  getProviderSource(): '@huggingface/transformers' | '@xenova/transformers' | null {
+    return this.providerSource;
   }
 
   /** Whether initialize() has completed successfully. */

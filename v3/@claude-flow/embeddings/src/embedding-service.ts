@@ -387,7 +387,9 @@ export class TransformersEmbeddingService extends BaseEmbeddingService {
       // ADR-094: try @huggingface/transformers first (clears the
       // protobufjs <7.5.5 critical RCE chain), fall back to legacy
       // @xenova/transformers for backwards compatibility.
-      const { loadTransformersPipeline } = await import('./transformers-loader.js');
+      // ADR-0239 cluster 4 step (a): canonical loader has moved to
+      // @claude-flow/memory; this dead-stack file is deleted in step (c).
+      const { loadTransformersPipeline } = await import('@claude-flow/memory/transformers-loader.js');
       const handle = await loadTransformersPipeline();
       if (!handle) {
         throw new Error(

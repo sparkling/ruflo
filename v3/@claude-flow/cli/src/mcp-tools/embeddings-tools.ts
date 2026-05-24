@@ -905,6 +905,34 @@ export const embeddingsTools: MCPTool[] = [
 
       const ruvectorEnabled = config.neural.ruvector?.enabled ?? false;
 
+      // ADR-0239 cluster 4 step (a) / F-08-008: surface which transformers
+      // package the live embedding path would resolve. Uses the relocated
+      // transformers-loader (now in @claude-flow/memory) so the answer
+      // reflects the actual resolution order (@huggingface/transformers
+      // preferred over @xenova/transformers per ADR-0094 CVE mitigation).
+      //
+      // Indirect import through a string variable so TypeScript doesn't
+      // try to resolve the subpath at compile time (the dist file only
+      // exists after `@claude-flow/memory` builds and installs into the
+      // CLI's node_modules — same pattern transformers-loader uses for
+      // the optional transformers packages).
+      let runtimeSource: '@huggingface/transformers' | '@xenova/transformers' | null = null;
+      let runtimeVersion: string | undefined;
+      try {
+        const loaderSpecifier = '@claude-flow/memory/transformers-loader.js';
+        const loader = await import(/* @vite-ignore */ loaderSpecifier) as {
+          loadTransformersPipeline: () => Promise<{
+            source: '@huggingface/transformers' | '@xenova/transformers';
+            version?: string;
+          } | null>;
+        };
+        const handle = await loader.loadTransformersPipeline();
+        if (handle) {
+          runtimeSource = handle.source;
+          runtimeVersion = handle.version;
+        }
+      } catch { /* loader unavailable — runtime.source stays null */ }
+
       return {
         success: true,
         initialized: true,
@@ -926,6 +954,17 @@ export const embeddingsTools: MCPTool[] = [
               version: ruvectorVersion,
             },
           },
+        },
+        // ADR-0239 cluster 4 step (a) acceptance gate: confirms
+        // @huggingface/transformers is the resolved source on a fresh
+        // install. `runtime.source === '@huggingface/transformers'`
+        // means the CVE mitigation landed; `'@xenova/transformers'`
+        // means the install fell back to the legacy package (CVE chain
+        // still exposed); `null` means no transformers package is
+        // installed at all.
+        runtime: {
+          source: runtimeSource,
+          version: runtimeVersion,
         },
         paths: {
           config: getConfigPath(),
