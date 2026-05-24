@@ -22,6 +22,43 @@ export interface ParserOptions {
   defaults?: Record<string, unknown>;
 }
 
+/**
+ * ADR-0244 site #11 (F-01-009): coerce a CommandOption's declared
+ * default value to its declared type. String defaults like
+ * `default: 'false'` on `type: 'boolean'` previously slipped through
+ * `applyDefaults` as the literal string 'false', which
+ * `Boolean(...)` reads as truthy and strict-equality checks silently
+ * branched the wrong way.
+ *
+ * Coercions:
+ *   - `type: 'boolean'` + string default → `'true'` / `'false'`
+ *     mapped to boolean; any other string ⇒ `Boolean(value)` (which
+ *     is `true` for non-empty strings).
+ *   - `type: 'number'` + string default → `Number(value)` (NaN
+ *     propagates rather than masking the misdeclaration).
+ *   - `type: 'string[]'` / `type: 'array'` + string default →
+ *     `value.split(',').map(s => s.trim())`.
+ *   - Otherwise: return the value verbatim (already the declared
+ *     type, or no coercion mapped).
+ */
+function coerceDefault(opt: CommandOption, value: unknown): string | boolean | number | string[] {
+  if (opt.type === 'boolean' && typeof value === 'string') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return Boolean(value);
+  }
+  if (opt.type === 'number' && typeof value === 'string') {
+    return Number(value);
+  }
+  // 'array' is the union member for string-array flags in
+  // CommandOption. (ADR-0244 swarm-review E2 expert flagged this as
+  // 'string[]' in the audit; the cli-core type uses 'array'.)
+  if (opt.type === 'array' && typeof value === 'string') {
+    return value.split(',').map((s) => s.trim());
+  }
+  return value as string | boolean | number | string[];
+}
+
 export class CommandParser {
   private options: ParserOptions;
   private commands: Map<string, Command> = new Map();
@@ -483,7 +520,18 @@ export class CommandParser {
     for (const opt of this.globalOptions) {
       const key = this.normalizeKey(opt.name);
       if (flags[key] === undefined && opt.default !== undefined) {
-        flags[key] = opt.default as string | boolean | number | string[];
+        // ADR-0244 site #11 (F-01-009): coerce string defaults to
+        // declared type before assigning. Previously a string default
+        // like `default: 'false'` on a `type: 'boolean'` option was
+        // assigned verbatim — `Boolean('false') === true` AND
+        // `flag === false` strict-equality silently took the wrong
+        // branch. Same story for `default: '100'` on `type: 'number'`
+        // and `default: 'a,b,c'` on `type: 'string[]'` /
+        // `type: 'array'`. The 3-line coercion at this seam closes
+        // the CC-03 class across 25+ option sites without per-command
+        // file edits. Upstream `ruvnet/ruflo` ships the verbatim-cast
+        // bug; the fix is fork-only merge-tax per ADR-0244.
+        flags[key] = coerceDefault(opt, opt.default);
       }
     }
 
