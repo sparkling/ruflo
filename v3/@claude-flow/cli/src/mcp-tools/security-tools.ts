@@ -24,8 +24,15 @@ type AIDefenceInstance = ReturnType<typeof import('@claude-flow/aidefence').crea
 // Lazy-loaded AIDefence instance
 let aidefenceInstance: AIDefenceInstance | null = null;
 
-// Track if we've attempted install this session
-let installAttempted = false;
+// ADR-0247 site #3 (F-04-011): track WHEN we last attempted install so a
+// transient npm/registry failure no longer pins aidefence "off" for the
+// entire MCP-server-process lifetime. After INSTALL_BACKOFF_MS the gate
+// resets and the install path runs again.
+let installAttemptedAt: number | null = null;
+const INSTALL_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+// Cache the last install-attempt error so retries within the backoff window
+// return the same actionable message instead of a generic "not available".
+let installError: Error | null = null;
 
 // ADR-093 follow-up: wrapper-level counters for the lightweight aidefence
 // tools (has_pii, is_safe, scan-quick) that bypass the package's own
@@ -70,18 +77,34 @@ async function getAIDefence(): Promise<AIDefenceInstance> {
     }
   }
 
-  // Don't attempt install more than once per session
-  if (installAttempted) {
-    throw new Error('AIDefence package not available. Install with: npm install @claude-flow/aidefence');
+  // ADR-0247 site #3 (F-04-011): re-attempt install after INSTALL_BACKOFF_MS
+  // so a transient failure self-recovers instead of pinning aidefence "off"
+  // for the rest of the MCP-server-process lifetime.
+  if (installAttemptedAt !== null) {
+    const sinceMs = Date.now() - installAttemptedAt;
+    if (sinceMs < INSTALL_BACKOFF_MS) {
+      const retryAt = new Date(installAttemptedAt + INSTALL_BACKOFF_MS).toISOString();
+      const cachedMsg = installError ? installError.message : 'AIDefence package not available';
+      throw new Error(
+        `${cachedMsg} (cached; auto-retry after ${retryAt})`
+      );
+    }
+    // Past backoff window — reset and re-enter the install path
+    installAttemptedAt = null;
+    installError = null;
   }
-  installAttempted = true;
+  installAttemptedAt = Date.now();
 
   // Second attempt - auto-install and retry
   console.error(`[claude-flow] ${packageName} not found, attempting auto-install...`);
   const installed = await autoInstallPackage(packageName);
 
   if (!installed) {
-    throw new Error('AIDefence package not available. Install with: npm install @claude-flow/aidefence');
+    // ADR-0247 site #3 (F-04-011): cache so the 5-min backoff returns the
+    // same message instead of an ambiguous "not available".
+    const err = new Error('AIDefence package not available. Install with: npm install @claude-flow/aidefence');
+    installError = err;
+    throw err;
   }
 
   // #1807 — auto-install lands the package somewhere Node's standard
@@ -117,14 +140,20 @@ async function getAIDefence(): Promise<AIDefenceInstance> {
     console.error(`[claude-flow] ${packageName} loaded after install (file:// path)`);
     return instance;
   } catch (retryError) {
-    throw new Error(
+    // ADR-0247 site #3 (F-04-011): cache the error so the same actionable
+    // message surfaces during the 5-minute backoff window, and include a
+    // "backoff until <ISO>" hint so operators know recovery is automatic.
+    const retryAt = new Date((installAttemptedAt ?? Date.now()) + INSTALL_BACKOFF_MS).toISOString();
+    const err = new Error(
       `AIDefence installed but failed to load: ${retryError}.\n` +
       `This usually means npm installed the package somewhere Node's module resolver doesn't search ` +
       `(common with global installs of \`claude-flow\`). Recovery options:\n` +
       `  1. Run \`npm install --save @claude-flow/aidefence\` in your project's working directory.\n` +
       `  2. Or run \`npx ruflo@latest mcp start\` from a directory whose node_modules contains the package.\n` +
-      `  3. Or restart the MCP server after the install completes.`
+      `  3. Or wait for auto-retry: backoff until ${retryAt}.`
     );
+    installError = err;
+    throw err;
   }
 }
 
