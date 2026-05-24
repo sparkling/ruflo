@@ -17,7 +17,9 @@ async function loadBMSSP(): Promise<void> {
   if (WasmGraph) return;
 
   try {
-    const bmssp = await import('@ruvnet/bmssp');
+    // `as string` defers module-name type resolution — @ruvnet/bmssp is an
+    // optional WASM dep that may not be installed (handled by the catch).
+    const bmssp = await import('@ruvnet/bmssp' as string);
     await bmssp.default(); // Initialize WASM
     WasmGraph = bmssp.WasmGraph;
   } catch (error) {
