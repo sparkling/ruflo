@@ -23,8 +23,8 @@ If you've cloned the repository:
 
 ```bash
 # Clone the repository
-git clone https://github.com/ruvnet/claude-flow.git
-cd claude-flow
+git clone https://github.com/sparkling/ruflo.git
+cd ruflo
 
 # In Claude Code, install the plugin
 /plugin add .
@@ -199,8 +199,8 @@ ls -la agents/
 
 ```
 # Try local installation
-git clone https://github.com/ruvnet/claude-flow.git
-cd claude-flow
+git clone https://github.com/sparkling/ruflo.git
+cd ruflo
 /plugin add .
 ```
 
@@ -210,8 +210,8 @@ cd claude-flow
 
 - **Documentation**: See README.md for complete documentation
 - **Quick Start**: See docs/QUICKSTART.md for 5-minute guide
-- **GitHub Issues**: https://github.com/ruvnet/claude-flow/issues
-- **Discussions**: https://github.com/ruvnet/claude-flow/discussions
+- **GitHub Issues**: https://github.com/sparkling/ruflo/issues
+- **Discussions**: https://github.com/sparkling/ruflo/discussions
 
 ---
 

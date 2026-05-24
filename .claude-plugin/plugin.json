@@ -1,18 +1,17 @@
 {
-  "name": "claude-flow",
-  "version": "2.5.0",
+  "name": "ruflo",
+  "version": "3.7.0-alpha.10-patch.298",
   "description": "Enterprise AI agent orchestration plugin with 150+ commands, 74+ specialized agents, SPARC methodology, swarm coordination, GitHub integration, and neural training capabilities",
   "author": {
-    "name": "rUv",
-    "email": "ruv@ruv.net"
+    "name": "Henrik Pettersen"
   },
-  "homepage": "https://github.com/ruvnet/claude-flow",
+  "homepage": "https://github.com/sparkling/ruflo",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ruvnet/claude-flow.git"
+    "url": "https://github.com/sparkling/ruflo.git"
   },
   "bugs": {
-    "url": "https://github.com/ruvnet/claude-flow/issues"
+    "url": "https://github.com/sparkling/ruflo/issues"
   },
   "license": "MIT",
   "keywords": [

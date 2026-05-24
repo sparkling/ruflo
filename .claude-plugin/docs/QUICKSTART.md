@@ -19,8 +19,8 @@ In Claude Code:
 
 ```bash
 # Clone the repository
-git clone https://github.com/ruvnet/claude-flow.git
-cd claude-flow
+git clone https://github.com/sparkling/ruflo.git
+cd ruflo
 ```
 
 Then in Claude Code:
@@ -201,11 +201,11 @@ The swarm automatically:
 ### Add MCP Servers
 
 ```bash
-# Core MCP (required)
-claude mcp add claude-flow npx claude-flow@alpha mcp start
+# Core MCP (required) — per ADR-0117 service-method install
+claude mcp add ruflo -- npx -y @sparkleideas/ruflo@latest mcp start
 
 # Enhanced coordination (optional)
-claude mcp add ruv-swarm npx ruv-swarm mcp start
+claude mcp add ruv-swarm -- npx -y ruv-swarm mcp start
 
 # Cloud features (optional - requires auth)
 claude mcp add flow-nexus npx flow-nexus@latest mcp start
@@ -297,10 +297,10 @@ ls ~/.claude/commands/
 cat ~/.claude/settings.json
 
 # Verify MCP package
-npx claude-flow@alpha --version
+npx -y @sparkleideas/ruflo@latest --version
 
 # Reinstall if needed
-npm install -g claude-flow@alpha
+npm install -g @sparkleideas/ruflo
 ```
 
 ### Agents Not Spawning

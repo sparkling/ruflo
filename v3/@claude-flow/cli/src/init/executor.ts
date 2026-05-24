@@ -1188,50 +1188,22 @@ async function writeHelpers(
 ): Promise<void> {
   const helpersDir = path.join(targetDir, '.claude', 'helpers');
 
-  // Find source helpers directory (works for npm package and local dev)
-  const sourceHelpersDir = findSourceHelpersDir(options.sourceBaseDir);
-
   // Always materialize .claude/scripts/check-patches.sh alongside helpers.
   // settings-generator.ts wires the SessionStart hook to
   //   bash "$(git rev-parse --show-toplevel)"/.claude/scripts/check-patches.sh --global
   // — if we skip this write, the hook points at a non-existent file and
   // tests/unit/hook-paths.test.mjs (paired in ruflo-patch) fails.
-  // This runs regardless of the helpers-copy path below.
+  // This runs regardless of the helpers path below.
   await writeCheckPatchesScript(targetDir, options, result);
 
-  // Try to copy existing helpers from source first
-  if (sourceHelpersDir && fs.existsSync(sourceHelpersDir)) {
-    const helperFiles = fs.readdirSync(sourceHelpersDir);
-    let copiedCount = 0;
-
-    for (const file of helperFiles) {
-      const sourcePath = path.join(sourceHelpersDir, file);
-      const destPath = path.join(helpersDir, file);
-
-      // Skip directories and only copy files
-      if (!fs.statSync(sourcePath).isFile()) continue;
-
-      if (!fs.existsSync(destPath) || options.force) {
-        fs.copyFileSync(sourcePath, destPath);
-
-        // Make shell scripts and mjs files executable
-        if (file.endsWith('.sh') || file.endsWith('.mjs')) {
-          fs.chmodSync(destPath, '755');
-        }
-
-        result.created.files.push(`.claude/helpers/${file}`);
-        copiedCount++;
-      } else {
-        result.skipped.push(`.claude/helpers/${file}`);
-      }
-    }
-
-    if (copiedCount > 0) {
-      return; // Skip generating if we copied from source
-    }
-  }
-
-  // Fall back to generating helpers if source not available
+  // ADR-0235: generator output wins. Generate the 8 known helpers FIRST
+  // (lines 1234-1243 in pre-ADR-0235 layout), then copy any bundled-static
+  // names the generator did not produce. The bundled static at
+  // v3/@claude-flow/cli/.claude/helpers/ has been removed (ADR-0235 Option B),
+  // so the copy block is normally a no-op — it remains here as defense in
+  // depth in case a future commit re-introduces the bundled directory:
+  // generator output ships even if bundled is present (Option D preference
+  // inversion). Paired with init-helpers-parity.test.mjs in ruflo-patch.
   const helpers: Record<string, string> = {
     'pre-commit': generatePreCommitHook(),
     'post-commit': generatePostCommitHook(),
@@ -1257,6 +1229,35 @@ async function writeHelpers(
       result.created.files.push(`.claude/helpers/${name}`);
     } else {
       result.skipped.push(`.claude/helpers/${name}`);
+    }
+  }
+
+  // ADR-0235: defense-in-depth fallback. Copy any bundled-static files that
+  // do not collide with the generator-produced names above. Generator wins
+  // for the 8 names; bundled static (if present) serves any remaining names.
+  // After ADR-0235 Option B, findSourceHelpersDir() typically returns null
+  // (sentinel hook-handler.mjs deleted), so this block is normally a no-op.
+  const sourceHelpersDir = findSourceHelpersDir(options.sourceBaseDir);
+  if (sourceHelpersDir && fs.existsSync(sourceHelpersDir)) {
+    const generatorNames = new Set(Object.keys(helpers));
+    const helperFiles = fs.readdirSync(sourceHelpersDir);
+
+    for (const file of helperFiles) {
+      if (generatorNames.has(file)) continue; // generator already wrote this name
+      const sourcePath = path.join(sourceHelpersDir, file);
+      const destPath = path.join(helpersDir, file);
+
+      if (!fs.statSync(sourcePath).isFile()) continue;
+
+      if (!fs.existsSync(destPath) || options.force) {
+        fs.copyFileSync(sourcePath, destPath);
+        if (file.endsWith('.sh') || file.endsWith('.mjs')) {
+          fs.chmodSync(destPath, '755');
+        }
+        result.created.files.push(`.claude/helpers/${file}`);
+      } else {
+        result.skipped.push(`.claude/helpers/${file}`);
+      }
     }
   }
 }

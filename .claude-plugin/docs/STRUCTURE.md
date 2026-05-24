@@ -15,8 +15,7 @@ claude-flow/
 │   ├── STRUCTURE.md             # This file
 │   ├── docs/
 │   │   └── QUICKSTART.md        # 5-minute quickstart
-│   └── scripts/
-│       ├── install.sh           # Installation script
+│   └── scripts/                # ADR-0235: install.sh removed (use `claude mcp add`)
 │       ├── verify.sh            # Verification script
 │       └── uninstall.sh         # Uninstallation script
 │

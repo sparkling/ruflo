@@ -2,10 +2,10 @@
 
 ## ✅ Plugin Status: PRODUCTION READY
 
-**Version**: 2.5.0
+**Version**: 3.7.0-alpha.10-patch.298
 **License**: MIT
-**Author**: rUv
-**Repository**: https://github.com/ruvnet/claude-flow
+**Author**: Henrik Pettersen
+**Repository**: https://github.com/sparkling/ruflo
 
 ---
 
@@ -17,8 +17,7 @@ claude-flow/
 │   ├── plugin.json           ✓ Official plugin metadata
 │   ├── marketplace.json      ✓ Marketplace distribution metadata
 │   ├── README.md             ✓ Comprehensive documentation (20KB)
-│   ├── scripts/
-│   │   ├── install.sh       ✓ Full installation script
+│   ├── scripts/             ✓ ADR-0235: install.sh removed (use `claude mcp add`)
 │   │   ├── verify.sh        ✓ Verification script
 │   │   └── uninstall.sh     ✓ Uninstallation script
 │   └── docs/
@@ -292,9 +291,9 @@ Should show `claude-flow` as active.
 
 ## 🤝 Support & Community
 
-- **Repository**: https://github.com/ruvnet/claude-flow
-- **Issues**: https://github.com/ruvnet/claude-flow/issues
-- **Discussions**: https://github.com/ruvnet/claude-flow/discussions
+- **Repository**: https://github.com/sparkling/ruflo
+- **Issues**: https://github.com/sparkling/ruflo/issues
+- **Discussions**: https://github.com/sparkling/ruflo/discussions
 - **Website**: https://flow-nexus.ruv.io
 
 ---
@@ -302,7 +301,7 @@ Should show `claude-flow` as active.
 ## 📝 License & Attribution
 
 - **License**: MIT
-- **Author**: rUv (ruv@ruv.net)
+- **Author**: Henrik Pettersen
 - **Copyright**: 2025
 - **Open Source**: Free for personal and commercial use
 
@@ -326,25 +325,20 @@ The plugin is configured via `.claude-plugin/plugin.json`:
 
 ```json
 {
-  "name": "claude-flow",
-  "version": "2.5.0",
+  "name": "ruflo",
+  "version": "3.7.0-alpha.10-patch.298",
   "description": "Enterprise AI agent orchestration plugin...",
   "author": {
-    "name": "rUv",
-    "email": "ruv@ruv.net"
+    "name": "Henrik Pettersen"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ruvnet/claude-flow.git"
-  },
-  "mcpServers": {
-    "claude-flow": {
-      "command": "npx",
-      "args": ["claude-flow@alpha", "mcp", "start"]
-    }
+    "url": "https://github.com/sparkling/ruflo.git"
   }
 }
 ```
+
+Note: `mcpServers` is registered separately via `claude mcp add ruflo -- npx -y @sparkleideas/ruflo@latest mcp start` per ADR-0117 (service-method install).
 
 Commands and agents are automatically discovered from `commands/` and `agents/` directories.
 
@@ -357,5 +351,5 @@ Users install with:
 
 **Plugin Status**: PRODUCTION READY
 **Last Updated**: 2025-10-09
-**Version**: 2.5.0
+**Version**: 3.7.0-alpha.10-patch.298
 **Specification**: Claude Code Official Plugin Format

@@ -1,6 +1,6 @@
 # 🚀 Claude Flow Plugin - Complete Enterprise AI Agent Orchestration
 
-[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](https://github.com/ruvnet/claude-flow)
+[![Version](https://img.shields.io/badge/version-3.7.0-blue.svg)](https://github.com/sparkling/ruflo)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-%3E%3D2.0.0-purple.svg)](https://claude.com/code)
 
@@ -282,14 +282,14 @@ Claude Flow is the most comprehensive Claude Code plugin for enterprise AI agent
 In Claude Code:
 
 ```
-/plugin add ruvnet/claude-flow
+/plugin add sparkling/ruflo
 ```
 
 Or from local directory:
 
 ```bash
-git clone https://github.com/ruvnet/claude-flow.git
-cd claude-flow
+git clone https://github.com/sparkling/ruflo.git
+cd ruflo
 ```
 
 Then in Claude Code:
@@ -306,10 +306,10 @@ Then in Claude Code:
 ### 3. Configure MCP Servers (Optional)
 
 ```bash
-# Add MCP servers to Claude Code
-claude mcp add claude-flow npx claude-flow@alpha mcp start
-claude mcp add ruv-swarm npx ruv-swarm mcp start  # Optional
-claude mcp add flow-nexus npx flow-nexus@latest mcp start  # Optional
+# Add MCP servers to Claude Code (per ADR-0117, ADR-0235)
+claude mcp add ruflo -- npx -y @sparkleideas/ruflo@latest mcp start
+claude mcp add ruv-swarm -- npx -y ruv-swarm mcp start  # Optional
+claude mcp add flow-nexus -- npx -y flow-nexus@latest mcp start  # Optional
 ```
 
 ### 4. Verify Installation
@@ -346,13 +346,14 @@ In Claude Code:
 
 ```bash
 # Clone the repository
-git clone https://github.com/ruvnet/claude-flow.git
-cd claude-flow/claude-plugin
+git clone https://github.com/sparkling/ruflo.git
+cd ruflo/.claude-plugin
 
-# Run installation script
-bash scripts/install.sh
+# Register the MCP server (ADR-0235: install.sh removed; MCP setup
+# is performed via `claude mcp add` per ADR-0117 service-method)
+claude mcp add ruflo -- npx -y @sparkleideas/ruflo@latest mcp start
 
-# Or copy manually
+# Or copy commands/agents manually
 cp -r commands ~/.claude/commands/
 cp -r agents ~/.claude/agents/
 ```
@@ -361,7 +362,7 @@ cp -r agents ~/.claude/agents/
 
 ```bash
 # Run setup via npx
-npx claude-flow@alpha init --plugin
+npx -y @sparkleideas/ruflo@latest init --plugin
 
 # This will:
 # 1. Create .claude directory
@@ -417,8 +418,7 @@ claude-flow/
 │   ├── post-task.sh
 │   ├── session-start.sh
 │   └── session-end.sh
-├── scripts/                  # Installation and setup scripts
-│   ├── install.sh
+├── scripts/                  # Setup scripts (ADR-0235: install.sh removed)
 │   ├── setup-mcp.sh
 │   ├── verify.sh
 │   └── uninstall.sh
@@ -509,9 +509,9 @@ Claude Flow integrates with 3 MCP servers providing 110+ tools:
 ```json
 {
   "mcpServers": {
-    "claude-flow": {
+    "ruflo": {
       "command": "npx",
-      "args": ["claude-flow@alpha", "mcp", "start"]
+      "args": ["-y", "@sparkleideas/ruflo@latest", "mcp", "start"]
     }
   }
 }
@@ -645,9 +645,9 @@ Claude Flow integrates with 3 MCP servers providing 110+ tools:
 
 ## 🤝 Support
 
-- **Documentation**: [GitHub Wiki](https://github.com/ruvnet/claude-flow/wiki)
-- **Issues**: [GitHub Issues](https://github.com/ruvnet/claude-flow/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/ruvnet/claude-flow/discussions)
+- **Documentation**: [GitHub Wiki](https://github.com/sparkling/ruflo/wiki)
+- **Issues**: [GitHub Issues](https://github.com/sparkling/ruflo/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/sparkling/ruflo/discussions)
 - **Website**: [Flow Nexus](https://flow-nexus.ruv.io)
 
 ---
