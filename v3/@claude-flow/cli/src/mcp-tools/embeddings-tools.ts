@@ -481,7 +481,11 @@ export const embeddingsTools: MCPTool[] = [
 
       const query = input.query as string;
       const topK = (input.topK as number) || 5;
-      const threshold = (input.threshold as number) || 0.5;
+      // F-08-003: omitted threshold flows through to ADR-0227's adaptive
+      // 0.15 floor downstream (which routes per-provider). Hard-coded 0.5
+      // bypass overrode that adaptive path and cut mpnet recall (per
+      // project-memory-search-rvf-snapshot-isolation). Let undefined pass.
+      const threshold = input.threshold as number | undefined;
       const namespace = input.namespace as string;
 
       const startTime = performance.now();
