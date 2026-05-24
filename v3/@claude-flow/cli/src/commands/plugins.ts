@@ -234,6 +234,10 @@ const installCommand: Command = {
     { name: 'dev', short: 'd', type: 'boolean', description: 'Install as dev dependency' },
     { name: 'verify', type: 'boolean', description: 'Verify checksum (default: true)', default: true },
     { name: 'registry', short: 'r', type: 'string', description: 'Registry to use' },
+    // ADR-0234 site 5 part (b): `--source` makes the source choice explicit
+    // so a caller asking for IPFS gets a clear failure rather than silent
+    // npm substitution. Default is npm (the actual implementation).
+    { name: 'source', type: 'string', description: 'Install source: npm (default) or ipfs (not yet implemented)' },
   ],
   examples: [
     { command: 'claude-flow plugins install -n community-analytics', description: 'Install plugin from npm' },
@@ -244,9 +248,30 @@ const installCommand: Command = {
     const version = ctx.flags.version as string || 'latest';
     const registryName = ctx.flags.registry as string;
     const verify = ctx.flags.verify !== false;
+    const source = (ctx.flags.source as string | undefined)?.toLowerCase();
 
     if (!name) {
       output.printError('Plugin name is required');
+      return { success: false, exitCode: 1 };
+    }
+
+    // ADR-0234 site 5 part (b): guard against `--source ipfs`. The IPFS
+    // install path is not implemented in this fork (the pre-fix code
+    // unconditionally installed from npm regardless of any "IPFS"
+    // framing). Per `feedback-no-fallbacks`, an explicit IPFS request
+    // must fail loud, not silently substitute npm.
+    if (source === 'ipfs') {
+      output.printError(
+        '[plugins] IPFS install path not implemented (ADR-0234). ' +
+        'Use --source npm (the default) or omit --source.',
+      );
+      return { success: false, exitCode: 1 };
+    }
+    if (source && source !== 'npm') {
+      output.printError(
+        `[plugins] Unknown --source value '${source}' (ADR-0234). ` +
+        `Supported: 'npm' (default) | 'ipfs' (not yet implemented).`,
+      );
       return { success: false, exitCode: 1 };
     }
 

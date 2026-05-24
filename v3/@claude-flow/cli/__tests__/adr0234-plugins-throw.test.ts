@@ -1,18 +1,21 @@
 /**
- * ADR-0234 site 5 part (a) — plugins install description is honest.
+ * ADR-0234 site 5 — plugins install --source ipfs guard + honest description.
  *
- * The install subcommand's description and examples no longer advertise
- * an IPFS path. The prior wording (`'Install a plugin from IPFS registry
- * or local path'` + example `'Install plugin from IPFS'`) was dishonest —
- * the implementation unconditionally called `installFromNpm(...)`.
+ * Part (a) source-shape gate: the install subcommand's description and
+ * examples no longer advertise an IPFS path. The prior wording
+ * (`'Install a plugin from IPFS registry or local path'` + example
+ * `'Install plugin from IPFS'`) was dishonest — the implementation
+ * unconditionally called `installFromNpm(...)`.
  *
- * Per ADR-0234 Implementation discipline: two assertions on the source
- * text — the npm-honest description is present, the IPFS-only wording is
- * gone. Site 5 part (b) (`--source ipfs` guard) lands in a separate
- * follow-on commit.
+ * Part (b) runtime guard: invoking `plugins install --source ipfs` throws
+ * an ADR-0234-tagged error (exit 1) rather than silently substituting
+ * npm.
+ *
+ * Per ADR-0234 Implementation discipline: TWO tests — one asserts the
+ * exit-code shape, one asserts the printed error contains 'ADR-0234'.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,16 +45,46 @@ describe('ADR-0234 site 5 part (a) — plugins install description is honest', (
     expect(src).not.toMatch(/description:\s*['"]Install plugin from IPFS['"]/);
     expect(src).not.toMatch(/description:\s*['"]Install from IPFS['"]/);
   });
+});
 
-  // ADR-0234 site 5 part (b) — ADR-0234 literal in the source.
-  // Part (b) lands in a follow-on commit; pinning the literal in the
-  // description ensures part (a) IS the commit that introduces ADR-0234
-  // to the file. Test asserts ADR-0234 appears in the install-command
-  // description region (the "IPFS path not yet implemented" wording is
-  // the marker; the example wording also surfaces ADR-0234 explicitly
-  // for the help text).
-  it('plugins.ts source contains the literal ADR-0234 reference after part (a)', () => {
-    const src = readFileSync(PLUGINS_SRC, 'utf-8');
-    expect(src).toContain('ADR-0234');
+describe('ADR-0234 site 5 part (b) — plugins install --source ipfs throws', () => {
+  it('installCommand action returns success:false exitCode:1 when --source=ipfs', async () => {
+    const mod: any = await import('../src/commands/plugins.js');
+    const pluginsCommand = mod.default ?? mod.pluginsCommand;
+    const installSub = pluginsCommand.subcommands?.find((s: any) => s.name === 'install');
+    expect(installSub, 'expected install subcommand to be present').toBeDefined();
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const result = await installSub.action({
+        flags: { name: 'community-analytics', source: 'ipfs' },
+        args: [],
+      });
+      expect((result as { success?: boolean }).success).toBe(false);
+      expect((result as { exitCode?: number }).exitCode).toBe(1);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('thrown error message from --source ipfs contains literal ADR-0234', async () => {
+    const mod: any = await import('../src/commands/plugins.js');
+    const pluginsCommand = mod.default ?? mod.pluginsCommand;
+    const installSub = pluginsCommand.subcommands?.find((s: any) => s.name === 'install');
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await installSub.action({
+        flags: { name: 'community-analytics', source: 'ipfs' },
+        args: [],
+      });
+      const allWrites = stderrSpy.mock.calls
+        .map((c: any[]) => String(c[0]))
+        .join('\n');
+      expect(allWrites).toContain('ADR-0234');
+      expect(allWrites).toMatch(/IPFS/i);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });
