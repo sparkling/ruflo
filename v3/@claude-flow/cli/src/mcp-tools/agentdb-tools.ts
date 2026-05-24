@@ -1584,61 +1584,18 @@ export const agentdbEmbedStatus: MCPTool = {
   },
 };
 
-// ===== ADR-0045: agentdb_telemetry_metrics — TelemetryManager metrics =====
-
-export const agentdbTelemetryMetrics: MCPTool = {
-  name: 'agentdb_telemetry_metrics',
-  description: 'Get D1 TelemetryManager metrics: counters, histograms (p50/p95/p99), and exporter config',
-  inputSchema: {
-    type: 'object',
-    properties: {},
-  },
-  handler: async () => {
-    try {
-      const ctrl = await getController<any>('telemetryManager');
-      if (!ctrl) return { success: false, error: 'TelemetryManager not available' };
-      const result = typeof ctrl.getMetrics === 'function' ? { success: true, metrics: ctrl.getMetrics() } : { success: false, error: 'getMetrics not available' };
-      if (!result.success) return result;
-      const metrics = result.metrics;
-      const countersEmpty = !metrics?.counters || Object.keys(metrics.counters).length === 0;
-      const histogramsEmpty = !metrics?.histograms || Object.keys(metrics.histograms).length === 0;
-      const isEmpty = !metrics || (countersEmpty && histogramsEmpty);
-      if (isEmpty) {
-        return { ...result, notice: 'No telemetry instrumentation active. Counters require explicit startSpan/increment calls from controller operations.' };
-      }
-      return result;
-    } catch (error) {
-      return { success: false, error: sanitizeError(error) };
-    }
-  },
-};
-
-// ===== ADR-0045: agentdb_telemetry_spans — TelemetryManager spans =====
-
-export const agentdbTelemetrySpans: MCPTool = {
-  name: 'agentdb_telemetry_spans',
-  description: 'Get recent D1 TelemetryManager spans with duration and attributes',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      limit: { type: 'number', description: 'Maximum spans to return (default: 100, max: 500)' },
-    },
-  },
-  handler: async (params: Record<string, unknown>) => {
-    try {
-      const limit = validatePositiveInt(params.limit, 100, 500);
-      const ctrl = await getController<any>('telemetryManager');
-      if (!ctrl) return { success: false, error: 'TelemetryManager not available' };
-      const spans = typeof ctrl.getSpans === 'function' ? ctrl.getSpans(limit) : [];
-      if (!spans || (Array.isArray(spans) && spans.length === 0)) {
-        return { success: true, spans: [], notice: 'No span instrumentation wired. Spans require controller operations to call telemetryManager.startSpan().' };
-      }
-      return { success: true, spans };
-    } catch (error) {
-      return { success: false, error: sanitizeError(error) };
-    }
-  },
-};
+// ADR-0238 S3 (supersedes ADR-0045): the two telemetry-introspection MCP
+// tools (previously bound to TelemetryManager getMetrics/getSpans) are
+// DELETED. The class has no introspection methods (the API design doesn't
+// match what OpenTelemetry Tracer/Meter natively expose), so the tools
+// always fell through to a misleading "not available" notice. Use the
+// working stat tools instead:
+//   - `agentdb_resource_usage`
+//   - `agentdb_circuit_status`
+//   - `agentdb_rate_limit_status`
+//   - `agentdb_query_stats`
+// Real introspection (in-process ring buffers) is a separate product-bet
+// ADR with no driver today.
 
 // agentdb_attention_compute — deferred (bridge not implemented)
 
@@ -2369,8 +2326,8 @@ export const agentdbTools: MCPTool[] = [
   // agentdbQuantizeStatus / agentdbHealthReport — deferred (ADR-0047)
   agentdbEmbed,              // ADR-0045
   agentdbEmbedStatus,        // ADR-0045
-  agentdbTelemetryMetrics,   // ADR-0045
-  agentdbTelemetrySpans,     // ADR-0045
+  // ADR-0238 S3: agentdbTelemetryMetrics + agentdbTelemetrySpans DELETED
+  // (supersedes ADR-0045 telemetry MCP tools — see comment block above).
   // agentdbAttentionCompute — deferred (ADR-0044)
   agentdbAttentionBenchmark, // ADR-0044
   agentdbAttentionConfigure, // ADR-0044

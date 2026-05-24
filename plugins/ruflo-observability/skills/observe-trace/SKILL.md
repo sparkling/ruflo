@@ -13,6 +13,8 @@ Collect distributed trace spans for a task and build a visual trace tree showing
 
 When you need to understand how a task was executed across agents -- which spans ran, how long each took, where bottlenecks occurred, and how agents coordinated.
 
+> **Note (ADR-0238 S3)**: Spans collected via `memory_search --namespace observability` are application-emitted records (this skill's domain). The AgentDB-substrate telemetry-introspection MCP tools that previously returned in-process spans were removed (the bound class has no `getSpans` method); use the working stat tools (`agentdb_resource_usage`, `agentdb_circuit_status`, `agentdb_rate_limit_status`, `agentdb_query_stats`) for live substrate health, and continue using `memory_search` for application traces.
+
 ## Steps
 
 1. **Collect spans** -- call `mcp__ruflo__memory_search --namespace observability` (or `memory_list`) to retrieve all spans matching the `<task-id>`. The `memory_*` tool family routes by namespace; `agentdb_hierarchical-*` does NOT (it routes by tier `working|episodic|semantic`), so use `memory_*` here. See [ruflo-agentdb ADR-0001 §"Namespace convention"](../../../ruflo-agentdb/docs/adrs/0001-agentdb-optimization.md).

@@ -115,3 +115,18 @@ npx @sparkleideas/cli@latest memory search --query "latency spikes in authentica
 - **ruflo-loop-workers**: Background workers produce telemetry that this plugin correlates
 - **ruflo-swarm**: Agent swarm activity generates the traces and metrics this plugin collects
 - **ruflo-cost-tracker**: Token usage metrics feed into cost attribution and budget monitoring
+
+### Telemetry-Introspection MCP Tools
+
+Per ADR-0238 Surface 3, the two `agentdb` telemetry-introspection MCP tools
+(previously bound to `TelemetryManager.getMetrics`/`.getSpans`) are
+removed — the underlying class has no such methods. Use the working
+stat tools instead:
+
+- `mcp__ruflo__agentdb_resource_usage` — live CPU / memory / handle counts
+- `mcp__ruflo__agentdb_circuit_status` — circuit-breaker state per controller
+- `mcp__ruflo__agentdb_rate_limit_status` — rate-limit windows + leaky-bucket fills
+- `mcp__ruflo__agentdb_query_stats` — query latency histograms + cache hit/miss
+
+In-process span / metric ring buffers (the API design the removed tools
+implied) is a separate product-bet ADR with no driver today.

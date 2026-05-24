@@ -13,6 +13,8 @@ Aggregate counters, gauges, and histograms from the observability namespace and 
 
 When you need a snapshot of system health -- task completion rates, error rates, active agent counts, memory usage, and token consumption. Useful for monitoring swarm performance and detecting degradation.
 
+> **Note (ADR-0238 S3)**: For live AgentDB introspection (resource usage, circuit-breaker state, rate limits, query stats), use `mcp__ruflo__agentdb_resource_usage`, `mcp__ruflo__agentdb_circuit_status`, `mcp__ruflo__agentdb_rate_limit_status`, and `mcp__ruflo__agentdb_query_stats`. The two `agentdb_telemetry_*` introspection tools were removed (the bound class has no `getMetrics`/`getSpans` methods).
+
 ## Steps
 
 1. **Retrieve metrics** -- call `mcp__ruflo__memory_search --namespace observability` (or `memory_list`) to fetch metric records for the specified period (default: 1 hour). The `memory_*` tool family routes by namespace; `agentdb_hierarchical-*` does NOT, so use `memory_*` here.
