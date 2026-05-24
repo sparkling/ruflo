@@ -52,6 +52,17 @@ function loadClaimsConfig(): { config: ClaimsConfig; path: string } {
   return { config: defaultConfig, path: configPaths[0] };
 }
 
+// ADR-0238 S2: ADVISORY — wire-pending feature.
+// Central MCP dispatch (`mcp-client.ts::callMCPTool`, `archivist.dispatch`)
+// performs NO claims/permission check; this command's policy file is unread
+// at runtime. Banner is printed on every subcommand path so operators don't
+// over-trust the configured policy.
+function printAdvisoryBanner(): void {
+  output.writeln(output.bold('ADVISORY (ADR-0238 S2): claims policy is NOT enforced at runtime.'));
+  output.writeln(output.dim('Central MCP dispatch never consults this file. Use this command for future-enforcement policy management only.'));
+  output.writeln();
+}
+
 function saveClaimsConfig(config: ClaimsConfig, configPath: string): void {
   const dir = dirname(configPath);
   if (!existsSync(dir)) {
@@ -77,6 +88,7 @@ const listCommand: Command = {
     { command: 'claude-flow claims list -u user123', description: 'List user claims' },
   ],
   action: async (_ctx: CommandContext): Promise<CommandResult> => {
+    printAdvisoryBanner();
     try {
       const { config, path: configPath } = loadClaimsConfig();
 
@@ -161,6 +173,7 @@ const checkCommand: Command = {
     { command: 'claude-flow claims check -c admin:delete -u user123', description: 'Check user permission' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
+    printAdvisoryBanner();
     const claim = ctx.flags.claim as string;
     const user = ctx.flags.user as string || 'current';
     const resource = ctx.flags.resource as string;
@@ -319,6 +332,7 @@ const grantCommand: Command = {
     { command: 'claude-flow claims grant -c agent:spawn -r developer', description: 'Grant to role' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
+    printAdvisoryBanner();
     const claim = ctx.flags.claim as string;
     const user = ctx.flags.user as string;
     const role = ctx.flags.role as string;
@@ -381,6 +395,7 @@ const revokeCommand: Command = {
     { command: 'claude-flow claims revoke -c admin:* -r guest', description: 'Revoke from role' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
+    printAdvisoryBanner();
     const claim = ctx.flags.claim as string;
     const user = ctx.flags.user as string;
     const role = ctx.flags.role as string;
@@ -449,6 +464,7 @@ const rolesCommand: Command = {
     { command: 'claude-flow claims roles -a show -n admin', description: 'Show role details' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
+    printAdvisoryBanner();
     const action = (ctx.flags.action as string) || 'list';
     const name = ctx.flags.name as string;
 
@@ -557,6 +573,7 @@ const policiesCommand: Command = {
     { command: 'claude-flow claims policies -a create -n rate-limit', description: 'Create policy' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
+    printAdvisoryBanner();
     const action = (ctx.flags.action as string) || 'list';
     const name = ctx.flags.name as string;
 
@@ -659,6 +676,17 @@ export const claimsCommand: Command = {
     { command: 'claude-flow claims grant -c agent:spawn -r developer', description: 'Grant claim' },
   ],
   action: async (): Promise<CommandResult> => {
+    // ADR-0238 S2: ADVISORY — wire-pending feature.
+    // This command writes/reads a claims policy file, but the MCP central
+    // dispatch (`mcp-client.ts::callMCPTool`, `archivist.dispatch`) performs
+    // NO claims/permission check. Every mutating MCP tool is reachable
+    // without policy evaluation. `claims check/grant/list/revoke` is
+    // policy-management for future enforcement, not a runtime gate today.
+    // Wiring real central-dispatch enforcement requires `caller_identity`
+    // in `MCPCallContext` (multi-ADR architectural change) — deferred.
+    output.writeln();
+    output.writeln(output.bold('ADVISORY: claims policy is NOT enforced at runtime (ADR-0238 S2)'));
+    output.writeln(output.dim('This command writes claims that NOTHING currently consults. Future product-bet ADR will wire central dispatch.'));
     output.writeln();
     output.writeln(output.bold('RuFlo Claims System'));
     output.writeln(output.dim('Fine-grained authorization and access control'));
