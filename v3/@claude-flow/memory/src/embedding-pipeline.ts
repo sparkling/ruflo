@@ -63,17 +63,24 @@ export function cosineSimilarity(
 }
 
 // ---------------------------------------------------------------------------
-// Hash-based fallback embedder (deterministic, non-semantic)
+// Hash-based fallback embedder — test-only fixture (ADR-0234)
 // ---------------------------------------------------------------------------
 
 /**
  * Generate a deterministic embedding from text using character-level hashing.
  * Produces a unit-length vector of the requested dimension.
  *
- * This is NOT semantic — it exists purely so that the pipeline never returns
- * an error when no ML model is available (testing, CI, demo).
+ * This is NOT semantic. ADR-0234 (extends ADR-0095 amendment 2026-05-23 per
+ * `feedback-no-fallbacks`) removes the silent fall-through to this function
+ * from production paths — `_doInitialize` now throws when neither
+ * `@xenova/transformers` nor `ruvector` is available, and `embedInternal`
+ * no longer routes to `generateHashEmbedding` as a degraded provider. The
+ * function is retained as an in-file fixture so unit tests can construct a
+ * deterministic reference vector without spinning up a real model.
+ *
+ * @internal — production callsites cannot reach this; see `_doInitialize`.
  */
-function generateHashEmbedding(text: string, dimension: number): Float32Array {
+export function generateHashEmbedding(text: string, dimension: number): Float32Array {
   const embedding = new Float32Array(dimension);
   const words = text.toLowerCase().split(/\s+/);
 
@@ -110,7 +117,11 @@ export class EmbeddingPipeline {
   private readonly embeddingConfig: EmbeddingConfig;
   private model: any = null; // loaded model instance (pipeline function or embedder object)
   private initialized = false;
-  private provider: 'transformers.js' | 'ruvector' | 'hash-fallback' = 'hash-fallback';
+  // ADR-0234: 'hash-fallback' removed. `_doInitialize` throws when no real
+  // provider is available; `provider` only ever becomes one of the two
+  // real values after successful init. `'uninitialized'` is the only
+  // pre-init state.
+  private provider: 'transformers.js' | 'ruvector' | 'uninitialized' = 'uninitialized';
 
   constructor(config: EmbeddingConfig) {
     this.embeddingConfig = config;
@@ -145,24 +156,44 @@ export class EmbeddingPipeline {
     }
 
     // Try 1: @xenova/transformers
+    let transformersErr: unknown = null;
     try {
       const transformers = await import('@xenova/transformers');
       const { pipeline } = transformers;
       this.model = await pipeline('feature-extraction', this.embeddingConfig.model);
       this.provider = 'transformers.js';
     } catch (e: any) {
-      // ADR-0080: log the actual error instead of silent swallow
-      console.warn(`[embedding-pipeline] transformers.js failed: ${e?.message || e}. Trying ruvector...`);
+      transformersErr = e;
       // Try 2: ruvector
       try {
         const ruvector = await import('ruvector');
         if (ruvector && typeof (ruvector as any).embed === 'function') {
           this.model = ruvector;
           this.provider = 'ruvector';
+        } else {
+          // ADR-0234: ruvector imported but doesn't expose embed() — fail loud.
+          throw new Error(
+            'ruvector loaded but does not export an embed(text) function',
+          );
         }
       } catch (e2: any) {
-        // ADR-0080: log fallback to hash so users know search quality is degraded
-        console.warn(`[embedding-pipeline] ruvector failed: ${e2?.message || e2}. Using hash-fallback (search quality degraded).`);
+        // ADR-0234 (extends ADR-0095 amendment 2026-05-23 to sibling loaders
+        // per feedback-no-fallbacks): neither @xenova/transformers nor
+        // ruvector is available. The prior console.warn + silent hash
+        // fallback in embedInternal made search quality degrade invisibly
+        // (operators only noticed when recall dropped to ~0.05-0.28 on
+        // mpnet-related queries — see ADR-0227). Surface as a labelled
+        // throw so the deployment fact (missing embedding provider) is
+        // visible at init time.
+        const transformersMsg = (transformersErr as { message?: string })?.message ?? String(transformersErr);
+        const ruvectorMsg = e2?.message ?? String(e2);
+        throw new Error(
+          `[embedding-pipeline] No embedding provider available. ` +
+          `transformers.js failed: ${transformersMsg}. ` +
+          `ruvector failed: ${ruvectorMsg}. ` +
+          `Silent hash-fallback is removed (ADR-0234, extends ADR-0095 amendment 2026-05-23 per feedback-no-fallbacks). ` +
+          `Install @xenova/transformers (preferred, ONNX) or ruvector (bundled MiniLM) to proceed.`,
+        );
       }
     }
 
@@ -218,29 +249,39 @@ export class EmbeddingPipeline {
   // -------------------------------------------------------------------------
 
   private async embedInternal(text: string): Promise<Float32Array> {
+    // ADR-0234: throw on provider failure rather than falling through to
+    // generateHashEmbedding. _doInitialize guarantees `provider` is one of
+    // the two real providers before embedInternal is reached; any error
+    // from the real provider must surface, not be masked by a hash vector.
+
     // Transformers.js: pipeline returns { data: Float32Array }
     if (this.provider === 'transformers.js' && this.model) {
-      try {
-        const output = await this.model(text, { pooling: 'mean', normalize: true });
-        if (output?.data) return new Float32Array(output.data);
-      } catch {
-        // fall through to hash
-      }
+      const output = await this.model(text, { pooling: 'mean', normalize: true });
+      if (output?.data) return new Float32Array(output.data);
+      throw new Error(
+        `[embedding-pipeline] transformers.js returned no data (ADR-0234, feedback-no-fallbacks).`,
+      );
     }
 
     // ruvector: embed(text) returns Float32Array or number[]
     if (this.provider === 'ruvector' && this.model) {
-      try {
-        const result = await this.model.embed(text);
-        if (result instanceof Float32Array) return result;
-        if (Array.isArray(result)) return new Float32Array(result);
-      } catch {
-        // fall through to hash
-      }
+      const result = await this.model.embed(text);
+      if (result instanceof Float32Array) return result;
+      if (Array.isArray(result)) return new Float32Array(result);
+      throw new Error(
+        `[embedding-pipeline] ruvector.embed returned unsupported shape ` +
+        `(ADR-0234, feedback-no-fallbacks).`,
+      );
     }
 
-    // Hash-based fallback (always works, deterministic, non-semantic)
-    return generateHashEmbedding(text, this.embeddingConfig.dimension);
+    // Should be unreachable: _doInitialize throws when no provider is
+    // available, so `provider` is always one of the two above by the time
+    // embedInternal runs. If we get here, something bypassed init.
+    throw new Error(
+      `[embedding-pipeline] embedInternal reached with no active provider ` +
+      `(provider=${this.provider}; ADR-0234, feedback-no-fallbacks). ` +
+      `Call initialize() before embed().`,
+    );
   }
 }
 

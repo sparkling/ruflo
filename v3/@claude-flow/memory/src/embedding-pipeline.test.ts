@@ -158,72 +158,47 @@ describe('EmbeddingPipeline', () => {
     expect(pipeline.isInitialized()).toBe(false);
   });
 
-  it('defaults to hash-fallback provider', () => {
+  // ADR-0234: `'hash-fallback'` provider value is removed; the
+  // pre-initialize provider is now `'uninitialized'`. The actual provider
+  // is only set after `_doInitialize` resolves a real binding.
+  it('defaults to uninitialized provider before initialize()', () => {
     const pipeline = new EmbeddingPipeline(makeConfig());
-    expect(pipeline.getProvider()).toBe('hash-fallback');
+    expect(pipeline.getProvider()).toBe('uninitialized');
   });
 
   describe('initialize()', () => {
-    it('sets isInitialized to true after successful init', async () => {
-      // With hash-fallback (no real model), initialize always succeeds
+    // ADR-0234: with neither @xenova/transformers nor ruvector available
+    // in this test env, initialize() now throws (silent hash-fallback is
+    // removed per feedback-no-fallbacks). Pre-fix tests that assumed
+    // initialize() always succeeds via the hash provider are revised to
+    // assert the throw.
+    it('throws when neither transformers.js nor ruvector is installed (ADR-0234)', async () => {
       const pipeline = new EmbeddingPipeline(makeConfig());
-      await pipeline.initialize();
-      expect(pipeline.isInitialized()).toBe(true);
+      await expect(pipeline.initialize()).rejects.toThrow(/ADR-0234/);
     });
 
-    it('is idempotent — second call is a no-op', async () => {
+    it('init error mentions both transformers and ruvector causes', async () => {
       const pipeline = new EmbeddingPipeline(makeConfig());
-      await pipeline.initialize();
-      await pipeline.initialize(); // should not throw
-      expect(pipeline.isInitialized()).toBe(true);
+      let caught: unknown;
+      try {
+        await pipeline.initialize();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toMatch(/transformers/i);
+      expect((caught as Error).message).toMatch(/ruvector/i);
     });
   });
 
   describe('embed()', () => {
-    it('returns Float32Array of configured dimension', async () => {
-      const dim = 16; // small for speed
-      const pipeline = new EmbeddingPipeline(makeConfig({ dimension: dim }));
-      await pipeline.initialize();
-      const result = await pipeline.embed('hello world');
-      expect(result).toBeInstanceOf(Float32Array);
-      expect(result.length).toBe(dim);
-    });
-
-    it('auto-initializes if not yet initialized', async () => {
+    // ADR-0234: with no real provider available, embed() throws at
+    // auto-initialize. The shape of returned Float32Arrays is only
+    // observable from environments with a real binding (covered by the
+    // memory-pkg integration tests in `index.test.ts`).
+    it('throws when no provider is installed (ADR-0234)', async () => {
       const pipeline = new EmbeddingPipeline(makeConfig({ dimension: 8 }));
-      expect(pipeline.isInitialized()).toBe(false);
-      const result = await pipeline.embed('test');
-      expect(pipeline.isInitialized()).toBe(true);
-      expect(result.length).toBe(8);
-    });
-
-    it('returns normalized vectors (unit length)', async () => {
-      const pipeline = new EmbeddingPipeline(makeConfig({ dimension: 32 }));
-      await pipeline.initialize();
-      const result = await pipeline.embed('some text for embedding');
-      let mag = 0;
-      for (let i = 0; i < result.length; i++) mag += result[i] * result[i];
-      mag = Math.sqrt(mag);
-      // Hash fallback normalizes to unit length
-      expect(mag).toBeCloseTo(1.0, 3);
-    });
-
-    it('produces deterministic output for the same input', async () => {
-      const pipeline = new EmbeddingPipeline(makeConfig({ dimension: 16 }));
-      await pipeline.initialize();
-      const a = await pipeline.embed('reproducible');
-      const b = await pipeline.embed('reproducible');
-      expect(Array.from(a)).toEqual(Array.from(b));
-    });
-
-    it('produces different output for different inputs', async () => {
-      const pipeline = new EmbeddingPipeline(makeConfig({ dimension: 16 }));
-      await pipeline.initialize();
-      const a = await pipeline.embed('alpha');
-      const b = await pipeline.embed('beta');
-      // At least one element must differ
-      const differs = Array.from(a).some((v, i) => v !== b[i]);
-      expect(differs).toBe(true);
+      await expect(pipeline.embed('test')).rejects.toThrow(/ADR-0234/);
     });
   });
 });
@@ -241,39 +216,24 @@ describe('singleton management', () => {
     expect(getPipeline()).toBeNull();
   });
 
-  it('initPipeline() creates and returns the singleton', async () => {
+  // ADR-0234: with no real embedding provider available, `initPipeline()`
+  // throws. The singleton lifecycle (idempotent init, resetPipeline()
+  // clears state) is still exercised via the throw branch:
+  //   - `initPipeline()` throws and does NOT cache a partial singleton
+  //   - `getPipeline()` remains null after a failed init
+  //   - `resetPipeline()` is callable in either state
+  // Full success-path coverage is in environments where a real binding
+  // is installed (memory-pkg integration tests in `index.test.ts`).
+  it('initPipeline() throws when no provider installed and leaves singleton null (ADR-0234)', async () => {
     const cfg = makeConfig({ dimension: 8 });
-    const pipeline = await initPipeline(cfg);
-    expect(pipeline).toBeInstanceOf(EmbeddingPipeline);
-    expect(pipeline.isInitialized()).toBe(true);
-    expect(pipeline.getDimension()).toBe(8);
-  });
-
-  it('initPipeline() returns the same instance on second call', async () => {
-    const cfg = makeConfig({ dimension: 8 });
-    const first = await initPipeline(cfg);
-    const second = await initPipeline(cfg);
-    expect(first).toBe(second);
-  });
-
-  it('getPipeline() returns the singleton after initPipeline()', async () => {
-    const cfg = makeConfig({ dimension: 8 });
-    const pipeline = await initPipeline(cfg);
-    expect(getPipeline()).toBe(pipeline);
-  });
-
-  it('resetPipeline() clears the singleton', async () => {
-    await initPipeline(makeConfig({ dimension: 8 }));
-    expect(getPipeline()).not.toBeNull();
-    resetPipeline();
+    await expect(initPipeline(cfg)).rejects.toThrow(/ADR-0234/);
     expect(getPipeline()).toBeNull();
   });
 
-  it('initPipeline() creates a new instance after resetPipeline()', async () => {
-    const first = await initPipeline(makeConfig({ dimension: 8 }));
+  it('resetPipeline() is safe to call after a failed init', async () => {
+    await expect(initPipeline(makeConfig({ dimension: 8 }))).rejects.toThrow();
+    // Should not throw.
     resetPipeline();
-    const second = await initPipeline(makeConfig({ dimension: 16 }));
-    expect(second).not.toBe(first);
-    expect(second.getDimension()).toBe(16);
+    expect(getPipeline()).toBeNull();
   });
 });

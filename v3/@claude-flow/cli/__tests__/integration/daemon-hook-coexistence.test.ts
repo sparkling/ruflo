@@ -76,6 +76,17 @@ vi.mock('@claude-flow/memory/embedding-adapter', () => ({
   getAdaptiveThreshold: vi.fn(async () => 0.7),
 }));
 
+// ADR-0234: memory-router._doInit now eagerly imports embedding-pipeline
+// (the prior bare `catch {}` that swallowed pipeline-init failures has
+// been removed). This test scope is the JS-layer router lifecycle, not
+// the embedding subsystem, so mock the pipeline import to a no-op rather
+// than spinning up a real model.
+vi.mock('@claude-flow/memory/embedding-pipeline', () => ({
+  initPipeline: vi.fn(async () => ({})),
+  getPipeline: vi.fn(() => null),
+  resetPipeline: vi.fn(),
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let router: any;
 

@@ -865,23 +865,32 @@ async function _doInit(): Promise<void> {
   // Phase 1: Resolve config (best-effort -- non-fatal if unavailable)
   let databasePath = '.claude-flow/memory.rvf';
   let dimensions = 768;
+  let _resolvedEmbedding: any = null;
   try {
     const configMod = await import('@claude-flow/memory/resolve-config' as string);
     const config = configMod.getConfig();
     databasePath = config.storage?.databasePath || databasePath;
     dimensions = config.embedding?.dimension || dimensions;
-
-    // Initialize embedding pipeline (best-effort)
-    try {
-      const pipelineMod = await import('@claude-flow/memory/embedding-pipeline' as string);
-      if (pipelineMod?.initPipeline) {
-        await pipelineMod.initPipeline(config.embedding);
-      }
-    } catch {
-      // Embedding pipeline init failed -- hash fallback will be used
-    }
+    _resolvedEmbedding = config.embedding ?? null;
   } catch {
-    // Config resolution unavailable -- storage will use its own defaults
+    // Config resolution unavailable -- storage will use its own defaults.
+    // Embedding pipeline init below also short-circuits in this branch.
+  }
+
+  // Initialize embedding pipeline.
+  // ADR-0234 (extends ADR-0095 amendment 2026-05-23 to sibling loaders per
+  // feedback-no-fallbacks): the prior bare `catch {}` swallowed the
+  // embedding-pipeline init error while the inner hash-fallback (now
+  // removed in embedding-pipeline.ts) made search silently return
+  // ~0.05-0.28 similarities on a hash backend. Let the throw propagate so
+  // the deployment fact (no @xenova/transformers AND no ruvector
+  // available) surfaces at init time. We deliberately do NOT wrap this in
+  // a catch here.
+  if (_resolvedEmbedding) {
+    const pipelineMod = await import('@claude-flow/memory/embedding-pipeline' as string);
+    if (pipelineMod?.initPipeline) {
+      await pipelineMod.initPipeline(_resolvedEmbedding);
+    }
   }
 
   // ADR-0069 Bug #3: resolve the database path to a per-user default when
