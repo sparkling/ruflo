@@ -29,7 +29,7 @@ Ruflo already ships every primitive needed to assemble a maigret-style investiga
 | Capability | Existing tool |
 |---|---|
 | Hybrid sparse+dense semantic search | `mcp__claude-flow__memory_search_unified`, `ruflo-rag-memory:memory-search` |
-| Vector search (HNSW, RaBitQ) | `mcp__claude-flow__embeddings_search`, `embeddings_rabitq_search` |
+| Vector search (HNSW) | `mcp__claude-flow__embeddings_search` |
 | Pattern recall | `mcp__claude-flow__agentdb_pattern-search`, `agentdb_hierarchical-recall` |
 | Knowledge-graph traversal + extraction | `ruflo-knowledge-graph:kg-traverse`, `kg-extract` |
 | Web search & fetch | `WebSearch`, `WebFetch` |
