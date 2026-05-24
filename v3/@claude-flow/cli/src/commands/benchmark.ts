@@ -11,75 +11,8 @@ import { output } from '../output.js';
 import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-// ============================================================================
-// Pretrain Benchmark Subcommand
-// ============================================================================
-
-const pretrainCommand: Command = {
-  name: 'pretrain',
-  description: 'Benchmark self-learning pre-training system (SONA, EWC++, MoE)',
-  options: [
-    { name: 'iterations', short: 'i', type: 'number', description: 'Benchmark iterations', default: '100' },
-    { name: 'warmup', short: 'w', type: 'number', description: 'Warmup iterations', default: '10' },
-    { name: 'output', short: 'o', type: 'string', description: 'Output format: text, json', default: 'text' },
-    { name: 'save', short: 's', type: 'string', description: 'Save results to file' },
-    { name: 'verbose', short: 'v', type: 'boolean', description: 'Verbose output', default: 'false' },
-  ],
-  examples: [
-    { command: 'claude-flow benchmark pretrain', description: 'Run pre-training benchmarks' },
-    { command: 'claude-flow benchmark pretrain -i 500 --save results.json', description: 'Extended benchmark with results saved' },
-    { command: 'claude-flow benchmark pretrain -o json', description: 'Output results as JSON' },
-  ],
-  action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const iterations = parseInt(ctx.flags.iterations as string || '100', 10);
-    const warmup = parseInt(ctx.flags.warmup as string || '10', 10);
-    const outputFormat = ctx.flags.output as string || 'text';
-    const saveFile = ctx.flags.save as string | undefined;
-    const verbose = ctx.flags.verbose === true;
-
-    try {
-      // Dynamically import benchmark suite
-      const { runPretrainBenchmarkSuite } = await import('../benchmarks/pretrain/index.js');
-
-      const results = await runPretrainBenchmarkSuite({
-        iterations,
-        warmupIterations: warmup,
-        verbose,
-      });
-
-      // Output as JSON if requested
-      if (outputFormat === 'json') {
-        output.writeln(JSON.stringify(results, null, 2));
-      }
-
-      // Save to file if requested
-      if (saveFile) {
-        const resultsDir = join(process.cwd(), '.claude-flow', 'benchmarks'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        if (!existsSync(resultsDir)) {
-          mkdirSync(resultsDir, { recursive: true });
-        }
-        const savePath = saveFile.startsWith('/') ? saveFile : join(resultsDir, saveFile);
-        writeFileSync(savePath, JSON.stringify(results, null, 2));
-        output.writeln(output.success(`Results saved to ${savePath}`));
-      }
-
-      const allPassed = results.results.every(r => r.targetMet);
-      return {
-        success: true,
-        message: allPassed
-          ? 'All benchmark targets met!'
-          : `${results.results.filter(r => r.targetMet).length}/${results.results.length} targets met`,
-      };
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      output.writeln(output.error(`Benchmark failed: ${errorMsg}`));
-      return {
-        success: false,
-        message: `Benchmark failed: ${errorMsg}`,
-      };
-    }
-  },
-};
+// Pretrain subcommand removed by ADR-0239 cluster 7 (Batch 3 deleted
+// `cli/src/benchmarks/pretrain/`). Keeping `neural`, `memory`, `all`.
 
 // ============================================================================
 // Neural Benchmark Subcommand
@@ -391,13 +324,7 @@ const allCommand: Command = {
     const startTime = Date.now();
     const allResults: Record<string, unknown> = {};
 
-    // Run pretrain benchmarks
-    output.writeln();
-    output.writeln(output.bold('▸ Pre-Training Benchmarks'));
-    if (pretrainCommand.action) {
-      const pretrainResult = await pretrainCommand.action(ctx);
-      allResults.pretrain = pretrainResult;
-    }
+    // Pretrain benchmarks removed (ADR-0239 cluster 7).
 
     // Run neural benchmarks
     output.writeln();
@@ -450,13 +377,11 @@ export const benchmarkCommand: Command = {
   name: 'benchmark',
   description: 'Performance benchmarking for self-learning and neural systems',
   subcommands: [
-    pretrainCommand,
     neuralCommand,
     memoryCommand,
     allCommand,
   ],
   examples: [
-    { command: 'claude-flow benchmark pretrain', description: 'Benchmark pre-training system' },
     { command: 'claude-flow benchmark neural', description: 'Benchmark neural operations' },
     { command: 'claude-flow benchmark memory', description: 'Benchmark memory operations' },
     { command: 'claude-flow benchmark all', description: 'Run all benchmarks' },
@@ -467,13 +392,12 @@ export const benchmarkCommand: Command = {
     output.writeln(output.dim('─'.repeat(50)));
     output.writeln();
     output.writeln('Available subcommands:');
-    output.writeln(`  ${output.highlight('pretrain')}  - Benchmark self-learning pre-training (SONA, EWC++, MoE)`);
     output.writeln(`  ${output.highlight('neural')}    - Benchmark neural operations (embeddings, WASM)`);
     output.writeln(`  ${output.highlight('memory')}    - Benchmark memory operations (HNSW, store, search)`);
     output.writeln(`  ${output.highlight('all')}       - Run all benchmark suites`);
     output.writeln();
     output.writeln('Examples:');
-    output.writeln('  claude-flow benchmark pretrain -i 200');
+    output.writeln('  claude-flow benchmark neural -i 200');
     output.writeln('  claude-flow benchmark all --save results.json');
     output.writeln();
 
