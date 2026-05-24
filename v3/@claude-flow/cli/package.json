@@ -108,7 +108,6 @@
   "optionalDependencies": {
     "@claude-flow/aidefence": "3.0.2-patch.821",
     "@claude-flow/codex": "3.0.0-alpha.9-patch.866",
-    "@claude-flow/embeddings": "3.0.0-alpha.15-patch.298",
     "@claude-flow/guidance": "3.0.0-alpha.3-patch.298",
     "@claude-flow/memory": "3.0.0-alpha.15-patch.298",
     "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.822",
