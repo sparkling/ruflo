@@ -20,6 +20,7 @@ import {
   type MCPServerStatus,
 } from '../mcp-server.js';
 import { listMCPTools, callMCPTool, hasTool, getToolMetadata } from '../mcp-client.js';
+import { configManager } from '../services/config-file-manager.js';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -257,6 +258,17 @@ const startCommand: Command = {
       // Start the server
       const status = await manager.start();
 
+      // ADR-0244 site #8 (F-01-007): replace literal `'27 enabled'`
+      // with the live tool count from `listMCPTools()` (already
+      // imported at mcp.ts:22). The previous hardcoded `27` was
+      // wrong against the actual ~298+ tools the manager registers,
+      // causing users to assume the server was under-provisioned.
+      // Upstream `ruvnet/ruflo` is byte-identical at this line; the
+      // fix is fork-only merge-tax per ADR-0244.
+      const liveToolCount = listMCPTools().length;
+      const toolsValue = !tools || tools === 'all'
+        ? `${liveToolCount} enabled`
+        : `${tools.split(',').length} enabled`;
       output.writeln();
       output.printTable({
         columns: [
@@ -268,7 +280,7 @@ const startCommand: Command = {
           { property: 'Transport', value: transport },
           { property: 'Host', value: host },
           { property: 'Port', value: port },
-          { property: 'Tools', value: !tools || tools === 'all' ? '27 enabled' : `${tools.split(',').length} enabled` },
+          { property: 'Tools', value: toolsValue },
           { property: 'Status', value: output.success('Running') }
         ]
       });
@@ -569,6 +581,23 @@ const toolsCommand: Command = {
 };
 
 // Enable/disable tools
+//
+// ADR-0244 site #6 (F-01-006): persist toggle state to
+// `.claude-flow/config.json` under `mcp.disabledTools`. Previously
+// the handler printed success without writing anything; the tools
+// remained enabled. After the fix the handler reads the current
+// disabledTools list, applies enable/disable mutations, and writes
+// the result back via `configManager.set('mcp.disabledTools', ...)`.
+//
+// Per ADR-0244 §Decision #6 (E5 expert amendment): toggling is
+// config-write-only at runtime; effective on next
+// `getMCPServerManager()` instantiation. The success envelope MUST
+// include `note:'Restart required for changes to take effect'` so
+// the user understands the toggle does NOT propagate to a live
+// server in this process.
+//
+// Upstream `ruvnet/ruflo` ships the dishonest-print at this block
+// byte-identical; the fix is fork-only merge-tax per ADR-0244.
 const toggleCommand: Command = {
   name: 'toggle',
   description: 'Enable or disable MCP tools',
@@ -587,27 +616,73 @@ const toggleCommand: Command = {
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const toEnable = ctx.flags.enable as string;
-    const toDisable = ctx.flags.disable as string;
-
-    if (toEnable) {
-      const tools = toEnable.split(',');
-      output.printInfo(`Enabling tools: ${tools.join(', ')}`);
-      output.printSuccess(`Enabled ${tools.length} tools`);
-    }
-
-    if (toDisable) {
-      const tools = toDisable.split(',');
-      output.printInfo(`Disabling tools: ${tools.join(', ')}`);
-      output.printSuccess(`Disabled ${tools.length} tools`);
-    }
+    const toEnable = ctx.flags.enable as string | undefined;
+    const toDisable = ctx.flags.disable as string | undefined;
 
     if (!toEnable && !toDisable) {
       output.printError('Use --enable or --disable with comma-separated tool names');
       return { success: false, exitCode: 1 };
     }
 
-    return { success: true };
+    // Read current disabledTools list (set of tool names). Initialise
+    // empty when no prior list exists.
+    const existing = configManager.get(ctx.cwd, 'mcp.disabledTools');
+    const disabledSet = new Set<string>(
+      Array.isArray(existing) ? (existing as unknown[]).filter((x): x is string => typeof x === 'string') : []
+    );
+
+    const enabledList: string[] = [];
+    const disabledList: string[] = [];
+
+    if (toEnable) {
+      const tools = toEnable.split(',').map((t) => t.trim()).filter(Boolean);
+      for (const t of tools) {
+        disabledSet.delete(t);
+        enabledList.push(t);
+      }
+      output.printInfo(`Enabling tools: ${tools.join(', ')}`);
+    }
+
+    if (toDisable) {
+      const tools = toDisable.split(',').map((t) => t.trim()).filter(Boolean);
+      for (const t of tools) {
+        disabledSet.add(t);
+        disabledList.push(t);
+      }
+      output.printInfo(`Disabling tools: ${tools.join(', ')}`);
+    }
+
+    // Persist the updated disabledTools list. fail-loud per
+    // feedback-no-fallbacks if the config write fails — the user
+    // expects the toggle to land.
+    const nextList = Array.from(disabledSet).sort();
+    try {
+      configManager.set(ctx.cwd, 'mcp.disabledTools', nextList);
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err);
+      output.printError(`Failed to persist mcp.disabledTools: ${cause}`);
+      return { success: false, exitCode: 1, message: `Failed to persist mcp.disabledTools: ${cause}` };
+    }
+
+    if (enabledList.length > 0) {
+      output.printSuccess(`Enabled ${enabledList.length} tools`);
+    }
+    if (disabledList.length > 0) {
+      output.printSuccess(`Disabled ${disabledList.length} tools`);
+    }
+
+    // ADR-0244 site #6 honesty envelope (per E5 expert): restart note.
+    output.writeln(output.dim('  Restart required for changes to take effect'));
+
+    return {
+      success: true,
+      data: {
+        enabled: enabledList,
+        disabled: disabledList,
+        disabledTools: nextList,
+      },
+      message: 'Restart required for changes to take effect',
+    };
   }
 };
 
