@@ -1,6 +1,6 @@
 {
   "name": "ruflo-market-data",
-  "description": "Market data ingestion — feed normalization, OHLCV vectorization, and HNSW-indexed pattern matching",
+  "description": "Market-data workflow scaffolds composing memory_*, agentdb_pattern-*, embeddings_generate, and ruvllm_hnsw_* primitives — ingest/pattern thought-templates for OHLCV vectorization and similarity routing (data ingestion + normalization handled by user-supplied tooling, not the plugin)",
   "version": "0.2.17",
   "author": {
     "name": "ruvnet",

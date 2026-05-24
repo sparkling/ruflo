@@ -1,6 +1,6 @@
 {
   "name": "ruflo-iot-cognitum",
-  "description": "IoT device lifecycle, telemetry anomaly detection, fleet management, and witness chain verification for Cognitum Seed hardware",
+  "description": "IoT workflow scaffolds composing memory_* primitives — telemetry/lifecycle/fleet/firmware/witness-verify thought-templates routed via mcp__ruflo__memory_store and memory_search (not hardware-bound enforcement)",
   "version": "0.2.17",
   "author": {
     "name": "ruvnet",
