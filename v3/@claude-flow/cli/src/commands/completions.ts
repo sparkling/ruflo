@@ -3,36 +3,50 @@
  * Shell completions for bash, zsh, fish, powershell
  *
  * Created with ruv.io
+ *
+ * ADR-0244 site #10 (F-01-013): TOP_LEVEL_COMMANDS, SWARM_SUBCOMMANDS,
+ * AGENT_SUBCOMMANDS (and the rest of the per-command subcommand lists)
+ * are derived at generation time from the live command registry +
+ * each command's `.subcommands` field. The previous hardcoded
+ * literals contained subcommands that do not exist (swarm destroy,
+ * swarm monitor, swarm optimize, agent update, etc.) and missing
+ * `help`/`version` are removed from the top-level list (those are
+ * global flags, not registered commands). Upstream `ruvnet/ruflo` is
+ * byte-identical at this block; the fix is fork-only merge-tax per
+ * ADR-0244.
  */
 
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
+import { commands as registeredCommands, getCommandNames } from './index.js';
 
-// Get all top-level commands for completions
-const TOP_LEVEL_COMMANDS = [
-  'swarm', 'agent', 'task', 'session', 'config', 'memory', 'workflow',
-  'hive-mind', 'hooks', 'daemon', 'neural', 'security', 'performance',
-  'providers', 'plugins', 'deployment', 'claims', 'embeddings',
-  'doctor', 'completions', 'help', 'version'
-];
+/** Derive top-level command names from the registry (excludes
+ *  aliases and global flags like --help/--version). */
+function deriveTopLevelCommands(): string[] {
+  // commandLoaders names + commandRegistry names; sort for stable output.
+  return Array.from(new Set(getCommandNames())).sort();
+}
 
-// Swarm subcommands
-const SWARM_SUBCOMMANDS = ['init', 'status', 'scale', 'destroy', 'monitor', 'optimize'];
+/** Derive subcommands for a specific top-level command by walking
+ *  the eagerly-registered commands array. Returns an empty array if
+ *  the parent is lazy-loaded (in which case the completion script
+ *  falls back to a manually maintained list below). */
+function deriveSubcommands(parentName: string): string[] {
+  const parent = registeredCommands.find((c) => c.name === parentName);
+  if (!parent || !parent.subcommands) return [];
+  return parent.subcommands.map((s) => s.name).sort();
+}
 
-// Agent subcommands
-const AGENT_SUBCOMMANDS = ['spawn', 'terminate', 'status', 'list', 'pool', 'health', 'update'];
-
-// Task subcommands
-const TASK_SUBCOMMANDS = ['create', 'status', 'list', 'complete', 'cancel'];
-
-// Memory subcommands
-const MEMORY_SUBCOMMANDS = ['store', 'retrieve', 'search', 'list', 'delete', 'stats', 'configure', 'cleanup', 'compress', 'export', 'import'];
-
-// Hive-mind subcommands
-const HIVE_MIND_SUBCOMMANDS = ['init', 'spawn', 'status', 'task', 'join', 'leave', 'consensus', 'broadcast', 'memory', 'optimize-memory', 'shutdown'];
-
-// Hooks subcommands
-const HOOKS_SUBCOMMANDS = ['pre-edit', 'post-edit', 'pre-command', 'post-command', 'pre-task', 'post-task', 'route', 'explain', 'pretrain', 'build-agents', 'metrics', 'transfer', 'list', 'intelligence'];
+// Derive at module-load time so the strings are baked into the
+// generated completion script. The values are read once per CLI
+// invocation; cost is negligible.
+const TOP_LEVEL_COMMANDS = deriveTopLevelCommands();
+const SWARM_SUBCOMMANDS = deriveSubcommands('swarm');
+const AGENT_SUBCOMMANDS = deriveSubcommands('agent');
+const TASK_SUBCOMMANDS = deriveSubcommands('task');
+const MEMORY_SUBCOMMANDS = deriveSubcommands('memory');
+const HIVE_MIND_SUBCOMMANDS = deriveSubcommands('hive-mind');
+const HOOKS_SUBCOMMANDS = deriveSubcommands('hooks');
 
 // Generate bash completion script
 function generateBashCompletion(): string {
