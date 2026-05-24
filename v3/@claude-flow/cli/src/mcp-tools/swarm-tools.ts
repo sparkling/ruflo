@@ -522,6 +522,86 @@ export const swarmTools: MCPTool[] = [
     },
   },
   {
+    // ADR-0244 site #9: register the `swarm_scale` handler that the
+    // CLI command `swarm scale` (commands/swarm.ts ADR-0244 site #3)
+    // expects to find. Previously the tool was advertised at
+    // mcp.ts:503 ("Scale swarm size") but had zero handler
+    // implementation in mcp-tools/. The CLI now wires through here
+    // and surfaces failures honestly.
+    //
+    // Shape parity with swarm_status / swarm_health: NOT in the
+    // archivist `ToolPayloadMap` (no audit-chain handler exists);
+    // stays cli-authoritative — mutates `.swarm/swarm-state.json`
+    // directly via loadSwarmStore + saveSwarmStore.
+    //
+    // Semantics: set the target's `maxAgents` to the requested
+    // count. Actual agent spawning is the responsibility of the
+    // orchestrator (CLI Task tool / hive-mind spawn); this tool
+    // updates the persisted scaling intent so subsequent
+    // `swarm_status` reads reflect the new target.
+    name: 'swarm_scale',
+    description: 'Scale a swarm to a new agent target. Updates the persisted maxAgents on the named swarm; orchestrators read the new target on next coordination cycle.',
+    category: 'swarm',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        swarmId: { type: 'string', description: 'Swarm ID to scale' },
+        agents: { type: 'number', description: 'Target agent count (1-50)' },
+        type: { type: 'string', description: 'Optional agent type filter (advisory; orchestrators may honour)' },
+      },
+      required: ['swarmId', 'agents'],
+    },
+    handler: async (input) => {
+      const swarmId = input.swarmId as string;
+      const agents = input.agents as number;
+      const type = input.type as string | undefined;
+
+      if (!swarmId || typeof swarmId !== 'string') {
+        return { success: false, error: 'swarmId is required (string)' };
+      }
+      if (!Number.isFinite(agents) || agents < 1 || agents > 50) {
+        return { success: false, error: `agents must be a number in [1, 50]; got ${String(agents)}` };
+      }
+
+      const store = loadSwarmStore();
+      const target = store.swarms[swarmId];
+      if (!target) {
+        return { success: false, error: `Swarm ${swarmId} not found` };
+      }
+      if (target.status !== 'running') {
+        return { success: false, error: `Swarm ${swarmId} is not running (status: ${target.status})` };
+      }
+
+      const previousMaxAgents = target.maxAgents;
+      target.maxAgents = agents;
+      target.updatedAt = new Date().toISOString();
+      // Record advisory scaling intent in config so orchestrators can
+      // honour the requested type filter on next coordination cycle.
+      if (type !== undefined) {
+        const cfg = target.config as Record<string, unknown>;
+        cfg.scaleTypeFilter = type;
+      }
+
+      try {
+        saveSwarmStore(store);
+      } catch (err) {
+        return {
+          success: false,
+          error: `Failed to persist swarm state: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
+      return {
+        success: true,
+        swarmId,
+        previousMaxAgents,
+        maxAgents: agents,
+        ...(type !== undefined ? { typeFilter: type } : {}),
+        updatedAt: target.updatedAt,
+      };
+    },
+  },
+  {
     name: 'swarm_health',
     description: 'Check swarm health status with real state inspection',
     category: 'swarm',
