@@ -17,6 +17,12 @@
  * aggressive — this one is tight enough to be safe.
  */
 
+// Force this file into module scope so top-level `const` declarations don't
+// collide with the emitted `dist/src/log-filters.d.ts` (which composite project
+// references pull in). Without an export, TS treats this as a global script and
+// the source const + emitted `declare const` cause "Cannot redeclare" errors.
+export {};
+
 const isCosmeticAgentdbPatchNoise = (msg: unknown): boolean => {
   const s = String(msg ?? '');
   return s.includes('[AgentDB Patch]') && s.includes('Controller index not found');
