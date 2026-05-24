@@ -21,7 +21,10 @@ hooks:
     echo "📝 Raft operation complete"
     # Verify log consistency
     echo "🔍 Validating log replication and consistency"
+advisory: true
 ---
+**Advisory roleplay only (ADR-0238 S8).** This agent's prompt describes distributed-consensus mechanisms (PBFT, Raft, gossip, CRDT, quorum, cryptographic security) but spawning it does NOT enforce them. Real consensus dispatch goes through `claude-flow hive-mind --consensus <mode>` → `cli/src/mcp-tools/hive-mind-tools.ts` → archivist → `forks/agentdb/src/archivist/handlers/hive-mind/consensus/*` (single-process state-merge with per-strategy threshold arithmetic). The agent name (`byzantine-coordinator`, `raft-manager`, etc.) does not connect to any PBFT three-phase / Raft leader-election / Ed25519-signed message-authentication implementation in this repo. Use the prompt as a reasoning scaffold; treat the protocol vocabulary as advisory, not enforced.
+
 
 # Raft Consensus Manager
 
