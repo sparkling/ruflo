@@ -24,6 +24,7 @@ import {
   persistMicroLoraAdapt,
   getMicroLoraRecord,
 } from './ruvllm-store.js';
+import { BoundedLRU } from '../utils/bounded-lru.js';
 
 async function loadRuvllmWasm() {
   return import('../ruvector/ruvllm-wasm.js');
@@ -32,14 +33,29 @@ async function loadRuvllmWasm() {
 // ── Instance Registries (in-process, short-lived) ─────────────────
 // One process may create+operate in-memory (fast path). Cross-process
 // flows fall back to on-disk persistence + replay (see rebuild* helpers).
+//
+// ADR-0243 F-10-001: bounded LRU with dispose probe.
+// Pre-ADR-0243: three plain `new Map<string, ...>()` accumulated a
+// NAPI/WASM-backed handle for every distinct id ever seen, with no LRU,
+// no TTL, no eviction. The WASM heap + Float32Array memory grew for the
+// process lifetime (critical on the MCP-stdio server). The bounded LRU
+// + dispose probe (destroy/free/dispose in priority order) closes both
+// the JS-Map leak AND the underlying WASM-heap leak; see ADR-0243
+// §Critique Expert 1.
+//
+// Cap is `CLAUDE_FLOW_RUVLLM_CACHE_MAX` (default 64) per ADR-0243
+// §Decision F-10-001. The default tracks the HiveLRU shape with a
+// smaller cap (WASM handles are heavier than HiveState entries).
 
 type HnswRouter = Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createHnswRouter>>;
 type SonaInstant = Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createSonaInstant>>;
 type MicroLora = Awaited<ReturnType<typeof import('../ruvector/ruvllm-wasm.js').createMicroLora>>;
 
-const hnswRouters = new Map<string, HnswRouter>();
-const sonaInstances = new Map<string, SonaInstant>();
-const loraInstances = new Map<string, MicroLora>();
+const RUVLLM_CACHE_MAX = BoundedLRU.readEnvMax('CLAUDE_FLOW_RUVLLM_CACHE_MAX', 64);
+
+const hnswRouters = new BoundedLRU<string, HnswRouter>({ maxEntries: RUVLLM_CACHE_MAX });
+const sonaInstances = new BoundedLRU<string, SonaInstant>({ maxEntries: RUVLLM_CACHE_MAX });
+const loraInstances = new BoundedLRU<string, MicroLora>({ maxEntries: RUVLLM_CACHE_MAX });
 
 // ── Replay helpers ────────────────────────────────────────────────
 

@@ -27,6 +27,43 @@ import {
 // daemon-state.json + CLI orchestration, cross-platform.
 import { Archivist, type ArchivistInitConfig, setAuditLogPath } from 'agentdb/archivist';
 
+// ADR-0243 F-10-010: module-scope idempotency gates for signal + crash
+// handler installation. Pre-ADR-0243 the daemon registered SIGTERM/SIGINT/
+// SIGHUP on every `start()` call AND uncaughtException/unhandledRejection
+// on every `start()` call. Multiple `WorkerDaemon` constructions in one
+// process (e.g. the `daemon trigger` path constructs a fresh instance per
+// call) doubled the listener count per restart. ~11 restarts triggered
+// `MaxListenersExceededWarning`; the listener-store memory grew from start
+// 1.
+//
+// The flags are module-scope (top-level `let`) per ADR-0243 §Critique
+// Expert 3 — instance-scope `private` fields would not have helped
+// because each new `WorkerDaemon` instance has its own field, so the
+// gate would not actually be process-wide.
+//
+// Follows the `audit-writer::installSignalHandlersOnce` pattern at
+// `forks/agentdb/src/archivist/audit-writer.ts:143-156`. Adopted
+// verbatim, not reinvented.
+//
+// Unblocks ADR-0244 F-01-002 (the colliding `start --daemon` PID file
+// write defers ownership to this canonical signal-handler discipline).
+let daemonShutdownHandlersInstalled = false;
+let daemonCrashHandlersInstalled = false;
+
+/**
+ * Test-only reset. Clears the module-scope handler-install flags so
+ * tests that exercise multiple `WorkerDaemon.start()` calls in one
+ * process can verify the idempotency gate from a clean slate.
+ *
+ * NOT for production: the flags are designed to be one-shot per process
+ * lifetime; clearing them mid-process makes the next `start()` re-install
+ * handlers, which is precisely the leak the gate prevents.
+ */
+export function __resetDaemonHandlerInstallFlagsForTests(): void {
+  daemonShutdownHandlersInstalled = false;
+  daemonCrashHandlersInstalled = false;
+}
+
 // Worker types matching hooks-tools.ts
 export type WorkerType =
   | 'ultralearn'
@@ -457,9 +494,20 @@ export class WorkerDaemon extends EventEmitter {
   }
 
   /**
-   * Setup graceful shutdown handlers
+   * Setup graceful shutdown handlers.
+   *
+   * ADR-0243 F-10-010: idempotency-gated by module-scope
+   * `daemonShutdownHandlersInstalled`. The first call wires handlers; all
+   * subsequent calls (including from a fresh `WorkerDaemon` instance
+   * created later in the same process — see `daemon trigger`) short-
+   * circuit. Without this gate, listener count grew by 3 per `start()`
+   * call and hit `MaxListenersExceededWarning` (default 10) after ~3
+   * restarts.
    */
   private setupShutdownHandlers(): void {
+    if (daemonShutdownHandlersInstalled) return;
+    daemonShutdownHandlersInstalled = true;
+
     const shutdown = async () => {
       this.log('info', 'Received shutdown signal, stopping daemon...');
       await this.stop();
@@ -479,8 +527,15 @@ export class WorkerDaemon extends EventEmitter {
    * orphan. With these, we log a structured crash record, run stop()
    * to clean up, then exit 1 so the process actually dies (otherwise
    * Node would crash anyway after the handler returns).
+   *
+   * ADR-0243 F-10-010: idempotency-gated by module-scope
+   * `daemonCrashHandlersInstalled` for the same listener-leak reasons
+   * as `setupShutdownHandlers`.
    */
   private installCrashHandlers(): void {
+    if (daemonCrashHandlersInstalled) return;
+    daemonCrashHandlersInstalled = true;
+
     const onCrash = (kind: 'uncaughtException' | 'unhandledRejection', err: unknown) => {
       // Best-effort logging; never throw from inside the crash handler.
       try {

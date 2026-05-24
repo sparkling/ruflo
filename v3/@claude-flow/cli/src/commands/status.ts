@@ -482,7 +482,10 @@ async function watchStatus(intervalSeconds: number): Promise<CommandResult> {
   // Initial display
   await refresh();
 
-  // Set up interval
+  // Set up interval — short-lived CLI watch loop, intentionally ref'd
+  // so the watch survives without unrelated event-loop pumping. Cleared
+  // on SIGINT below.
+  // no-unref-setinterval: keep-alive
   const intervalId = setInterval(refresh, intervalSeconds * 1000);
 
   // Handle exit

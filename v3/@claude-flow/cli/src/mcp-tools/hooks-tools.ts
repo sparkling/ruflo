@@ -29,6 +29,7 @@ import { dirname, join, resolve } from 'path';
 import { type MCPTool, findProjectRoot } from './types.js';
 import { tryOptionalImport } from '../utils/optional-import.js';
 import { withTimeoutLogged } from '../utils/timeout.js';
+import { BoundedLRU } from '../utils/bounded-lru.js';
 // ADR-0218 / #1845: producer wires validateText for the dispatch context.
 // (validate-input.ts also exports an unrelated 11-member agent WorkerType —
 // do NOT import it; the daemon's 12-member WorkerType lives in this file.)
@@ -525,7 +526,30 @@ interface TrajectoryData {
 }
 
 // In-memory trajectory tracking (persisted on end)
-const activeTrajectories = new Map<string, TrajectoryData>();
+//
+// ADR-0243 F-10-005: bounded LRU + idle-TTL.
+// Pre-ADR-0243 this was a plain `new Map<string, TrajectoryData>()`. A
+// buggy client that calls `hooks_intelligence_trajectory-start` without
+// ever calling `hooks_intelligence_trajectory-end` left the entry in the
+// Map for the process lifetime, even though the trajectory was logically
+// orphaned. On a long-lived MCP-stdio process this accumulated. The
+// bounded LRU caps the count; the idle TTL evicts trajectories that
+// have not seen a `set`/`get` in `TRAJ_IDLE_TTL_MS` (default 1h per
+// ADR-0243 §Decision F-10-005).
+//
+// Dispose probe yields a no-op here — `TrajectoryData` is a plain JS
+// object with no native handle. The probe shape stays for symmetry
+// with the F-10-001 callsite and for future-proofing if trajectories
+// ever own a resource.
+const TRAJ_CACHE_MAX = BoundedLRU.readEnvMax('CLAUDE_FLOW_TRAJ_CACHE_MAX', 256);
+const TRAJ_IDLE_TTL_MS = BoundedLRU.readEnvMax(
+  'CLAUDE_FLOW_TRAJ_IDLE_TTL_MS',
+  60 * 60 * 1000, // 1 hour
+);
+const activeTrajectories = new BoundedLRU<string, TrajectoryData>({
+  maxEntries: TRAJ_CACHE_MAX,
+  idleTtlMs: TRAJ_IDLE_TTL_MS,
+});
 
 // Memory store types and helpers
 interface MemoryEntry {

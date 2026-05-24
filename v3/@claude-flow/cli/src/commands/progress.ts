@@ -208,6 +208,9 @@ const watchCommand: Command = {
     };
 
     await check();
+    // Short-lived CLI progress poller — intentionally ref'd so the
+    // process stays alive while the user watches; cleared on SIGINT.
+    // no-unref-setinterval: keep-alive
     const timer = setInterval(check, interval);
 
     // Handle Ctrl+C

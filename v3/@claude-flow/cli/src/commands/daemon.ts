@@ -182,11 +182,11 @@ const startCommand: Command = {
 
         // Keep process alive — setInterval creates a ref'd handle that prevents
         // Node.js from exiting even when startDaemon's timers are unref'd (#1478 Bug 2).
-        setInterval(() => {}, 60_000);
+        setInterval(() => {}, 60_000); // no-unref-setinterval: keep-alive
         await new Promise(() => {}); // Never resolves - daemon runs until killed
       } else {
         await startDaemon(projectRoot, config);
-        setInterval(() => {}, 60_000); // Keep alive with ref'd handle (#1478)
+        setInterval(() => {}, 60_000); // no-unref-setinterval: keep-alive (#1478)
         await new Promise(() => {}); // Keep alive
       }
 

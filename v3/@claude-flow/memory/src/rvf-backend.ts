@@ -1762,8 +1762,20 @@ export class RvfBackend implements IMemoryBackend {
   private ensureNativeSemanticReady(): void {
     // silent-fallthrough-OK: idempotent rehydration; non-native or already-rehydrated paths legitimately no-op
     if (!this.nativeDb || this._nativeRehydrated) return;
-    this._nativeRehydrated = true;
-    if (this._pendingNativeIngest.length === 0) return;
+    // ADR-0243 F-10-007: do NOT flip `_nativeRehydrated = true` here.
+    // Pre-ADR-0243 the flag was set BEFORE the loop, which had two
+    // hazards: (1) a re-entrant call during ingestBatch would see
+    // `_nativeRehydrated = true` AND a still-populated buffer, and
+    // (2) a fallback-degradation throw mid-loop left the buffer holding
+    // 100K × Float32Array (~300MB at 768-dim) AND marked rehydrated, so
+    // no retry would ever run. The flag is now flipped only AFTER both
+    // the ingest loop and the buffer clear complete — re-entrancy safe,
+    // and a fallback-degrade exit leaves `_nativeRehydrated = false`
+    // so a subsequent attempt can retry the ingest.
+    if (this._pendingNativeIngest.length === 0) {
+      this._nativeRehydrated = true;
+      return;
+    }
     for (const { id, embedding } of this._pendingNativeIngest) {
       const numId = this.assignNativeId(id);
       try {
@@ -1787,7 +1799,8 @@ export class RvfBackend implements IMemoryBackend {
         this.reIndexAfterDegrade(id, embedding);
       }
     }
-    this._pendingNativeIngest = []; // release memory
+    this._pendingNativeIngest = []; // release memory (ADR-0243 F-10-007 eager flush)
+    this._nativeRehydrated = true;  // flip only after the buffer clear
   }
 
   /** Acquire advisory lock (PID-based lockfile).
