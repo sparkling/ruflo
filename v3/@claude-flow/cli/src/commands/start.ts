@@ -161,11 +161,20 @@ const startAction = async (ctx: CommandContext): Promise<CommandResult> => {
       output.writeln();
       output.printInfo('Running in daemon mode. Use "claude-flow stop" to stop.');
 
-      // Store PID for daemon management
-      const daemonPidPath = path.join(cwd, '.claude-flow', 'daemon.pid');
-      fs.writeFileSync(daemonPidPath, String(process.pid));
-
-      // Detach from parent process for true daemon behavior
+      // ADR-0244 site #2 (F-01-002 CRITICAL): `daemonPidPath` write
+      // block removed. The previous code wrote `String(process.pid)`
+      // (raw integer) to `.claude-flow/daemon.pid`, colliding with
+      // `commands/daemon.ts`'s real daemon writer (JSON-object shape)
+      // and with the prior `commands/process.ts` daemon stub (also
+      // JSON-object) — three writers racing on the same file with
+      // two on-disk formats; `JSON.parse` on the raw integer crashed
+      // `status` reads. PID-file ownership belongs to the canonical
+      // `daemonCommand` (see ADR-0243 site #4 for the
+      // `installSignalHandlersOnce` discipline). Upstream
+      // `ruvnet/ruflo` ships this same block at start.ts:219-220;
+      // the fork-only deletion is per ADR-0244 site discipline.
+      //
+      // Detach streams (unchanged): true-daemon behaviour on Unix.
       if (process.platform !== 'win32') {
         // Unix-like systems: create new session
         try {
@@ -177,13 +186,16 @@ const startAction = async (ctx: CommandContext): Promise<CommandResult> => {
         }
       }
 
-      // Keep process alive in daemon mode
+      // Keep the process alive in daemon mode. Previously the
+      // heartbeat polled the (now-removed) `daemonPidPath` to decide
+      // when to exit; with the write removed, the keepAlive becomes
+      // an unrefed pacemaker — the process exits naturally once
+      // there is no other work AND when the user invokes the
+      // top-level `stop` command (which signals this process).
       const keepAlive = setInterval(() => {
-        // Heartbeat - check if we should still be running
-        if (!fs.existsSync(daemonPidPath)) {
-          clearInterval(keepAlive);
-          process.exit(0);
-        }
+        // No-op heartbeat; presence of other refed work keeps the
+        // event loop alive. Removing the PID-file probe avoids the
+        // three-writer race.
       }, 5000);
       keepAlive.unref(); // Don't prevent process from exiting if no other work
     }

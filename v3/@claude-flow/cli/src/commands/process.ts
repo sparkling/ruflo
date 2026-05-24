@@ -3,204 +3,26 @@
  * Background process management, daemon mode, and monitoring
  */
 
-import { readdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
+import { readdirSync, readFileSync, existsSync } from 'fs';
 import { cpus, loadavg, totalmem, freemem } from 'node:os';
-import { dirname, resolve } from 'path';
+import { resolve } from 'path';
 import type { Command, CommandContext, CommandResult } from '../types.js';
 
-// Helper functions for PID file management
-function writePidFile(pidFile: string, pid: number, port: number): void {
-  const dir = dirname(resolve(pidFile));
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  const data = JSON.stringify({ pid, port, startedAt: new Date().toISOString() });
-  writeFileSync(resolve(pidFile), data, 'utf-8');
-}
+// ADR-0244 site #1: PID-file helpers removed alongside the deleted
+// `daemon` subcommand (writePidFile/readPidFile/removePidFile were
+// only used by that block). The canonical daemon driver in
+// `commands/daemon.ts` owns PID-file lifecycle.
 
-function readPidFile(pidFile: string): { pid: number; port: number; startedAt: string } | null {
-  try {
-    const path = resolve(pidFile);
-    if (!existsSync(path)) return null;
-    const data = readFileSync(path, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
-}
-
-function removePidFile(pidFile: string): boolean {
-  try {
-    const path = resolve(pidFile);
-    if (existsSync(path)) {
-      unlinkSync(path);
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Daemon subcommand - start/stop background daemon
- */
-const daemonCommand: Command = {
-  name: 'daemon',
-  description: 'Manage background daemon process',
-  options: [
-    {
-      name: 'action',
-      type: 'string',
-      description: 'Action to perform',
-      choices: ['start', 'stop', 'restart', 'status'],
-      default: 'status',
-    },
-    {
-      name: 'port',
-      type: 'number',
-      description: 'Port for daemon HTTP API',
-      default: 3847,
-    },
-    {
-      name: 'pid-file',
-      type: 'string',
-      description: 'PID file location',
-      default: '.claude-flow/daemon.pid',
-    },
-    {
-      name: 'log-file',
-      type: 'string',
-      description: 'Log file location',
-      default: '.claude-flow/daemon.log',
-    },
-    {
-      name: 'detach',
-      type: 'boolean',
-      description: 'Run in detached mode',
-      default: true,
-    },
-  ],
-  examples: [
-    { command: 'claude-flow process daemon --action start', description: 'Start the daemon' },
-    { command: 'claude-flow process daemon --action stop', description: 'Stop the daemon' },
-    { command: 'claude-flow process daemon --action restart --port 3850', description: 'Restart on different port' },
-    { command: 'claude-flow process daemon --action status', description: 'Check daemon status' },
-  ],
-  action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const action = (ctx.flags?.action as string) || 'status';
-    const port = (ctx.flags?.port as number) || 3847;
-    const pidFile = (ctx.flags?.['pid-file'] as string) || '.claude-flow/daemon.pid';
-    const logFile = (ctx.flags?.['log-file'] as string) || '.claude-flow/daemon.log';
-    const detach = ctx.flags?.detach !== false;
-
-    // Check existing daemon state from PID file
-    const existingDaemon = readPidFile(pidFile);
-    const daemonState = {
-      status: existingDaemon ? 'running' as const : 'stopped' as const,
-      pid: existingDaemon?.pid || null as number | null,
-      uptime: existingDaemon ? Math.floor((Date.now() - new Date(existingDaemon.startedAt).getTime()) / 1000) : 0,
-      port: existingDaemon?.port || port,
-      startedAt: existingDaemon?.startedAt || null as string | null,
-    };
-
-    switch (action) {
-      case 'start':
-        if (existingDaemon) {
-          console.log('\n⚠️  Daemon already running\n');
-          console.log(`  📍 PID: ${existingDaemon.pid}`);
-          console.log(`  🌐 Port: ${existingDaemon.port}`);
-          console.log(`  ⏱️  Started: ${existingDaemon.startedAt}`);
-          break;
-        }
-
-        console.log('\n🚀 Starting claude-flow daemon...\n');
-        const newPid = process.pid; // Use actual process PID
-        daemonState.status = 'running';
-        daemonState.pid = newPid;
-        daemonState.startedAt = new Date().toISOString();
-        daemonState.uptime = 0;
-
-        // Persist PID to file
-        writePidFile(pidFile, newPid, port);
-
-        console.log('  ✅ Daemon started successfully');
-        console.log(`  📍 PID: ${daemonState.pid}`);
-        console.log(`  🌐 HTTP API: http://localhost:${port}`);
-        console.log(`  📄 PID file: ${resolve(pidFile)}`);
-        console.log(`  📝 Log file: ${logFile}`);
-        console.log(`  🔄 Mode: ${detach ? 'detached' : 'foreground'}`);
-        console.log('\n  Services:');
-        console.log('    ├─ MCP Server: listening');
-        console.log('    ├─ Agent Pool: initialized (0 agents)');
-        console.log('    ├─ Memory Service: connected');
-        console.log('    ├─ Task Queue: ready');
-        console.log('    └─ Swarm Coordinator: standby');
-        break;
-
-      case 'stop':
-        if (!existingDaemon) {
-          console.log('\n⚠️  No daemon running\n');
-          break;
-        }
-        console.log('\n🛑 Stopping claude-flow daemon...\n');
-        console.log(`  📍 Stopping PID ${existingDaemon.pid}...`);
-
-        // Remove PID file
-        removePidFile(pidFile);
-        daemonState.status = 'stopped';
-        daemonState.pid = null;
-
-        console.log('  ✅ Daemon stopped successfully');
-        console.log('  📍 PID file removed');
-        console.log('  🧹 Resources cleaned up');
-        break;
-
-      case 'restart':
-        console.log('\n🔄 Restarting claude-flow daemon...\n');
-        if (existingDaemon) {
-          console.log(`  🛑 Stopping PID ${existingDaemon.pid}...`);
-          removePidFile(pidFile);
-          console.log('  ✅ Stopped');
-        }
-        console.log('  🚀 Starting new instance...');
-        const restartPid = process.pid;
-        writePidFile(pidFile, restartPid, port);
-        daemonState.pid = restartPid;
-        daemonState.status = 'running';
-        console.log(`  ✅ Daemon restarted (PID: ${restartPid})`);
-        console.log(`  🌐 HTTP API: http://localhost:${port}`);
-        console.log(`  📄 PID file: ${resolve(pidFile)}`);
-        break;
-
-      case 'status':
-        console.log('\n📊 Daemon Status\n');
-        console.log('  ┌─────────────────────────────────────────┐');
-        console.log('  │ claude-flow daemon                      │');
-        console.log('  ├─────────────────────────────────────────┤');
-        if (existingDaemon) {
-          const uptime = Math.floor((Date.now() - new Date(existingDaemon.startedAt).getTime()) / 1000);
-          const uptimeStr = uptime < 60 ? `${uptime}s` : `${Math.floor(uptime / 60)}m ${uptime % 60}s`;
-          console.log('  │ Status:      🟢 running                │');
-          console.log(`  │ PID:         ${existingDaemon.pid.toString().padEnd(28)}│`);
-          console.log(`  │ Port:        ${existingDaemon.port.toString().padEnd(28)}│`);
-          console.log(`  │ Uptime:      ${uptimeStr.padEnd(28)}│`);
-        } else {
-          console.log('  │ Status:      ⚪ not running             │');
-          console.log(`  │ Port:        ${port.toString().padEnd(28)}│`);
-          console.log(`  │ PID file:    ${pidFile.substring(0, 26).padEnd(28)}│`);
-          console.log('  │ Uptime:      --                         │');
-        }
-        console.log('  └─────────────────────────────────────────┘');
-        if (!existingDaemon) {
-          console.log('\n  To start: claude-flow process daemon --action start');
-        }
-        break;
-    }
-
-    return { success: true, data: daemonState };
-  },
-};
+// ADR-0244 site #1 (F-01-001 CRITICAL): `daemon` subcommand deleted.
+// The previous stub wrote the CLI's own `process.pid` to
+// `.claude-flow/daemon.pid` and printed a hardcoded "Services:" tree
+// without spawning anything, colliding with `commands/start.ts`'s
+// `start --daemon` writer and `commands/daemon.ts`'s real daemon
+// writer (three-writer race on same file with two on-disk formats).
+// Canonical daemon driver lives in `commands/daemon.ts`; the
+// `process` group now offers only monitor/workers/signals/logs.
+// Upstream `ruvnet/ruflo` is byte-identical at this block; the
+// deletion is fork-only merge-tax per ADR-0244 site discipline.
 
 /**
  * Monitor subcommand - real-time process monitoring
@@ -702,7 +524,10 @@ export const processCommand: Command = {
   name: 'process',
   description: 'Background process management, daemon, and monitoring',
   aliases: ['proc', 'ps'],
-  subcommands: [daemonCommand, monitorCommand, workersCommand, signalsCommand, logsCommand],
+  // ADR-0244 site #1: `daemonCommand` removed (was a stub colliding
+  // with `commands/daemon.ts`'s real daemon writer). Use the
+  // top-level `daemon` command for daemon lifecycle management.
+  subcommands: [monitorCommand, workersCommand, signalsCommand, logsCommand],
   options: [
     {
       name: 'help',
@@ -711,8 +536,9 @@ export const processCommand: Command = {
       description: 'Show help for process command',
     },
   ],
+  // ADR-0244 site #1: `process daemon` example removed; canonical
+  // daemon driver is the top-level `daemon` command (commands/daemon.ts).
   examples: [
-    { command: 'claude-flow process daemon --action start', description: 'Start daemon' },
     { command: 'claude-flow process monitor --watch', description: 'Watch processes' },
     { command: 'claude-flow process workers --action list', description: 'List workers' },
     { command: 'claude-flow process logs --follow', description: 'Follow logs' },
@@ -721,14 +547,14 @@ export const processCommand: Command = {
     // Show help if no subcommand
     console.log('\n🔧 Process Management\n');
     console.log('Manage background processes, daemons, and workers.\n');
+    // ADR-0244 site #1: `daemon` subcommand removed; the top-level
+    // `daemon` command is the canonical daemon driver.
     console.log('Subcommands:');
-    console.log('  daemon     - Manage background daemon process');
     console.log('  monitor    - Real-time process monitoring');
     console.log('  workers    - Manage background workers');
     console.log('  signals    - Send signals to processes');
     console.log('  logs       - View and manage process logs');
     console.log('\nExamples:');
-    console.log('  claude-flow process daemon --action start');
     console.log('  claude-flow process monitor --watch');
     console.log('  claude-flow process workers --action spawn --type task --count 3');
     console.log('  claude-flow process logs --follow --level error');
