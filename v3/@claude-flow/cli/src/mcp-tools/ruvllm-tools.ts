@@ -83,8 +83,18 @@ async function rebuildMicroLora(id: string): Promise<MicroLora | undefined> {
   if (!rec) return undefined;
   const mod = await loadRuvllmWasm();
   const lora = await mod.createMicroLora(rec.config);
-  for (const entry of rec.journal) {
+  for (let i = 0; i < rec.journal.length; i++) {
+    const entry = rec.journal[i];
     if (entry.op === 'adapt') {
+      if (!('input' in entry) || entry.input === undefined) {
+        // ADR-0231 gap #1: legacy adapt entries lack input field. They predate
+        // the per-call input requirement and were mathematically no-ops (the
+        // pre-fork zero-input bug). Skip on replay; lose no real adaptation.
+        console.warn(
+          `microlora replay: skipping legacy adapt entry for loraId=${id} index=${i} (no input field; pre-ADR-0231)`,
+        );
+        continue;
+      }
       lora.adapt(
         Float32Array.from(entry.input),
         entry.quality,
