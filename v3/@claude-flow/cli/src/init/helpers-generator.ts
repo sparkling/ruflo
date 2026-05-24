@@ -957,8 +957,15 @@ export function generateIntelligenceStub(): string {
 
 /**
  * Generate a minimal auto-memory-hook.mjs fallback for fresh installs.
- * This ESM script handles import/sync/status commands gracefully when
+ * This ESM script handles import/status commands gracefully when
  * @claude-flow/memory is not installed. Gets overwritten when source copy succeeds.
+ *
+ * ADR-0083 Wave 2 removed the `sync` subcommand (and the `doSync()` drain) from
+ * `auto-memory-hook.mjs`: the router writes to RVF directly so the JSON→RVF
+ * drain became a dead bridge. The bundled-static helpers honored this; this
+ * generator did not until ADR-0235 (Batch 1) deleted the bundled-static layer
+ * and made the generator the sole source-of-truth — exposing the pre-existing
+ * drift. Keep `import` + `status` only.
  */
 export function generateAutoMemoryHook(): string {
   return `#!/usr/bin/env node
@@ -968,8 +975,9 @@ export function generateAutoMemoryHook(): string {
  *
  * Usage:
  *   node auto-memory-hook.mjs import   # SessionStart
- *   node auto-memory-hook.mjs sync     # SessionEnd / Stop
  *   node auto-memory-hook.mjs status   # Show bridge status
+ *
+ * ADR-0083 Wave 2 removed the legacy 'sync' subcommand + doSync() drain.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
@@ -1027,22 +1035,6 @@ async function doImport() {
   dim('Auto memory import available — run init --upgrade for full support');
 }
 
-async function doSync() {
-  if (!existsSync(STORE_PATH)) {
-    dim('No entries to sync');
-    return;
-  }
-
-  const memPkg = await loadMemoryPackage();
-
-  if (!memPkg || !memPkg.AutoMemoryBridge) {
-    dim('Memory package not available — sync skipped (non-critical)');
-    return;
-  }
-
-  dim('Auto memory sync available — run init --upgrade for full support');
-}
-
 function doStatus() {
   console.log('\\n=== Auto Memory Bridge Status ===\\n');
   console.log('  Package:        Fallback mode (run init --upgrade for full)');
@@ -1058,10 +1050,9 @@ const command = process.argv[2] || 'status';
 try {
   switch (command) {
     case 'import': await doImport(); break;
-    case 'sync': await doSync(); break;
     case 'status': doStatus(); break;
     default:
-      console.log('Usage: auto-memory-hook.mjs <import|sync|status>');
+      console.log('Usage: auto-memory-hook.mjs <import|status>');
       process.exit(1);
   }
 } catch (err) {
