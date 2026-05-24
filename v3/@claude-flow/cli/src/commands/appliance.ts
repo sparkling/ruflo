@@ -47,8 +47,16 @@ async function loadModule<T>(path: string, exportName: string, label: string): P
   try {
     const mod = await import(path);
     return mod[exportName] as T;
-  } catch {
-    output.printError(`RVFA ${label} module not found`, 'Install with: npm install @claude-flow/appliance');
+  } catch (err) {
+    // ADR-0239 cluster 7 (F-11-014) honesty fix: the appliance modules
+    // ship in this same package's dist; there is no separate
+    // @claude-flow/appliance npm package to install. Surface the real
+    // module-resolution error instead of pointing the user at a 404.
+    const detail = err instanceof Error ? err.message : String(err);
+    output.printError(
+      `RVFA ${label} module failed to load`,
+      `Module path: ${path}. Root cause: ${detail}`,
+    );
     return null;
   }
 }

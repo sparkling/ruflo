@@ -1,4 +1,11 @@
 /**
+ * KEEP — ADR-0239 cluster 7 KEEP-with-watch disposition.
+ *
+ * 2 inbound consumers (under threshold); explicitly retained, NOT a
+ * dead-code candidate. If a future refactor removes the last consumer,
+ * re-evaluate against the dead-code lint gate (ADR-0239 cluster 8).
+ * Remove this marker when the consumer count changes.
+ *
  * Encryption-at-rest vault primitives (ADR-096 Phase 1).
  *
  * Goal: provide deterministic encrypt/decrypt of arbitrary Buffers with a
