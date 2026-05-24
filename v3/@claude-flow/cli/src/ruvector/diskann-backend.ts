@@ -2,11 +2,20 @@
  * DiskANN Vector Search Backend
  *
  * SSD-friendly approximate nearest neighbor search using Vamana graph.
- * Falls back gracefully to HNSW (@ruvector/router VectorDb) or
- * pure-JS cosine similarity when DiskANN is unavailable.
+ *
+ * ADR-0234: fork diverges from upstream (which ships a silent three-tier
+ * cascade `diskann → hnsw → cosine-js` by design — see ADR-0234 §Check 2
+ * site 2; verified byte-identical with `ruvnet/ruflo` at 2026-05-24). Per
+ * `feedback-no-fallbacks`, the silent cascade is replaced by fail-loud
+ * throws at each loader boundary. `createJsFallbackIndex` is preserved as
+ * a test-only helper (unreachable from `getDiskAnnIndex` production path).
+ * INTEGRATION-LEDGER: this fork patch is a perpetual merge tax — sync
+ * agents preserve the throws via the labelled `{code, path, adr}` shape.
  *
  * @module v3/cli/ruvector/diskann-backend
  */
+
+import { throwLoaderUnavailable } from './loader-errors.js';
 
 // ===== Types =====
 
@@ -35,7 +44,12 @@ let diskannAvailable: boolean | null = null;
 let activeBackend: VectorBackend = 'cosine-js';
 
 /**
- * Check if @ruvector/diskann is available
+ * Check if @ruvector/diskann is available.
+ *
+ * ADR-0234: this remains a non-throwing probe — callers use it to branch
+ * BEFORE invoking `getDiskAnnIndex`. The throw happens at `getDiskAnnIndex`
+ * (the loader boundary) so a missing binding cannot silently degrade the
+ * runtime backend tier.
  */
 export async function isDiskAnnAvailable(): Promise<boolean> {
   if (diskannAvailable !== null) return diskannAvailable;
@@ -52,7 +66,13 @@ export async function isDiskAnnAvailable(): Promise<boolean> {
 }
 
 /**
- * Create or get a DiskANN index instance
+ * Create or get a DiskANN index instance.
+ *
+ * ADR-0234: fork diverges from upstream (which ships silent cascade by
+ * design). Throws via `throwLoaderUnavailable` at each missing tier rather
+ * than falling through. The three throw shapes share the labelled
+ * `{code, path, adr: 'ADR-0234'}` template (per F-06-002 cross-cutting
+ * observation 3) so sync agents can preserve them mechanically.
  */
 export async function getDiskAnnIndex(config: DiskAnnConfig): Promise<{
   index: any;
@@ -60,57 +80,75 @@ export async function getDiskAnnIndex(config: DiskAnnConfig): Promise<{
 }> {
   if (diskannInstance) return { index: diskannInstance, backend: activeBackend };
 
-  // Try DiskANN first
+  // Tier 1: DiskANN
   if (await isDiskAnnAvailable()) {
+    let DiskAnn: any;
     try {
       const { createRequire } = await import('module');
       const require2 = createRequire(import.meta.url);
-      const { DiskAnn } = require2('@ruvector/diskann');
-
-      const index = new DiskAnn({
-        dim: config.dim,
-        maxDegree: config.maxDegree ?? 64,
-        buildBeam: config.buildBeam ?? 128,
-        searchBeam: config.searchBeam ?? 64,
-        alpha: config.alpha ?? 1.2,
-        pqSubspaces: config.pqSubspaces ?? 0,
-        storagePath: config.storagePath,
-      });
-
-      diskannInstance = index;
-      activeBackend = 'diskann';
-      return { index, backend: 'diskann' };
-    } catch {
-      // Fall through
+      DiskAnn = require2('@ruvector/diskann').DiskAnn;
+    } catch (err) {
+      // ADR-0234: probe said available but require failed — surface it.
+      throwLoaderUnavailable(
+        'DISKANN_TIER_UNAVAILABLE',
+        '@ruvector/diskann',
+        'DiskANN binding probe succeeded but require() failed. Re-install @ruvector/diskann.',
+        err,
+      );
     }
+
+    const index = new DiskAnn({
+      dim: config.dim,
+      maxDegree: config.maxDegree ?? 64,
+      buildBeam: config.buildBeam ?? 128,
+      searchBeam: config.searchBeam ?? 64,
+      alpha: config.alpha ?? 1.2,
+      pqSubspaces: config.pqSubspaces ?? 0,
+      storagePath: config.storagePath,
+    });
+
+    diskannInstance = index;
+    activeBackend = 'diskann';
+    return { index, backend: 'diskann' };
   }
 
-  // Try HNSW (@ruvector/router VectorDb) as fallback
+  // Tier 2: HNSW (@ruvector/router VectorDb)
+  let router: any;
   try {
     const { createRequire } = await import('module');
     const require2 = createRequire(import.meta.url);
-    const router = require2('@ruvector/router');
-    if (router.VectorDb && router.DistanceMetric) {
-      const index = new router.VectorDb({
-        dimensions: config.dim,
-        distanceMetric: router.DistanceMetric.Cosine,
-        hnswM: 16,
-        hnswEfConstruction: 200,
-        hnswEfSearch: 100,
-      });
-      diskannInstance = index;
-      activeBackend = 'hnsw';
-      return { index, backend: 'hnsw' };
-    }
-  } catch {
-    // Fall through
+    router = require2('@ruvector/router');
+  } catch (err) {
+    // ADR-0234: no diskann + no router → fail loud; do NOT fall through to
+    // pure-JS cosine. Pure-JS is a test fixture, not a production tier.
+    throwLoaderUnavailable(
+      'HNSW_TIER_UNAVAILABLE',
+      '@ruvector/router',
+      'Neither @ruvector/diskann nor @ruvector/router is installed. Install one to enable vector search.',
+      err,
+    );
+  }
+  if (router.VectorDb && router.DistanceMetric) {
+    const index = new router.VectorDb({
+      dimensions: config.dim,
+      distanceMetric: router.DistanceMetric.Cosine,
+      hnswM: 16,
+      hnswEfConstruction: 200,
+      hnswEfSearch: 100,
+    });
+    diskannInstance = index;
+    activeBackend = 'hnsw';
+    return { index, backend: 'hnsw' };
   }
 
-  // Pure JS fallback
-  const jsIndex = createJsFallbackIndex(config.dim);
-  diskannInstance = jsIndex;
-  activeBackend = 'cosine-js';
-  return { index: jsIndex, backend: 'cosine-js' };
+  // ADR-0234: router import succeeded but expected exports missing → fail
+  // loud. The pure-JS fallback below is reserved for tests; production
+  // callers cannot silently land on it.
+  throwLoaderUnavailable(
+    'PURE_JS_DISALLOWED',
+    '@ruvector/router#VectorDb',
+    '@ruvector/router loaded but does not export VectorDb/DistanceMetric. Verify the package version.',
+  );
 }
 
 /**
@@ -195,7 +233,11 @@ export async function searchVectors(
   return index.search(query, k);
 }
 
-// ===== Pure JS fallback =====
+// ===== Pure JS fallback — test-only fixture (ADR-0234) =====
+// Retained so `benchmark()` can compare backends and tests can construct a
+// brute-force reference impl; `getDiskAnnIndex` no longer falls back here in
+// production (throws via `throwLoaderUnavailable` when neither
+// @ruvector/diskann nor @ruvector/router is installed).
 
 function createJsFallbackIndex(dim: number) {
   const vectors = new Map<string, Float32Array>();

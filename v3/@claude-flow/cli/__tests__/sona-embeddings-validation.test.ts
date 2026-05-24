@@ -3,7 +3,11 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SONAOptimizer, resetSONAOptimizer } from '../src/memory/sona-optimizer.js';
-import { generateEmbedding } from '../src/ruvector/vector-db.js';
+// ADR-0234: production-path `generateEmbedding` from `vector-db.ts` now
+// throws when ruvector is unavailable (silent hash-fallback removed). The
+// in-file `generateHashEmbedding` is retained as a test-only fixture and is
+// exercised directly below.
+import { generateEmbedding, generateHashEmbedding } from '../src/ruvector/vector-db.js';
 
 // ---------- SONA Optimizer ----------
 describe('SONA Optimizer', () => {
@@ -53,27 +57,31 @@ describe('SONA Optimizer', () => {
 
 // ---------- Embeddings Transparency ----------
 describe('Embeddings Transparency (vector-db)', () => {
-  it('6: generateHashEmbedding via generateEmbedding returns Float32Array of length 384', () => {
-    // generateEmbedding defaults to 768, but we request 384
-    const emb = generateEmbedding('hello world', 384);
+  // ADR-0234: production-path `generateEmbedding` now throws when ruvector
+  // is unavailable. The deterministic-hash fixture lives in
+  // `generateHashEmbedding` and is exercised directly. The behaviour the
+  // pre-ADR-0234 test asserted (Float32Array length 384, deterministic
+  // output) is preserved by exercising the fixture; what changed is that
+  // production callsites can no longer silently land here.
+  it('6: generateHashEmbedding fixture returns Float32Array of length 384', () => {
+    const emb = generateHashEmbedding('hello world', 384);
     expect(emb).toBeInstanceOf(Float32Array);
     expect(emb.length).toBe(384);
   });
 
-  it('7: hash embedding is deterministic (same input -> same output)', () => {
-    const a = generateEmbedding('deterministic test input', 384);
-    const b = generateEmbedding('deterministic test input', 384);
+  it('7: generateHashEmbedding fixture is deterministic (same input -> same output)', () => {
+    const a = generateHashEmbedding('deterministic test input', 384);
+    const b = generateHashEmbedding('deterministic test input', 384);
     expect(Array.from(a)).toEqual(Array.from(b));
   });
 
-  it('8: hash embedding has _warning property (non-enumerable) on fallback', () => {
-    const emb = generateEmbedding('test transparency', 384);
-    // _warning is defined as non-enumerable
-    const descriptor = Object.getOwnPropertyDescriptor(emb, '_warning');
-    expect(descriptor).toBeDefined();
-    expect(descriptor!.enumerable).toBe(false);
-    expect(typeof descriptor!.value).toBe('string');
-    expect(descriptor!.value).toContain('hash-based');
+  it('8: production generateEmbedding throws ADR-0234 error when ruvector unavailable', () => {
+    // Replaces the prior `_warning` property assertion (the fork had already
+    // deleted that warning in the EMBEDDING_DIM=768 cleanup commit, leaving
+    // the fallback silent — ADR-0234's exact diagnosis). The fix surfaces
+    // missing-ruvector as a labelled throw instead of a tagged Float32Array.
+    expect(() => generateEmbedding('test transparency', 384))
+      .toThrow(/ADR-0234/);
   });
 });
 

@@ -1,15 +1,21 @@
 /**
  * Vector Database Module
  *
- * Provides optional ruvector WASM-accelerated vector operations for:
+ * Provides ruvector WASM-accelerated vector operations for:
  * - Semantic similarity search
  * - HNSW indexing (150x faster)
  * - Embedding generation
  *
- * Gracefully degrades when ruvector is not installed.
+ * ADR-0234 (extends ADR-0095 amendment 2026-05-23 per feedback-no-fallbacks):
+ * fails loud at the loader boundary when ruvector is not installed; the prior
+ * silent hash-stretched-sine fallback (FallbackVectorDB / generateHashEmbedding
+ * in production paths) is removed. `generateHashEmbedding` is retained in-file
+ * as a test-only fixture (callable from `__tests__/`); no production callsite
+ * may reach it.
  *
  * Created with love by ruv.io
  */
+import { throwLoaderUnavailable } from './loader-errors.js';
 
 // ============================================================================
 // Types
@@ -34,8 +40,11 @@ export interface RuVectorModule {
 }
 
 // ============================================================================
-// Fallback Implementation (when ruvector not available)
+// FallbackVectorDB — test-only fixture (ADR-0234)
 // ============================================================================
+// Retained as an in-file class so unit tests can construct a brute-force
+// reference impl when needed; production paths cannot reach it (createVectorDB
+// throws on missing ruvector per ADR-0234 / feedback-no-fallbacks).
 
 class FallbackVectorDB implements VectorDB {
   private vectors: Map<string, { embedding: Float32Array; metadata?: Record<string, unknown> }> = new Map();
@@ -98,9 +107,18 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 }
 
 /**
- * Generate a simple hash-based embedding (fallback when ruvector not available)
+ * Generate a simple hash-based embedding.
+ *
+ * ADR-0234: retained ONLY as a test-only fixture. Per `feedback-no-fallbacks`,
+ * production callsites must not reach this — they go through `loadRuVector` /
+ * `createVectorDB` / `generateEmbedding` which now throw via
+ * `throwLoaderUnavailable` when ruvector is missing. Exported so tests in
+ * `__tests__/` can still import the deterministic-hash fixture they relied on
+ * before the loader cascade was made fail-loud.
+ *
+ * @internal
  */
-function generateHashEmbedding(text: string, dimensions: number = EMBEDDING_DIM): Float32Array {
+export function generateHashEmbedding(text: string, dimensions: number = EMBEDDING_DIM): Float32Array {
   const embedding = new Float32Array(dimensions);
   const normalized = text.toLowerCase().trim();
 
@@ -142,73 +160,106 @@ let isAvailable = false;
 // ============================================================================
 
 /**
- * Attempt to load the ruvector module
- * Returns true if successfully loaded, false otherwise
+ * Attempt to load the ruvector module.
+ *
+ * ADR-0234: throws on import failure or absent VectorDB export. Returns true
+ * only on a fully-resolved live binding; never returns false (would mask a
+ * deployment fact behind a silent boolean). Idempotent — repeated calls after
+ * a successful load short-circuit to `true`.
  */
 export async function loadRuVector(): Promise<boolean> {
   if (loadAttempted) {
-    return isAvailable;
+    if (isAvailable) return true;
+    // Re-throw on every call so callers can't silently degrade past an
+    // earlier failed load attempt.
+    throwLoaderUnavailable(
+      'RUVECTOR_UNAVAILABLE',
+      'ruvector',
+      'Install ruvector (or @ruvector/*) and retry. The previous load attempt failed; restart the process after install.',
+    );
   }
 
   loadAttempted = true;
 
+  let ruvector: any;
   try {
-    // Dynamic import to handle missing dependency gracefully
-    const ruvector = await import('ruvector').catch(() => null);
-
-    // ruvector exports VectorDB class, not createVectorDB function
-    if (ruvector && (typeof ruvector.VectorDB === 'function' || typeof ruvector.VectorDb === 'function')) {
-      // Create adapter module that matches our expected interface
-      const VectorDBClass = ruvector.VectorDB || ruvector.VectorDb;
-      ruvectorModule = {
-        createVectorDB: async (dimensions: number): Promise<VectorDB> => {
-          const db = new VectorDBClass({ dimensions });
-          // Wrap ruvector's VectorDB to match our interface
-          return {
-            insert: (embedding: Float32Array, id: string, metadata?: Record<string, unknown>) => {
-              db.insert({ id, vector: embedding, metadata });
-            },
-            search: async (query: Float32Array, k: number = 10) => {
-              const results = await db.search({ vector: query, k });
-              return results.map((r: any) => ({
-                id: r.id,
-                score: r.score,
-                metadata: r.metadata,
-              }));
-            },
-            remove: (id: string) => {
-              db.delete(id);
-              return true;
-            },
-            size: async () => {
-              const len = await db.len();
-              return len;
-            },
-            clear: () => {
-              // Not directly supported - would need to recreate
-            },
-          } as VectorDB;
-        },
-        generateEmbedding: (text: string, dimensions: number = EMBEDDING_DIM): Float32Array => {
-          // ruvector may not have this - use fallback
-          return generateHashEmbedding(text, dimensions);
-        },
-        cosineSimilarity: (a: Float32Array, b: Float32Array): number => {
-          return cosineSimilarity(a, b);
-        },
-        isWASMAccelerated: (): boolean => {
-          return ruvector.isWasm?.() ?? false;
-        },
-      };
-      isAvailable = true;
-      return true;
-    }
-  } catch {
-    // Silently fail - ruvector is optional
+    // Dynamic import — throws are surfaced (no silent .catch(() => null)).
+    ruvector = await import('ruvector');
+  } catch (err) {
+    isAvailable = false;
+    throwLoaderUnavailable(
+      'RUVECTOR_UNAVAILABLE',
+      'ruvector',
+      'Install ruvector (or the @ruvector/* native binding) to enable vector search.',
+      err,
+    );
   }
 
+  // ruvector exports VectorDB class, not createVectorDB function
+  if (ruvector && (typeof ruvector.VectorDB === 'function' || typeof ruvector.VectorDb === 'function')) {
+    // Create adapter module that matches our expected interface
+    const VectorDBClass = ruvector.VectorDB || ruvector.VectorDb;
+    ruvectorModule = {
+      createVectorDB: async (dimensions: number): Promise<VectorDB> => {
+        const db = new VectorDBClass({ dimensions });
+        // Wrap ruvector's VectorDB to match our interface
+        return {
+          insert: (embedding: Float32Array, id: string, metadata?: Record<string, unknown>) => {
+            db.insert({ id, vector: embedding, metadata });
+          },
+          search: async (query: Float32Array, k: number = 10) => {
+            const results = await db.search({ vector: query, k });
+            return results.map((r: any) => ({
+              id: r.id,
+              score: r.score,
+              metadata: r.metadata,
+            }));
+          },
+          remove: (id: string) => {
+            db.delete(id);
+            return true;
+          },
+          size: async () => {
+            const len = await db.len();
+            return len;
+          },
+          clear: () => {
+            // Not directly supported - would need to recreate
+          },
+        } as VectorDB;
+      },
+      generateEmbedding: (text: string, dimensions: number = EMBEDDING_DIM): Float32Array => {
+        // Native ruvector binding may not expose `embed`; surface that as a
+        // load failure rather than substituting a hash fixture in production.
+        if (typeof (ruvector as any).embed === 'function') {
+          const result = (ruvector as any).embed(text, dimensions);
+          if (result instanceof Float32Array) return result;
+          if (Array.isArray(result)) return new Float32Array(result);
+        }
+        throwLoaderUnavailable(
+          'RUVECTOR_UNAVAILABLE',
+          'ruvector#embed',
+          'Installed ruvector binding does not expose a text-embedding API. Upgrade to a build that exports `embed(text, dims)`.',
+        );
+      },
+      cosineSimilarity: (a: Float32Array, b: Float32Array): number => {
+        return cosineSimilarity(a, b);
+      },
+      isWASMAccelerated: (): boolean => {
+        return ruvector.isWasm?.() ?? false;
+      },
+    };
+    isAvailable = true;
+    return true;
+  }
+
+  // Import succeeded but the expected VectorDB class is missing.
   isAvailable = false;
-  return false;
+  throwLoaderUnavailable(
+    'RUVECTOR_UNAVAILABLE',
+    'ruvector#VectorDB',
+    'Installed ruvector package does not export VectorDB/VectorDb. Verify the binding version.',
+  );
 }
 
 /**
@@ -229,48 +280,66 @@ export function isWASMAccelerated(): boolean {
 }
 
 /**
- * Create a vector database
- * Uses ruvector HNSW if available, falls back to brute-force search
+ * Create a vector database.
+ *
+ * ADR-0234: uses ruvector HNSW (throws if unavailable). The prior silent
+ * fallback to `FallbackVectorDB` is removed; missing-binding now surfaces
+ * as a labelled error per `feedback-no-fallbacks`. `FallbackVectorDB`
+ * remains in-file as a test-only fixture.
  */
 export async function createVectorDB(dimensions: number = EMBEDDING_DIM): Promise<VectorDB> {
   await loadRuVector();
 
   if (ruvectorModule && typeof ruvectorModule.createVectorDB === 'function') {
-    try {
-      return await ruvectorModule.createVectorDB(dimensions);
-    } catch {
-      // Fall back to simple implementation
-    }
+    return await ruvectorModule.createVectorDB(dimensions);
   }
 
-  return new FallbackVectorDB(dimensions);
+  // loadRuVector() already throws on absence; defense-in-depth in case the
+  // module shape mutates after the load gate passes.
+  throwLoaderUnavailable(
+    'RUVECTOR_UNAVAILABLE',
+    'ruvector#createVectorDB',
+    'ruvector loaded but createVectorDB factory unavailable.',
+  );
 }
 
 /**
- * Generate an embedding for text
- * Uses ruvector if available, falls back to hash-based embedding
+ * Generate an embedding for text.
+ *
+ * ADR-0234: routes through the loaded ruvector binding (throws if
+ * unavailable). The prior silent fall-through to `generateHashEmbedding`
+ * is removed; production callsites cannot reach the hash fixture.
  */
 export function generateEmbedding(text: string, dimensions: number = EMBEDDING_DIM): Float32Array {
   if (ruvectorModule && typeof ruvectorModule.generateEmbedding === 'function') {
-    try {
-      return ruvectorModule.generateEmbedding(text, dimensions);
-    } catch {
-      // Fall back to hash-based embedding
-    }
+    return ruvectorModule.generateEmbedding(text, dimensions);
   }
 
-  return generateHashEmbedding(text, dimensions);
+  // Module not loaded — call sites must call loadRuVector() first (which
+  // throws on missing binding) so this state is only reachable when the
+  // module was loaded but then unloaded.
+  throwLoaderUnavailable(
+    'RUVECTOR_UNAVAILABLE',
+    'ruvector#generateEmbedding',
+    'Call loadRuVector() before generateEmbedding() and install ruvector if not present.',
+  );
 }
 
 /**
- * Compute cosine similarity between two vectors
+ * Compute cosine similarity between two vectors.
+ *
+ * The pure-JS `cosineSimilarity` path is mathematically equivalent to the
+ * native binding and is NOT a degraded fallback — ADR-0234 only governs
+ * loader cascades that change the SEMANTIC surface (embedding provider,
+ * search backend). Cosine similarity over a known pair of vectors is
+ * deterministic across runtimes.
  */
 export function computeSimilarity(a: Float32Array, b: Float32Array): number {
   if (ruvectorModule && typeof ruvectorModule.cosineSimilarity === 'function') {
     try {
       return ruvectorModule.cosineSimilarity(a, b);
     } catch {
-      // Fall back to JS implementation
+      // Pure-JS cosine is mathematically equivalent; keep this path.
     }
   }
 
@@ -278,18 +347,22 @@ export function computeSimilarity(a: Float32Array, b: Float32Array): number {
 }
 
 /**
- * Get status information about the ruvector module
+ * Get status information about the ruvector module.
+ *
+ * ADR-0234: `backend: 'fallback'` is removed from the return shape — there
+ * is no fallback any more. When `available === false`, callers must treat
+ * subsequent ruvector calls as throwing.
  */
 export function getStatus(): {
   available: boolean;
   wasmAccelerated: boolean;
-  backend: 'ruvector-wasm' | 'ruvector' | 'fallback';
+  backend: 'ruvector-wasm' | 'ruvector' | 'unavailable';
 } {
   if (!isAvailable) {
     return {
       available: false,
       wasmAccelerated: false,
-      backend: 'fallback',
+      backend: 'unavailable',
     };
   }
 
