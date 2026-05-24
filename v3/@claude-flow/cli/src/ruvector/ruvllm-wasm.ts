@@ -300,7 +300,7 @@ export async function createMicroLora(config: MicroLoraConfig): Promise<{
       feedback.learningRate = learningRate;
       try { (feedback as any).success = success; } catch { /* v2.0.2 quirk */ }
       if (consolidate) {
-        (lora as any).adapt_constrained(input, feedback);
+        (lora as any).adaptConstrained(input, feedback);
       } else {
         lora.adapt(input, feedback);
       }
