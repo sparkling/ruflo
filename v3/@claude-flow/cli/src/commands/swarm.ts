@@ -752,6 +752,24 @@ const stopCommand: Command = {
 };
 
 // Scale swarm
+//
+// ADR-0244 site #3 (F-01-003): wire `swarm scale` to MCP `swarm_scale`.
+// Previously the handler printed `printSuccess('Swarm scaled to N
+// agents')` and returned `{success:true, data:{swarmId, agents, delta}}`
+// without ever invoking `swarm_scale`. The `--type` flag was read into
+// `agentType` but never used. Per ADR-0244 site #3 disposition, we now:
+//   (a) call `swarm_scale` MCP tool, passing {swarmId, agents:target,
+//       type:agentType};
+//   (b) on missing handler / MCP failure, fail-loud with
+//       `{success:false, exitCode:1, error}` envelope (ADR-0210
+//       stub-honesty mandate + feedback-no-fallbacks).
+// The MCP-server registration side is covered in ADR-0244 site #9
+// (`mcp-tools/swarm-tools.ts` adds the `swarm_scale` handler). Until
+// that lands, the fail-loud branch is the safety net per ADR-0244
+// E1 expert amendment.
+//
+// Upstream `ruvnet/ruflo` ships the dishonest-envelope shape at this
+// block; the fix is fork-only merge-tax per ADR-0244.
 const scaleCommand: Command = {
   name: 'scale',
   description: 'Scale swarm agent count',
@@ -773,7 +791,7 @@ const scaleCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const swarmId = ctx.args[0];
     const targetAgents = ctx.flags.agents as number;
-    const agentType = ctx.flags.type as string;
+    const agentType = ctx.flags.type as string | undefined;
 
     if (!swarmId) {
       output.printError('Swarm ID is required');
@@ -787,15 +805,21 @@ const scaleCommand: Command = {
 
     output.printInfo(`Scaling swarm ${swarmId} to ${targetAgents} agents...`);
 
-    // Calculate scaling delta — fetch actual count instead of hardcoded 8 (#1425)
-    const { callMCPTool } = await import('../mcp-client.js');
+    // Fetch the current agent count via swarm_status; tolerate failure
+    // because the delta print is informational. If swarm_status itself
+    // fails it is the SAME failure mode the swarm_scale call will hit
+    // below — log here and proceed (the scale call is the source of
+    // truth for the success envelope).
     let currentAgents = 0;
     try {
       const statusResult = await callMCPTool('swarm_status', {});
       const statusData = typeof statusResult === 'string' ? JSON.parse(statusResult) : statusResult;
-      currentAgents = statusData?.agentCount ?? statusData?.agents?.length ?? 0;
+      currentAgents = (statusData as { agentCount?: number; agents?: unknown[] })?.agentCount
+        ?? (statusData as { agents?: unknown[] })?.agents?.length
+        ?? 0;
     } catch {
-      // If MCP unavailable, fall back to 0 (will spawn all requested agents)
+      // Informational only — the scale call below will surface the
+      // canonical failure if MCP is genuinely down.
       currentAgents = 0;
     }
     const delta = targetAgents - currentAgents;
@@ -806,12 +830,33 @@ const scaleCommand: Command = {
       output.writeln(output.dim(`  Gracefully stopping ${-delta} agents...`));
     } else {
       output.printInfo('Swarm already at target size');
-      return { success: true };
+      return { success: true, data: { swarmId, agents: targetAgents, delta: 0 } };
     }
 
-    output.printSuccess(`Swarm scaled to ${targetAgents} agents`);
-
-    return { success: true, data: { swarmId, agents: targetAgents, delta } };
+    // ADR-0244 site #3: actually call swarm_scale. On any failure
+    // (missing handler, MCP unreachable, validation error) surface
+    // the cause via {success:false, exitCode:1, message} — NEVER
+    // print success without proof of the work being done.
+    try {
+      const scalePayload: Record<string, unknown> = {
+        swarmId,
+        agents: targetAgents,
+      };
+      if (agentType !== undefined) {
+        scalePayload.type = agentType;
+      }
+      const scaleResult = await callMCPTool('swarm_scale', scalePayload);
+      output.printSuccess(`Swarm scaled to ${targetAgents} agents`);
+      return { success: true, data: { swarmId, agents: targetAgents, delta, mcp: scaleResult } };
+    } catch (err) {
+      const cause = err instanceof MCPClientError ? err.message : String(err);
+      output.printError(`swarm_scale failed: ${cause}`);
+      return {
+        success: false,
+        exitCode: 1,
+        message: `swarm_scale failed: ${cause}`,
+      };
+    }
   }
 };
 
@@ -872,8 +917,21 @@ const coordinateCommand: Command = {
       data: v3Agents
     });
 
-    // Actually initialize via MCP instead of just displaying (#1423)
+    // Actually initialize via MCP instead of just displaying (#1423).
+    //
+    // ADR-0244 site #7 (F-01-011): envelope-honesty fix. Previously
+    // the MCP-failure branch only printed `printWarning(...)` to
+    // stderr (may be filtered) and the action returned
+    // {success:true, data:{agents, count}} — calling scripts could
+    // not tell whether coordination was active. Keep the printed
+    // plan (informational + useful even on failure) but flip the
+    // envelope to {success:false, exitCode:1, message} on MCP
+    // failure so callers can distinguish active vs degraded.
+    // Upstream `ruvnet/ruflo` ships the success-on-MCP-fail shape at
+    // this block; the fix is fork-only merge-tax per ADR-0244.
     output.writeln();
+    let mcpInitialised = false;
+    let mcpError: string | null = null;
     try {
       await callMCPTool('swarm_init', {
         topology: 'hierarchical-mesh',
@@ -881,15 +939,25 @@ const coordinateCommand: Command = {
         strategy: 'specialized',
       });
       output.printSuccess(`Swarm coordination initialized with ${agentCount} agent slots via MCP`);
-    } catch {
-      output.printWarning('MCP unavailable — showing agent plan only (no active coordination)');
+      mcpInitialised = true;
+    } catch (err) {
+      mcpError = err instanceof MCPClientError ? err.message : String(err);
+      output.printWarning(`MCP unavailable — showing agent plan only (no active coordination): ${mcpError}`);
     }
 
     output.writeln();
     output.writeln(output.dim('Note: Use Claude Code Task tool or hive-mind spawn --claude to'));
     output.writeln(output.dim('drive actual agent execution. This command sets up the topology.'));
 
-    return { success: true, data: { agents: v3Agents, count: agentCount } };
+    if (!mcpInitialised) {
+      return {
+        success: false,
+        exitCode: 1,
+        data: { agents: v3Agents, count: agentCount, mcpInitialised: false },
+        message: `swarm_init failed: ${mcpError ?? 'unknown'}`,
+      };
+    }
+    return { success: true, data: { agents: v3Agents, count: agentCount, mcpInitialised: true } };
   }
 };
 
