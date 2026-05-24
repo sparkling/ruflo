@@ -135,6 +135,53 @@ export class MCPClientError extends Error {
 }
 
 /**
+ * ADR-0247 site #1 (F-04-009): Type-narrow helper for MCP isError envelope.
+ * Aidefence handlers (and others) signal failure via
+ * `{ isError: true, content: [{ type: 'text', text: <json> }] }`. Without
+ * this check the client previously returned the envelope as-is and callers
+ * destructuring `{ safe } = await callMCPTool(...)` saw `undefined`.
+ * Complement to ADR-0242 (server-side handler-throw rule).
+ */
+function isMCPErrorEnvelope(x: unknown): x is { isError: true; content?: unknown[] } {
+  return (
+    typeof x === 'object' &&
+    x !== null &&
+    (x as { isError?: unknown }).isError === true
+  );
+}
+
+/**
+ * ADR-0247 site #1: Extract a human-readable error message from an MCP error
+ * envelope. Handlers commonly serialize the cause as
+ * `content[0].text = JSON.stringify({ error: '...' })`. Falls back to the raw
+ * text when JSON-parse fails, and to a sentinel when the envelope is empty.
+ */
+function extractEnvelopeError(envelope: { content?: unknown[] }): Error {
+  const content = envelope.content;
+  if (!Array.isArray(content) || content.length === 0) {
+    return new Error('MCP tool returned isError envelope with no content');
+  }
+  const first = content[0];
+  const text =
+    typeof first === 'object' && first !== null && typeof (first as { text?: unknown }).text === 'string'
+      ? ((first as { text: string }).text)
+      : undefined;
+  if (!text) {
+    return new Error('MCP tool returned isError envelope with no text content');
+  }
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const msg =
+      (typeof parsed.error === 'string' && parsed.error) ||
+      (typeof parsed.message === 'string' && parsed.message) ||
+      text;
+    return new Error(String(msg));
+  } catch {
+    return new Error(text);
+  }
+}
+
+/**
  * Call an MCP tool by name with input parameters
  *
  * @param toolName - Name of the MCP tool (e.g., 'agent_spawn', 'swarm_init')
@@ -176,8 +223,28 @@ export async function callMCPTool<T = unknown>(
   try {
     // Call the tool handler
     const result = await tool.handler(input, context);
+
+    // ADR-0247 site #1 (F-04-009): inspect isError envelope and throw so
+    // consumers destructuring `{ safe } = await callMCPTool(...)` cannot
+    // silently treat an error as a falsy verdict. Complements ADR-0242.
+    if (isMCPErrorEnvelope(result)) {
+      const cause = extractEnvelopeError(result);
+      throw new MCPClientError(
+        `MCP tool '${toolName}' returned isError envelope: ${cause.message}`,
+        toolName,
+        cause
+      );
+    }
+
     return result as T;
   } catch (error) {
+    // ADR-0247 site #1: don't double-wrap our own MCPClientError (e.g. from
+    // the isError-envelope branch above) — re-throw as-is so the synthesised
+    // `cause` chain is preserved for `(err as MCPClientError).cause?.message`
+    // introspection.
+    if (error instanceof MCPClientError) {
+      throw error;
+    }
     // Wrap and re-throw with context
     throw new MCPClientError(
       `Failed to execute MCP tool '${toolName}': ${error instanceof Error ? error.message : String(error)}`,
