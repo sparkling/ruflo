@@ -5,15 +5,15 @@
  * Based on the V3 Architecture Decision Records and Swarm Implementation Plan
  */
 
-import {
+import type {
   SwarmConfig,
   TopologyType,
   LoadBalancingStrategy,
   AgentDomain,
   PhaseId,
-  PerformanceTargets,
-  V3_PERFORMANCE_TARGETS
-} from './shared/types';
+  PerformanceTargets
+} from './@claude-flow/swarm/src/shared/types.js';
+import { V3_PERFORMANCE_TARGETS } from './@claude-flow/swarm/src/shared/types.js';
 
 // =============================================================================
 // Swarm Configuration
@@ -439,6 +439,21 @@ export const topologyConfigs: Record<TopologyType, TopologyConfig> = {
       ['agent-2', 'agent-3', 'agent-4', 'agent-5', 'agent-6', 'agent-7', 'agent-8', 'agent-9', 'agent-10', 'agent-11', 'agent-12', 'agent-13', 'agent-14', 'agent-15']
     ],
     meshConnections: []
+  },
+  'hybrid': {
+    name: 'Hybrid',
+    description: 'Default to hierarchical-mesh; runtime selects centralized vs mesh per scope.',
+    centralNode: 'agent-1',
+    layers: [
+      ['agent-1'],
+      ['agent-2', 'agent-3', 'agent-4', 'agent-5', 'agent-6', 'agent-7', 'agent-8', 'agent-9', 'agent-10', 'agent-11', 'agent-12'],
+      ['agent-13', 'agent-14', 'agent-15']
+    ],
+    meshConnections: [
+      ['agent-2', 'agent-3', 'agent-4'],
+      ['agent-5', 'agent-6', 'agent-7', 'agent-8', 'agent-9'],
+      ['agent-10', 'agent-11', 'agent-12']
+    ]
   }
 };
 
