@@ -13,6 +13,7 @@
 // declarations should be removed and the real types take over.
 
 declare module 'agentdb';
+declare module '@sparkleideas/agentdb'; // codemod-renamed form of 'agentdb'
 declare module '@claude-flow/agentdb';
 declare module '@claude-flow/memory';
 declare module '@ruvector/attention';
@@ -80,6 +81,64 @@ declare module 'agentdb/wasm' {
   export type VectorBackendAsync = any;
 }
 declare module 'agentdb/adapters/memory-rvf-adapter' {
+  export const MemoryRvfAdapter: any;
+  export type MemoryRvfAdapter = any;
+}
+
+// Codemod-renamed forms: `agentdb/*` → `@sparkleideas/agentdb/*`.
+// The codemod rewrites `import`/`require` strings in .ts but NOT the
+// `declare module 'agentdb/*'` strings in .d.ts (its UNSCOPED_IMPORT_RE
+// matches only import/require/from sites). So after codemod runs, callers
+// import `@sparkleideas/agentdb/*` but the .d.ts still declares the
+// pre-codemod names. Mirror each agentdb/* declaration to its renamed form
+// so tsc resolves the post-codemod import sites.
+declare module '@sparkleideas/agentdb/archivist' {
+  export const Archivist: any;
+  export type Archivist = any;
+  export const setAuditLogPath: any;
+  export const __resetAuditWriterForTests: any;
+  export const RaftTermCollisionError: any;
+  export const DuplicateVoteError: any;
+  export const RaftVoteChangeError: any;
+  export const ProposalNotFoundError: any;
+  export const VoterIdRequiredError: any;
+  export type ArchivistInitConfig = any;
+  export const AutopilotLearner: any;
+  export type AutopilotLearner = any;
+  export type AutopilotLearnResult = any;
+  export type CausalGraphWriter = any;
+  export type CausalGraphWriteResult = any;
+  export type EmbeddingScorer = any;
+  export type FeedbackRecorder = any;
+  export type FeedbackWriteResult = any;
+  export type GNNTelemetryReader = any;
+  export type HierarchicalMemoryWriter = any;
+  export type HierarchicalWriteResult = any;
+  export type LearningSystemWriter = any;
+  export type LearningWriteResult = any;
+  export type PatternHit = any;
+  export type PatternReader = any;
+  export type ReasoningBankWriter = any;
+  export type ReasoningBankWriteResult = any;
+  export type ReflexionStoreWriter = any;
+  export type ReflexionWriteResult = any;
+  export type RouteDecision = any;
+  export type SemanticRouteReader = any;
+  export type SkillLibraryWriter = any;
+  export type SkillLibraryWriteResult = any;
+  export type SonaTrajectoryReader = any;
+  export type SonaTrajectoryWriter = any;
+  export type SonaTrajectoryWriteResult = any;
+  export type TaskRouter = any;
+  export type ToolPayloadMap = any;
+}
+declare module '@sparkleideas/agentdb/archivist/handlers' {
+  // Side-effect-only import — no named exports needed.
+}
+declare module '@sparkleideas/agentdb/wasm' {
+  export type VectorBackendAsync = any;
+}
+declare module '@sparkleideas/agentdb/adapters/memory-rvf-adapter' {
   export const MemoryRvfAdapter: any;
   export type MemoryRvfAdapter = any;
 }
