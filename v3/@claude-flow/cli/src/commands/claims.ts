@@ -185,13 +185,15 @@ const checkCommand: Command = {
     let reason = 'Claim not found in policy';
     let policySource = 'default';
 
+    // Hoisted so the ADR-0234 fail-closed catch below can name the search
+    // paths in its operator-facing error message.
+    const claimsConfigPaths = [
+      path.resolve('.claude-flow/claims.json'),
+      path.resolve('claude-flow.claims.json'),
+      path.resolve(process.env.HOME || '~', '.config/claude-flow/claims.json'),
+    ];
+
     try {
-      // Check for claims config file
-      const claimsConfigPaths = [
-        path.resolve('.claude-flow/claims.json'),
-        path.resolve('claude-flow.claims.json'),
-        path.resolve(process.env.HOME || '~', '.config/claude-flow/claims.json'),
-      ];
 
       let claimsConfig: {
         roles?: Record<string, string[]>;
@@ -264,10 +266,20 @@ const checkCommand: Command = {
       spinner.stop();
     } catch (error) {
       spinner.stop();
-      // On error, fall back to permissive default
-      isGranted = !claim.startsWith('admin:');
-      reason = isGranted ? 'Granted (default permissive policy)' : 'Admin claims require explicit grant';
-      policySource = 'fallback';
+      // ADR-0234 (extends ADR-0095 amendment 2026-05-23 per feedback-no-fallbacks):
+      // fork diverges from upstream (which ships permissive-on-error RBAC by
+      // design — byte-identical with `ruvnet/ruflo/v3/@claude-flow/cli/src/commands/claims.ts`
+      // verified 2026-05-24). The prior `Granted (default permissive policy)`
+      // branch silently elevated any non-`admin:*` claim when the policy
+      // file was unreadable. Fail closed: print the underlying cause and
+      // exit non-zero so callers can branch on the failure.
+      const causeMsg = (error as { message?: string })?.message ?? String(error);
+      output.printError(
+        `Policy evaluation failed: ${causeMsg}. ` +
+        `Permissive-on-error branch removed (ADR-0234). ` +
+        `Fix the policy file at one of: ${claimsConfigPaths.join(', ')}`,
+      );
+      return { success: false, exitCode: 1 };
     }
 
     if (isGranted) {
