@@ -40,9 +40,11 @@ const DEFAULT_CONFIG: UpdateConfig = {
   priority: {
     '@claude-flow/security': 'critical',
     '@claude-flow/cli': 'high',
-    '@claude-flow/embeddings': 'normal',
+    // ADR-0239 cluster 4(c): @claude-flow/embeddings package deleted
+    // (CVE-loader relocated to @claude-flow/memory).
+    // ADR-0239 cluster 1: @claude-flow/testing workspace package
+    // deleted (0 consumers; dist would be a tombstone).
     '@claude-flow/integration': 'normal',
-    '@claude-flow/testing': 'low',
   },
   exclude: [],
 };
@@ -50,10 +52,10 @@ const DEFAULT_CONFIG: UpdateConfig = {
 // Packages to check for updates
 const CLAUDE_FLOW_PACKAGES = [
   '@claude-flow/cli',
-  '@claude-flow/embeddings',
+  // ADR-0239 cluster 4(c): @claude-flow/embeddings removed.
   '@claude-flow/security',
   '@claude-flow/integration',
-  '@claude-flow/testing',
+  // ADR-0239 cluster 1: @claude-flow/testing removed.
 ];
 
 interface NpmPackageInfo {

@@ -10,7 +10,6 @@
       "@claude-flow/performance": ["./@claude-flow/performance/src"],
       "@claude-flow/cli": ["./@claude-flow/cli/src"],
       "@claude-flow/neural": ["./@claude-flow/neural/src"],
-      "@claude-flow/testing": ["./@claude-flow/testing/src"],
       "@claude-flow/deployment": ["./@claude-flow/deployment/src"],
       "@claude-flow/shared": ["./@claude-flow/shared/src"],
       "@claude-flow/hooks": ["./@claude-flow/hooks/src"]
@@ -25,7 +24,6 @@
     { "path": "./@claude-flow/performance" },
     { "path": "./@claude-flow/cli" },
     { "path": "./@claude-flow/neural" },
-    { "path": "./@claude-flow/testing" },
     { "path": "./@claude-flow/deployment" },
     { "path": "./@claude-flow/hooks" }
   ],

@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const FORK_ROOT = resolve(__dirname, "../../../../");
+const FORK_ROOT = resolve(__dirname, "../../../../../");
 
 describe('ADR-0239 cluster 7: orphan cli/runtime/headless + benchmarks/pretrain + production + v3/agents yaml deleted', () => {
   it("v3/@claude-flow/cli/src/runtime/headless.ts must not exist", () => {

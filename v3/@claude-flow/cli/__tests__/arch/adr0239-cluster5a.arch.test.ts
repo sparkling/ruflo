@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const FORK_ROOT = resolve(__dirname, "../../../../");
+const FORK_ROOT = resolve(__dirname, "../../../../../");
 
 describe('ADR-0239 cluster 5: cognitive-kernel and ruvector-upstream dead plugin trees deleted', () => {
   it("v3/plugins/cognitive-kernel must not exist", () => {

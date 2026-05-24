@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const FORK_ROOT = resolve(__dirname, "../../../../");
+const FORK_ROOT = resolve(__dirname, "../../../../../");
 
 describe('ADR-0239 cluster 23: v3/mcp parallel server tree and v3/src DDD scaffold deleted (closes F-10-002 F-05-001 F-11-016)', () => {
   it("v3/mcp must not exist", () => {

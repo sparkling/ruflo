@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const FORK_ROOT = resolve(__dirname, "../../../../");
+const FORK_ROOT = resolve(__dirname, "../../../../../");
 
 describe('ADR-0239 cluster 4: dead @claude-flow/embeddings package deleted (CVE-loader already relocated to memory in step a)', () => {
   it("v3/@claude-flow/embeddings must not exist", () => {
