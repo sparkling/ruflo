@@ -5,7 +5,7 @@ status: Proposed
 date: 2026-05-04
 authors:
   - planner (Claude Code)
-tags: [plugin, agentdb, mcp, hnsw, rabitq, controllers, namespacing, smoke-test]
+tags: [plugin, agentdb, mcp, hnsw, controllers, namespacing, smoke-test]
 ---
 
 ## Context
@@ -31,10 +31,9 @@ Counted directly from source on 2026-05-04 (HEAD of `main`):
 | Surface | Plugin claim | Real count | Source |
 |---|---|---|---|
 | `agentdb_*` MCP tools | "19 controllers" → implies tools | **15 tools** | `v3/@sparkleideas/cli/src/mcp-tools/agentdb-tools.ts:629–645` (`agentdbTools` export array) |
-| `embeddings_*` MCP tools | 7 enumerated in skill | **10 tools** | `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts:159, 260, 328, 418, 520, 717, 835, 910, 926, 970` |
+| `embeddings_*` MCP tools | 7 enumerated in skill | **7 registered tools** | `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts` (`embeddings_init`/`_generate`/`_compare`/`_search`/`_neural`/`_hyperbolic`/`_status`) |
 | `ruvllm_hnsw_*` MCP tools | 3 enumerated | **3 tools** (correct) but capacity is **~11 patterns**, not 10,000 | `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts:57–58` ("Max ~11 patterns (v2.0.1 limit)") |
 | Controllers in `ControllerRegistry` | "19" | **29** names across 6 init levels: 13 AgentDB-layer + 16 CLI-layer | `v3/@sparkleideas/memory/src/controller-registry.ts:34–73` (type `ControllerName`) and `:160–174` (`INIT_LEVELS`) |
-| RaBitQ 1-bit quantization | Not documented | 32× compression, two-phase Hamming-prefilter + exact-rerank pipeline | `embeddings_rabitq_build`, `_search`, `_status` at `embeddings-tools.ts:910, 926, 970`; impl at `v3/@sparkleideas/cli/src/memory/rabitq-index.ts` |
 | HNSW tuning (`efSearch`, `efConstruction`, `M`) | Not surfaced in any skill | `efSearch` accepted as a constructor param on `ruvllm_hnsw_create`; `efConstruction` defaulted to 200 in the lite index; `M` not exposed via MCP | `ruvllm-tools.ts:64`, `v3/@sparkleideas/memory/src/hnsw-index.ts:537` |
 | Pattern-store fallback when ReasoningBank unavailable | Not documented | ADR-093 F4: when controller registry returns null, `agentdb_pattern-store` writes to `memory_store` with `controller: 'memory-store-fallback'` | `agentdb-tools.ts:138–161` |
 | Native graph-node backend for causal edges | Not documented | ADR-087: `agentdb_causal-edge` tries graph-node first, falls back to bridge | `agentdb-tools.ts:267–290` |
@@ -44,12 +43,20 @@ The "19 controllers" number appears to be a stale snapshot from before ADR-095 G
 
 ### What's missing entirely
 
-Beyond the count drift, the plugin omits four substantive capabilities of the substrate it documents:
+Beyond the count drift, the plugin omits three substantive capabilities of the substrate it documents:
 
-1. **Quantization.** `embeddings_rabitq_*` provides 32× memory reduction at index time. CLAUDE.md's V3 perf targets explicitly call out "Memory Reduction 50–75% with quantization" as **Implemented**; the plugin advertises HNSW speedup but never mentions quantization.
-2. **Index tunables.** `efSearch` / `efConstruction` / `M` directly control the recall/latency tradeoff; the plugin presents HNSW as a binary "150–12,500×" claim with no operating points.
-3. **Namespacing convention.** Every consumer plugin (`ruflo-browser` defines `browser-sessions / browser-selectors / browser-templates / browser-cookies` in its ADR-0001 §3; `ruflo-rag-memory` references `claude-memories / patterns / tasks / solutions`; `ruflo-intelligence` writes to `pattern`) reinvents namespace naming. There is no contract from `ruflo-agentdb` about how namespaces should be named, what they should contain, or how they are GC'd. The `agentdb_*` tools mostly do not even take a namespace parameter — they route to controllers (`reasoningBank`, `hierarchicalMemory`, `causalGraph`) — but the CLI fallback `memory_store` and `embeddings_search` *do* take namespace strings, so the surface is mixed and undocumented.
-4. **Token-efficiency path.** The repo ships `getCompactContext` on the `TokenOptimizer` (`v3/@sparkleideas/integration/src/token-optimizer.ts:109`), and `agentdb_context-synthesize` exists for the same goal at the MCP layer. Neither is surfaced by the plugin as a "use this when you want compact retrieved context for an LLM call" workflow.
+1. **Index tunables.** `efSearch` / `efConstruction` / `M` directly control the recall/latency tradeoff; the plugin presents HNSW as a binary "150–12,500×" claim with no operating points.
+2. **Namespacing convention.** Every consumer plugin (`ruflo-browser` defines `browser-sessions / browser-selectors / browser-templates / browser-cookies` in its ADR-0001 §3; `ruflo-rag-memory` references `claude-memories / patterns / tasks / solutions`; `ruflo-intelligence` writes to `pattern`) reinvents namespace naming. There is no contract from `ruflo-agentdb` about how namespaces should be named, what they should contain, or how they are GC'd. The `agentdb_*` tools mostly do not even take a namespace parameter — they route to controllers (`reasoningBank`, `hierarchicalMemory`, `causalGraph`) — but the CLI fallback `memory_store` and `embeddings_search` *do* take namespace strings, so the surface is mixed and undocumented.
+3. **Token-efficiency path.** The repo ships `getCompactContext` on the `TokenOptimizer` (`v3/@sparkleideas/integration/src/token-optimizer.ts:109`), and `agentdb_context-synthesize` exists for the same goal at the MCP layer. Neither is surfaced by the plugin as a "use this when you want compact retrieved context for an LLM call" workflow.
+
+> **Note (ADR-0248)**: A prior revision of this document advertised
+> a RaBitQ 1-bit quantization workflow (build/search/status tools) for
+> 32× memory reduction. Those tools were never registered in the
+> central cli MCP registry (`v3/@sparkleideas/cli/src/mcp-tools/`) and
+> the backing index implementation was never written. Per ADR-0210's
+> implement/restore/delete mandate, all phantom references were removed
+> in ADR-0248 (2026-05-24). If quantization is implemented in
+> the future, reintroduce the workflow at that time.
 
 ### Why now
 
@@ -70,16 +77,16 @@ The plugin currently treats "19" as a magic number repeated across five files. R
 
 The point isn't to memorize the count — it's to stop hard-coding any count. The runtime tool `agentdb_controllers` is already the source of truth; documentation should defer to it.
 
-### 2. Surface `embeddings_rabitq_*` as a first-class quantization workflow
+### 2. (Removed by ADR-0248)
 
-Add a new section to `skills/vector-search/SKILL.md` titled "Quantized search (32× memory)" with:
+Originally proposed surfacing a 1-bit quantization workflow as a
+first-class skill. The 3 backing tools were never registered in the
+central cli MCP registry — see Note above. Step removed; no surface
+change to `skills/vector-search/SKILL.md` for quantization.
 
-- A 5-step recipe: `embeddings_init` → `embeddings_rabitq_build` (one-time, after corpus is loaded) → `embeddings_rabitq_search` (Hamming-prefilter to top-N candidates) → optional rerank via `embeddings_search` (exact, on the candidate set) → `embeddings_rabitq_status` for index health.
-- A "when to use" rule: corpora ≥ 5,000 vectors and/or memory-constrained environments. Below that, the rebuild cost outweighs the savings.
-- The exact tool names added to the `allowed-tools` frontmatter line.
-- A note: RaBitQ `_search` returns candidate IDs only; the rerank step is the user's responsibility (mirrors the docstring at `embeddings-tools.ts:911`).
-
-`embeddings_neural` (line 520) is the other undocumented `embeddings_*` tool. It is the substrate-level entry point and is implicitly covered by `embeddings_init`/`_generate`; we will add a one-line note to `commands/embeddings.md` acknowledging it exists, and stop there. We do not invent a second skill for it.
+`embeddings_neural` (the other undocumented `embeddings_*` tool) is the
+substrate-level entry point and is implicitly covered by `embeddings_init`/`_generate`; a one-line note in `commands/embeddings.md`
+acknowledges it exists, and that's it. No second skill.
 
 ### 3. Expose HNSW tuning as a deliberate, documented choice
 
@@ -126,9 +133,9 @@ Numbered checks (this is the verifiable artifact, not the prose above):
 1. `agentdb_health` returns `{ available: true, ... }`. The bridge is wired.
 2. `agentdb_controllers.total >= 15` and `agentdb_controllers.active >= 10`. The lower-bound assertions are deliberately loose — they verify "the registry initialized at all" without hard-coding the 29-name `ControllerName` union or the 15 `agentdb_*` MCP tools (which are different counts). If a future ADR removes a default-active controller, raise the floor; do not raise the test to an exact match.
 3. The 15 documented `agentdb_*` tool names are all callable: `agentdb_health, agentdb_controllers, agentdb_pattern-store, agentdb_pattern-search, agentdb_feedback, agentdb_causal-edge, agentdb_route, agentdb_session-start, agentdb_session-end, agentdb_hierarchical-store, agentdb_hierarchical-recall, agentdb_consolidate, agentdb_batch, agentdb_context-synthesize, agentdb_semantic-route`. Each gets a smoke call with minimal args; non-error response = pass.
-4. The 10 documented `embeddings_*` tools are all callable: `embeddings_init, embeddings_generate, embeddings_compare, embeddings_search, embeddings_neural, embeddings_hyperbolic, embeddings_status, embeddings_rabitq_build, embeddings_rabitq_search, embeddings_rabitq_status`.
+4. The 7 documented `embeddings_*` tools are all callable: `embeddings_init, embeddings_generate, embeddings_compare, embeddings_search, embeddings_neural, embeddings_hyperbolic, embeddings_status`.
 5. The 3 documented `ruvllm_hnsw_*` tools are all callable: `ruvllm_hnsw_create` (dim=384, max=11), `ruvllm_hnsw_add`, `ruvllm_hnsw_route`.
-6. RaBitQ build runs: `embeddings_rabitq_build` then `embeddings_rabitq_status` reports `available: true`.
+6. (Removed by ADR-0248 — quantization check withdrawn alongside phantom-tool removal.)
 7. Pattern-store with the bridge intentionally unavailable returns `controller: 'memory-store-fallback'`. **Caveat — this check has a load-bearing unverified assumption:** the env-var name `MEMORY_BRIDGE_DISABLE=1` was inferred from the fallback code path, not confirmed against the actual gating mechanism in `bridgeHealthCheck`. Implementer must grep `agentdb-tools.ts` + `memory-bridge.ts` for the real switch (it may instead key on `AGENTDB_BRIDGE`, on a missing AgentDB controller, or on no env var at all). If no clean runtime switch exists, downgrade this check to a code-path inspection (assert the fallback string literal is reachable in source) rather than a runtime assertion.
 8. `agentdb_hierarchical-store` rejects a `tier` value not in `{working, episodic, semantic}` (regression on `agentdb-tools.ts:426`).
 9. `agentdb_batch` rejects a 501-element entries array (regression on `MAX_BATCH_SIZE = 500` at `agentdb-tools.ts:20`).
@@ -149,7 +156,6 @@ Following ruvector ADR-0001:
 **Positive:**
 
 - Every count, tool name, and capability claim in the plugin matches a verifiable line in the source. The "19 controllers" myth is gone.
-- RaBitQ goes from invisible to a documented quantization workflow — downstream plugins handling large corpora (`ruflo-rag-memory`, future `ruflo-knowledge-graph` integrations) get a 32× memory-reduction story by reference, not by re-discovery.
 - HNSW becomes tunable instead of a magic number. Consumer plugins choose an operating point.
 - A namespace convention exists. `ruflo-browser`'s ADR §3 already implements it ad hoc; this ADR formalizes it so the next plugin author doesn't re-derive it.
 - Operational fallbacks (pattern-store fallback, graph-node backend) are now part of the contract; agents can branch on them deterministically.
@@ -159,14 +165,14 @@ Following ruvector ADR-0001:
 
 - Three downstream plugins reference "19 controllers" in their own docs (grep across `plugins/`). Updating them is a separate, mechanical task — but if it's not done, the inconsistency moves rather than disappears.
 - The namespace convention is non-binding (we have no enforcement in the bridge). It documents intent. If a downstream plugin ignores it, the substrate still works — it just gets harder to reason about. Future enforcement would be a `validate-namespace` helper exposed via MCP, but that is out of scope here.
-- Smoke depends on the daemon being healthy and the embeddings backend being warm. Cold-start runs may flake on `embeddings_rabitq_build` if no vectors are loaded yet. Mitigation: smoke seeds 10 vectors via `memory_store` before exercising the rabitq path.
+- Smoke depends on the daemon being healthy and the embeddings backend being warm. Cold-start runs may flake on first invocation if no vectors are loaded yet. Mitigation: smoke seeds 10 vectors via `memory_store` before exercising the search path.
 - We do not propose changing `agentdb-tools.ts` itself. Some of the "19 controllers" claim is upstream framing in the AgentDB README too; we cannot unilaterally fix that, only stop propagating it from the plugin.
 
 **Neutral:**
 
 - Plugin version moves `0.2.0` → `0.3.0`. Semver-minor because the namespace convention is a new contract for consumers, not a removal.
 - No new MCP tools are introduced. We are surfacing existing surface, not extending it.
-- No change to the `.claude-plugin/plugin.json` keywords beyond optionally adding `rabitq` and `quantization`. Keywords are advisory only.
+- No change to the `.claude-plugin/plugin.json` keywords beyond the namespace-convention update. Keywords are advisory only. (ADR-0248 removed the previously-proposed `rabitq` + `quantization` keywords alongside the phantom-tool cleanup.)
 
 ## Verification
 
@@ -180,7 +186,6 @@ bash plugins/ruflo-agentdb/scripts/smoke.sh
 Plus three documentation invariants checked by a one-line `grep` each:
 
 - `! grep -rn "19 AgentDB controllers\|all 19 controllers\|19 Controllers" plugins/ruflo-agentdb/` — no occurrence remains.
-- `grep -q "embeddings_rabitq_build" plugins/ruflo-agentdb/skills/vector-search/SKILL.md` — quantization workflow is documented.
 - `grep -q "Namespace convention" plugins/ruflo-agentdb/README.md` — namespace contract section exists.
 
 ## Related
@@ -192,9 +197,8 @@ Plus three documentation invariants checked by a one-line `grep` each:
 - `v3/docs/adr/ADR-093-mcp-audit-may-2026-remediation.md` — F4 introduced the `memory-store-fallback` controller string surfaced by §5.
 - `v3/docs/adr/ADR-095-architectural-gaps-from-april-audit.md` — G7 closed five disabled controllers; the README block `README.md:22–35` summarizes G7 correctly.
 - `v3/@sparkleideas/cli/src/mcp-tools/agentdb-tools.ts` — 15 `agentdb_*` tool definitions (canonical surface for §6 check 3).
-- `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts` — 10 `embeddings_*` tool definitions including RaBitQ trio at `:910–981`.
+- `v3/@sparkleideas/cli/src/mcp-tools/embeddings-tools.ts` — 7 `embeddings_*` tool definitions (registered surface).
 - `v3/@sparkleideas/cli/src/mcp-tools/ruvllm-tools.ts` — 3 `ruvllm_hnsw_*` tools, ~11-pattern WASM cap at `:58`.
 - `v3/@sparkleideas/memory/src/controller-registry.ts:34–73` — `ControllerName` union (canonical 29-name list).
 - `v3/@sparkleideas/memory/src/controller-registry.ts:160–174` — `INIT_LEVELS` (canonical dependency-ordered grouping).
-- `v3/@sparkleideas/cli/src/memory/rabitq-index.ts` — RaBitQ implementation referenced by the quantization workflow in §2.
 - `v3/@sparkleideas/integration/src/token-optimizer.ts:109` — `getCompactContext` token-efficiency path (deferred: §6 covers `agentdb_context-synthesize` only; the integration-layer optimizer is a separate ADR if surfaced).

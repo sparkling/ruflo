@@ -1,8 +1,8 @@
 ---
 name: vector-search
-description: Vector search via embeddings_* (large-scale HNSW) and ruvllm_hnsw_* (WASM router for ≤11 hot patterns), with RaBitQ 1-bit quantization for 32× memory reduction
-argument-hint: "<query> [--limit N] [--quantized]"
-allowed-tools: mcp__ruflo__embeddings_generate mcp__ruflo__embeddings_search mcp__ruflo__embeddings_compare mcp__ruflo__embeddings_init mcp__ruflo__embeddings_status mcp__ruflo__embeddings_hyperbolic mcp__ruflo__embeddings_neural mcp__ruflo__embeddings_rabitq_build mcp__ruflo__embeddings_rabitq_search mcp__ruflo__embeddings_rabitq_status mcp__ruflo__ruvllm_hnsw_create mcp__ruflo__ruvllm_hnsw_add mcp__ruflo__ruvllm_hnsw_route mcp__ruflo__memory_search_unified Bash
+description: Vector search via embeddings_* (large-scale HNSW) and ruvllm_hnsw_* (WASM router for ≤11 hot patterns)
+argument-hint: "<query> [--limit N]"
+allowed-tools: mcp__ruflo__embeddings_generate mcp__ruflo__embeddings_search mcp__ruflo__embeddings_compare mcp__ruflo__embeddings_init mcp__ruflo__embeddings_status mcp__ruflo__embeddings_hyperbolic mcp__ruflo__embeddings_neural mcp__ruflo__ruvllm_hnsw_create mcp__ruflo__ruvllm_hnsw_add mcp__ruflo__ruvllm_hnsw_route mcp__ruflo__memory_search_unified Bash
 ---
 
 # Vector Search
@@ -21,7 +21,6 @@ The "12,500×" headline applies to the large-scale `embeddings_search` path. The
 | Need | Path |
 |---|---|
 | Search a corpus of N ≥ 500 documents | `embeddings_search` |
-| Memory-constrained corpus (≥5,000 vectors) | RaBitQ quantized — see "Quantized search" below |
 | Compare two strings | `embeddings_compare` |
 | Hierarchical / taxonomic data | `embeddings_hyperbolic` (Poincare ball) |
 | Route a query to one of ≤11 hot patterns | `ruvllm_hnsw_route` |
@@ -35,20 +34,6 @@ The "12,500×" headline applies to the large-scale `embeddings_search` path. The
 4. **Search** — `mcp__ruflo__embeddings_search` with the query.
 5. **Compare** — `mcp__ruflo__embeddings_compare` to measure similarity.
 6. **Unified search** — `mcp__ruflo__memory_search_unified` for cross-namespace.
-
-## Quantized search (32× memory reduction)
-
-For corpora ≥5,000 vectors and/or memory-constrained environments, use the RaBitQ 1-bit quantization workflow. Below 5,000 vectors the rebuild cost outweighs the savings — use the standard path instead.
-
-| Step | Tool | Purpose |
-|---|---|---|
-| 1 | `embeddings_init` | Engine warm |
-| 2 | `embeddings_rabitq_build` | One-time build of the 1-bit index after corpus is loaded |
-| 3 | `embeddings_rabitq_search` | Hamming-prefilter returns top-N candidate IDs (cheap) |
-| 4 | `embeddings_search` | Optional exact rerank on the candidate set (full-precision) |
-| 5 | `embeddings_rabitq_status` | Index health, memory footprint, build time |
-
-> **Note**: `embeddings_rabitq_search` returns candidate IDs only — the rerank in step 4 is the user's responsibility (mirrors the docstring at `embeddings-tools.ts:911`). Without rerank, results are approximate; with rerank, you get full-precision quality at 32× lower memory.
 
 ## Tuning
 
@@ -90,5 +75,4 @@ npx @sparkleideas/cli@latest memory search --query "your query"
 | Brute-force scan | Baseline |
 | HNSW (n=500, balanced) | ~150× faster |
 | HNSW (n=10,000, balanced) | ~12,500× faster |
-| RaBitQ + rerank (n=10,000) | ~12,500× search speed at 32× lower memory |
 | `ruvllm_hnsw_route` (n≤11) | sub-ms per route, fixed cost |

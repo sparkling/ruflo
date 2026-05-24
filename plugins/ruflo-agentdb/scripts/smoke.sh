@@ -36,25 +36,19 @@ else
   ok
 fi
 
-step "INV2: RaBitQ workflow documented in vector-search SKILL"
-grep -q "embeddings_rabitq_build" "$ROOT/skills/vector-search/SKILL.md" \
-  && grep -q "embeddings_rabitq_search" "$ROOT/skills/vector-search/SKILL.md" \
-  && grep -q "embeddings_rabitq_status" "$ROOT/skills/vector-search/SKILL.md" \
-  && ok || bad "RaBitQ trio not all documented"
-
 step "INV3: README has the Namespace convention section"
 grep -q "## Namespace convention" "$ROOT/README.md" \
   && grep -q "Reserved namespaces" "$ROOT/README.md" \
   && ok || bad "Namespace convention section missing"
 
 # 1. Plugin version + new keywords
-step "1. plugin.json declares version 0.3.0 with rabitq + namespace-convention keywords"
+step "1. plugin.json declares version 0.3.0 with namespace-convention keywords"
 v=$(grep -E '"version"[[:space:]]*:' "$ROOT/.claude-plugin/plugin.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 if [[ "$v" != "0.3.0" ]]; then
   bad "expected 0.3.0, got '$v'"
 else
   miss=""
-  for k in rabitq quantization namespace-convention controller-bridge; do
+  for k in namespace-convention controller-bridge; do
     grep -q "\"$k\"" "$ROOT/.claude-plugin/plugin.json" || miss="$miss $k"
   done
   [[ -z "$miss" ]] && ok || bad "missing keywords:$miss"
@@ -76,10 +70,10 @@ for t in agentdb_health agentdb_controllers agentdb_pattern-store agentdb_patter
 done
 [[ -z "$miss" ]] && ok || bad "undocumented:$miss"
 
-# 4. All 10 embeddings_* tools documented
-step "4. all 10 embeddings_* tool names referenced in plugin docs"
+# 4. All 7 embeddings_* tools documented (registered in cli registry)
+step "4. all 7 embeddings_* tool names referenced in plugin docs"
 miss=""
-for t in embeddings_init embeddings_generate embeddings_compare embeddings_search embeddings_neural embeddings_hyperbolic embeddings_status embeddings_rabitq_build embeddings_rabitq_search embeddings_rabitq_status; do
+for t in embeddings_init embeddings_generate embeddings_compare embeddings_search embeddings_neural embeddings_hyperbolic embeddings_status; do
   grep -rq "$t" "$ROOT" --include='*.md' || miss="$miss $t"
 done
 [[ -z "$miss" ]] && ok || bad "undocumented:$miss"
@@ -96,19 +90,6 @@ elif ! grep -rq "11 patterns\|≤11" "$ROOT/skills/vector-search/SKILL.md" "$ROO
   bad "WASM cap (~11 patterns) not acknowledged"
 else
   ok
-fi
-
-# 6. RaBitQ workflow has a 5-step recipe + the rerank caveat
-step "6. RaBitQ section has the 5-step recipe + rerank caveat"
-F="$ROOT/skills/vector-search/SKILL.md"
-if grep -q "Quantized search" "$F" \
-   && grep -q "rerank" "$F" \
-   && grep -qE "embeddings_rabitq_build" "$F" \
-   && grep -qE "embeddings_rabitq_search" "$F" \
-   && grep -qE "embeddings_rabitq_status" "$F"; then
-  ok
-else
-  bad "RaBitQ section incomplete (missing recipe or rerank caveat)"
 fi
 
 # 7. Pattern-store fallback is source-inspectable (no env var gates this — see ADR §6 caveat)

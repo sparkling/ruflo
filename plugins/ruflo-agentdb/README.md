@@ -20,7 +20,7 @@ The substrate plugin for Ruflo memory. Wraps three CLI MCP families — `agentdb
 ## Features
 
 - **Controller bridge**: 15 `agentdb_*` MCP tools (hierarchical store/recall, semantic routing, pattern store/search, causal edges, context synthesis, batch ops, consolidation, feedback, sessions).
-- **RuVector embeddings**: 10 `embeddings_*` MCP tools — 384-dim ONNX (all-MiniLM-L6-v2), HNSW search, hyperbolic (Poincare), neural substrate, and **RaBitQ 1-bit quantization (32× memory reduction)**.
+- **RuVector embeddings**: 7 `embeddings_*` MCP tools — 384-dim ONNX (all-MiniLM-L6-v2), HNSW search, hyperbolic (Poincare), neural substrate.
 - **HNSW pattern router**: 3 `ruvllm_hnsw_*` tools (WASM-backed, ≤11 high-priority patterns — distinct from the large-scale embeddings HNSW path).
 - **Causal knowledge graphs**: `agentdb_causal-edge` (graph-node backend with bridge fallback per ADR-087).
 
@@ -66,7 +66,7 @@ Initialization order per ADR-053 (`controller-registry.ts:160-174`):
 ## Skills
 
 - `agentdb-query` — Query AgentDB with semantic routing and hierarchical recall
-- `vector-search` — HNSW vector search + RaBitQ quantization + 3 tuning profiles
+- `vector-search` — HNSW vector search + 3 tuning profiles
 
 ## Namespace convention
 
@@ -203,11 +203,11 @@ bash plugins/ruflo-agentdb/scripts/smoke.sh
 # Expected: "10 passed, 0 failed"
 ```
 
-The smoke script is the contract. It calls each documented MCP tool, exercises the RaBitQ workflow, and source-inspects the fallback path (no env-var gate exists to force the fallback live).
+The smoke script is the contract. It calls each documented MCP tool and source-inspects the fallback path (no env-var gate exists to force the fallback live).
 
 ## Architecture Decisions
 
-- [`ADR-0001` — Optimize ruflo-agentdb (accurate surface, RaBitQ, namespacing, smoke contract)](./docs/adrs/0001-agentdb-optimization.md)
+- [`ADR-0001` — Optimize ruflo-agentdb (accurate surface, namespacing, smoke contract)](./docs/adrs/0001-agentdb-optimization.md)
 
 ## Related Plugins
 
