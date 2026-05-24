@@ -85,7 +85,13 @@ async function rebuildMicroLora(id: string): Promise<MicroLora | undefined> {
   const lora = await mod.createMicroLora(rec.config);
   for (const entry of rec.journal) {
     if (entry.op === 'adapt') {
-      lora.adapt(entry.quality, entry.learningRate, entry.success);
+      lora.adapt(
+        Float32Array.from(entry.input),
+        entry.quality,
+        entry.learningRate,
+        entry.success,
+        entry.consolidate ?? true,
+      );
     }
   }
   loraInstances.set(id, lora);
@@ -332,10 +338,12 @@ export const ruvllmWasmTools: MCPTool[] = [
       properties: {
         loraId: { type: 'string', description: 'MicroLoRA instance ID' },
         quality: { type: 'number', description: 'Quality signal (0.0-1.0)' },
+        input: { type: 'array', items: { type: 'number' }, description: 'Input embedding vector (length must match the LoRA instance inputDim)' },
         learningRate: { type: 'number', description: 'Learning rate (default: 0.01)' },
         success: { type: 'boolean', description: 'Whether the adaptation was successful (default: true)' },
+        consolidate: { type: 'boolean', description: 'Apply EWC++ catastrophic-forgetting protection (default: true)' },
       },
-      required: ['loraId', 'quality'],
+      required: ['loraId', 'quality', 'input'],
     },
     handler: async (args: Record<string, unknown>) => {
       { const v = validateIdentifier(args.loraId, 'loraId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
@@ -346,10 +354,13 @@ export const ruvllmWasmTools: MCPTool[] = [
         const quality = args.quality as number;
         const learningRate = args.learningRate as number | undefined;
         const success = args.success as boolean | undefined;
+        const inputArr = args.input as number[];
+        const input = Float32Array.from(inputArr);
+        const consolidate = (args.consolidate as boolean | undefined) ?? true;
         const statsBefore = lora.stats();
-        lora.adapt(quality, learningRate, success);
+        lora.adapt(input, quality, learningRate, success, consolidate);
         const statsAfter = lora.stats();
-        persistMicroLoraAdapt(loraId, quality, learningRate, success);
+        persistMicroLoraAdapt(loraId, quality, inputArr, learningRate, success, consolidate);
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, stats: statsAfter, statsChanged: statsBefore !== statsAfter }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };

@@ -24,9 +24,6 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
-// WASM binary requires at least 768-dim input for MicroLoRA adapt()
-const MICROLORA_WASM_MIN_DIM = 768;
-
 // ── Types ────────────────────────────────────────────────────
 
 export interface HnswRouterConfig {
@@ -258,7 +255,13 @@ export async function createSonaInstant(config: SonaConfig = {}): Promise<{
  */
 export async function createMicroLora(config: MicroLoraConfig): Promise<{
   apply: (input: Float32Array) => Float32Array;
-  adapt: (quality: number, learningRate?: number, success?: boolean) => void;
+  adapt: (
+    input: Float32Array,
+    quality: number,
+    learningRate?: number,
+    success?: boolean,
+    consolidate?: boolean,
+  ) => void;
   applyUpdates: (gradients: Float32Array) => void;
   stats: () => string;
   reset: () => void;
@@ -280,13 +283,27 @@ export async function createMicroLora(config: MicroLoraConfig): Promise<{
     apply(input: Float32Array): Float32Array {
       return lora.apply(input);
     },
-    adapt(quality: number, learningRate = 0.01, success = true): void {
+    adapt(
+      input: Float32Array,
+      quality: number,
+      learningRate = 0.01,
+      success = true,
+      consolidate = true,
+    ): void {
+      if (input.length !== config.inputDim) {
+        throw new Error(
+          `MicroLoRA adapt: input.length=${input.length} must match config.inputDim=${config.inputDim}`,
+        );
+      }
       const feedback = new mod.AdaptFeedbackWasm();
       feedback.quality = quality;
       feedback.learningRate = learningRate;
       try { (feedback as any).success = success; } catch { /* v2.0.2 quirk */ }
-      const input = new Float32Array(Math.max(config.inputDim, MICROLORA_WASM_MIN_DIM));
-      lora.adapt(input, feedback);
+      if (consolidate) {
+        (lora as any).adapt_constrained(input, feedback);
+      } else {
+        lora.adapt(input, feedback);
+      }
     },
     applyUpdates(gradients: Float32Array): void {
       lora.applyUpdates(gradients);

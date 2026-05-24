@@ -214,8 +214,10 @@ export interface MicroLoraPersistedConfig {
 export type MicroLoraJournalEntry = {
   op: 'adapt';
   quality: number;
+  input: number[];
   learningRate?: number;
   success?: boolean;
+  consolidate?: boolean;
 };
 
 export interface MicroLoraPersistedInstance {
@@ -259,13 +261,15 @@ export function persistMicroLoraCreate(id: string, config: MicroLoraPersistedCon
 export function persistMicroLoraAdapt(
   id: string,
   quality: number,
+  input: number[],
   learningRate?: number,
   success?: boolean,
+  consolidate?: boolean,
 ): boolean {
   const store = loadMicroLoraStore();
   const rec = store.instances[id];
   if (!rec) return false;
-  rec.journal.push({ op: 'adapt', quality, learningRate, success });
+  rec.journal.push({ op: 'adapt', quality, input, learningRate, success, consolidate });
   saveMicroLoraStore(store);
   return true;
 }
