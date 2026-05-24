@@ -70,22 +70,6 @@ describe('Provider Selection', () => {
     await db.shutdown();
   });
 
-  it('createDatabase with provider "json" creates a JsonBackend', async () => {
-    const db = await createDatabase(join(tmpDir, 'test-json.json'), {
-      provider: 'json',
-    });
-    const health = await db.healthCheck();
-    assert.ok(health);
-    // JsonBackend always returns 'healthy' and recommends SQLite
-    assert.equal(health.status, 'healthy');
-    assert.ok(
-      health.recommendations.some((r: string) =>
-        r.toLowerCase().includes('sqlite'),
-      ),
-    );
-    await db.shutdown();
-  });
-
   it('createDatabase with provider "auto" selects RVF', async () => {
     const db = await createDatabase(join(tmpDir, 'test-auto.db'), {
       provider: 'auto',
@@ -100,10 +84,10 @@ describe('Provider Selection', () => {
     await db.shutdown();
   });
 
-  it('getAvailableProviders returns rvf: true and json: true', async () => {
+  it('getAvailableProviders reports rvf availability', async () => {
     const providers = await getAvailableProviders();
+    // Fork union: { rvf, betterSqlite3 } — JsonBackend dropped.
     assert.equal(providers.rvf, true);
-    assert.equal(providers.json, true);
   });
 });
 
@@ -273,66 +257,10 @@ describe('IMemoryBackend Contract (RVF)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Data Migration Scenario (JSON -> RVF)
+// 4. Concurrent Operations
 // ---------------------------------------------------------------------------
-
-describe('Data Migration (JSON -> RVF)', () => {
-  let dir: string;
-
-  before(() => {
-    dir = mkdtempSync(join(tmpdir(), 'rvf-migrate-'));
-  });
-  after(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('entries from JsonBackend can be migrated to RvfBackend', async () => {
-    // Step 1: Create JsonBackend with entries
-    const jsonDb = await createDatabase(join(dir, 'source.json'), {
-      provider: 'json',
-    });
-    const entries = [
-      makeEntry('m-1', 'migrate', 'mk1', 'first'),
-      makeEntry('m-2', 'migrate', 'mk2', 'second'),
-      makeEntry('m-3', 'other', 'mk3', 'third'),
-    ];
-    await jsonDb.bulkInsert(entries);
-
-    // Step 2: Create RvfBackend
-    const rvfDb = await createDatabase(join(dir, 'dest.rvf'), {
-      provider: 'rvf',
-    });
-
-    // Step 3: Copy entries from JSON to RVF
-    for (const entry of entries) {
-      await rvfDb.store(entry);
-    }
-
-    // Step 4: Verify all entries accessible in RVF
-    for (const entry of entries) {
-      const got = await rvfDb.get(entry.id);
-      assert.ok(got, `Entry ${entry.id} should exist in RVF`);
-      assert.equal(got.content, entry.content);
-      assert.equal(got.namespace, entry.namespace);
-    }
-
-    // Verify namespaces preserved
-    const namespaces = await rvfDb.listNamespaces();
-    assert.ok(namespaces.includes('migrate'));
-    assert.ok(namespaces.includes('other'));
-
-    // Verify counts
-    assert.equal(await rvfDb.count('migrate'), 2);
-    assert.equal(await rvfDb.count('other'), 1);
-
-    await jsonDb.shutdown();
-    await rvfDb.shutdown();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. Concurrent Operations
-// ---------------------------------------------------------------------------
+// (Section 4 "Data Migration (JSON -> RVF)" removed: JsonBackend was dropped
+// from the fork's provider union; cross-format migration no longer applies.)
 
 describe('Concurrent Operations', () => {
   let db: IMemoryBackend;
