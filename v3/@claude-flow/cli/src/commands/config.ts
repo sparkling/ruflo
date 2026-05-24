@@ -301,6 +301,17 @@ const providersCommand: Command = {
 };
 
 // Reset configuration
+//
+// ADR-0244 site #5 (F-01-005): thread the --section flag through to
+// `configManager.reset(cwd, section?)`. Previously the handler called
+// `configManager.reset(ctx.cwd)` with no section arg, discarding the
+// advertised choices and resetting the full config regardless. The
+// manager signature now accepts an optional `section` (see
+// services/config-file-manager.ts ADR-0244 site #5); passing
+// 'all'/undefined preserves the legacy full-reset behaviour.
+//
+// Upstream `ruvnet/ruflo` is byte-identical at this block; the fix
+// is fork-only merge-tax per ADR-0244.
 const resetCommand: Command = {
   name: 'reset',
   description: 'Reset configuration to defaults',
@@ -320,14 +331,19 @@ const resetCommand: Command = {
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
+    const section = ctx.flags.section as string | undefined;
     try {
-      const configPath = configManager.reset(ctx.cwd);
-      output.writeln(`Configuration reset to defaults: ${configPath}`);
-      return { success: true };
+      const configPath = configManager.reset(ctx.cwd, section);
+      if (section && section !== 'all') {
+        output.writeln(`Configuration section "${section}" reset to defaults: ${configPath}`);
+      } else {
+        output.writeln(`Configuration reset to defaults: ${configPath}`);
+      }
+      return { success: true, data: { configPath, section: section ?? 'all' } };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       output.printError(message);
-      return { success: false, exitCode: 1 };
+      return { success: false, exitCode: 1, message };
     }
   }
 };

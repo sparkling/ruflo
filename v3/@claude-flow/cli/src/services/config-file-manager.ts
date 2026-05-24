@@ -92,9 +92,36 @@ export class ConfigFileManager {
     return targetPath;
   }
 
-  /** Reset config to defaults */
-  reset(cwd: string): string {
+  /**
+   * Reset config to defaults.
+   *
+   * ADR-0244 site #5 (F-01-005): when `section` is provided, ONLY that
+   * top-level key is replaced with its default (the rest of the config
+   * is preserved). When `section` is undefined or 'all', the full
+   * config is reset (legacy behaviour).
+   *
+   * Valid sections match the cli `config reset --section <name>`
+   * choices declared in `commands/config.ts`: `agents`, `swarm`,
+   * `memory`, `mcp`, `providers`, `all`. Passing an unknown section
+   * throws so the caller surfaces a clear error.
+   */
+  reset(cwd: string, section?: string): string {
     const targetPath = this.configPath ?? path.resolve(cwd, CONFIG_FILENAMES[0]);
+    if (section !== undefined && section !== 'all') {
+      if (!Object.prototype.hasOwnProperty.call(DEFAULT_CONFIG, section)) {
+        throw new Error(
+          `Unknown config section: ${section}. Valid: ${Object.keys(DEFAULT_CONFIG).join(', ')}, all`
+        );
+      }
+      // Load current (or default if missing), then replace only the
+      // requested top-level key with its default value.
+      const current = this.getConfig(cwd);
+      const next = { ...current, [section]: (DEFAULT_CONFIG as Record<string, unknown>)[section] };
+      this.writeAtomic(targetPath, next);
+      this.config = next;
+      this.configPath = targetPath;
+      return targetPath;
+    }
     this.writeAtomic(targetPath, DEFAULT_CONFIG);
     this.config = { ...DEFAULT_CONFIG };
     this.configPath = targetPath;
