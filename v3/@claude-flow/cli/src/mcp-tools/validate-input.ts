@@ -278,6 +278,19 @@ async function getSecurityModule(): Promise<Record<string, any> | null> {
 }
 
 /**
+ * ADR-0241: explicit allowlist of Zod issue codes that the fork's
+ * `validateAgentSpawn` intentionally suppresses when delegating to
+ * `@claude-flow/security`'s `SpawnAgentSchema`. Mirrors the cli-core copy
+ * at `@claude-flow/cli-core/src/mcp-tools/validate-input.ts`. Both copies
+ * must stay in lockstep; the cli copy exists because upstream's 9-line
+ * re-export shim has not been adopted in this fork (full fork copy retained
+ * for divergent local helpers like `validateQueenType` / `validateWorkerType`).
+ */
+const SUPPRESSED_VALIDATION_CODES = new Set<string>([
+  'invalid_enum_value',
+]);
+
+/**
  * Enhanced validation using @claude-flow/security Zod schemas when available.
  * Falls back to inline regex validation otherwise.
  */
@@ -301,9 +314,16 @@ export async function validateAgentSpawn(input: Record<string, unknown>): Promis
   // Try enhanced Zod validation if available.
   // Fix for #1567: @claude-flow/security's SpawnAgentSchema expects `type` and
   // `id` (not `agentType`/`name`), so the previous call always failed with
-  // "type: Required". Also swallow `invalid_enum_value` errors because the
-  // schema enumerates only 15 built-in agent types — we support custom types
-  // (the inline validator already checked the identifier is safe).
+  // "type: Required". The previous implementation swallowed every
+  // `invalid_enum_value` issue silently because the security schema enumerates
+  // only ~15 built-in agent types and the fork supports custom plugin-supplied
+  // types (the inline validator above already checked the identifier is safe).
+  //
+  // ADR-0241: the bare `continue` was an undocumented, untyped seam. Replace
+  // with a typed allowlist set (SUPPRESSED_VALIDATION_CODES) so the suppression
+  // is explicit and the future extension point is auditable. Upstream cli has
+  // re-exported this from cli-core (9-line shim); the fork's full-copy mirror
+  // diverges further, but both fork copies stay in lockstep on the allowlist.
   const sec = await getSecurityModule();
   if (sec?.SpawnAgentSchema) {
     try {
@@ -314,7 +334,12 @@ export async function validateAgentSpawn(input: Record<string, unknown>): Promis
     } catch (zodErr: any) {
       if (zodErr.issues) {
         for (const issue of zodErr.issues) {
-          if (issue.code === 'invalid_enum_value') continue;
+          if (SUPPRESSED_VALIDATION_CODES.has(issue.code)) {
+            // ADR-0241 allowlist: explicit suppression, not silent untyped
+            // swallow. Extend SUPPRESSED_VALIDATION_CODES with a rationale —
+            // never add an inline `continue`.
+            continue;
+          }
           errors.push(`${issue.path.join('.')}: ${issue.message}`);
         }
       }

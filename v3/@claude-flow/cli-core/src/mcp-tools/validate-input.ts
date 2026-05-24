@@ -209,6 +209,24 @@ async function getSecurityModule(): Promise<Record<string, any> | null> {
 }
 
 /**
+ * ADR-0241: explicit allowlist of Zod issue codes that the fork's
+ * `validateAgentSpawn` intentionally suppresses when delegating to
+ * `@claude-flow/security`'s `SpawnAgentSchema`. Each entry MUST carry a
+ * rationale comment — silent additions are exactly the drift this set exists
+ * to prevent. Replaces the bare `if (issue.code === '…') continue;` swallow.
+ *
+ * Current entries:
+ *   - `invalid_enum_value`: SpawnAgentSchema enumerates ~15 built-in agent
+ *     types; the fork supports plugin-supplied custom types validated upstream
+ *     by `validateIdentifier(input.agentType, 'agentType')` for shell-meta /
+ *     path-traversal / character-set safety. Enum-membership rejection by
+ *     the security schema would block legitimate plugin types.
+ */
+const SUPPRESSED_VALIDATION_CODES = new Set<string>([
+  'invalid_enum_value',
+]);
+
+/**
  * Enhanced validation using @claude-flow/security Zod schemas when available.
  * Falls back to inline regex validation otherwise.
  */
@@ -232,9 +250,17 @@ export async function validateAgentSpawn(input: Record<string, unknown>): Promis
   // Try enhanced Zod validation if available.
   // Fix for #1567: @claude-flow/security's SpawnAgentSchema expects `type` and
   // `id` (not `agentType`/`name`), so the previous call always failed with
-  // "type: Required". Also swallow `invalid_enum_value` errors because the
-  // schema enumerates only 15 built-in agent types — we support custom types
-  // (the inline validator already checked the identifier is safe).
+  // "type: Required". The previous implementation swallowed every
+  // `invalid_enum_value` issue silently because the security schema enumerates
+  // only ~15 built-in agent types and the fork supports custom plugin-supplied
+  // types (the inline validator above already checked the identifier is safe).
+  //
+  // ADR-0241: the bare `continue` was an undocumented, untyped seam. Replace
+  // with a typed allowlist set so the suppression is explicit and the future
+  // extension point ("we accept these Zod issue codes as expected divergence
+  // from the security schema") is auditable. Upstream cli-core ships the
+  // byte-identical bare swallow at the same line — fork-only divergence,
+  // ledger row + INTEGRATION-LEDGER disposition `superseded-by-local`.
   const sec = await getSecurityModule();
   if (sec?.SpawnAgentSchema) {
     try {
@@ -245,7 +271,13 @@ export async function validateAgentSpawn(input: Record<string, unknown>): Promis
     } catch (zodErr: any) {
       if (zodErr.issues) {
         for (const issue of zodErr.issues) {
-          if (issue.code === 'invalid_enum_value') continue;
+          if (SUPPRESSED_VALIDATION_CODES.has(issue.code)) {
+            // ADR-0241 allowlist: explicit suppression with a documented
+            // rationale, not a silent untyped swallow. If a future Zod issue
+            // code needs the same treatment, extend the set above with the
+            // reason — do NOT add an inline `continue`.
+            continue;
+          }
           errors.push(`${issue.path.join('.')}: ${issue.message}`);
         }
       }

@@ -179,6 +179,12 @@ export const memoryTools: MCPTool[] = [
       properties: {
         key: { type: 'string', description: 'Memory key (unique within namespace)' },
         value: { description: 'Value to store (string or object)' },
+        // ADR-0241: namespace is optional; handler defaults to "default" at :260.
+        // Schema previously listed namespace in `required`, creating an asymmetry
+        // where strict MCP clients refused calls that permissive clients passed
+        // through to a `'default'`-defaulted write. Upstream is permissive
+        // (`required: ['key', 'value']` at ruvnet/ruflo/v3/.../memory-tools.ts:274);
+        // this relax re-converges with upstream.
         namespace: { type: 'string', description: 'Namespace for organization (default: "default")' },
         tags: {
           type: 'array',
@@ -190,7 +196,7 @@ export const memoryTools: MCPTool[] = [
         scope: { type: 'string', enum: ['agent', 'session', 'global'], description: 'Memory scope (default: unscoped)' },
         scope_id: { type: 'string', description: 'Scope identifier (agent ID or session ID)' },
       },
-      required: ['key', 'value', 'namespace'],
+      required: ['key', 'value'],
     },
     handler: async (input) => {
       await ensureInitialized();
