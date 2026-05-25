@@ -876,16 +876,15 @@ export const memoryTools: MCPTool[] = [
         // ADR-0257 #6: populate totalSize + location fields (was always empty).
         const rvfPath = join(findProjectRoot(), '.swarm', 'memory.rvf');
         let totalSize = 'unknown';
-        let location = rvfPath;
-        try {
-          const st = statSync(rvfPath);
-          const bytes = st.size;
+        const location = rvfPath;
+        if (existsSync(rvfPath)) {
+          const bytes = statSync(rvfPath).size;
           totalSize = bytes < 1024
             ? `${bytes} B`
             : bytes < 1024 * 1024
               ? `${(bytes / 1024).toFixed(1)} KB`
               : `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-        } catch { /* file may not exist yet — leave 'unknown' */ }
+        }
 
         return {
           initialized: !!result.initialized,
