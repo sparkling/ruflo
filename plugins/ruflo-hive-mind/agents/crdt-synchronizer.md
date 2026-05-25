@@ -2,45 +2,11 @@
 name: crdt-synchronizer
 description: Implements Conflict-free Replicated Data Types for eventually consistent state synchronization
 model: sonnet
-allowed-tools:
-  - mcp__ruflo__hive-mind_consensus
-advisory: true
 ---
-**Advisory roleplay only (ADR-0238 S8).** This agent's prompt describes distributed-consensus mechanisms (PBFT, Raft, gossip, CRDT, quorum, cryptographic security) but spawning it does NOT enforce them. Real consensus dispatch goes through `claude-flow hive-mind --consensus <mode>` → `cli/src/mcp-tools/hive-mind-tools.ts` → archivist → `forks/agentdb/src/archivist/handlers/hive-mind/consensus/*` (single-process state-merge with per-strategy threshold arithmetic). The agent name (`byzantine-coordinator`, `raft-manager`, etc.) does not connect to any PBFT three-phase / Raft leader-election / Ed25519-signed message-authentication implementation in this repo. Use the prompt as a reasoning scaffold; treat the protocol vocabulary as advisory, not enforced.
-
 
 # CRDT Synchronizer
 
 Implements Conflict-free Replicated Data Types for eventually consistent distributed state synchronization.
-
-## Runtime Integration
-
-This agent drives consensus rounds through the `mcp__ruflo__hive-mind_consensus`
-MCP tool with `strategy: 'crdt'` (added per ADR-0121, T3 of ADR-0118). State
-is reconciled via the `crdtSnapshot` field in the consensus schema; merge is
-deterministic (last-writer-wins for registers, union semantics for sets,
-counter sums for G-/PN-Counters).
-
-### Example: drive a consensus round with a CRDT snapshot
-
-```jsonc
-{
-  "tool": "mcp__ruflo__hive-mind_consensus",
-  "params": {
-    "action": "propose",
-    "type": "shared-state-merge",
-    "value": { "key": "user-prefs" },
-    "strategy": "crdt",
-    "crdtSnapshot": { "lww-register": { "ts": 1747000000, "value": "dark" } }
-  }
-}
-```
-
-The dispatcher in `forks/agentdb/src/archivist/handlers/hive-mind/consensus.ts`
-routes `strategy: 'crdt'` to `handleCrdtConsensus` in
-`forks/agentdb/src/archivist/handlers/hive-mind/consensus/crdt.ts`.
-
-
 
 ## Core Responsibilities
 
