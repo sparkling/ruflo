@@ -1213,7 +1213,7 @@ Analyze the above codebase context and provide your response following the forma
       // Windows (where setsid-style detach isn't available the same way).
       const killTree = (signal: NodeJS.Signals) => {
         if (process.platform !== 'win32' && typeof child.pid === 'number') {
-          try { process.kill(-child.pid, signal); return; } catch { /* fall through */ }
+          try { process.kill(-child.pid, signal); return; } catch (e: any) { if (e?.code !== 'ESRCH') throw e; }
         }
         try { child.kill(signal); } catch { /* already dead */ }
       };

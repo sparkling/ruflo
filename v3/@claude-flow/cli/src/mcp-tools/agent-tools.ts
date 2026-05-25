@@ -315,7 +315,11 @@ export const agentTools: MCPTool[] = [
             _saveSwarmStore(swarmStore);
           }
         }
-      } catch { /* swarm store unavailable — agent still registered globally */ }
+      } catch (e) {
+        // Best-effort: swarm store may be locked/missing/corrupt — agent is
+        // already registered globally above, so coordination still works.
+        console.error('[agent_spawn] swarm store push failed:', e);
+      }
 
       // Include Agent Booster routing info if applicable
       const response: Record<string, unknown> = {
