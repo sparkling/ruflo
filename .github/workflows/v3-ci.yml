@@ -115,6 +115,14 @@ on:
       # subsequent commit — preserve the existing entries on edit.
       - 'v3/@claude-flow/cli/src/mcp-tools/wasm-agent-tools.ts'
       - 'scripts/smoke-wasm-plugin-bridge.mjs'
+      # skills lockstep smoke (ADR-0257 item #3) — guards the source/payload
+      # split between .claude/skills/ (editorial source) and v3/@claude-flow/cli/
+      # .claude/skills/ (npm payload copied by `ruflo init` via SKILLS_MAP).
+      # The two trees MUST stay byte-identical or users get stale prose or
+      # regressed brand refs (e.g. mcp__claude-flow__* instead of mcp__ruflo__*).
+      - '.claude/skills/**'
+      - 'v3/@claude-flow/cli/.claude/skills/**'
+      - 'scripts/smoke-skills-lockstep.mjs'
   pull_request:
     branches: [main]
     paths:
@@ -196,6 +204,11 @@ on:
       # this list further — preserve the existing entries on edit.
       - 'v3/@claude-flow/cli/src/mcp-tools/wasm-agent-tools.ts'
       - 'scripts/smoke-wasm-plugin-bridge.mjs'
+      # skills lockstep smoke (ADR-0257 item #3)
+      # See push.paths above for the full rationale.
+      - '.claude/skills/**'
+      - 'v3/@claude-flow/cli/.claude/skills/**'
+      - 'scripts/smoke-skills-lockstep.mjs'
       # witness manifests / fix list — so witness-verify runs on PRs that
       # touch them (otherwise a stale per-OS manifest only fails post-merge).
       - 'verification/**'
@@ -1629,3 +1642,32 @@ jobs:
 
       - name: Run wasm plugin bridge smoke
         run: node scripts/smoke-wasm-plugin-bridge.mjs
+
+  # ── ADR-0257 item #3 skills lockstep smoke ──────────────────────────────────
+  #
+  # Guards the source/payload split between `.claude/skills/` (editorial source)
+  # and `v3/@claude-flow/cli/.claude/skills/` (npm-package payload copied by
+  # `ruflo init` via SKILLS_MAP in `v3/@claude-flow/cli/src/init/executor.ts`).
+  # The two trees MUST stay byte-identical or users get stale prose / regressed
+  # brand references (e.g. `mcp__claude-flow__*` instead of `mcp__ruflo__*`).
+  #
+  # Bidirectional check: every SKILL.md in either tree must have a byte-
+  # identical name-matched counterpart in the other tree. Missing names OR
+  # byte differences fail the gate. No allowlist — drift should never happen.
+  #
+  # Zero runtime deps; pure Node.js readFileSync + Buffer.equals().
+  skills-lockstep-smoke:
+    name: skills lockstep smoke (ADR-0257)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run skills lockstep smoke
+        run: node scripts/smoke-skills-lockstep.mjs
