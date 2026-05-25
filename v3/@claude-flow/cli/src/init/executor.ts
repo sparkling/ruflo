@@ -1215,6 +1215,15 @@ async function writeHelpers(
     'auto-memory-hook.mjs': generateAutoMemoryHook(),
   };
 
+  // ADR-0257 statusline regression fix: statusline-generator.ts produces
+  // statusline.cjs + statusline-hook.sh when components.statusline is enabled,
+  // but writeHelpers only had the 8 core helpers above. Add them here so
+  // --full and default inits produce the statusline files consistently.
+  if (options.components.statusline) {
+    helpers['statusline.cjs'] = generateStatuslineScript(options);
+    helpers['statusline-hook.sh'] = generateStatuslineHook(options);
+  }
+
   for (const [name, content] of Object.entries(helpers)) {
     const filePath = path.join(helpersDir, name);
 
