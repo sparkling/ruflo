@@ -73,7 +73,9 @@ const storeCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const key = ctx.flags.key as string;
     let value = ctx.flags.value as string || ctx.args[0];
-    const namespace = ctx.flags.namespace as string;
+    // ADR-0257 #3: apply 'default' fallback so log line reads "default/<key>"
+    // not "undefined/<key>" when --namespace is omitted.
+    const namespace = (ctx.flags.namespace as string) || 'default';
     const ttl = ctx.flags.ttl as number;
     const tags = ctx.flags.tags ? (ctx.flags.tags as string).split(',') : [];
     const asVector = ctx.flags.vector as boolean;
