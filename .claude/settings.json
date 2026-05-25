@@ -1,6 +1,6 @@
 {
   "model": "claude-opus-4-7",
-  "_comment_skillListingBudgetFraction": "#1834 — repo has 367 SKILL.md files (5x duplicates of common skills) across .agents/skills, .claude/skills, archive/v2/.claude/skills, v3/@claude-flow/{cli,mcp}/.claude/skills. With Claude Code's default 1% budget, ~378 descriptions get truncated. Bumping to 6% covers the actual usage (5.5%). Long-term fix is to prune the duplicates and archive paths (see #1834).",
+  "_comment_skillListingBudgetFraction": "#1834 — repo currently exposes ~315 SKILL.md files (5x duplicates of common skills) across .agents/skills (134), plugins/*/skills (104), v3/@claude-flow/{cli,codex,browser}/.../skills (38), .claude/skills (38). archive/v2/_v2_claude_snapshot/skills was renamed to legacy-skills/ to remove its 26 entries from discovery (preserves history; not deleted). With Claude Code's default 1% budget, most descriptions still truncate. 6% covers the actual usage. Long-term fix is to dedup .agents/skills vs .claude/skills (largest overlap) and consolidate v3/cli skills into the plugin-marketplace path (see #1834).",
   "skillListingBudgetFraction": 0.06,
   "customInstructions": "Follow the project's CLAUDE.md guidelines. Use concurrent execution for all operations. Prioritize v3 implementation with security-first development, 15-agent swarm coordination, phased performance optimization, and cross-platform helper automation.",
   "env": {
