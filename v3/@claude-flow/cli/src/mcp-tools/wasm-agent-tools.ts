@@ -52,10 +52,14 @@ interface PluginManifest {
  * Returns null silently if the plugin or its manifest is missing.
  */
 function loadPluginManifest(pluginName: string): PluginManifest | null {
+  // ADR-0100/G: mcp-tools/*-tools.ts must not call process.cwd() directly;
+  // use findProjectRoot() so the workspace anchor honors --workspace-root /
+  // ACCEPT_TEMP env discipline (see types.ts for the resolution chain).
+  const projectRoot = findProjectRoot();
   const candidateDirs = [
-    resolve(process.cwd(), 'plugins', pluginName, '.claude-plugin', 'plugin.json'),
-    resolve(process.cwd(), 'plugins', `ruflo-${pluginName}`, '.claude-plugin', 'plugin.json'),
-    resolve(process.cwd(), 'v3', 'plugins', pluginName, '.claude-plugin', 'plugin.json'),
+    resolve(projectRoot, 'plugins', pluginName, '.claude-plugin', 'plugin.json'),
+    resolve(projectRoot, 'plugins', `ruflo-${pluginName}`, '.claude-plugin', 'plugin.json'),
+    resolve(projectRoot, 'v3', 'plugins', pluginName, '.claude-plugin', 'plugin.json'),
   ];
   for (const p of candidateDirs) {
     if (existsSync(p)) {

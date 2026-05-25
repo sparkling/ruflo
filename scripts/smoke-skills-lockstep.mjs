@@ -4,33 +4,25 @@
  *
  * The `.claude/skills/` tree at the repo root is the editorial source for
  * skills; `v3/@claude-flow/cli/.claude/skills/` is the npm-package payload
- * that `ruflo init` copies into user projects via SKILLS_MAP in
- * `v3/@claude-flow/cli/src/init/executor.ts`. The two MUST stay byte-
- * identical or users get stale prose / regressed brand references (e.g.
- * `mcp__claude-flow__*` instead of `mcp__ruflo__*`).
+ * that `ruflo init` copies into user projects via SKILLS_MAP. The two trees
+ * are NOT a strict bijection — top is a superset (editorial source) and
+ * v3/cli is a subset (the shipped bundle). Per ADR-0216, the bundle pins a
+ * specific name-set (currently 33 skills) and explicitly excludes 5 top-only
+ * editorial skills: agentic-jujutsu, hive-mind-advanced, performance-
+ * analysis, worker-benchmarks, worker-integration.
  *
- * Earlier this session, agent `skill-resync` found drift in BOTH
- * directions:
- *   - 8 files where top was fresher (re-synced top → v3/cli in commit
- *     `02b6d7bcf`)
- *   - 1 file (`verification-quality`) where v3/cli was fresher (reverse-
- *     synced v3/cli → top in commit `34119ebcb`)
+ * What this smoke detects:
  *
- * This smoke prevents recurrence by bidirectionally byte-comparing the
- * two trees on every push / PR / direct edit:
+ *   1. v3/cli SKILL.md missing from top — suspicious (where's the source?)
+ *   2. v3/cli SKILL.md byte-differs from top for shared names — suspicious
  *
- *   1. Every `<name>` directory in `.claude/skills/` with a `SKILL.md`
- *      must have a name-matched `v3/@claude-flow/cli/.claude/skills/<name>/SKILL.md`
- *      that is byte-identical.
- *   2. Every `<name>` directory in `v3/@claude-flow/cli/.claude/skills/`
- *      with a `SKILL.md` must have a name-matched `.claude/skills/<name>/SKILL.md`
- *      that is byte-identical.
+ * What this smoke deliberately DOES NOT flag:
  *
- * Any missing-name OR any byte difference fails the smoke. No allowlist
- * — the whole point is that drift should never happen.
+ *   - top SKILL.md without a v3/cli counterpart (editorial-only, intentional
+ *     per ADR-0216)
  *
- * Exit 0: all SKILL.md files aligned in both directions.
- * Exit 1: one or more files differ or are missing in one tree.
+ * Exit 0: every name in v3/cli has a byte-identical counterpart in top.
+ * Exit 1: one or more v3/cli SKILL.md files are missing from top or byte-differ.
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -61,27 +53,24 @@ const v3Names = new Set(listSkillNames(V3_SKILLS));
 
 const drifts = [];
 
-// Pass 1: every top name must exist in v3/cli; byte-compare matched pairs.
-for (const name of topNames) {
-  const topFile = join(TOP_SKILLS, name, 'SKILL.md');
-  const v3File = join(V3_SKILLS, name, 'SKILL.md');
-  if (!v3Names.has(name)) {
+// Every v3/cli name must exist in top (the editorial source) and be byte-identical.
+// Top-only names are intentional (per ADR-0216 — editorial superset).
+for (const name of v3Names) {
+  if (!topNames.has(name)) {
     drifts.push({
-      type: 'top-only',
+      type: 'v3-only',
       name,
-      message: `'${name}' has a SKILL.md in .claude/skills/ but not in v3/@claude-flow/cli/.claude/skills/`,
-      fix: `copy .claude/skills/${name}/SKILL.md → v3/@claude-flow/cli/.claude/skills/${name}/SKILL.md, or remove the top copy if it is an unbundled editorial draft.`,
+      message: `'${name}' has a SKILL.md in v3/@claude-flow/cli/.claude/skills/ but not in .claude/skills/`,
+      fix: `top is the editorial source — copy v3/@claude-flow/cli/.claude/skills/${name}/SKILL.md → .claude/skills/${name}/SKILL.md, OR remove the v3/cli copy if it shouldn't be in the bundle.`,
     });
     continue;
   }
-  const topBytes = readFileSync(topFile);
-  const v3Bytes = readFileSync(v3File);
+  const topBytes = readFileSync(join(TOP_SKILLS, name, 'SKILL.md'));
+  const v3Bytes = readFileSync(join(V3_SKILLS, name, 'SKILL.md'));
   if (!topBytes.equals(v3Bytes)) {
     drifts.push({
       type: 'byte-differ',
       name,
-      topPath: `.claude/skills/${name}/SKILL.md`,
-      v3Path: `v3/@claude-flow/cli/.claude/skills/${name}/SKILL.md`,
       topSize: topBytes.length,
       v3Size: v3Bytes.length,
       message: `'${name}' SKILL.md content differs between top (${topBytes.length} bytes) and v3/cli (${v3Bytes.length} bytes)`,
@@ -90,43 +79,30 @@ for (const name of topNames) {
   }
 }
 
-// Pass 2: every v3/cli name must exist in top (catches v3/cli-only drift).
-for (const name of v3Names) {
-  if (!topNames.has(name)) {
-    drifts.push({
-      type: 'v3-only',
-      name,
-      message: `'${name}' has a SKILL.md in v3/@claude-flow/cli/.claude/skills/ but not in .claude/skills/`,
-      fix: `copy v3/@claude-flow/cli/.claude/skills/${name}/SKILL.md → .claude/skills/${name}/SKILL.md (top is the editorial source).`,
-    });
-  }
-}
-
-const aligned = topNames.size + v3Names.size - drifts.length;
+const topOnlyCount = [...topNames].filter(n => !v3Names.has(n)).length;
+const intersectionCount = v3Names.size - drifts.filter(d => d.type === 'v3-only').length;
 
 if (drifts.length === 0) {
-  console.log(`ok: all ${topNames.size} skills aligned byte-identical across .claude/skills/ and v3/@claude-flow/cli/.claude/skills/`);
+  console.log(
+    `ok: ${v3Names.size} bundled skill(s) aligned byte-identical with top; ` +
+    `${topOnlyCount} top-only editorial skill(s) intentionally not bundled (per ADR-0216).`
+  );
   process.exit(0);
 }
 
 console.error(`\n${drifts.length} SKILL.md lockstep drift(s) detected:\n`);
-
 for (const d of drifts) {
-  if (d.type === 'top-only') {
-    console.error(`  [TOP-ONLY] ${d.name}`);
-    console.error(`    ${d.message}`);
-    console.error(`    Fix: ${d.fix}`);
-  } else if (d.type === 'v3-only') {
+  if (d.type === 'v3-only') {
     console.error(`  [V3-ONLY] ${d.name}`);
     console.error(`    ${d.message}`);
     console.error(`    Fix: ${d.fix}`);
   } else if (d.type === 'byte-differ') {
     console.error(`  [BYTE-DIFFER] ${d.name}`);
-    console.error(`    top:   ${d.topPath} (${d.topSize} bytes)`);
-    console.error(`    v3/cli: ${d.v3Path} (${d.v3Size} bytes)`);
+    console.error(`    top:   .claude/skills/${d.name}/SKILL.md (${d.topSize} bytes)`);
+    console.error(`    v3/cli: v3/@claude-flow/cli/.claude/skills/${d.name}/SKILL.md (${d.v3Size} bytes)`);
     console.error(`    Fix: ${d.fix}`);
   }
 }
 
-console.error(`\nADR-0257: docs/adr/ADR-0257-session-2026-05-25-backlog-execution-plan.md\n`);
+console.error(`\nADR-0257 item #3 + ADR-0216 bundle pin.\n`);
 process.exit(1);
