@@ -10,9 +10,15 @@
  *      one that ships in the tarball but is never copied by any init path.
  *
  *   2. SKILLS_MAP COMPLETENESS — every skill name in SKILLS_MAP (all arrays)
- *      has a corresponding SKILL.md at
- *      v3/@claude-flow/cli/.claude/skills/{name}/SKILL.md. Catches Phase 1
- *      regressions where a skill dir disappears from the package.
+ *      has a corresponding SKILL.md in either
+ *      v3/@claude-flow/cli/.claude/skills/{name}/SKILL.md (bundled payload) or
+ *      .claude/skills/{name}/SKILL.md (editorial source). Catches Phase 1
+ *      regressions where a skill dir disappears from BOTH trees. Per ADR-0216,
+ *      a known carve-out of editorial-only names lives in `.claude/skills/`
+ *      only and is intentionally absent from the bundled payload; copySkills
+ *      silently no-ops on those. The lockstep smoke
+ *      (scripts/smoke-skills-lockstep.mjs) governs the byte-identical contract
+ *      between the two trees.
  *
  *   3. NO INIT–PLUGIN AGENT BASENAME COLLISION — no .md file in
  *      v3/@claude-flow/cli/.claude/agents/(any path) shares a basename with any
@@ -30,6 +36,7 @@ import { join } from 'node:path';
 const REPO_ROOT = process.cwd();
 const EXECUTOR_TS = join(REPO_ROOT, 'v3', '@claude-flow', 'cli', 'src', 'init', 'executor.ts');
 const CLI_DOT_CLAUDE = join(REPO_ROOT, 'v3', '@claude-flow', 'cli', '.claude');
+const TOP_DOT_CLAUDE = join(REPO_ROOT, '.claude');
 const PLUGINS_DIR = join(REPO_ROOT, 'plugins');
 
 // ---------------------------------------------------------------------------
@@ -59,12 +66,26 @@ function collectFiles(dir, ext) {
 
 // Parse all string values from a Record<string, string[]> literal in source.
 // Handles multi-line blocks terminated by the closing '};'.
+//
+// Comment-stripping is mandatory: apostrophes inside `//` comments (e.g.
+// "weren't", "AI-native") would otherwise open malformed regex captures that
+// straddle category boundaries and produce garbled "skill names". Strip both
+// full-line `// ...` comments and inline `... // tail` comments before matching.
 function parseMapValues(src, mapName) {
   const start = src.indexOf(`const ${mapName}:`);
   if (start === -1) return new Set();
-  const block = src.slice(start, src.indexOf('\n};', start) + 3);
+  const rawBlock = src.slice(start, src.indexOf('\n};', start) + 3);
+  // Strip `//`-style line comments line-by-line. We don't need block-comment
+  // (`/* ... */`) handling because the maps don't use them.
+  const block = rawBlock
+    .split('\n')
+    .map(line => {
+      const idx = line.indexOf('//');
+      return idx === -1 ? line : line.slice(0, idx);
+    })
+    .join('\n');
   const values = new Set();
-  // Match single-quoted string literals
+  // Match single-quoted string literals (now safe — no comment apostrophes).
   for (const m of block.matchAll(/'([^']+)'/g)) {
     values.add(m[1]);
   }
@@ -114,24 +135,35 @@ for (const dir of agentsDirs) {
 }
 
 // ---------------------------------------------------------------------------
-// Assertion 2: Every SKILLS_MAP skill has a SKILL.md in the package
+// Assertion 2: Every SKILLS_MAP skill has a SKILL.md (or README.md) in EITHER
+// the bundled v3/cli payload OR the top editorial source. Per ADR-0216, 5
+// names are editorial-only — present in top, absent from the bundle by design.
+// `copySkills` silently no-ops those at user-init time; the lockstep smoke
+// (smoke-skills-lockstep.mjs) is the byte-equality gate between the two trees.
+//
+// This smoke fails only when a SKILLS_MAP entry has NO source at all (neither
+// tree contains the dir). That is the regression Phase 1 was protecting
+// against, and it still catches it.
 // ---------------------------------------------------------------------------
 
 const skillsMapValues = parseMapValues(executorSrc, 'SKILLS_MAP');
-const skillsDir = join(CLI_DOT_CLAUDE, 'skills');
+const bundleSkillsDir = join(CLI_DOT_CLAUDE, 'skills');
+const topSkillsDir = join(TOP_DOT_CLAUDE, 'skills');
 const missingSkills = [];
 
+function skillExistsIn(dir, name) {
+  return existsSync(join(dir, name, 'SKILL.md')) || existsSync(join(dir, name, 'README.md'));
+}
+
 for (const skillName of skillsMapValues) {
-  const skillDir = join(skillsDir, skillName);
-  const skillMd = join(skillDir, 'SKILL.md');
-  const readmeMd = join(skillDir, 'README.md');
-  // Skill must have a directory with at least SKILL.md or README.md
-  if (!existsSync(skillMd) && !existsSync(readmeMd)) {
+  const inBundle = skillExistsIn(bundleSkillsDir, skillName);
+  const inTop = skillExistsIn(topSkillsDir, skillName);
+  if (!inBundle && !inTop) {
     missingSkills.push({
       type: 'missing-skill',
-      // Report the SKILL.md path for clarity even though README.md is accepted
-      path: `v3/@claude-flow/cli/.claude/skills/${skillName}/SKILL.md`,
-      message: `SKILLS_MAP references '${skillName}' but neither SKILL.md nor README.md found in package`,
+      name: skillName,
+      path: `v3/@claude-flow/cli/.claude/skills/${skillName}/SKILL.md (and .claude/skills/${skillName}/)`,
+      message: `SKILLS_MAP references '${skillName}' but no SKILL.md or README.md found in either the bundle or the top editorial source`,
     });
   }
 }
@@ -191,7 +223,8 @@ for (const v of allViolations) {
   } else if (v.type === 'missing-skill') {
     console.error(`  [MISSING-SKILL] ${v.path}`);
     console.error(`    ${v.message}`);
-    console.error(`    Fix: copy the skill from .claude/skills/${v.path.split('/').at(-2)}/ into the package.`);
+    console.error(`    Fix: add the skill source at .claude/skills/${v.name}/SKILL.md (editorial),`);
+    console.error(`         or remove '${v.name}' from SKILLS_MAP in v3/@claude-flow/cli/src/init/executor.ts.`);
   } else if (v.type === 'agent-collision') {
     console.error(`  [COLLISION] ${v.message}`);
     console.error(`    init:   ${v.init}`);
