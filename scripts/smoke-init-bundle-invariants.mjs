@@ -181,10 +181,33 @@ const pluginAgentFiles = existsSync(PLUGINS_DIR)
       .flatMap(e => collectFiles(join(PLUGINS_DIR, e.name, 'agents'), '.md'))
   : [];
 
+// ADR-128 wire-in carve-out: 2 consensus agents (gossip-coordinator and
+// crdt-synchronizer) carry load-bearing ADR-0120/0121 wire-in (allowed-tools
+// + Runtime Integration example) that makes mcp__ruflo__hive-mind_consensus
+// reachable from the agent. The wire-in needs to be reachable at the
+// user-facing .claude/agents/consensus/<file>.md path post-`ruflo init`.
+//
+// Init copies from the CLI init template — NOT from the plugin (plugin install
+// is a separate user-driven `/plugin install` step, not part of `ruflo init`).
+// So for these 2 wired files, the canonical surface MUST be the CLI init
+// template, not the plugin. ADR-128's "plugin's version is canonical" policy
+// is correct for purely-documentation duplicates but doesn't account for
+// files whose wire-in is consumed at init time.
+//
+// These 2 files are allowlisted from the collision check. The plugin's thin
+// copies of the same basenames remain (so `/plugin install ruflo-hive-mind`
+// still installs a reasonable agent definition), but the CLI init template
+// owns the wired version that reaches the user's project on init.
+const ADR_128_WIRE_IN_CARVE_OUT = new Set([
+  'gossip-coordinator.md',
+  'crdt-synchronizer.md',
+]);
+
 const collisionViolations = [];
 
 for (const pluginFile of pluginAgentFiles) {
   const basename = pluginFile.split('/').pop();
+  if (ADR_128_WIRE_IN_CARVE_OUT.has(basename)) continue;
   if (initBasenames.has(basename)) {
     // Find the init copy for the error message
     const initCopy = initAgentFiles.find(f => f.split('/').pop() === basename);
