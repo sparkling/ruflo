@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/errors",
-  "version": "3.0.0-alpha.1-patch.18",
+  "version": "3.0.0-alpha.1-patch.19",
   "description": "Shared typed error library for ruflo — base RufloError class, RufloErrorCode enum, wrapError + getErrorMessage utilities, isRufloError type guard. Extracted from gastown-bridge/errors.ts per ADR-0242.",
   "type": "module",
   "main": "dist/index.js",
