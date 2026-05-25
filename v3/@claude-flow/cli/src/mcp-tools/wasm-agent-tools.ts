@@ -59,7 +59,13 @@ function loadPluginManifest(pluginName: string): PluginManifest | null {
   ];
   for (const p of candidateDirs) {
     if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, 'utf8')) as PluginManifest; } catch { /* skip */ }
+      try {
+        return JSON.parse(readFileSync(p, 'utf8')) as PluginManifest;
+      } catch (e: any) {
+        // Malformed JSON or missing file → fall through to next candidate; rethrow IO errors.
+        if (e instanceof SyntaxError || e?.code === 'ENOENT') continue;
+        throw e;
+      }
     }
   }
   return null;

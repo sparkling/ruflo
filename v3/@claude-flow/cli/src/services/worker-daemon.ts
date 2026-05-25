@@ -415,7 +415,10 @@ export class WorkerDaemon extends EventEmitter {
     try {
       const osrelease = readFileSync('/proc/sys/kernel/osrelease', 'utf8').toLowerCase();
       if (osrelease.includes('microsoft') || osrelease.includes('wsl')) return true;
-    } catch { /* not on Linux or /proc inaccessible */ }
+    } catch (e: any) {
+      // ENOENT/EACCES expected on macOS/Windows or restricted /proc; rethrow other errors.
+      if (e?.code !== 'ENOENT' && e?.code !== 'EACCES') throw e;
+    }
     return false;
   }
 
