@@ -1325,4 +1325,86 @@ export const memoryTools: MCPTool[] = [
       }
     },
   },
+
+  {
+    name: 'memory_export',
+    description: 'Export memory entries to a JSON file (keys, namespaces, timestamps, values, embedding-presence flag). Reads through routeMemoryOp({type:"list"}) — same substrate seam as memory_list. Schema: ruflo-memory-export/v1. CSV/binary/includeVectors=true throw typed errors until implemented (ADR-0255 Phase 1).',
+    category: 'memory',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        outputPath: { type: 'string', description: 'Filesystem path to write the JSON export.' },
+        format: { type: 'string', enum: ['json', 'csv', 'binary'], description: 'Output format. Phase 1: only "json" is implemented; "csv" and "binary" throw a typed error (ADR-0255 Decision #3 — no silent fallback).' },
+        namespace: { type: 'string', description: 'Filter to a single namespace; omit to export all namespaces.' },
+        includeVectors: { type: 'boolean', description: 'Phase 1: must be false (or omitted). includeVectors=true throws a typed error pending schema v2 with embeddingModel/embeddingDim fields (ADR-0255 Decision #6).' },
+      },
+      required: ['outputPath'],
+    },
+    handler: async (input) => {
+      // Input validation BEFORE ensureInitialized() — typed errors fire without
+      // paying the substrate-boot cost. Mirrors the early-validation discipline
+      // for unsupported-flag rejection. ensureInitialized is only needed once
+      // we actually intend to read the substrate (after all rejections pass).
+      const outputPath = typeof input.outputPath === 'string' ? input.outputPath : '';
+      if (!outputPath) {
+        return { error: "'outputPath' is required and must be a non-empty string" };
+      }
+      const format = typeof input.format === 'string' ? input.format : 'json';
+      if (format === 'csv' || format === 'binary') {
+        throw new Error(`format '${format}' not implemented — Phase 1 ships JSON only; see ADR-0255 Plan`);
+      }
+      if (format !== 'json') {
+        throw new Error(`format '${format}' not recognized — valid choices: 'json' (csv/binary deferred per ADR-0255 Plan)`);
+      }
+      if (input.includeVectors === true) {
+        throw new Error('includeVectors=true not implemented — Phase 1 omits vector serialization (mpnet-768 vs MiniLM-384 incompatibility); schema v2 needed (ADR-0255 Decision #6 / Open Questions)');
+      }
+      const namespace = typeof input.namespace === 'string' && input.namespace.length > 0 ? input.namespace : undefined;
+      if (namespace !== undefined) {
+        const v = validateIdentifier(namespace, 'namespace');
+        if (!v.valid) throw new Error(v.error);
+      }
+
+      await ensureInitialized();
+      // PHASE 6+: route through archivist when memory_search_index→memory_store
+      // collapse lands — same gate as memory_list (memory-tools.ts:790-799).
+      // Explicit 100k cap (ADR-0255 Decision #7); buffered all-at-once.
+      const all = await routeMemoryOp({ type: 'list', namespace, limit: 100000, offset: 0 });
+      const rawEntries = (all.entries as Array<Record<string, unknown>>) || [];
+      const entries = rawEntries.map((e) => ({
+        key: e.key,
+        namespace: e.namespace,
+        value: typeof e.content === 'string' ? e.content : null,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+        accessCount: e.accessCount,
+        hasEmbedding: e.hasEmbedding,
+        size: e.size,
+      }));
+      const payload = {
+        schema: 'ruflo-memory-export/v1' as const,
+        exportedAt: new Date().toISOString(),
+        namespace: namespace ?? null,
+        count: entries.length,
+        entries,
+      };
+      const serialized = JSON.stringify(payload, null, 2);
+      try {
+        writeFileSync(outputPath, serialized, 'utf-8');
+      } catch (e) {
+        return { error: `Could not write ${outputPath}: ${e instanceof Error ? e.message : String(e)}` };
+      }
+      const vectorsWithEmb = entries.filter((e) => e.hasEmbedding === true).length;
+      return {
+        outputPath,
+        format: 'json',
+        exported: {
+          entries: entries.length,
+          vectors: vectorsWithEmb,
+          patterns: 0,
+        },
+        fileSize: `${Buffer.byteLength(serialized)}B`,
+      };
+    },
+  },
 ];

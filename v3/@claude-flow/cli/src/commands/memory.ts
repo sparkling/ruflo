@@ -1175,9 +1175,9 @@ const exportCommand: Command = {
     },
     {
       name: 'include-vectors',
-      description: 'Include vector embeddings',
+      description: 'Include vector embeddings (Phase 1: must be false; true throws a typed error per ADR-0255 Decision #6 pending schema v2)',
       type: 'boolean',
-      default: true
+      default: false
     }
   ],
   examples: [
@@ -1209,7 +1209,11 @@ const exportCommand: Command = {
         outputPath,
         format,
         namespace: ctx.flags.namespace,
-        includeVectors: ctx.flags.includeVectors ?? true,
+        // ADR-0255 Decision #6: default to false (Phase 1 omits vector
+        // serialization). Setting true at the call site would throw the
+        // typed error in the MCP tool. Keep the user's explicit choice if
+        // provided; otherwise omit-as-false.
+        includeVectors: ctx.flags.includeVectors ?? false,
       });
 
       output.printSuccess(`Exported to ${result.outputPath}`);
