@@ -81,6 +81,11 @@ on:
       - 'v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts'
       - 'v3/@claude-flow/cli/src/ruvector/ruvllm-wasm.ts'
       - 'scripts/smoke-ruvllm-wasm-auto-init.mjs'
+      # agent_execute provider routing (#2042) — executeAgentTask must
+      # not regress to inline Anthropic fetch, and the OpenRouter branch
+      # in callAnthropicMessages must stay wired.
+      - 'v3/@claude-flow/cli/src/mcp-tools/agent-execute-core.ts'
+      - 'scripts/smoke-agent-execute-providers.mjs'
       # GitHub skills/agents/helpers surface (#2089, ADR-127) — injection
       # smoke + actions pin smoke gate every change to the .github surface.
       - '.claude/agents/github/**'
@@ -156,6 +161,9 @@ on:
       - 'v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts'
       - 'v3/@claude-flow/cli/src/ruvector/ruvllm-wasm.ts'
       - 'scripts/smoke-ruvllm-wasm-auto-init.mjs'
+      # agent_execute provider routing (#2042)
+      - 'v3/@claude-flow/cli/src/mcp-tools/agent-execute-core.ts'
+      - 'scripts/smoke-agent-execute-providers.mjs'
       # GitHub skills/agents/helpers surface (#2089, ADR-127)
       - '.claude/agents/github/**'
       - '.claude/skills/github-*/**'
@@ -407,6 +415,736 @@ jobs:
         run: |
           node plugins/ruflo-core/scripts/test-hooks.mjs \
             "node $GITHUB_WORKSPACE/v3/@claude-flow/cli/bin/cli.js"
+
+  browser-rvf-create-flags-smoke:
+    # Regression guard for ruvnet/ruflo#2015 — the ruflo-browser
+    # `browser_session_record` MCP tool wraps `ruvector rvf create`.
+    # ruvector@0.2.25 makes `-d, --dimension <n>` required, so before
+    # this fix every session-record call failed with
+    # `error: required option '-d, --dimension <n>' not specified`
+    # and the wrapper returned `{ success: false, error: "rvf create
+    # failed" }`.
+    #
+    # This smoke scans every place we shell out to `rvf create
+    # --kind browser-session` across the repo (TS source, compiled
+    # dist, shell scripts, agent-facing markdown recipes) and fails
+    # if any call is missing the dimension flag.
+    name: browser rvf create flag smoke (#2015)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Build CLI (so the compiled dist is scanned alongside src)
+        # The CLI uses `workspace:*` deps which only pnpm understands — npm
+        # install errors with EUNSUPPORTEDPROTOCOL. Install at the v3
+        # workspace root (mirrors the Build V3 job) and build everything in
+        # topological order so cli-core/memory/neural dist exist before cli.
+        # `continue-on-error: true` keeps the smoke usable even when CLI src
+        # has unrelated TS errors — the static scan will report any missing
+        # dist file it cares about, which is the contract we actually want.
+        continue-on-error: true
+        run: |
+          cd v3
+          pnpm install --frozen-lockfile
+          pnpm -r build
+
+      - name: Static scan of every rvf create call site
+        run: node scripts/smoke-browser-rvf-create-flags.mjs
+
+  graph-intelligence-build-smoke:
+    # Regression guard for #2044 / ADR-123 — the ruflo-graph-intelligence
+    # plugin lives outside the v3 pnpm workspace (it has its own
+    # package-lock.json) so it does not pick up the workspace's
+    # frozen-lockfile / -r build path. This job installs + builds + tests
+    # the plugin in isolation so the eleven sublinear wedges are verified
+    # on every push and PR.
+    name: ruflo-graph-intelligence build + test smoke (#2044, ADR-123)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install plugin dependencies (npm — plugin is outside v3 workspace)
+        working-directory: plugins/ruflo-graph-intelligence
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+
+      - name: Type-check
+        working-directory: plugins/ruflo-graph-intelligence
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: plugins/ruflo-graph-intelligence
+        run: npx tsc
+
+      - name: Run vitest
+        working-directory: plugins/ruflo-graph-intelligence
+        run: npx vitest run
+
+  supply-chain-audit:
+    # Supply-chain hardening (#2046, follow-up to ADR-123).
+    #
+    # Five layers of defence run by scripts/audit-supply-chain.mjs:
+    #   1. CVE — `npm audit --audit-level=high` on each shipped package.
+    #            HIGH/CRITICAL findings in DIRECT deps fail CI.
+    #   2. Lockfile integrity — every entry must have a SHA-512 `integrity`
+    #      hash. Missing or weak hashes are a tamper vector.
+    #   3. Top-level allowlist — new direct deps require an explicit
+    #      `.github/supply-chain/allowed-deps.json` addition. Block silent
+    #      additions via maintainer compromise or typo'd PRs.
+    #   4. Typosquat reject — names matching the policy block-list fail
+    #      regardless of whether the package actually exists upstream.
+    #   5. Publisher trust snapshot — logs npm maintainer identity for our
+    #      critical upstream deps so unexpected handover is visible in CI
+    #      logs (not a hard fail; informational).
+    #
+    # This job runs on every PR that touches a package.json, lockfile,
+    # allowlist, or the audit script itself. It also runs on pushes to main
+    # so direct-to-main changes (rare) are caught.
+    name: Supply-chain audit (#2046)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install ruflo-graph-intelligence deps (for npm audit)
+        working-directory: plugins/ruflo-graph-intelligence
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+
+      - name: Install @claude-flow/browser deps (for npm audit)
+        working-directory: v3/@claude-flow/browser
+        run: npm install --no-audit --no-fund --legacy-peer-deps --no-workspaces
+
+      - name: Run supply-chain audit
+        run: node scripts/audit-supply-chain.mjs
+
+      - name: Test audit script itself
+        run: node scripts/__tests__/audit-supply-chain.test.mjs
+
+  dependency-review:
+    # GitHub's official dependency-review-action — runs only on PRs and
+    # flags any new vulnerable dependency added by the PR vs the base
+    # branch. Configured to fail on `high` severity and to forbid
+    # known-bad licenses (GPL-style + non-OSI).
+    #
+    # **Setup requirement**: this action needs GitHub's Dependency Graph
+    # feature enabled at the repo level. Toggle at
+    # https://github.com/ruvnet/ruflo/settings/security_analysis under
+    # "Dependency graph". Until that toggle is on, the action errors
+    # with "Dependency review is not supported on this repository" — so
+    # this job is marked continue-on-error to keep the CVE/audit/codeowner
+    # layers of supply-chain hardening usable in the meantime.
+    #
+    # https://github.com/actions/dependency-review-action
+    name: Dependency review (#2046)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # `continue-on-error` is at the STEP (not job) level so the action's
+      # "Dependency review is not supported on this repository" error from
+      # the off-by-default Dependency Graph feature doesn't show as a PR
+      # check failure. Once the repo owner toggles Dependency Graph on at
+      # Settings → Security and analysis, remove this line to make the
+      # action gating again.
+      - name: Dependency Review
+        continue-on-error: true
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+          # Block licenses we cannot ship:
+          deny-licenses: AGPL-3.0, GPL-3.0, SSPL-1.0
+          # Block known-compromised package versions via pURL (package-url)
+          # format — this is the action's required input shape per its docs.
+          # https://github.com/actions/dependency-review-action#configuration-options
+          deny-packages: pkg:npm/event-stream@3.3.6, pkg:npm/flatmap-stream, pkg:npm/ua-parser-js@0.7.29, pkg:npm/ua-parser-js@0.8.0, pkg:npm/ua-parser-js@1.0.0, pkg:npm/colors@1.4.1, pkg:npm/faker@6.6.6
+
+  witness-marker-drift-smoke:
+    # Regression guard for ruvnet/ruflo#2021 — the slow witness-verify
+    # job below catches marker drift but only as a post-build check on
+    # cross-platform matrix. Direct pushes to main (e.g. the alpha.43
+    # release chain) bypass PR-time gating and a bad marker can sneak
+    # through, leaving the scheduled 12h cron to file a HIGH issue.
+    #
+    # This smoke runs verify.mjs's marker-presence layer (no signature
+    # check, no build, no native deps) on every push and pull-request.
+    # If a cited file exists on disk and the marker string is missing,
+    # fail immediately and name the specific fix id that drifted.
+    #
+    # The full witness-verify job stays — it adds the signature layer
+    # and the cross-platform dist build. This smoke is the fast gate
+    # that fails before that.
+    name: witness marker drift smoke (#2021)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Scan every witness marker for drift
+        run: node scripts/smoke-witness-marker-drift.mjs
+
+  witness-verify-precondition-smoke:
+    # Regression guard for ruvnet/ruflo#1880 — the 12h scheduled witness
+    # verification runs in a source-only checkout (no `npm ci`, no
+    # `npm run build`). Before this fix, that environment exited 1
+    # (real verification failure) because `@noble/ed25519` wasn't
+    # installed and 87+ dist files referenced by the manifest didn't
+    # exist on disk — so the scheduled runner filed a "verification
+    # broken" issue every 12 hours even though nothing was actually
+    # wrong with the signed manifest.
+    #
+    # verify.mjs now reserves exit 2 for precondition failures
+    # (missing dep, source-only checkout) and exit 1 strictly for real
+    # failures (signature invalid, dist file regressed). This smoke
+    # drives both shapes through and asserts the contract holds:
+    #   - missing @noble/ed25519     → exit 2 + named in the error
+    #   - all-manifest-files missing → exit 2 + precondition tag
+    #   - built tree                 → exit is NEVER 2
+    #
+    # Independent job so a precondition contract break is named clearly
+    # in the CI summary. Wired into witness-verify's `needs:` below.
+    name: witness verify precondition smoke (#1880)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install root dependencies (provides @noble/ed25519 for Case 3)
+        run: npm ci --legacy-peer-deps
+
+      - name: Drive precondition + built-tree shapes through verify.mjs
+        shell: bash
+        run: node scripts/smoke-witness-verify-precondition.mjs
+
+  kg-extract-type-imports-smoke:
+    # Regression guard for ruvnet/ruflo#2049 — `kg-extract` previously
+    # treated TypeScript `import type` and value imports as the same edge
+    # type, producing phantom runtime cycles in the knowledge graph (a
+    # 51-service codebase reported a non-existent `findings ⇄ finding-actions`
+    # cycle driven entirely by a one-way type-only import).
+    #
+    # This smoke runs two layers:
+    #   1. Static contract check on plugins/ruflo-knowledge-graph/skills/{kg-extract,kg-traverse}/SKILL.md
+    #      — assert kg-extract declares `type-depends-on` as a separate relation
+    #        with weight ≤ 0.1, and that neither skill references the
+    #        compiled-out `agentdb_semantic-route` controller.
+    #   2. Behavioural fixture: write a tiny TS scenario with one type-only
+    #      cycle + one value-import edge to /tmp, run the documented regex
+    #      classifier, and assert the cycle is NOT counted as a value edge.
+    #
+    # If a future PR softens either layer (re-introduces semantic-route in
+    # allowed-tools, drops the type-depends-on relation, or weakens the
+    # regex), this smoke catches it.
+    name: kg-extract type-import classification smoke (#2049)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run kg-extract type-import smoke
+        run: node scripts/smoke-kg-extract-type-imports.mjs
+
+  neural-trader-portfolio-cg-smoke:
+    # Regression guard for ruvnet/ruflo#2068 — ADR-126 Phase 3.
+    #
+    # Phase 3 wires the Conjugate-Gradient portfolio path that ADR-123
+    # Wedge 8 promises a 40-60× speedup over the legacy Neumann series.
+    # The contract is load-bearing on three artifacts that must stay
+    # in lockstep:
+    #   1. `src/sublinear-adapter.ts` — the typed adapter shape
+    #      (SublinearAdapter, solveCG, isMcpAvailable, SolveResult)
+    #      that conforms to ADR-123 §262-289.
+    #   2. `src/sublinear-adapter.mjs` — the runtime mirror that the
+    #      smoke + bench import directly (the plugin has no build step).
+    #   3. `skills/trader-portfolio-cg/SKILL.md` — frontmatter must
+    #      declare `mcp__ruflo-sublinear__solve` in allowed-tools and
+    #      write to the canonical `trading-risk` namespace.
+    #
+    # The smoke runs three layers:
+    #   [1/3] STATIC ADAPTER CONTRACT — class shape, method signatures,
+    #         SolveResult fields, MCP tool name, symmetric-input validation.
+    #   [2/3] STATIC SKILL CONTRACT — frontmatter, allowed-tools, namespace,
+    #         disable-flag documentation, Neumann fallback path.
+    #   [3/3] RUNTIME CORRECTNESS — solves the textbook 2×2 SPD case
+    #         A=[[4,1],[1,3]], b=[1,2] → x=[1/11, 7/11] within 1e-6, and
+    #         exercises the degraded paths (non-square, non-symmetric).
+    #
+    # If a future PR drops solveCG, removes the MCP tool from allowed-tools,
+    # changes the namespace, or breaks the local CG kernel, this smoke
+    # catches it before merge.
+    name: neural-trader portfolio CG smoke (#2068, ADR-126 Phase 3)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run portfolio CG smoke
+        run: node scripts/smoke-neural-trader-portfolio-cg.mjs
+
+  neural-trader-backtest-signing-smoke:
+    # Regression guard for ruvnet/ruflo#2068 — ADR-126 Phase 4.
+    #
+    # Phase 4 wires Ed25519-signed backtest artifacts so the paper→live
+    # promotion gate has cryptographic tamper evidence. The signing scheme
+    # mirrors the CWE-347 plugin-registry pattern (#1922): canonical body
+    # = JSON.stringify without signature fields; verifier pins to a
+    # caller-supplied `trustedPublicKey`, NOT to the served self-asserted
+    # `witnessPublicKey` field (which an attacker can swap freely).
+    #
+    # Three load-bearing artifacts must stay in lockstep:
+    #   1. `src/signed-artifact.ts` — the typed signer/verifier contract.
+    #   2. `src/signed-artifact.mjs` — the runtime mirror imported by the
+    #      smoke + (future) skill harnesses (the plugin has no build step).
+    #   3. `skills/trader-backtest/SKILL.md` + `skills/trader-cloud-backtest/SKILL.md`
+    #      — the call sites that sign before store + verify before promote.
+    #
+    # The smoke runs three layers:
+    #   [1/3] STATIC CONTRACT — verifier pins to trustedPublicKey (NOT to
+    #         artifact.witnessPublicKey), canonical body strips BOTH
+    #         signature fields, .ts and .mjs runtime mirrors agree.
+    #   [2/3] CRYPTO ROUND-TRIP with real Ed25519 — happy path, tampered
+    #         body fails, empty sig/pubkey fails, swapped served pubkey
+    #         still verifies (pin is real), wrong trusted pubkey fails.
+    #   [3/3] CALL-SITE BYTE check — trader-cloud-backtest/SKILL.md calls
+    #         verifyBacktestArtifact AND documents the fail-closed branch;
+    #         trader-backtest/SKILL.md references the signer + degraded
+    #         warning + RUFLO_WITNESS_KEY_PATH env var.
+    #
+    # If a future PR drops the verify call, reverts to pinning the served
+    # field, or removes the fail-closed branch, this smoke catches it
+    # before merge.
+    name: neural-trader backtest signing smoke (#2068, ADR-126 Phase 4)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install root deps (for @noble/ed25519)
+        run: npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
+
+      - name: Run backtest signing smoke
+        run: node scripts/smoke-neural-trader-backtest-signing.mjs
+
+  neural-trader-pipeline-smoke:
+    # Regression guard for ruvnet/ruflo#2068 — ADR-126 Phase 5.
+    #
+    # Phase 5 refactors the four neural-trader agents (market-analyst,
+    # trading-strategist, risk-analyst, backtest-engineer) into a typed
+    # SendMessage pipeline with risk-analyst as a structural BLOCKING
+    # GATE. The live broker call (`npx neural-trader --broker <name>`)
+    # cannot fire without an explicit RiskDecision approval event from
+    # risk-analyst for the proposal's signalId.
+    #
+    # Six load-bearing artifacts must stay in lockstep:
+    #   1. `src/pipeline-messages.ts` — the three TypeScript message
+    #      schemas (RegimeVerdict, SignalProposal, RiskDecision) +
+    #      PipelineMessage discriminated union.
+    #   2-5. `agents/{market-analyst,trading-strategist,risk-analyst,backtest-engineer}.md`
+    #      — frontmatter `name:` fields + Comms protocol sections with
+    #      the correct upstream/downstream wiring.
+    #   6. `trading-strategist.md` — the structural risk-gate guard at
+    #      step 5 of the Strategy Development Workflow that refuses
+    #      `--broker` calls without a risk-analyst approval.
+    #
+    # The smoke runs four layers:
+    #   [1/4] AGENT FRONTMATTER — each .md declares `name: <agent>` so
+    #         the agent is SendMessage-addressable.
+    #   [2/4] COMMS PROTOCOL — each .md has a "Comms protocol" section
+    #         with the correct upstream/downstream references; backtest-
+    #         engineer documents its orthogonal-lane status.
+    #   [3/4] STRUCTURAL RISK-GATE — trading-strategist.md contains
+    #         explicit refusal logic: mentions `--broker`, requires
+    #         RiskDecision approval, declares REFUSAL, emits [ERROR],
+    #         marks the gate as NON-NEGOTIABLE/structural.
+    #   [4/4] BEHAVIORAL MOCK — drives a mock pipeline through a guard
+    #         function that mirrors the trading-strategist guard. Happy
+    #         path approves and executes; missing approval / rejected
+    #         decision / mismatched signalId are ALL refused.
+    #
+    # If a future PR drops the guard, removes a `name` field, breaks
+    # the pipeline-messages schema, or rewrites a comms section without
+    # the upstream/downstream wiring, this smoke catches it before merge.
+    name: neural-trader pipeline risk-gate smoke (#2068, ADR-126 Phase 5)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run pipeline risk-gate smoke
+        run: node scripts/smoke-neural-trader-pipeline.mjs
+
+  neural-trader-feature-attribution-smoke:
+    # Regression guard for ruvnet/ruflo#2068 — ADR-126 Phase 6.
+    #
+    # Phase 6 ships regulator-grade feature attribution for LSTM /
+    # Transformer trading signals. Given a `signalId`, the `trader-explain`
+    # skill builds a feature-contribution graph, runs single-entry forward-
+    # push PageRank from the signal output node (via
+    # `mcp__ruflo-sublinear__page-rank-entry` when registered, local seeded
+    # power-iteration fallback otherwise), and stores the top-K ranked
+    # features as a `SignedAttributionArtifact` (the Phase 4 signing
+    # scheme — same Ed25519 + CWE-347 trusted-pin pattern).
+    #
+    # Three load-bearing artifacts must stay in lockstep:
+    #   1. `src/signed-attribution.ts` — the typed signer/verifier/PR
+    #      contract.
+    #   2. `src/signed-attribution.mjs` — the runtime mirror imported by
+    #      the smoke + skill harnesses (zero build step).
+    #   3. `skills/trader-explain/SKILL.md` — the call site that builds
+    #      the graph + signs the result + persists to `trading-analysis`.
+    #
+    # The smoke runs three layers:
+    #   [1/3] STATIC CONTRACT — TS/MJS export shape, verifier pins to
+    #         trustedPublicKey (CWE-347), graphMetadata.seed is part of
+    #         the typed shape, skill writes to `trading-analysis`, skill
+    #         documents the local fallback + the --explain fallback.
+    #   [2/3] CRYPTO ROUND-TRIP — Ed25519 signing fixture, tampered
+    #         feature score fails, tampered seed fails (seed is signed-in),
+    #         swapped served pubkey still verifies (pin is real).
+    #   [3/3] REPRODUCIBILITY — same seed → byte-identical PageRank
+    #         scores + identical top-K ordering. Different seed → scores
+    #         differ (proves the seed is load-bearing, not dead weight).
+    #         Mass conservation: scores sum to ~1.
+    #
+    # If a future PR breaks any of these properties — drops the verify
+    # call, removes the seed from graphMetadata, reverts the seeded
+    # initializer, drops the local fallback, or rewrites the skill
+    # without the `trading-analysis` namespace — this smoke catches it
+    # before merge.
+    name: neural-trader feature attribution smoke (#2068, ADR-126 Phase 6)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install root deps (for @noble/ed25519)
+        run: npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
+
+      - name: Run feature attribution smoke
+        run: node scripts/smoke-neural-trader-feature-attribution.mjs
+
+  plugin-registry-signature-smoke:
+    # Regression guard for ruvnet/ruflo#1922 (CWE-347 — improper verification
+    # of cryptographic signature). The plugin-registry signature verifier in
+    # v3/@claude-flow/cli/src/plugins/store/discovery.ts used to be a stub
+    # that returned `true` whenever the served `registryPublicKey` field
+    # started with `"ed25519"`. The call site only `console.warn`ed on
+    # failure and continued. With `requireVerification: true` (the default),
+    # a network adversary on the path to an IPFS gateway could swap the
+    # served registry and have a user install attacker-controlled plugin
+    # tarballs with filesystem+network+hooks permissions.
+    #
+    # This smoke runs three layers:
+    #   1. Static contract check on discovery.ts — must import
+    #      `verifyEd25519Signature`, must strip both signature fields before
+    #      stringifying, must pin to caller-supplied `expectedPublicKey`
+    #      (not the served `registryPublicKey`), call site must `await` +
+    #      fail-closed.
+    #   2. Crypto round-trip with real Ed25519, matching the signRegistry()
+    #      scheme in scripts/publish-registry.ts — valid signature passes,
+    #      tampered body fails, empty fields fail, swapped served key
+    #      doesn't defeat the trusted pin.
+    #   3. Call-site byte check — the `requireVerification` block must
+    #      `await` the verifier AND `return` on failure (not just warn).
+    #
+    # If a future PR reverts to prefix-matching, drops the await, or
+    # silently warns, this smoke catches it before merge.
+    name: plugin-registry signature verification smoke (#1922, CWE-347)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install root deps (for @noble/ed25519)
+        run: npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
+
+      - name: Run plugin-registry signature smoke
+        run: node scripts/smoke-plugin-registry-signature.mjs
+
+  ruvllm-wasm-auto-init-smoke:
+    # Regression guard for ruvnet/ruflo#2086 — ruvllm WASM bootstrap not
+    # exposed via MCP. Reporter: @seo-yas. Every `ruvllm_*` MCP tool that
+    # touches the WASM runtime calls `loadRuvllmWasm()` in
+    # `v3/@claude-flow/cli/src/mcp-tools/ruvllm-tools.ts`. That helper used
+    # to just `import(...)` the module and never call `initRuvllmWasm()`,
+    # leaving `_wasmReady=false`. Result: `ruvllm_status` reported
+    # `wasm.initialized=false` even after `ruvllm_sona_create` and
+    # downstream sona/microlora/hnsw operations silently failed or
+    # returned empty results.
+    #
+    # The fix wires `initRuvllmWasm()` into `loadRuvllmWasm()` (it's
+    # idempotent — `_wasmReady` short-circuits subsequent calls).
+    # `ruvllm_status` keeps a separate un-init `loadRuvllmWasmModule()`
+    # path so diagnostics still report uninitialized state without
+    # eagerly bootstrapping.
+    #
+    # This smoke statically asserts:
+    #   1. `loadRuvllmWasm()` awaits `mod.initRuvllmWasm()`.
+    #   2. `loadRuvllmWasmModule()` exists and does NOT init.
+    #   3. `ruvllm_status` handler uses the un-init loader.
+    #   4. Every WASM-touching ruvllm_* tool either routes through
+    #      `loadRuvllmWasm()` or looks up a pre-initialized instance.
+    #   5. No new ruvllm_* tools have been added that bypass the gate.
+    name: ruvllm WASM auto-init smoke (#2086)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run ruvllm WASM auto-init smoke
+        run: node scripts/smoke-ruvllm-wasm-auto-init.mjs
+
+  agent-execute-providers-smoke:
+    # Regression guard for ruvnet/ruflo#2042 — agent_execute hardcoded
+    # the Anthropic SDK and ignored the v3 provider system. Reporter:
+    # @ummcke00. Fix routes executeAgentTask through callAnthropicMessages
+    # which dispatches Anthropic / OpenRouter / Ollama by env var.
+    name: agent_execute provider routing smoke (#2042)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run agent_execute providers smoke
+        run: node scripts/smoke-agent-execute-providers.mjs
+
+  github-safe-injection-smoke:
+    # Regression guard for ruvnet/ruflo#2089 — ADR-127 Phase 1.
+    #
+    # Drives adversarial PR/issue bodies (backticks, $(), semicolons,
+    # >256KB, empty) through github-safe.js and asserts the body lands in a
+    # temp file verbatim rather than being passed inline to `gh`.  Inline
+    # interpolation of untrusted body content into shell arguments is the
+    # prompt-injection vector closed by the swarm-pr.md / swarm-issue.md
+    # fix in Phase 2.  This smoke ensures github-safe.js itself always writes
+    # the temp file and passes --body-file rather than --body.
+    #
+    # Runs against both copies:
+    #   - .claude/helpers/github-safe.js           (dogfood)
+    #   - v3/@claude-flow/cli/.claude/helpers/      (init-template)
+    name: github-safe injection smoke (#2089, ADR-127 Phase 1)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run github-safe injection smoke
+        run: node scripts/smoke-github-safe-injection.mjs
+
+  github-actions-pins-smoke:
+    # Static contract guard for ruvnet/ruflo#2089 — ADR-127 Phase 1.
+    #
+    # Scans every `uses:` line in:
+    #   .claude/agents/github/*.md
+    #   .claude/skills/github-[name]/SKILL.md
+    #   v3/@claude-flow/cli/.claude/commands/github/[name].md
+    #
+    # Asserts each ref is either SHA-pinned (40-hex) or present in
+    # .github/supply-chain/allowed-deps.json actions.allowed[].
+    #
+    # This smoke catches any future commit that copies @v3 snippets from
+    # blog posts into the skill files — the most common doc-drift pattern.
+    # Phase 3 upgrades all @v3 refs to @v4; this smoke is the regression
+    # gate that prevents them from drifting back.
+    name: github actions pin smoke (#2089, ADR-127 Phase 1)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run github actions pin smoke
+        run: node scripts/smoke-github-actions-pins.mjs
+
+  github-deprecated-actions-smoke:
+    # Regression guard for ruvnet/ruflo#2089 — ADR-127 Phase 3.
+    #
+    # Scans every `uses:` line in the same scope as the pins smoke and
+    # fails if any deprecated action ref is still present:
+    #   - actions/checkout@v3           (v4 available since Nov 2023)
+    #   - actions/setup-node@v3         (v4 available since Nov 2023)
+    #   - actions/create-release@*      (deprecated; replaced by gh CLI)
+    #   - actions/upload-release-asset@* (deprecated; replaced by gh CLI)
+    #   - softprops/action-gh-release@v1 (v1 has known CVEs; use @v2)
+    #
+    # Phase 3 bumps all @v3 refs to @v4.  This smoke is the regression gate
+    # that prevents them from drifting back via copy-paste from blog posts
+    # or AI-generated snippets that still reference the old versions.
+    name: github deprecated actions smoke (#2089, ADR-127 Phase 3)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run deprecated-actions smoke
+        run: node scripts/smoke-deprecated-actions.mjs
+
+  github-attribution-opt-in-smoke:
+    # Regression guard for ruvnet/ruflo#2089 — ADR-127 Phase 4.
+    #
+    # Phase 4 removes hardcoded "Generated with Claude Code" attribution
+    # strings from the static github command templates. Attribution is now
+    # opt-in via --attribution / options.attribution=true (#1670 / #2089).
+    # Hard-wired footers silently added a third-party Co-Authored-By line
+    # to every user's commits and were impossible to undo without rewriting
+    # git history.
+    #
+    # This smoke scans the same three trees as the pins smoke and fails if
+    # the "Generated with" emoji pattern reappears — preventing copy-paste
+    # regression from blog posts or AI-generated snippets.
+    name: github attribution opt-in smoke (#2089, ADR-127 Phase 4)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run attribution opt-in smoke
+        run: node scripts/smoke-attribution-opt-in.mjs
+
+  pre-bash-hook-smoke:
+    # Regression guard for ruvnet/ruflo#2017 — the `pre-bash` PreToolUse hook
+    # in `.claude/helpers/hook-handler.cjs` is a security gate that refuses to
+    # run dangerous commands (`rm -rf /`, fork bombs, etc.). In 3.6.30 it
+    # silently exited 0 on every dangerous payload because the handler read
+    # the wrong stdin field (`toolInput` object instead of
+    # `toolInput.command` string), `.toLowerCase()` threw TypeError, and the
+    # global safety-timer try/catch swallowed it — printing a misleading
+    # "[OK] Command validated" while letting the dangerous command through.
+    #
+    # This smoke drives real Claude-Code-shaped PreToolUse JSON into BOTH
+    # the published template (v3/@claude-flow/cli/.claude/helpers/) and the
+    # repo's dogfood copy (.claude/helpers/), and fails on any of:
+    #   - dangerous command + exit 0  (the security bypass)
+    #   - "[OK] Command validated" on a dangerous input (the misleading log)
+    #   - "[WARN] Hook X encountered an error" anywhere (silent-swallow shape)
+    #
+    # Independent job (not nested in plugin-hooks-smoke) so the gate is
+    # individually visible and the CI summary names the failure clearly.
+    name: pre-bash hook safety smoke (#2017)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Drive Claude-Code-shaped PreToolUse JSON through both handler copies
+        shell: bash
+        run: node scripts/smoke-pre-bash-hook.mjs
 
   mcp-protocol-smoke:
     # Regression guard for ruvnet/ruflo#1874 — boots the HTTP MCP server,

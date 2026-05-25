@@ -95,9 +95,27 @@ export async function callAnthropicMessages(input: AnthropicCallInput): Promise<
   const explicitProvider = (process.env.RUFLO_PROVIDER || '').toLowerCase();
   const ollamaKey = process.env.OLLAMA_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  // #2042 — OpenRouter is an OpenAI-compat endpoint that fronts dozens of
+  // providers. Reporter (@ummcke00) had `providers.openrouter.apiKey` in
+  // their config.yaml but agent_execute hardcoded Anthropic. Detect via
+  // explicit RUFLO_PROVIDER=openrouter OR presence of OPENROUTER_API_KEY
+  // when no Anthropic key is available (same precedence as the Ollama
+  // branch above).
+  const openrouterKey = process.env.OPENROUTER_API_KEY;
+  const useOpenRouter =
+    explicitProvider === 'openrouter' || (!anthropicKey && !!openrouterKey);
   const useOllama =
-    explicitProvider === 'ollama' || (!anthropicKey && !!ollamaKey);
+    explicitProvider === 'ollama' || (!anthropicKey && !!ollamaKey && !openrouterKey);
 
+  if (useOpenRouter && openrouterKey) {
+    return callOpenAICompat({
+      ...input,
+      apiKey: openrouterKey,
+      baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api',
+      providerLabel: 'openrouter',
+      defaultModel: process.env.OPENROUTER_DEFAULT_MODEL || 'anthropic/claude-3.5-sonnet',
+    });
+  }
   if (useOllama && ollamaKey) {
     return callOllamaCompat({ ...input, apiKey: ollamaKey });
   }
@@ -105,7 +123,7 @@ export async function callAnthropicMessages(input: AnthropicCallInput): Promise<
     return {
       success: false,
       error:
-        'No LLM provider configured. Set ANTHROPIC_API_KEY (Tier-3) or OLLAMA_API_KEY (Tier-2 Ollama Cloud — see issue #1725).',
+        'No LLM provider configured. Set ANTHROPIC_API_KEY (Tier-3), OPENROUTER_API_KEY (#2042), or OLLAMA_API_KEY (Tier-2 — #1725).',
     };
   }
   const model = input.model || 'claude-3-5-sonnet-latest';
@@ -260,6 +278,96 @@ async function callOllamaCompat(
   }
 }
 
+/**
+ * Generic OpenAI-compat caller for OpenRouter and other OpenAI-shaped
+ * endpoints. #2042 — reporter (@ummcke00) configured OpenRouter via
+ * config.yaml but agent_execute hardcoded the Anthropic fetch. This is
+ * the same shape as `callOllamaCompat` but routes to a configurable
+ * baseUrl + sends an OpenRouter-friendly default model when none is
+ * specified. Logical model names (haiku/sonnet/opus) pass through —
+ * OpenRouter accepts vendor-prefixed names like `anthropic/claude-3.5-sonnet`.
+ */
+async function callOpenAICompat(
+  input: AnthropicCallInput & {
+    apiKey: string;
+    baseUrl: string;
+    providerLabel: string;
+    defaultModel: string;
+  },
+): Promise<AnthropicCallResult> {
+  const model = resolveOpenAICompatModel(input.model, input.defaultModel);
+  const startedAt = Date.now();
+  const base = input.baseUrl.replace(/\/+$/, '');
+  const url = `${base}/v1/chat/completions`;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), input.timeoutMs || 60000);
+    const messages: Array<{ role: string; content: string }> = [];
+    if (input.systemPrompt) messages.push({ role: 'system', content: input.systemPrompt });
+    messages.push({ role: 'user', content: input.prompt });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        'content-type': 'application/json',
+        // OpenRouter convention: identify the integrating app for analytics
+        // and rate-limit tiering. Harmless on other OpenAI-compat backends.
+        'HTTP-Referer': 'https://github.com/ruvnet/ruflo',
+        'X-Title': 'Ruflo',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: input.maxTokens || 1024,
+        temperature: typeof input.temperature === 'number' ? input.temperature : 0.7,
+        messages,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '<unreadable error body>');
+      return { success: false, model, error: `${input.providerLabel} API error ${res.status}: ${errText.slice(0, 400)}` };
+    }
+    const data = await res.json() as {
+      id?: string;
+      model?: string;
+      choices: Array<{ message: { content: string }; finish_reason?: string }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    const textOut = data.choices?.[0]?.message?.content ?? '';
+    const usage = data.usage ?? {};
+    return {
+      success: true,
+      model: data.model || model,
+      messageId: data.id,
+      stopReason: data.choices?.[0]?.finish_reason ?? 'end_turn',
+      output: textOut,
+      usage: {
+        inputTokens: usage.prompt_tokens ?? 0,
+        outputTokens: usage.completion_tokens ?? 0,
+        totalTokens: usage.total_tokens ?? 0,
+      },
+      durationMs: Date.now() - startedAt,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      model,
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - startedAt,
+    };
+  }
+}
+
+function resolveOpenAICompatModel(input: string | undefined, fallback: string): string {
+  if (!input) return fallback;
+  // Logical Claude names → OpenRouter Anthropic-vendored names
+  if (input === 'haiku') return 'anthropic/claude-3.5-haiku';
+  if (input === 'sonnet' || input === 'inherit') return 'anthropic/claude-3.5-sonnet';
+  if (input === 'opus') return 'anthropic/claude-3-opus';
+  return input;
+}
+
 function resolveOllamaModel(input: string | undefined): string {
   const DEFAULT = 'gpt-oss:120b-cloud';
   if (!input) return DEFAULT;
@@ -309,16 +417,6 @@ export interface AgentExecuteResult {
 }
 
 export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentExecuteResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return {
-      success: false,
-      agentId: input.agentId,
-      error: 'ANTHROPIC_API_KEY not set in environment',
-      remediation: 'Set the env var and re-run. The key is read at call time.',
-    };
-  }
-
   // ADR-0181 Phase C (2026-05-18): three saveAgentStore() raw fs writes
   // (pre-LLM busy reservation, post-success idle release, post-error idle
   // release) now flip through archivist.dispatch('agent_execute', ...) for
@@ -329,6 +427,12 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
   // for this; mirroring the same pre-check pattern here keeps the
   // "Agent not found" / "Agent has been terminated" envelopes returning
   // before any dispatch overhead).
+  //
+  // #2042 (2026-05-21): the apiKey / ANTHROPIC_API_KEY early-return that
+  // used to live here was removed so executeAgentTask delegates to
+  // callAnthropicMessages, which dispatches to Anthropic / OpenRouter /
+  // Ollama based on env vars and config.yaml. The "no provider
+  // configured" envelope is now surfaced from the router's reply.
   const store = loadAgentStore();
   const agent = store.agents[input.agentId];
   if (!agent) return { success: false, agentId: input.agentId, error: 'Agent not found' };
@@ -353,74 +457,31 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
 
   const startedAt = Date.now();
 
-  try {
-    const controller = new AbortController();
-    const timeoutMs = input.timeoutMs || 60000;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // #2042 — delegate to callAnthropicMessages so the v3 provider router
+  // (Anthropic / Ollama / OpenRouter) governs which backend is hit. The
+  // previous inline `fetch('https://api.anthropic.com/...')` bypassed
+  // the router entirely and forced an ANTHROPIC_API_KEY error for every
+  // non-Anthropic deployment. Reporter (@ummcke00) had OpenRouter
+  // configured but the bypass made the agent unreachable.
+  const result = await callAnthropicMessages({
+    model: anthropicModel,
+    prompt: input.prompt,
+    systemPrompt,
+    maxTokens: input.maxTokens,
+    temperature: input.temperature,
+    timeoutMs: input.timeoutMs,
+  });
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: anthropicModel,
-        max_tokens: input.maxTokens || 1024,
-        temperature: typeof input.temperature === 'number' ? input.temperature : 0.7,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: input.prompt }],
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '<unreadable error body>');
-      // Post-LLM idle release (non-OK status) — second audit-traced mutation.
-      // taskCountDelta omitted (defaults to 0); count was already bumped at
-      // reservation. lastResult also omitted on error path — preserves the
-      // previous successful result so a transient API failure doesn't
-      // erase the last good output.
-      await archivist.dispatch('agent_execute', {
-        agentId: input.agentId,
-        status: 'idle',
-      });
-      return {
-        success: false,
-        agentId: input.agentId,
-        model: anthropicModel,
-        error: `Anthropic API error ${res.status}: ${errText.slice(0, 400)}`,
-      };
-    }
-
-    const data = await res.json() as {
-      id: string;
-      model: string;
-      content: Array<{ type: string; text?: string }>;
-      stop_reason: string;
-      usage: { input_tokens: number; output_tokens: number };
-    };
-
-    const textOut = data.content
-      .filter(c => c.type === 'text' && typeof c.text === 'string')
-      .map(c => c.text as string)
-      .join('');
-
-    const result: AgentExecuteResult = {
+  if (result.success) {
+    const out: AgentExecuteResult = {
       success: true,
       agentId: input.agentId,
-      messageId: data.id,
-      model: data.model,
-      stopReason: data.stop_reason,
-      output: textOut,
-      usage: {
-        inputTokens: data.usage.input_tokens,
-        outputTokens: data.usage.output_tokens,
-        totalTokens: data.usage.input_tokens + data.usage.output_tokens,
-      },
-      durationMs: Date.now() - startedAt,
+      messageId: result.messageId,
+      model: result.model,
+      stopReason: result.stopReason,
+      output: result.output,
+      usage: result.usage,
+      durationMs: result.durationMs ?? Date.now() - startedAt,
     };
 
     // Post-LLM idle release (success) — second audit-traced mutation.
@@ -428,24 +489,36 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
     await archivist.dispatch('agent_execute', {
       agentId: input.agentId,
       status: 'idle',
-      lastResult: result as unknown as Record<string, unknown>,
+      lastResult: out as unknown as Record<string, unknown>,
     });
 
-    return result;
-  } catch (err) {
-    // Post-LLM idle release (exception path) — second audit-traced mutation.
-    // lastResult omitted; preserves prior successful output.
-    await archivist.dispatch('agent_execute', {
-      agentId: input.agentId,
-      status: 'idle',
-    });
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      success: false,
-      agentId: input.agentId,
-      model: anthropicModel,
-      error: `agent_execute failed: ${msg}`,
-      durationMs: Date.now() - startedAt,
-    };
+    return out;
   }
+
+  // Post-LLM idle release (failure path) — second audit-traced mutation.
+  // taskCountDelta omitted (defaults to 0); count was already bumped at
+  // reservation. lastResult also omitted on error path — preserves the
+  // previous successful result so a transient API failure doesn't
+  // erase the last good output.
+  await archivist.dispatch('agent_execute', {
+    agentId: input.agentId,
+    status: 'idle',
+  });
+
+  // No-provider-configured error → surface the same actionable message
+  // the router built, with a #2042-aware remediation pointer.
+  const noProvider = (result.error || '').includes('No LLM provider configured');
+  return {
+    success: false,
+    agentId: input.agentId,
+    model: anthropicModel,
+    error: result.error || 'agent_execute failed',
+    durationMs: result.durationMs ?? Date.now() - startedAt,
+    ...(noProvider && {
+      remediation:
+        'Set one of ANTHROPIC_API_KEY, OPENROUTER_API_KEY (+ optional OPENROUTER_BASE_URL), or OLLAMA_API_KEY. ' +
+        'Or set RUFLO_PROVIDER=openrouter|ollama to force a specific provider.',
+    }),
+  };
 }
+
