@@ -106,6 +106,15 @@ on:
       - 'plugins/*/skills/**'
       - 'plugins/*/commands/**'
       - 'scripts/smoke-init-bundle-invariants.mjs'
+      # wasm plugin-bridge smoke (ADR-129 Phase 4, ADR-0256 Option A) — guards
+      # loadPluginManifest/extractPluginSkills helpers in wasm-agent-tools.ts.
+      # Helpers are exported for Phase 2 (wasm_agent_compose) consumption;
+      # smoke runs 5 PASS + 2 SKIP under Option A (the 2 SKIPs flip to PASS
+      # when Phase 2 lands and adds includePlugins to wasm_agent_compose).
+      # NOTE: this paths trigger may be extended further by B-3 in a
+      # subsequent commit — preserve the existing entries on edit.
+      - 'v3/@claude-flow/cli/src/mcp-tools/wasm-agent-tools.ts'
+      - 'scripts/smoke-wasm-plugin-bridge.mjs'
   pull_request:
     branches: [main]
     paths:
@@ -182,6 +191,11 @@ on:
       - 'plugins/*/skills/**'
       - 'plugins/*/commands/**'
       - 'scripts/smoke-init-bundle-invariants.mjs'
+      # wasm plugin-bridge smoke (ADR-129 Phase 4, ADR-0256 Option A)
+      # See push.paths above for the full rationale. NOTE: B-3 may extend
+      # this list further — preserve the existing entries on edit.
+      - 'v3/@claude-flow/cli/src/mcp-tools/wasm-agent-tools.ts'
+      - 'scripts/smoke-wasm-plugin-bridge.mjs'
       # witness manifests / fix list — so witness-verify runs on PRs that
       # touch them (otherwise a stale per-OS manifest only fails post-merge).
       - 'verification/**'
@@ -1586,3 +1600,32 @@ jobs:
 
       - name: Run init-bundle invariants smoke
         run: node scripts/smoke-init-bundle-invariants.mjs
+
+  # ── ADR-129 Phase 4 plugin-bridge smoke (ADR-0256 Option A) ─────────────────
+  #
+  # Guards the `loadPluginManifest` + `extractPluginSkills` helpers in
+  # `wasm-agent-tools.ts`. Helpers are exported pure functions ready for
+  # Phase 2 (`wasm_agent_compose` `includePlugins` parameter) to consume.
+  # Under Option A the smoke runs 5 PASS + 2 SKIP — the 2 SKIPs are the
+  # Phase-2-dependent assertions and flip to PASS naturally when Phase 2
+  # lands per ADR-0254 Amendment 1.
+  #
+  # Zero runtime deps; pure Node.js readFileSync. No API keys needed.
+  #
+  # NOTE: B-3 (subsequent commit) may add adjacent jobs to this same file.
+  # Preserve the existing jobs on edit; merge clean by appending at the end.
+  wasm-plugin-bridge-smoke:
+    name: wasm plugin bridge smoke (ADR-129 P4, ADR-0256)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run wasm plugin bridge smoke
+        run: node scripts/smoke-wasm-plugin-bridge.mjs

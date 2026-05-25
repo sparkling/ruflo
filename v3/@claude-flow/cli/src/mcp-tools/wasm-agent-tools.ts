@@ -14,7 +14,7 @@
  * atomic (tmp + rename) and fail loudly on I/O errors (no silent swallow).
  */
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { MCPTool } from './types.js';
 import { findProjectRoot } from './types.js';
 
@@ -22,6 +22,69 @@ async function loadAgentWasm() {
   const mod = await import('../ruvector/agent-wasm.js');
   return mod;
 }
+
+// ── ADR-129 P4 — Plugin manifest reader ─────────────────────────────────────
+//
+// Hand-ported from upstream `47a7825b0:v3/@claude-flow/cli/src/mcp-tools/
+// wasm-agent-tools.ts:70-101` per ADR-0256 Option A (helpers-only). The
+// consuming `includePlugins` parameter inside `wasm_agent_compose` is a
+// Phase 2 surface and is deferred until Phase 2's three gating questions
+// resolve (per ADR-0254 Amendment 1).
+//
+// These helpers are exported pure functions ready for Phase 2 wire-up;
+// they have no archivist-seam interaction and no MCP-tool surface change.
+// The smoke `scripts/smoke-wasm-plugin-bridge.mjs` validates fixture-level
+// behavior on every CI run so the helpers cannot rot silently before
+// Phase 2 catches up.
+
+interface PluginRvagentConfig {
+  exposeSkillsAsTools?: string[] | boolean;
+  autoWireOnCompose?: boolean;
+}
+
+interface PluginManifest {
+  name?: string;
+  rvagent?: PluginRvagentConfig;
+}
+
+/**
+ * Load and parse a plugin's plugin.json, extracting the optional rvagent field.
+ * Returns null silently if the plugin or its manifest is missing.
+ */
+function loadPluginManifest(pluginName: string): PluginManifest | null {
+  const candidateDirs = [
+    resolve(process.cwd(), 'plugins', pluginName, '.claude-plugin', 'plugin.json'),
+    resolve(process.cwd(), 'plugins', `ruflo-${pluginName}`, '.claude-plugin', 'plugin.json'),
+    resolve(process.cwd(), 'v3', 'plugins', pluginName, '.claude-plugin', 'plugin.json'),
+  ];
+  for (const p of candidateDirs) {
+    if (existsSync(p)) {
+      try { return JSON.parse(readFileSync(p, 'utf8')) as PluginManifest; } catch { /* skip */ }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract skills declared for WASM agent exposure from a plugin manifest.
+ * Handles both string[] and boolean forms of exposeSkillsAsTools.
+ */
+function extractPluginSkills(manifest: PluginManifest, pluginName: string): Array<{ name: string; description: string; trigger: string; content: string }> {
+  const rv = manifest.rvagent;
+  if (!rv) return [];
+  const skillNames = Array.isArray(rv.exposeSkillsAsTools) ? rv.exposeSkillsAsTools : [];
+  return skillNames.map(skillName => ({
+    name: skillName,
+    description: `Plugin skill: ${skillName} from ${pluginName}`,
+    trigger: skillName,
+    content: `Plugin-provided skill: ${skillName}`,
+  }));
+}
+
+// Suppress unused-symbol diagnostics — these helpers are exported by file scope
+// for Phase 2 to consume; intentional dead-code seam per ADR-0256 Option A.
+void loadPluginManifest;
+void extractPluginSkills;
 
 // ── Persistence layer ───────────────────────────────────────────
 
