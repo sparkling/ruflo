@@ -4,8 +4,8 @@
  *
  * Created with ruv.io
  *
- * ADR-0244 site #10 (F-01-013): TOP_LEVEL_COMMANDS, SWARM_SUBCOMMANDS,
- * AGENT_SUBCOMMANDS (and the rest of the per-command subcommand lists)
+ * ADR-0244 site #10 (F-01-013): getTopLevelCommands(), getSwarmSubcommands(),
+ * getAgentSubcommands() (and the rest of the per-command subcommand lists)
  * are derived at generation time from the live command registry +
  * each command's `.subcommands` field. The previous hardcoded
  * literals contained subcommands that do not exist (swarm destroy,
@@ -37,16 +37,43 @@ function deriveSubcommands(parentName: string): string[] {
   return parent.subcommands.map((s) => s.name).sort();
 }
 
-// Derive at module-load time so the strings are baked into the
-// generated completion script. The values are read once per CLI
-// invocation; cost is negligible.
-const TOP_LEVEL_COMMANDS = deriveTopLevelCommands();
-const SWARM_SUBCOMMANDS = deriveSubcommands('swarm');
-const AGENT_SUBCOMMANDS = deriveSubcommands('agent');
-const TASK_SUBCOMMANDS = deriveSubcommands('task');
-const MEMORY_SUBCOMMANDS = deriveSubcommands('memory');
-const HIVE_MIND_SUBCOMMANDS = deriveSubcommands('hive-mind');
-const HOOKS_SUBCOMMANDS = deriveSubcommands('hooks');
+// Lazy-derive on first access (memoized). Originally derived at module-
+// load time per ADR-0244 site #10 (F-01-013), but that ran BEFORE the
+// circular import `./index.js` finished initializing `commandRegistry`,
+// causing `ReferenceError: Cannot access 'commandRegistry' before
+// initialization` whenever this module loaded (`cli init --full` path,
+// surfaced by post-Batch-5 full-release acceptance verification).
+//
+// Memoization preserves the "read once per CLI invocation" intent.
+let _topLevelCommands: string[] | null = null;
+let _swarmSubcommands: string[] | null = null;
+let _agentSubcommands: string[] | null = null;
+let _taskSubcommands: string[] | null = null;
+let _memorySubcommands: string[] | null = null;
+let _hiveMindSubcommands: string[] | null = null;
+let _hooksSubcommands: string[] | null = null;
+
+function getTopLevelCommands(): string[] {
+  return (_topLevelCommands ??= deriveTopLevelCommands());
+}
+function getSwarmSubcommands(): string[] {
+  return (_swarmSubcommands ??= deriveSubcommands('swarm'));
+}
+function getAgentSubcommands(): string[] {
+  return (_agentSubcommands ??= deriveSubcommands('agent'));
+}
+function getTaskSubcommands(): string[] {
+  return (_taskSubcommands ??= deriveSubcommands('task'));
+}
+function getMemorySubcommands(): string[] {
+  return (_memorySubcommands ??= deriveSubcommands('memory'));
+}
+function getHiveMindSubcommands(): string[] {
+  return (_hiveMindSubcommands ??= deriveSubcommands('hive-mind'));
+}
+function getHooksSubcommands(): string[] {
+  return (_hooksSubcommands ??= deriveSubcommands('hooks'));
+}
 
 // Generate bash completion script
 function generateBashCompletion(): string {
@@ -58,15 +85,15 @@ _claude_flow_completions() {
     local cur prev words cword
     _init_completion -n : || return
 
-    local commands="${TOP_LEVEL_COMMANDS.join(' ')}"
+    local commands="${getTopLevelCommands().join(' ')}"
 
     # Subcommand completions
-    local swarm_commands="${SWARM_SUBCOMMANDS.join(' ')}"
-    local agent_commands="${AGENT_SUBCOMMANDS.join(' ')}"
-    local task_commands="${TASK_SUBCOMMANDS.join(' ')}"
-    local memory_commands="${MEMORY_SUBCOMMANDS.join(' ')}"
-    local hive_mind_commands="${HIVE_MIND_SUBCOMMANDS.join(' ')}"
-    local hooks_commands="${HOOKS_SUBCOMMANDS.join(' ')}"
+    local swarm_commands="${getSwarmSubcommands().join(' ')}"
+    local agent_commands="${getAgentSubcommands().join(' ')}"
+    local task_commands="${getTaskSubcommands().join(' ')}"
+    local memory_commands="${getMemorySubcommands().join(' ')}"
+    local hive_mind_commands="${getHiveMindSubcommands().join(' ')}"
+    local hooks_commands="${getHooksSubcommands().join(' ')}"
 
     case "\${words[1]}" in
         swarm)
@@ -376,25 +403,25 @@ function generateFishCompletion(): string {
 complete -c claude-flow -f
 
 # Top-level commands
-${TOP_LEVEL_COMMANDS.map(cmd => `complete -c claude-flow -n "__fish_use_subcommand" -a "${cmd}"`).join('\n')}
+${getTopLevelCommands().map(cmd => `complete -c claude-flow -n "__fish_use_subcommand" -a "${cmd}"`).join('\n')}
 
 # Swarm subcommands
-${SWARM_SUBCOMMANDS.map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from swarm" -a "${sub}"`).join('\n')}
+${getSwarmSubcommands().map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from swarm" -a "${sub}"`).join('\n')}
 
 # Agent subcommands
-${AGENT_SUBCOMMANDS.map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from agent" -a "${sub}"`).join('\n')}
+${getAgentSubcommands().map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from agent" -a "${sub}"`).join('\n')}
 
 # Task subcommands
-${TASK_SUBCOMMANDS.map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from task" -a "${sub}"`).join('\n')}
+${getTaskSubcommands().map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from task" -a "${sub}"`).join('\n')}
 
 # Memory subcommands
-${MEMORY_SUBCOMMANDS.map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from memory" -a "${sub}"`).join('\n')}
+${getMemorySubcommands().map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from memory" -a "${sub}"`).join('\n')}
 
 # Hive-mind subcommands
-${HIVE_MIND_SUBCOMMANDS.map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from hive-mind hive" -a "${sub}"`).join('\n')}
+${getHiveMindSubcommands().map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from hive-mind hive" -a "${sub}"`).join('\n')}
 
 # Hooks subcommands
-${HOOKS_SUBCOMMANDS.map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from hooks" -a "${sub}"`).join('\n')}
+${getHooksSubcommands().map(sub => `complete -c claude-flow -n "__fish_seen_subcommand_from hooks" -a "${sub}"`).join('\n')}
 
 # Neural subcommands
 complete -c claude-flow -n "__fish_seen_subcommand_from neural" -a "train status patterns predict optimize"
@@ -432,17 +459,17 @@ function generatePowerShellCompletion(): string {
 # Add to $PROFILE or save to a separate file and dot-source it
 
 $script:ClaudeFlowCommands = @(
-    '${TOP_LEVEL_COMMANDS.join("',\n    '")}'
+    '${getTopLevelCommands().join("',\n    '")}'
 )
 
 $script:SubCommands = @{
-    'swarm' = @('${SWARM_SUBCOMMANDS.join("', '")}')
-    'agent' = @('${AGENT_SUBCOMMANDS.join("', '")}')
-    'task' = @('${TASK_SUBCOMMANDS.join("', '")}')
-    'memory' = @('${MEMORY_SUBCOMMANDS.join("', '")}')
-    'hive-mind' = @('${HIVE_MIND_SUBCOMMANDS.join("', '")}')
-    'hive' = @('${HIVE_MIND_SUBCOMMANDS.join("', '")}')
-    'hooks' = @('${HOOKS_SUBCOMMANDS.join("', '")}')
+    'swarm' = @('${getSwarmSubcommands().join("', '")}')
+    'agent' = @('${getAgentSubcommands().join("', '")}')
+    'task' = @('${getTaskSubcommands().join("', '")}')
+    'memory' = @('${getMemorySubcommands().join("', '")}')
+    'hive-mind' = @('${getHiveMindSubcommands().join("', '")}')
+    'hive' = @('${getHiveMindSubcommands().join("', '")}')
+    'hooks' = @('${getHooksSubcommands().join("', '")}')
     'neural' = @('train', 'status', 'patterns', 'predict', 'optimize')
     'security' = @('scan', 'cve', 'threats', 'audit', 'secrets')
     'performance' = @('benchmark', 'profile', 'metrics', 'optimize', 'bottleneck')
