@@ -481,20 +481,15 @@ function generateHooksConfig(config: HooksConfig): object {
     ];
   }
 
-  // Stop — sync auto memory on exit
-  if (config.stop) {
-    hooks.Stop = [
-      {
-        hooks: [
-          {
-            type: 'command',
-            command: autoMemoryCmd('sync'),
-            timeout: 10000,
-          },
-        ],
-      },
-    ];
-  }
+  // Stop — intentionally NOT wired. ADR-0083 Wave 2 removed the `sync`
+  // subcommand + doSync() drain from auto-memory-hook.mjs because the router
+  // writes to RVF directly; there is no JSON buffer to drain on exit. The
+  // previous Stop hook (`autoMemoryCmd('sync')`) survived the script change
+  // and was emitting a broken `auto-memory-hook.mjs sync` invocation that the
+  // helper rejects with Usage: <import|status>. Removed entirely rather than
+  // repointed to `status` (which prints a banner on every Claude Code Stop —
+  // user-visible noise). `config.stop` retained in InitHookConfig in case a
+  // future ADR re-wires Stop to a real exit-time action.
 
   // PreCompact — preserve context before compaction
   if (config.preCompact) {
