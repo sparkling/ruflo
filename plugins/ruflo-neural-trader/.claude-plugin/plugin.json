@@ -1,7 +1,7 @@
 {
   "name": "ruflo-neural-trader",
   "description": "Neural-trading workflow scaffolds — 6 skills (backtest/portfolio/regime/risk/signal/train) wrap the external `npx neural-trader` CLI; result-storage and pattern recall via mcp__ruflo__memory_*, neural_train/predict, and agentdb_pattern-* (this plugin does NOT expose neural-trader's CLI tools as MCP-callable)",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "author": {
     "name": "ruvnet",
     "url": "https://github.com/ruvnet"
