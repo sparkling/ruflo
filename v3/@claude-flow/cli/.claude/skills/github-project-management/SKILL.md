@@ -2,7 +2,7 @@
 name: github-project-management
 description: |
   Comprehensive GitHub project management with swarm-coordinated issue tracking, project board automation, and sprint planning
-allowed-tools: "mcp__github__*, mcp__claude-flow__*, Bash, Read, Write, TodoWrite"
+allowed-tools: "mcp__github__*, mcp__ruflo__*, Bash, Read, Write, TodoWrite"
 ---
 
 # GitHub Project Management
@@ -65,10 +65,10 @@ npx ruv-swarm github board-init \
 
 ```javascript
 // Initialize issue management swarm
-mcp__claude-flow__swarm_init { topology: "star", maxAgents: 3 }
-mcp__claude-flow__agent_spawn { type: "coordinator", name: "Issue Coordinator" }
-mcp__claude-flow__agent_spawn { type: "researcher", name: "Requirements Analyst" }
-mcp__claude-flow__agent_spawn { type: "coder", name: "Implementation Planner" }
+mcp__ruflo__swarm_init { topology: "star", maxAgents: 3 }
+mcp__ruflo__agent_spawn { type: "coordinator", name: "Issue Coordinator" }
+mcp__ruflo__agent_spawn { type: "researcher", name: "Requirements Analyst" }
+mcp__ruflo__agent_spawn { type: "coder", name: "Implementation Planner" }
 
 // Create comprehensive issue
 mcp__github__create_issue {
@@ -93,7 +93,7 @@ mcp__github__create_issue {
 }
 
 // Set up automated tracking
-mcp__claude-flow__task_orchestrate {
+mcp__ruflo__task_orchestrate {
   task: "Monitor and coordinate issue progress with automated updates",
   strategy: "adaptive",
   priority: "medium"
