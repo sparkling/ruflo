@@ -491,8 +491,9 @@ const initAction = async (ctx: CommandContext): Promise<CommandResult> => {
       output.printSuccess('All services started');
     }
 
-    // Handle --with-embeddings
-    const withEmbeddings = ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings;
+    // Handle --with-embeddings (and --with-embedding singular alias, ADR-0257 #1)
+    const withEmbeddings = ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings
+      || ctx.flags['with-embedding'] || ctx.flags.withEmbedding;
     // ADR-0177 Phase 1.6 (b): use the already-validated options.embeddings.model
     //   as the authoritative source — flag was validated by validateEmbeddingModel
     //   earlier in this action.
@@ -1307,6 +1308,15 @@ export const initCommand: Command = {
       description: 'Initialize ONNX embedding subsystem with hyperbolic support',
       type: 'boolean',
       default: true, // ADR-0080: embeddings on by default — hash-fallback degrades search quality
+    },
+    {
+      // ADR-0257 #1: singular alias so --with-embedding (typo-friendly) is accepted.
+      // The action handler reads ctx.flags['with-embeddings'] || ctx.flags.withEmbeddings
+      // || ctx.flags['with-embedding'] || ctx.flags.withEmbedding (see below).
+      name: 'with-embedding',
+      description: 'Alias for --with-embeddings (singular form)',
+      type: 'boolean',
+      default: true,
     },
     {
       name: 'embedding-model',
