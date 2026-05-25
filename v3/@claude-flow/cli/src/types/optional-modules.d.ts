@@ -292,7 +292,7 @@ declare module '@ruvector/rvagent-wasm' {
     getConfig(): unknown;
     setActive(id: string): boolean;
     getActive(): unknown | undefined;
-    loadRvf(data: Uint8Array): boolean;
+    loadRvf(id: string): Uint8Array;
     free(): void;
   }
 
