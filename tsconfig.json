@@ -1,38 +1,28 @@
 {
+  "//": "Root tsconfig is NOT a build entry (ADR-0260 in ruflo-patch). The `npm run build` script at the root delegates to `npm run build:ts` (cli-scoped) — root tsc is never invoked by any build path. Real per-package builds use v3/@claude-flow/*/tsconfig.json (each `npm run build`), the publish pipeline's scripts/build-packages.sh (which generates per-package tsconfig.build.json via gen-tsconfig.mjs with stubs and sibling paths), or `pnpm -r typecheck` inside v3/ (workspace-scoped). The old `include: [\"v3/**/*.ts\"]` here tried to compile the entire v3 tree under a single tsc invocation; that produced 388 errors no build path observed because each package has its own node_modules / lib / module resolution. Kept as a config for IDEs that look for a root tsconfig — IDE language servers should consult the per-package tsconfig.json in each v3/@claude-flow/* package instead.",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022"],
-    "outDir": "./dist",
-    "rootDir": "./",
-    "strict": true,
-    "esModuleInterop": true,
+    "noEmit": true,
     "skipLibCheck": true,
+    "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
-    "noImplicitAny": false,
-    "paths": {
-      "@v3/*": ["./v3/*"]
-    },
-    "baseUrl": "."
+    "isolatedModules": true
   },
-  "include": [
-    "v3/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "**/*.test.ts",
-    "**/*.bench.ts",
-    "v3/__tests__/**/*.ts"
+  "files": [],
+  "references": [
+    { "path": "./v3/@claude-flow/shared" },
+    { "path": "./v3/@claude-flow/security" },
+    { "path": "./v3/@claude-flow/memory" },
+    { "path": "./v3/@claude-flow/integration" },
+    { "path": "./v3/@claude-flow/swarm" },
+    { "path": "./v3/@claude-flow/performance" },
+    { "path": "./v3/@claude-flow/cli" },
+    { "path": "./v3/@claude-flow/neural" },
+    { "path": "./v3/@claude-flow/deployment" },
+    { "path": "./v3/@claude-flow/hooks" }
   ]
 }
