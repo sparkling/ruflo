@@ -49,7 +49,7 @@
  * @module v3/cli/mcp-tools/memory-tools
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { createHash } from 'crypto';
@@ -872,6 +872,21 @@ export const memoryTools: MCPTool[] = [
         const withEmbeddings = (result.entriesWithEmbeddings as number) || 0;
         const namespaces = (result.namespaces as Record<string, number>) || {};
 
+        // ADR-0257 #4: report actual write path (ADR-0177 RVF restoration).
+        // ADR-0257 #6: populate totalSize + location fields (was always empty).
+        const rvfPath = join(findProjectRoot(), '.swarm', 'memory.rvf');
+        let totalSize = 'unknown';
+        let location = rvfPath;
+        try {
+          const st = statSync(rvfPath);
+          const bytes = st.size;
+          totalSize = bytes < 1024
+            ? `${bytes} B`
+            : bytes < 1024 * 1024
+              ? `${(bytes / 1024).toFixed(1)} KB`
+              : `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+        } catch { /* file may not exist yet — leave 'unknown' */ }
+
         return {
           initialized: !!result.initialized,
           totalEntries,
@@ -880,7 +895,9 @@ export const memoryTools: MCPTool[] = [
             ? `${((withEmbeddings / totalEntries) * 100).toFixed(1)}%`
             : '0%',
           namespaces,
-          backend: 'SQLite + HNSW',
+          backend: 'RVF + HNSW',
+          totalSize,
+          location,
           version: '3.0.0',
           features: {
             vectorEmbeddings: true,
