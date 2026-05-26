@@ -177,9 +177,9 @@ All access via `memory_*` (namespace-routed). No `agentdb_hierarchical-*` or `ag
 
 ### Memory lifecycle (ADR-125 integration)
 
-This plugin relies on `@claude-flow/memory@3.0.0-alpha.18` for the lifecycle guarantees defined in [ADR-125](../../v3/docs/adr/ADR-125-memory-consolidation.md) and wired by [ADR-126 Phase 2](../../v3/docs/adr/ADR-126-neural-trader-substrate-integration.md):
+This plugin relies on `@sparkleideas/memory@3.0.0-alpha.18` for the lifecycle guarantees defined in [ADR-125](../../v3/docs/adr/ADR-125-memory-consolidation.md) and wired by [ADR-126 Phase 2](../../v3/docs/adr/ADR-126-neural-trader-substrate-integration.md):
 
-- **Warm HNSW restart** — `@claude-flow/memory@3.0.0-alpha.18` (ADR-125 Phase 3) snapshots the HNSW index to a `.hnsw` sidecar file, so neural-trader process restarts no longer rebuild the strategy / regime similarity index from scratch. No plugin-side change is required to benefit; routing is automatic through `MemoryService.search()`.
+- **Warm HNSW restart** — `@sparkleideas/memory@3.0.0-alpha.18` (ADR-125 Phase 3) snapshots the HNSW index to a `.hnsw` sidecar file, so neural-trader process restarts no longer rebuild the strategy / regime similarity index from scratch. No plugin-side change is required to benefit; routing is automatic through `MemoryService.search()`.
 - **Hybrid retrieval (RRF + MMR)** — `market-analyst` regime-similarity queries automatically become hybrid (dense ANN + sparse FTS5 keyword, reciprocal-rank-fused and MMR-diversified) via the same `MemoryService.search()` path (ADR-125 Phase 5). When the embedding generator is unavailable, retrieval gracefully degrades to keyword-only rather than throwing.
 - **Signal TTL (24h)** — `trader-signal` writes to `trading-signals` with `expiresAt: now + 24h`. The `MemoryConsolidator.sweepExpired()` pass (ADR-125 Phase 4) removes them from all indexes — including HNSW — when they expire. Long-running ruflo sessions no longer accumulate stale intraday signals.
 - **Backtest dedup** — `trader-backtest` proactively deletes prior entries for the same `(strategyId, paramsHash)` before storing a fresh one. The same outcome is also produced asynchronously by the `MemoryConsolidator.dedup('keep-newest')` background pass that runs every 6 hours.
