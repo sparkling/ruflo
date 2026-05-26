@@ -51,10 +51,13 @@ Implementation is in `scripts/import.mjs` (one Bash call) rather than dozens of 
 <title> — <first paragraph of Context>
 
 file: <relative path>
-status: <Proposed|Accepted|Superseded|...>
+status: <proposed|accepted|rejected|deprecated|superseded>
+completed: <true|false>   # per ADR-0262 — informational only; no graph edges, no filtering, no sort
 date: <ISO date>
 tags: <comma-separated>
 ```
+
+The `completed` boolean (ADR-0262) is stored alongside `status` and `tags` for reference; absent → treated as `false`. No edges or filters derive from it.
 
 `adr-edges` namespace, key `<relation>:<FROM>-><TO>:<timestamp-rand>`, value:
 
