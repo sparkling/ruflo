@@ -20,7 +20,8 @@ ADRs follow canonical MADR 4.x (https://adr.github.io/madr/) with one extension:
 - **Filename**: `docs/adr/NNNN-<slug>.md` — 4-digit zero-padded number, lowercase kebab-case slug derived from the title. NO `ADR-` filename prefix.
 - **H1**: `# <Title>` — title only, NO `ADR-NNNN:` prefix. The number lives in the filename.
 - **Metadata**: YAML frontmatter (NOT bullet-list metadata under H1).
-- **Status enum**: `proposed | accepted | rejected | deprecated | superseded by ADR-NNNN`. Lowercase exactly as listed.
+- **Status enum**: `proposed | accepted | rejected | deprecated | superseded`. Lowercase exactly as listed.
+- **Completed flag**: `completed: false` for new ADRs (default). Set `completed: true` only when the ADR's scope is fully closed — nothing more to do under this ADR's name. Independent of `status`: an ADR can be `accepted` but still in-flight (`completed: false`). Per ADR-0262.
 - **Required sections**: `## Context and Problem Statement`, `## Considered Options` (bullet list), `## Decision Outcome` containing `### Consequences` (flat bullets) and `### Confirmation`.
 - **Optional sections**: `## Decision Drivers`, `## Pros and Cons of the Options` (with `### {Option}` per option), `## More Information`.
 
@@ -35,6 +36,7 @@ ADRs follow canonical MADR 4.x (https://adr.github.io/madr/) with one extension:
    ```markdown
    ---
    status: proposed
+   completed: false
    date: <today's date YYYY-MM-DD>
    decision-makers:
      - <leave blank for author to fill>
@@ -100,7 +102,7 @@ ADRs follow canonical MADR 4.x (https://adr.github.io/madr/) with one extension:
 
 4. **Store in AgentDB** -- Call `mcp__ruflo__agentdb_hierarchical-store` with:
    - path: `adr/ADR-NNNN`
-   - value: `{ "id": "ADR-NNNN", "title": "<title>", "status": "proposed", "date": "<today>", "tags": [], "file": "docs/adr/NNNN-<slug>.md" }`
+   - value: `{ "id": "ADR-NNNN", "title": "<title>", "status": "proposed", "completed": false, "date": "<today>", "tags": [], "supersedes": [], "depends-on": [], "implements": [], "file": "docs/adr/NNNN-<slug>.md" }`
 
 5. **Find related ADRs** -- Call `mcp__ruflo__memory_search` with the title as query in namespace `adr-patterns` to find related decisions. If matches found, add them to the `## More Information` section and create causal edges with relation `depends-on`.
 
@@ -111,6 +113,6 @@ ADRs follow canonical MADR 4.x (https://adr.github.io/madr/) with one extension:
 ## Notes
 
 - The `tags` frontmatter field is a project extension to canonical MADR for cross-cutting categorisation (e.g. `tags: [security, infrastructure]`). Optional — leave as `[]` if unused.
-- For supersession, set `status: superseded by ADR-NNNN` (lowercase, with the canonical ADR ID of the superseding decision). Reference the superseded ADR in `## More Information`.
+- For supersession, set `status: superseded` on the prior ADR. The successor ADR lists the prior in its `supersedes:` slot; the inverse (`superseded-by`) is derived at index time and must NOT be authored in frontmatter (ADR-0262, single source of truth). Reference the prior ADR in the successor's `## More Information`.
 - The `### Confirmation` section is optional in canonical MADR but recommended — it answers "how do we know this decision is being followed?"
 - If an ADR has only one viable option, list it alone in `## Considered Options` and explain in `## Decision Outcome` why no alternatives were considered.
