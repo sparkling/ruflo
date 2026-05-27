@@ -40,7 +40,9 @@ type LoadedTransport = Awaited<ReturnType<typeof loadQuicTransport>> & {
 };
 import {
   loadQuicTransport,
+  getTransportCapabilities,
   type AgentMessage,
+  type TransportCapabilities,
 } from 'agentic-flow/transport/loader';
 import { createMcpTools } from './mcp-tools.js';
 import { createCliCommands } from './cli-commands.js';
@@ -59,6 +61,13 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
   // in-process behavior — preserves backward compat for tests that
   // don't supply a port).
   private transport: LoadedTransport | null = null;
+  // ADR-0265 Phase 4: cached transport-capability snapshot taken at
+  // initialize() time. Exposed via getTransportInfo() for the CLI doctor
+  // surface (`cli doctor --component federation`) so operators can see
+  // which backend (`quic` vs `websocket-fallback`) the loader picked.
+  // Null when initialize() has not yet run OR the capabilities probe
+  // threw (rare — capabilities is a pure env-var read).
+  private transportInfo: TransportCapabilities | null = null;
 
   async initialize(context: PluginContext): Promise<void> {
     this.context = context;
@@ -233,6 +242,27 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
       context.logger.warn(
         `Federation transport unavailable (${err instanceof Error ? err.message : err}); ` +
           `falling back to in-process routing — federation_send will log only`,
+      );
+    }
+
+    // ADR-0265 Phase 4: snapshot transport capabilities for the doctor
+    // surface. `getTransportCapabilities()` is a pure env-var probe (no
+    // side effects, no socket touch) so this is cheap. We do it AFTER
+    // loadQuicTransport so the snapshot reflects whatever decision the
+    // loader actually made. The capability struct never carries the
+    // transport instance itself — only the descriptive metadata
+    // (`selectedBackend`, `quicAvailable`, `webSocketFallbackAvailable`,
+    // `tlsVersion?`).
+    try {
+      this.transportInfo = await getTransportCapabilities();
+    } catch (err) {
+      // Should be unreachable since the loader's probe is pure env-var
+      // read, but stay defensive — leaving `transportInfo` null lets
+      // doctor surface "capabilities-probe-failed" without crashing
+      // initialize().
+      this.transportInfo = null;
+      context.logger.warn(
+        `Federation transport capabilities probe failed (${err instanceof Error ? err.message : err})`,
       );
     }
 
@@ -417,5 +447,24 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
     if (!this.coordinator) return false;
     const status = this.coordinator.getStatus();
     return status.healthy;
+  }
+
+  /**
+   * ADR-0265 Phase 4: report which transport backend the loader selected
+   * at initialize() time. Returns the cached `TransportCapabilities`
+   * snapshot — `selectedBackend` is one of `'quic'` | `'websocket'` |
+   * `'websocket-fallback'` per the loader's literal union (the
+   * `'websocket-fallback'` value lands once agentic-flow's loader is
+   * widened in the same ADR-0265 cycle; today's loader returns
+   * `'websocket'`, which doctor treats as equivalent to the fallback
+   * path).
+   *
+   * Consumed by the CLI doctor (`cli doctor --component federation`) so
+   * operators can see which backend the plugin chose without having to
+   * inspect loader env vars themselves. Returns null when initialize()
+   * has not yet run OR the capabilities probe threw.
+   */
+  getTransportInfo(): TransportCapabilities | null {
+    return this.transportInfo;
   }
 }
