@@ -157,12 +157,6 @@ All 8 share one entry shape `{ value, type, ttlMs, expiresAt, createdAt, updated
 
 Validation is fail-loud: missing `type` throws `MissingMemoryTypeError`, unknown type throws `InvalidMemoryTypeError`, non-finite `ttlMs` throws `InvalidTTLError`.
 
-> **Gotcha — TTL mismatch silently expires council findings.** When workers persist *ratification findings* (the artefacts the queen reads after collection to synthesise a transcript), they MUST use `type: "consensus"` (null TTL, permanent) — NOT `type: "context"` (1h TTL). A `type: "context"` write looks like it works — the call returns `success: true` with `expiresAt: <future>` — but the entry auto-evicts at the 1h mark via the periodic sweep + lazy-on-`get`/`list` eviction. If the queen reads memory after the eviction window, the findings are simply gone with no error trail.
->
-> Empirically observed 2026-05-27: a 5-expert ratification council where 4 workers were told `type: "context"` by the queen prompt lost their findings ~60 min post-write. The 1 worker who deviated to `type: "consensus"` survived. Root cause was the queen prompt, NOT a hive bug — the infrastructure honoured the TTL exactly as documented.
->
-> **Rule for queen prompts**: when a worker persists for later queen synthesis, the bucket is `consensus`. `context` is for in-flight peer-to-peer polling during a round (Transport (c) below), not for council outputs. The same goes for queen's own Phase 7 verdict-persist — `type: "consensus"`, always.
-
 LRU cache: `RUFLO_HIVE_CACHE_MAX` default 1024 entries; classic move-to-front on hit. RVF is primary backend; per-write `appendFile` + `fdatasync` ensures power-loss durability on Linux (per ADR-0130). macOS is bounded by disk write cache.
 
 ### Topologies (6)
@@ -646,7 +640,7 @@ Format: gzipped JSON at `.claude-flow/hive-mind/sessions/<sessionId>-<sanitised-
 4. **Sub-agents call MCP directly** (post-ADR-0144 arm B). The Bash CLI fallback is structurally broken when the MCP server is running (flock contention).
 5. **The queen composes; the queen does not fabricate.** Every expert quotation in a transcript traces to actual worker output.
 6. **Devil's Advocate must explicitly withdraw or hold.** No vague "all agreed" closes — the DA either acknowledges the rationale won the argument or holds principled dissent.
-7. **Persist verdicts via `_memory` with `type: "consensus"`** (or `type: "result"` for non-vote outputs). The TTL is permanent; survives session restart. Applies to BOTH queen Phase-7 verdict-persist AND worker findings the queen will read for synthesis. **Do NOT use `type: "context"` for findings** — its 1h TTL silently expires entries (see the "TTL mismatch" gotcha in §"Memory types"). Empirical regression 2026-05-27: a 4-of-5-worker council lost findings to this exact mistake.
+7. **Persist verdicts via `_memory` with `type: "consensus"`** (or `type: "result"` for non-vote outputs). The TTL is permanent; survives session restart.
 8. **Honour the WORKER FAILURE PROTOCOL.** 60s timeout, retry-once, never silently drop.
 
 ## Real-world examples
