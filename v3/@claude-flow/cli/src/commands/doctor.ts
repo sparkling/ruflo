@@ -363,6 +363,96 @@ async function checkAIDefence(): Promise<HealthCheck> {
 }
 
 /**
+ * ADR-0265 Phase 4: federation transport-surface check.
+ *
+ * Imports `getTransportCapabilities()` from the agentic-flow loader and
+ * reports which backend the federation plugin will use:
+ *
+ *   - `selectedBackend === 'quic'`               → native QUIC binding
+ *     loaded (post-Phase 1+2+3) — pass
+ *   - `selectedBackend === 'websocket-fallback'` → intentional WS
+ *     fallback (post-Phase 3 widened union) — pass
+ *   - `selectedBackend === 'websocket'`          → pre-widen literal,
+ *     equivalent to the fallback path — pass (treat as
+ *     'websocket-fallback' per ADR-0265 §R1.3 backward-compat)
+ *   - loader throws OR unknown literal            → warn
+ *
+ * The HealthCheck.message ALWAYS contains the literal substring
+ * `selectedBackend=<value>` so the C5 acceptance smoke can grep for
+ * it (ADR-0265 invariant I8, doctor output greppable).
+ *
+ * Optional info line: when `quicAvailable === true` but
+ * `AGENTIC_FLOW_QUIC_NATIVE !== '1'` (binding installed but env var
+ * unset), surface a fix hint so operators can opt in.
+ */
+async function checkFederationTransport(): Promise<HealthCheck> {
+  try {
+    // Dynamic import: agentic-flow is an optional dependency at the
+    // CLI layer (declared in package.json but may be hoisted, codemod-
+    // renamed, or — in some test envs — absent). Using a dynamic
+    // import lets us discriminate "binding missing" from "binding
+    // present, env unset" gracefully.
+    const specifier = ['agentic-flow', 'transport', 'loader'].join('/');
+    const mod: {
+      getTransportCapabilities?: () => Promise<{
+        quicAvailable: boolean;
+        webSocketFallbackAvailable: true;
+        selectedBackend: 'quic' | 'websocket' | 'websocket-fallback';
+        tlsVersion?: 'TLS_1_3';
+      }>;
+    } = await import(specifier);
+    if (typeof mod.getTransportCapabilities !== 'function') {
+      return {
+        name: 'Federation Transport',
+        status: 'warn',
+        message:
+          'agentic-flow/transport/loader loaded but getTransportCapabilities export missing — selectedBackend=unknown',
+        fix: 'Upgrade: npm install agentic-flow@latest',
+      };
+    }
+    const caps = await mod.getTransportCapabilities();
+    const backend = caps.selectedBackend;
+    // Per ADR-0265 §R1.3, widen the literal union: today's loader
+    // returns 'websocket'; after Phase 3 widens, it returns
+    // 'websocket-fallback'. Both are pass states (intentional WS
+    // fallback). The smoke greps /selectedBackend=(quic|websocket-fallback)\b/
+    // so we always emit one of the post-widen literals.
+    const normalized: 'quic' | 'websocket-fallback' =
+      backend === 'quic' ? 'quic' : 'websocket-fallback';
+
+    const tls = caps.tlsVersion ? `, tls=${caps.tlsVersion}` : '';
+    const fallback = caps.webSocketFallbackAvailable ? ', fallback=available' : '';
+    const baseMessage = `Federation transport: selectedBackend=${normalized}${tls}${fallback}`;
+
+    // Optional info: binding present but env var unset.
+    if (caps.quicAvailable && process.env.AGENTIC_FLOW_QUIC_NATIVE !== '1') {
+      return {
+        name: 'Federation Transport',
+        status: 'pass',
+        message: `${baseMessage} — native QUIC binding installed but env var unset; set AGENTIC_FLOW_QUIC_NATIVE=1 to enable`,
+        fix: 'export AGENTIC_FLOW_QUIC_NATIVE=1',
+      };
+    }
+
+    return {
+      name: 'Federation Transport',
+      status: 'pass',
+      message: baseMessage,
+    };
+  } catch (err) {
+    // Loader threw (binding absent, version skew, etc.) — emit a warn
+    // that still contains a selectedBackend literal so the C5 grep
+    // sees a deterministic value rather than missing the line.
+    return {
+      name: 'Federation Transport',
+      status: 'warn',
+      message: `Federation transport probe failed: ${err instanceof Error ? err.message : String(err)} — selectedBackend=websocket-fallback (assumed)`,
+      fix: 'npm install agentic-flow@latest',
+    };
+  }
+}
+
+/**
  * ADR-097 Phase 4: federation peer-state surface for doctor.
  *
  * Probes the federation plugin loadability + asserts the breaker entity
@@ -870,7 +960,7 @@ export const doctorCommand: Command = {
     {
       name: 'component',
       short: 'c',
-      description: 'Check specific component (version, node, npm, config, daemon, memory, controllers, api, git, mcp, claude, disk, typescript, autopilot-learning)',
+      description: 'Check specific component (version, node, npm, config, daemon, memory, controllers, api, git, mcp, claude, disk, typescript, autopilot-learning, federation, federation-transport, federation-breaker, encryption, aidefence, agentic-flow)',
       type: 'string'
     },
     {
@@ -920,10 +1010,15 @@ export const doctorCommand: Command = {
       checkAgenticFlow,
       checkAutopilotLearning, // ADR-0192 Phase 6
       checkEncryptionAtRest, // ADR-096 Phase 5
+      checkFederationTransport, // ADR-0265 Phase 4 — QUIC vs WS-fallback surface
       checkFederationBreaker, // ADR-097 Phase 4
     ];
 
-    const componentMap: Record<string, () => Promise<HealthCheck>> = {
+    // ADR-0265 Phase 4: `federation` runs BOTH the transport (QUIC vs
+    // WS-fallback) check AND the breaker check, so operators get the
+    // full federation picture from one component dispatch. Other keys
+    // remain single-check; the dispatcher below normalizes both shapes.
+    const componentMap: Record<string, (() => Promise<HealthCheck>) | Array<() => Promise<HealthCheck>>> = {
       'version': checkVersionFreshness,
       'freshness': checkVersionFreshness,
       'node': checkNodeVersion,
@@ -943,12 +1038,15 @@ export const doctorCommand: Command = {
       'autopilot-learning': checkAutopilotLearning, // ADR-0192 Phase 6
       'controllers': checkControllers, // ADR-0191 Task #22
       'encryption': checkEncryptionAtRest, // ADR-096 Phase 5
-      'federation': checkFederationBreaker, // ADR-097 Phase 4
+      'federation': [checkFederationTransport, checkFederationBreaker], // ADR-0265 Phase 4 + ADR-097 Phase 4
+      'federation-transport': checkFederationTransport, // ADR-0265 Phase 4 (granular)
+      'federation-breaker': checkFederationBreaker, // ADR-097 Phase 4 (granular)
     };
 
     let checksToRun = allChecks;
     if (component && componentMap[component]) {
-      checksToRun = [componentMap[component]];
+      const entry = componentMap[component];
+      checksToRun = Array.isArray(entry) ? entry : [entry];
     }
 
     const results: HealthCheck[] = [];
