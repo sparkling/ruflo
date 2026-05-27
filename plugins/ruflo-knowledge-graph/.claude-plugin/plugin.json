@@ -17,5 +17,13 @@
     "mcp",
     "pathfinder-traversal",
     "entity-extraction"
-  ]
+  ],
+  "graph_adapter": {
+    "edgeRelations": ["trajectory-caused", "reinforced-by"],
+    "nodeTypes": ["memory", "task", "pattern"],
+    "autoRegister": false,
+    "adapter": "src/adapters/knowledge-graph-adapter.ts",
+    "_adr": "ADR-0261",
+    "_note": "Plugin runtime currently has no bootstrap that reads graph_adapter; adapter is structural-port shelfware until ADR-0261 follow-up wires plugin bootstrap. autoRegister:false documents this honestly per ADR-0261 §R2.9."
+  }
 }

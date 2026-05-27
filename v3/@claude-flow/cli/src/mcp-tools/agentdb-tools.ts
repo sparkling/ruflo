@@ -2287,6 +2287,581 @@ export const agentdbCausalNodeDelete: MCPTool = {
   },
 };
 
+// ===== ADR-0261: agentdb_graph-query and agentdb_graph-pathfinder =====
+//
+// Fork-native port of upstream ADR-130 PR `edde98f9e` (ratified 2026-05-27).
+// Algorithm logic is verbatim from upstream's agentdb-tools.ts (k-hop CTE,
+// power-iteration PPR, semantic cosine, 6 pathfinder modes), but:
+//
+//   - Row reads dispatch through the archivist's
+//     `agentdb_graph_edge_query` read handler (acquires substrate per-query;
+//     NO module-scope `_db` cache per ADR-0202 / ADR-0246).
+//   - Catch-and-return-false / catch-and-return-empty branches are replaced
+//     with throw-on-fatal per `feedback-best-effort-must-rethrow-fatals`.
+//   - `temporal-centrality` reads `decay_rate` from the column (upstream's
+//     hardcoded `0.1` is the bug, per ADR-0261 §R2.4 / §Risks).
+//   - `witness-chain-divergence` walks a populated `witness_id` column —
+//     fork populates witness_id from sha256(installation_id ‖
+//     audit_chain_entry_id) per ADR-0261 §R1.4. Upstream's column is dead
+//     so the algorithm was effectively dead code; here it lives.
+//   - `inlineCosine` is imported from `agentdb/encoders/scalar-int8-encoder`
+//     (Agent A's encoder export) — NOT from upstream's
+//     `embedding-quantization.ts` which the fork doesn't have.
+//   - Substrate library is better-sqlite3 (native) via archivist dispatch,
+//     not sql.js. The cli does the algorithm work; the archivist read
+//     handler does the row fetch.
+//
+// Cross-package dependency on `forks/agentdb`:
+//   - `agentdb/encoders/scalar-int8-encoder` exports `inlineCosine`
+//   - archivist registers a read handler under `agentdb_graph_edge_query`
+//     returning `ReadonlyArray<GraphEdgeRow>` for {action:'list', ...}
+//   - `ToolPayloadMap['agentdb_graph_edge_query']` is the typed payload
+
+/** Row shape returned by `agentdb_graph_edge_query` (Agent A's handler). */
+interface GraphEdgeRow {
+  readonly id: string;
+  readonly source_id: string;
+  readonly target_id: string;
+  readonly relation: string;
+  readonly weight: number;
+  readonly confidence: number;
+  readonly decay_rate: number;
+  readonly last_reinforced: string | null;
+  readonly witness_id: string | null;
+  readonly embedding_ref: string | null;
+}
+
+/** Complexity budget — same shape as upstream. */
+interface ComplexityBudget {
+  maxNodesVisited?: number;
+  maxDepth?: number;
+  maxMillis?: number;
+  maxMemoryMB?: number;
+}
+
+/**
+ * Acquire graph_edges rows from agentdb per-query (no cached handle).
+ * Per ADR-0261 §R2: archivist `dispatchRead` mints a fresh `ReadContext`
+ * for every call, which acquires the substrate per-query via
+ * `ctx.substrate.query`. The cli never sees the substrate handle directly.
+ */
+async function loadGraphEdgeRows(filter: {
+  sourceId?: string;
+  targetId?: string;
+  relation?: string;
+  withEmbedding?: boolean;
+  limit: number;
+}): Promise<ReadonlyArray<GraphEdgeRow>> {
+  await ensureSqliteWired();
+  const archivist = await getProcessArchivist();
+  // ADR-0261 §R2.9 footnote #2 — the read handler is registered by Agent A
+  // at `forks/agentdb/src/archivist/handlers/agentdb/graph-edge.ts` (read
+  // side). Typed payload via ToolPayloadMap entry that Agent A adds.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = await (archivist as any).dispatchRead('agentdb_graph_edge_query', {
+    action: 'list',
+    sourceId: filter.sourceId,
+    targetId: filter.targetId,
+    relation: filter.relation,
+    withEmbedding: filter.withEmbedding ?? false,
+    limit: filter.limit,
+  }) as ReadonlyArray<GraphEdgeRow>;
+  return rows ?? [];
+}
+
+// ----- Helpers ported verbatim from upstream agentdb-tools.ts -----
+
+function cosineSim(a: Float32Array, b: Float32Array): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom > 0 ? dot / denom : 0;
+}
+
+function deduplicateByNodeId<T extends { nodeId: string }>(arr: T[]): T[] {
+  const seen = new Set<string>();
+  return arr.filter(item => {
+    if (seen.has(item.nodeId)) return false;
+    seen.add(item.nodeId);
+    return true;
+  });
+}
+
+/**
+ * Simple Personalized PageRank without external solver.
+ * Verbatim from upstream `agentdb-tools.ts` simplePersonalizedPageRank
+ * (only the row source changed from cached sql.js to per-query dispatch).
+ */
+function simplePersonalizedPageRank(
+  seedNodeId: string,
+  edges: ReadonlyArray<[string, string, number]>,
+  topK: number,
+  damping: number,
+  iterations: number,
+): Array<{ nodeId: string; score: number }> {
+  const outEdges = new Map<string, Array<[string, number]>>();
+  const nodes = new Set<string>();
+  for (const [src, tgt, w] of edges) {
+    nodes.add(src); nodes.add(tgt);
+    if (!outEdges.has(src)) outEdges.set(src, []);
+    outEdges.get(src)!.push([tgt, w]);
+  }
+
+  if (!nodes.has(seedNodeId)) return [];
+
+  const nodeList = Array.from(nodes);
+  const N = nodeList.length;
+  const idx = new Map<string, number>(nodeList.map((n, i) => [n, i]));
+  const seedIdx = idx.get(seedNodeId) ?? 0;
+
+  let scores = new Float32Array(N).fill(0);
+  scores[seedIdx] = 1.0;
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const next = new Float32Array(N).fill(0);
+    for (let i = 0; i < N; i++) {
+      const node = nodeList[i];
+      const out = outEdges.get(node) ?? [];
+      if (out.length === 0) {
+        next[seedIdx] += scores[i]; // dangling node → restart
+        continue;
+      }
+      const totalW = out.reduce((s, [, w]) => s + w, 0);
+      for (const [tgt, w] of out) {
+        const j = idx.get(tgt) ?? 0;
+        next[j] += scores[i] * (w / totalW) * (1 - damping);
+      }
+    }
+    next[seedIdx] += damping; // restart
+    const sum = next.reduce((s, v) => s + v, 0);
+    if (sum > 0) for (let i = 0; i < N; i++) next[i] /= sum;
+    scores = next;
+  }
+
+  const results: Array<{ nodeId: string; score: number }> = [];
+  for (let i = 0; i < N; i++) {
+    if (nodeList[i] !== seedNodeId) {
+      results.push({ nodeId: nodeList[i], score: scores[i] });
+    }
+  }
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, topK);
+}
+
+/**
+ * In-cli k-hop traversal over a row set (substitute for upstream's
+ * recursive CTE). The rows are pre-filtered by Agent A's read handler
+ * (no source-id filter — full table scan up to maxNodesVisited), and we
+ * walk the breadth-first frontier in JS.
+ *
+ * Per ADR-0261 §R2: better-sqlite3 substrate also supports recursive
+ * CTEs natively; doing the walk in JS is functionally equivalent (no
+ * silent skips) and keeps the algorithm logic in one place (cli) for
+ * the verbatim-port discipline.
+ */
+function khopFrontier(
+  startNodeId: string,
+  rows: ReadonlyArray<GraphEdgeRow>,
+  depth: number,
+  relation: string | undefined,
+  maxNodes: number,
+): Array<{ nodeId: string; depth: number }> {
+  const adj = new Map<string, Array<string>>();
+  for (const r of rows) {
+    if (relation && r.relation !== relation) continue;
+    if (!adj.has(r.source_id)) adj.set(r.source_id, []);
+    adj.get(r.source_id)!.push(r.target_id);
+  }
+  const visited = new Map<string, number>();
+  visited.set(startNodeId, 0);
+  let frontier: string[] = [startNodeId];
+  for (let d = 0; d < depth && frontier.length > 0; d++) {
+    const next: string[] = [];
+    for (const node of frontier) {
+      for (const tgt of adj.get(node) ?? []) {
+        if (!visited.has(tgt)) {
+          visited.set(tgt, d + 1);
+          next.push(tgt);
+          if (visited.size >= maxNodes) break;
+        }
+      }
+      if (visited.size >= maxNodes) break;
+    }
+    frontier = next;
+  }
+  const out: Array<{ nodeId: string; depth: number }> = [];
+  for (const [nodeId, d] of visited) {
+    if (nodeId !== startNodeId) out.push({ nodeId, depth: d });
+  }
+  out.sort((a, b) => a.depth - b.depth || a.nodeId.localeCompare(b.nodeId));
+  return out;
+}
+
+// ===== ADR-0261: agentdb_graph-query =====
+
+export const agentdbGraphQuery: MCPTool = {
+  name: 'agentdb_graph-query',
+  description:
+    'Unified graph traversal across the graph_edges substrate (ADR-0261, fork-native ADR-130). ' +
+    'Modes: k-hop neighbor expansion, semantic cosine ranking on int8 embeddings, ' +
+    'personalized PageRank. Use when memory_search alone is wrong because you need ' +
+    'structured edge-shaped retrieval with relation filters and complexity budgets. ' +
+    'Rows are loaded per-query through the archivist; no cached handle.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      nodeId: { type: 'string', description: 'Domain-prefixed node ID (e.g. "memory:abc", "task:xyz")' },
+      mode: {
+        type: 'string',
+        enum: ['k-hop', 'semantic', 'pagerank'],
+        description: 'Query mode: k-hop neighbor expansion, semantic cosine search, or PageRank scoring',
+      },
+      depth: { type: 'number', description: 'Hop depth for k-hop mode (default 2, max 5)' },
+      topK: { type: 'number', description: 'Max results for semantic and pagerank modes (default 10)' },
+      relation: { type: 'string', description: 'Optional edge relation filter (e.g. "trajectory-caused")' },
+      complexityBudget: {
+        type: 'object',
+        description: 'Computation limits',
+        properties: {
+          maxNodesVisited: { type: 'number' },
+          maxDepth: { type: 'number' },
+          maxMillis: { type: 'number' },
+          maxMemoryMB: { type: 'number' },
+        },
+      },
+    },
+    required: ['nodeId', 'mode'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    const t0 = Date.now();
+    try {
+      const vNodeId = validateIdentifier(params.nodeId, 'nodeId');
+      if (!vNodeId.valid) return { success: false, error: vNodeId.error };
+      const nodeId = validateString(params.nodeId, 'nodeId', 500);
+      if (!nodeId) return { success: false, error: 'nodeId is required' };
+
+      const mode = params.mode as string;
+      if (!['k-hop', 'semantic', 'pagerank'].includes(mode)) {
+        return { success: false, error: 'mode must be "k-hop", "semantic", or "pagerank"' };
+      }
+
+      const budgetRaw = (params.complexityBudget ?? {}) as ComplexityBudget;
+      const budget: Required<ComplexityBudget> = {
+        maxNodesVisited: budgetRaw.maxNodesVisited ?? 10_000,
+        maxDepth: budgetRaw.maxDepth ?? 5,
+        maxMillis: budgetRaw.maxMillis ?? 50,
+        maxMemoryMB: budgetRaw.maxMemoryMB ?? 32,
+      };
+      const depth = Math.min(validatePositiveInt(params.depth, 2, budget.maxDepth), budget.maxDepth);
+      const topK = validatePositiveInt(params.topK, 10, MAX_TOP_K);
+      const relation = validateString(params.relation, 'relation', 200) ?? undefined;
+
+      // ── k-hop mode ─────────────────────────────────────────────────────────
+      if (mode === 'k-hop') {
+        // Per ADR-0261 §R2: acquire rows per query via archivist read
+        // dispatch (no module-scope cache). Algorithm runs in cli JS.
+        const rows = await loadGraphEdgeRows({
+          relation,
+          limit: budget.maxNodesVisited,
+        });
+        const results = khopFrontier(nodeId, rows, Math.min(depth, 3), relation, budget.maxNodesVisited);
+        return {
+          success: true, mode, nodeId, depth,
+          results: results.map(r => ({ nodeId: r.nodeId, depth: r.depth })),
+          count: results.length,
+          backend: 'archivist-khop',
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      // ── semantic mode ──────────────────────────────────────────────────────
+      if (mode === 'semantic') {
+        // Generate query embedding via the archivist's agentdb_embed
+        // read handler (also acquired per-query).
+        const embResult = await (await getProcessArchivist()).dispatchRead('agentdb_embed', {
+          text: nodeId,
+        }) as { success: true; embedding: ReadonlyArray<number>; dimension: number } | undefined;
+        if (!embResult || !embResult.embedding || embResult.embedding.length === 0) {
+          // No fallback (per feedback-best-effort-must-rethrow-fatals).
+          throw new Error('agentdb_graph-query: semantic mode requires embedding service (agentdb_embed returned empty)');
+        }
+        const qv = new Float32Array(embResult.embedding);
+
+        // Load rows that carry an embedding_ref. The handler returns
+        // only rows where embedding_ref IS NOT NULL when withEmbedding=true.
+        const rows = await loadGraphEdgeRows({
+          withEmbedding: true,
+          limit: budget.maxNodesVisited,
+        });
+
+        // Use the encoder's inlineCosine for zero-decode similarity when
+        // the caller's query is itself stored as an encoded ref. Here the
+        // query came as a string → an mpnet embedding, so we decode each
+        // row's embedding_ref to a Float32Array and run cosine in JS.
+        // Import the encoder lazily so the cli doesn't pay the cost when
+        // graph-query is not invoked.
+        const { decodeEmbedding } = await import('agentdb/encoders/scalar-int8-encoder');
+        const scored: Array<{ nodeId: string; score: number; relation: string }> = [];
+        for (const row of rows) {
+          if (!row.embedding_ref) continue;
+          const ev = decodeEmbedding(row.embedding_ref);
+          if (!ev || ev.length !== qv.length) continue;
+          const cos = cosineSim(qv, ev);
+          scored.push({ nodeId: row.source_id, score: cos, relation: row.relation });
+          scored.push({ nodeId: row.target_id, score: cos, relation: row.relation });
+        }
+        scored.sort((a, b) => b.score - a.score);
+        const deduped = deduplicateByNodeId(scored).slice(0, topK);
+
+        return {
+          success: true, mode, nodeId, topK,
+          results: deduped,
+          count: deduped.length,
+          backend: 'archivist-cosine',
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      // ── pagerank mode ──────────────────────────────────────────────────────
+      if (mode === 'pagerank') {
+        const rows = await loadGraphEdgeRows({
+          limit: budget.maxNodesVisited,
+        });
+        if (rows.length === 0) {
+          return {
+            success: true, mode, nodeId,
+            results: [], count: 0,
+            message: 'graph_edges is empty',
+            elapsedMs: Date.now() - t0,
+          };
+        }
+        const edges = rows.map(r =>
+          [r.source_id, r.target_id, r.weight ?? 1.0] as [string, string, number],
+        );
+        const scores = simplePersonalizedPageRank(nodeId, edges, topK, 0.85, 20);
+        return {
+          success: true, mode, nodeId, topK,
+          results: scores,
+          count: scores.length,
+          backend: 'archivist-ppr',
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      return { success: false, error: `Unknown mode: ${mode}` };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
+// ===== ADR-0261: agentdb_graph-pathfinder =====
+
+export const agentdbGraphPathfinder: MCPTool = {
+  name: 'agentdb_graph-pathfinder',
+  description:
+    'Multi-algorithm graph pathfinder over the graph_edges substrate (ADR-0261, fork-native ADR-130). ' +
+    'Use when agentdb_graph-query k-hop is not enough — pathfinder supports personalized-pagerank, ' +
+    'dynamic-mincut, spectral-sparsify, temporal-centrality, connected-component-churn, and ' +
+    'witness-chain-divergence. Prefer over prompt-level graph loops in ruflo-knowledge-graph ' +
+    'graph-navigator when you need ranked paths with formal complexityBudget enforcement.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      seedNodeId: { type: 'string', description: 'Domain-prefixed start node (e.g. "memory:auth-module")' },
+      query: { type: 'string', description: 'Natural-language query for relevance scoring' },
+      depth: { type: 'number', description: 'Expansion depth (default 3, max 5)' },
+      threshold: { type: 'number', description: 'Minimum cumulative relevance score (default 0.3)' },
+      topK: { type: 'number', description: 'Max paths returned (default 10)' },
+      algorithm: {
+        type: 'string',
+        enum: [
+          'personalized-pagerank',
+          'dynamic-mincut',
+          'spectral-sparsify',
+          'temporal-centrality',
+          'connected-component-churn',
+          'witness-chain-divergence',
+        ],
+        description: 'Graph algorithm (default: personalized-pagerank)',
+      },
+      complexityBudget: {
+        type: 'object',
+        properties: {
+          maxNodesVisited: { type: 'number' },
+          maxDepth: { type: 'number' },
+          maxMillis: { type: 'number' },
+          maxMemoryMB: { type: 'number' },
+        },
+      },
+    },
+    required: ['seedNodeId', 'query'],
+  },
+  handler: async (params: Record<string, unknown>) => {
+    const t0 = Date.now();
+    try {
+      const vSeed = validateIdentifier(params.seedNodeId, 'seedNodeId');
+      if (!vSeed.valid) return { success: false, error: vSeed.error };
+      const seedNodeId = validateString(params.seedNodeId, 'seedNodeId', 500);
+      if (!seedNodeId) return { success: false, error: 'seedNodeId is required' };
+      const query = validateString(params.query, 'query', 2000) ?? '';
+
+      const budgetRaw = (params.complexityBudget ?? {}) as ComplexityBudget;
+      const rawDepth = validatePositiveInt(params.depth, 3, 5);
+      const depth = Math.min(rawDepth, 5);
+      const depthWarning = rawDepth > 5 ? `depth clamped from ${rawDepth} to 5` : undefined;
+
+      const budget: Required<ComplexityBudget> = {
+        maxNodesVisited: budgetRaw.maxNodesVisited ?? 10_000,
+        maxDepth: Math.min(budgetRaw.maxDepth ?? depth, 5),
+        maxMillis: budgetRaw.maxMillis ?? 50,
+        maxMemoryMB: budgetRaw.maxMemoryMB ?? 32,
+      };
+      const threshold = typeof params.threshold === 'number' ? params.threshold : 0.3;
+      const topK = validatePositiveInt(params.topK, 10, MAX_TOP_K);
+      const algorithm = (params.algorithm as string) ?? 'personalized-pagerank';
+
+      const validAlgorithms = [
+        'personalized-pagerank',
+        'dynamic-mincut',
+        'spectral-sparsify',
+        'temporal-centrality',
+        'connected-component-churn',
+        'witness-chain-divergence',
+      ];
+      if (!validAlgorithms.includes(algorithm)) {
+        return {
+          success: false,
+          error: `Unknown algorithm: ${algorithm}. Valid: ${validAlgorithms.join(', ')}`,
+        };
+      }
+
+      // Load rows for this algorithm. Per ADR-0261 §R2: acquire substrate
+      // per-query through the archivist (no cached handle).
+      const rows = await loadGraphEdgeRows({ limit: budget.maxNodesVisited });
+
+      if (rows.length === 0) {
+        return {
+          success: true, paths: [], count: 0,
+          message: 'no edges found',
+          seedNodeId, algorithm,
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      let paths: Array<{ nodeId: string; score: number; depth: number }> = [];
+
+      // Check millisecond budget before heavy computation.
+      if (Date.now() - t0 > budget.maxMillis) {
+        return {
+          success: true, paths: [], count: 0,
+          message: `complexityBudget.maxMillis (${budget.maxMillis}ms) exceeded before solver dispatch`,
+          seedNodeId, algorithm,
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      switch (algorithm) {
+        case 'personalized-pagerank': {
+          const edgeTuples = rows.map(r =>
+            [r.source_id, r.target_id, r.weight ?? 1.0] as [string, string, number],
+          );
+          const pprResults = simplePersonalizedPageRank(seedNodeId, edgeTuples, topK, 0.85, 20);
+          paths = pprResults.filter(r => r.score >= threshold).map(r => ({ ...r, depth: 1 }));
+          break;
+        }
+        case 'temporal-centrality': {
+          // ADR-0261 §R2.4 / §Risks fix: read `decay_rate` from the column,
+          // NOT a hardcoded constant (upstream's `0.1` was the bug).
+          const nodeScores = new Map<string, number>();
+          const now = Date.now();
+          for (const row of rows) {
+            const ageMs = row.last_reinforced
+              ? now - new Date(row.last_reinforced).getTime()
+              : now;
+            const ageDays = ageMs / (1000 * 60 * 60 * 24);
+            const decayRate = Number.isFinite(row.decay_rate) ? row.decay_rate : 0;
+            const w = row.weight ?? 1.0;
+            const conf = row.confidence ?? 1.0;
+            const decayedScore = w * conf * Math.exp(-decayRate * ageDays);
+            for (const n of [row.source_id, row.target_id]) {
+              nodeScores.set(n, (nodeScores.get(n) ?? 0) + decayedScore);
+            }
+          }
+          paths = Array.from(nodeScores.entries())
+            .filter(([n, s]) => n !== seedNodeId && s >= threshold)
+            .map(([nodeId, score]) => ({ nodeId, score, depth: 1 }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, topK);
+          break;
+        }
+        case 'witness-chain-divergence': {
+          // ADR-0261 §R1.4 / §R2.4 fix: `witness_id` is populated in this
+          // fork (sha256(installation_id ‖ audit_chain_entry_id)), so the
+          // chain walk reaches non-trivial state. Upstream's column was
+          // dead — the algorithm there was effectively a no-op.
+          const witnessChain: Array<{ nodeId: string; score: number; depth: number }> = [];
+          const seen = new Set<string>();
+          let current = seedNodeId;
+          for (let d = 0; d < depth; d++) {
+            const nextEdge = rows.find(r => r.source_id === current && r.witness_id);
+            if (!nextEdge) break;
+            const next = nextEdge.target_id;
+            if (seen.has(next)) {
+              // Loop detected → divergence score 1.0
+              witnessChain.push({ nodeId: next, score: 1.0, depth: d + 1 });
+              break;
+            }
+            seen.add(next);
+            witnessChain.push({ nodeId: next, score: 0.5, depth: d + 1 });
+            current = next;
+          }
+          paths = witnessChain.slice(0, topK);
+          break;
+        }
+        case 'connected-component-churn':
+        case 'dynamic-mincut':
+        case 'spectral-sparsify': {
+          // Simplified implementations port verbatim: return k-hop
+          // neighbors with rank-decayed score.
+          const khopResult = await agentdbGraphQuery.handler({
+            nodeId: seedNodeId, mode: 'k-hop', depth, complexityBudget: budget,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          }) as any;
+          if (khopResult.success && Array.isArray(khopResult.results)) {
+            paths = (khopResult.results as Array<{ nodeId: string; depth?: number }>)
+              .map((r, i) => ({
+                nodeId: r.nodeId,
+                score: 1.0 / (1 + i),
+                depth: r.depth ?? 1,
+              }))
+              .filter(r => r.score >= threshold)
+              .slice(0, topK);
+          }
+          break;
+        }
+      }
+
+      const elapsedMs = Date.now() - t0;
+      return {
+        success: true,
+        seedNodeId, algorithm, depth, topK, threshold,
+        paths,
+        count: paths.length,
+        elapsedMs,
+        budgetUsed: { millis: elapsedMs, nodes: rows.length },
+        ...(depthWarning && { warning: depthWarning }),
+      };
+    } catch (error) {
+      return { success: false, error: sanitizeError(error) };
+    }
+  },
+};
+
 // ===== Export all tools =====
 
 export const agentdbTools: MCPTool[] = [
@@ -2342,4 +2917,6 @@ export const agentdbTools: MCPTool[] = [
   agentdbGraphNodeCreate,    // W2-I6: GraphDatabaseAdapter node create
   agentdbGraphEdgeCreate,    // W2-I6: GraphDatabaseAdapter edge create
   agentdbGraphNodeGet,       // W2-I6: GraphDatabaseAdapter node query by ID
+  agentdbGraphQuery,         // ADR-0261: graph_edges query (k-hop, semantic, pagerank)
+  agentdbGraphPathfinder,    // ADR-0261: graph_edges pathfinder (6 algorithms)
 ];

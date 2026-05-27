@@ -1673,6 +1673,44 @@ export const hooksPostTask: MCPTool = {
       );
     }
 
+    // ADR-0261 (fork-native ADR-130) Phase 3: write `reinforced-by` edge
+    // from the task's output memory node to its retrieved-context node on
+    // task success. Replaces upstream's
+    // `(async () => { try { ... } catch { /* non-fatal */ } })().catch(() => {})`
+    // fire-and-forget with a synchronous archivist dispatch that re-throws
+    // on fatal errors (per feedback-best-effort-must-rethrow-fatals +
+    // ADR-0261 §R1.6).
+    if (success) {
+      try {
+        const { getProcessArchivist, ensureSqliteWired } = await import(
+          '../memory/archivist-init.js'
+        );
+        await ensureSqliteWired();
+        await (await getProcessArchivist()).dispatch(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'agentdb_graph_edge' as any,
+          {
+            action: 'save',
+            sourceId: `task:${taskId}`,
+            targetId: `pattern:${taskId}`,
+            relation: 'reinforced-by',
+            weight: quality,
+            confidence: quality,
+            lastReinforced: new Date().toISOString(),
+            metadata: { success, agent, taskId },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        );
+      } catch (err) {
+        // Re-throw — archivist dispatch surfaces real failures. No
+        // silent swallow per feedback-best-effort-must-rethrow-fatals.
+        throw new Error(
+          `hooks_post-task: reinforced-by graph_edges write failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     // Persist routing outcome for runtime learning (file-based, always reliable)
     const taskText = (params.task as string) || '';
     const outcomeKeywords = extractKeywords(taskText);
@@ -2784,6 +2822,44 @@ export const hooksTrajectoryStep: MCPTool = {
         quality,
         timestamp,
       });
+    }
+
+    // ADR-0261 (fork-native ADR-130) Phase 3: write `trajectory-caused`
+    // edge between successive trajectory memory rows. Replaces upstream's
+    // fire-and-forget `(async () => { try { ... } catch { /* non-fatal */ }
+    // })().catch(() => {})` with a synchronous archivist dispatch that
+    // re-throws on fatal errors (per
+    // feedback-best-effort-must-rethrow-fatals + ADR-0261 §R1.6).
+    if (result) {
+      try {
+        const { getProcessArchivist, ensureSqliteWired } = await import(
+          '../memory/archivist-init.js'
+        );
+        await ensureSqliteWired();
+        await (await getProcessArchivist()).dispatch(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'agentdb_graph_edge' as any,
+          {
+            action: 'save',
+            sourceId: `task:${trajectoryId}`,
+            targetId: `pattern:${stepId}`,
+            relation: 'trajectory-caused',
+            weight: quality,
+            confidence: quality,
+            metadata: { action, result, trajectoryId, stepId },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        );
+      } catch (err) {
+        // Re-throw — archivist dispatch surfaces real failures (writer
+        // unavailable, invariant violation, SAVEPOINT rollback). The
+        // fire-and-forget swallow in upstream's diff is replaced here per
+        // ADR-0261 §Risks (criterion C6 — no fire-and-forget).
+        throw new Error(
+          `hooks_intelligence_trajectory-step: graph_edges write failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     return {
