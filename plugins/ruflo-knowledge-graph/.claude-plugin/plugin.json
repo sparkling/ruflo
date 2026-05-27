@@ -1,7 +1,7 @@
 {
   "name": "ruflo-knowledge-graph",
   "description": "Knowledge-graph workflow scaffolds composing agentdb_* primitives \u2014 kg-extract/kg-traverse thought-templates routed via mcp__ruflo__agentdb_causal-edge, agentdb_hierarchical-recall, and agentdb_pattern-search",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "author": {
     "name": "ruvnet",
     "url": "https://github.com/ruvnet"
