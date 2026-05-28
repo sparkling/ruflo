@@ -414,14 +414,26 @@ export async function createAgentFromTemplate(templateId: string): Promise<WasmA
 
 // ── RVF Container Operations ─────────────────────────────────
 
+export interface McpToolDescriptor {
+  name: string;
+  description: string;
+  input_schema: unknown;
+  group?: string;
+}
+
 /**
- * Build an RVF container with prompts, tools, and skills.
- * Uses the high-level RVF builder API (addPrompt, addTool, addSkill).
+ * Build an RVF container with prompts, tools, skills, and MCP tool descriptors.
+ * Uses the high-level RVF builder API (addPrompt, addTool, addSkill, addMcpTools).
+ *
+ * ADR-129 P2: mcpTools parameter wires builder.addMcpTools() so that
+ * composed agents can declare which of ruflo's MCP tools they need. Hand-ported
+ * from upstream `47a7825b0:agent-wasm.ts:445-471` per ADR-0266 Phase 3.
  */
 export async function buildRvfContainer(opts: {
   prompts?: Array<{ name: string; system_prompt: string; version: string }>;
   tools?: Array<{ name: string; description: string; parameters: unknown[]; returns: string }>;
   skills?: Array<{ name: string; description: string; trigger: string; content: string }>;
+  mcpTools?: McpToolDescriptor[];
 }): Promise<Uint8Array> {
   await initAgentWasm();
   const mod = await import('@ruvector/rvagent-wasm');
@@ -436,8 +448,88 @@ export async function buildRvfContainer(opts: {
   for (const s of opts.skills ?? []) {
     builder.addSkill(JSON.stringify(s));
   }
+  // ADR-129 P2: pass MCP tool descriptors into the RVF container so
+  // composed agents know which tools are available via the MCP server.
+  if (opts.mcpTools && opts.mcpTools.length > 0) {
+    builder.addMcpTools(JSON.stringify(opts.mcpTools));
+  }
 
   return builder.build();
+}
+
+// ── ADR-129 P3 / ADR-0266 Phase 3 — Additional gallery methods + reset ──────
+//
+// Hand-ported from upstream `47a7825b0:agent-wasm.ts:476-538`. These are thin
+// wrappers over the @ruvector/rvagent-wasm gallery handle (via `getGallery()`
+// memoized accessor above) plus the per-agent `reset()` mutator. Consumed by
+// the Phase 2/3 MCP tool handlers in `mcp-tools/wasm-agent-tools.ts`.
+
+/** Load a template as raw RVF bytes. */
+export async function galleryLoadRvf(id: string): Promise<Uint8Array> {
+  const gallery = await getGallery();
+  return gallery.loadRvf(id);
+}
+
+/** Apply configuration overrides to the active template. */
+export async function galleryConfigure(configJson: string): Promise<void> {
+  const gallery = await getGallery();
+  gallery.configure(configJson);
+}
+
+/** List templates filtered by category. */
+export async function galleryListByCategory(category: string): Promise<GalleryTemplate[]> {
+  const gallery = await getGallery();
+  return gallery.listByCategory(category);
+}
+
+/** Add a custom template to the gallery. */
+export async function galleryAddCustom(templateJson: string): Promise<void> {
+  const gallery = await getGallery();
+  gallery.addCustom(templateJson);
+}
+
+/** Remove a custom template by ID. */
+export async function galleryRemoveCustom(id: string): Promise<void> {
+  const gallery = await getGallery();
+  gallery.removeCustom(id);
+}
+
+/** Import custom templates from JSON. Returns the count imported. */
+export async function galleryImportCustom(templatesJson: string): Promise<number> {
+  const gallery = await getGallery();
+  // The d.ts says `importCustom(): boolean`, but upstream's wrapper returns
+  // the count; cast through unknown to honor the wider WASM-bridge runtime
+  // shape (the d.ts is a conservative stub).
+  return gallery.importCustom(templatesJson) as unknown as number;
+}
+
+/** Export all custom templates as JSON. */
+export async function galleryExportCustom(): Promise<unknown> {
+  const gallery = await getGallery();
+  return gallery.exportCustom();
+}
+
+/** Get the currently active template ID. */
+export async function galleryGetActive(): Promise<string | undefined> {
+  const gallery = await getGallery();
+  return gallery.getActive() as string | undefined;
+}
+
+/** Get configuration overrides for the active template. */
+export async function galleryGetConfig(): Promise<unknown> {
+  const gallery = await getGallery();
+  return gallery.getConfig();
+}
+
+/** Reset a WASM agent — clears messages and turn count. */
+export function resetWasmAgent(agentId: string): boolean {
+  const entry = agents.get(agentId);
+  if (!entry) return false;
+  try {
+    entry.agent.reset();
+    syncAgentInfo(entry);
+  } catch { /* best-effort */ }
+  return true;
 }
 
 /**
