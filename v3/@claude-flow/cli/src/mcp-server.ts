@@ -478,6 +478,23 @@ export class MCPServerManager extends EventEmitter {
     const { initProcessArchivist, ensureRvfWired } = await import('./memory/archivist-init.js');
     await initProcessArchivist();
 
+    // ADR-0267 fix (Option B): mark the memory-router as non-persistent so each
+    // routeMemoryOp / routeEmbeddingOp call releases the RVF flock after the op,
+    // allowing CLI memory commands and other MCP servers to acquire it between
+    // ops. The MCP server is long-lived like the worker daemon (which already
+    // does this at worker-daemon.ts:961-963); without this call, the eager
+    // warmUpRvfWithRetry below (and any subsequent tool dispatch) caches the
+    // RVF backend for the MCP server's lifetime and the flock is never
+    // released — `npx @sparkleideas/cli memory store ...` blocks indefinitely
+    // when the MCP server is running. Per `feedback-no-fallbacks` we set this
+    // BEFORE warmup so the warmup's transient open also releases.
+    {
+      const router = await import('./memory/memory-router.js');
+      if (typeof router.setRouterPersistent === 'function') {
+        router.setRouterPersistent(false);
+      }
+    }
+
     // ADR-0181 Phase 5 DA-L2 + Phase 6 CF#1: eager RVF warm-up at MCP server
     // startup with bounded retry-with-backoff.
     //
