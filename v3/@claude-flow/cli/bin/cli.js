@@ -81,16 +81,40 @@ if (isMCPMode) {
   const { initProcessArchivist, ensureRvfWired } = await import('../dist/src/memory/archivist-init.js');
   const { warmUpRvfWithRetry } = await import('../dist/src/mcp-server.js');
   let archivistFatal = null;
+  let rvfWarmedUp = false;
+  // ADR-0267 Option F (cli.js entry — the ACTUAL live path; bin/mcp-server.js
+  // is unreachable from `ruflo mcp start` because bin/ruflo.mjs proxies to
+  // bin/cli.js which handles MCP inline). The warmUpRvfWithRetry call was
+  // the lock holder: it acquires the RVF backend's kernel flock(LOCK_EX) and
+  // the MCP server keeps _isPersistent=true by default → flock held for the
+  // server's lifetime → CLI memory ops from a separate process block.
+  //
+  // Resolution: defer warmUpRvfWithRetry to the first `tools/call` that needs
+  // the RVF substrate. initProcessArchivist alone is safe (it does NOT open
+  // RVF — verified by reading the function body). A new lazy ensureRvfWarmedUp
+  // helper is invoked from the tools/call handler before callMCPTool, so RVF
+  // IS wired before any dispatch, but only when actually needed.
+  //
+  // Memoized via `rvfWarmedUp` flag: subsequent tools/call invocations are
+  // no-ops. The cli's `ensureRvfWired` also memoizes (rvfWirePromise) so this
+  // is belt-and-braces.
+  //
+  // Trade-off: ADR-0181 Phase 5 DA-L2's "fail loud at startup for corrupt RVF"
+  // surfaces in the first tool-call error frame instead of at MCP server
+  // startup. Equivalent for a long-lived server — the fault still surfaces
+  // LOUDLY. Operator UX unchanged: error reaches the MCP client through
+  // protocol-level error code -32603.
   const archivistReady = (async () => {
     await initProcessArchivist();
-    // Bounded retry-with-backoff (mirrors mcp-server.ts:505-510): transient FS
-    // errors get retries; a non-recoverable fault rejects and is surfaced at the
-    // tools/call boundary (feedback-best-effort-must-rethrow-fatals — never
-    // swallowed into a silent success).
-    await warmUpRvfWithRetry(sessionId, ensureRvfWired);
   })().catch((err) => {
     archivistFatal = err instanceof Error ? err : new Error(String(err));
   });
+  // Lazy RVF warmup — invoked from tools/call below on first need.
+  async function ensureRvfWarmedUp() {
+    if (rvfWarmedUp) return;
+    await warmUpRvfWithRetry(sessionId, ensureRvfWired);
+    rvfWarmedUp = true;
+  }
 
   // ADR-0204 (b) F-09-001: import validateSchema for tools/call pre-validation.
   // Uses the package subpath export "./*" -> "./dist/*.js" from @claude-flow/mcp/package.json.
@@ -229,12 +253,27 @@ if (isMCPMode) {
         // ADR-0204 (a) F-09-011: ensure the archivist substrate is wired before
         // dispatch (the route to archivist.dispatch()). The handshake above did
         // not wait for this; tool calls do. A fatal warm-up surfaces loudly here.
+        // ADR-0267 Option F: warmUpRvfWithRetry was deferred out of
+        // archivistReady to avoid holding the RVF flock for the server's
+        // lifetime; ensureRvfWarmedUp() triggers it lazily here on first need.
         await archivistReady;
         if (archivistFatal) {
           return {
             jsonrpc: '2.0',
             id: message.id,
             error: { code: -32603, message: `Archivist substrate failed to initialize: ${archivistFatal.message}` },
+          };
+        }
+        try {
+          await ensureRvfWarmedUp();
+        } catch (rvfErr) {
+          return {
+            jsonrpc: '2.0',
+            id: message.id,
+            error: {
+              code: -32603,
+              message: `RVF substrate failed to initialize: ${rvfErr instanceof Error ? rvfErr.message : String(rvfErr)}`,
+            },
           };
         }
 
