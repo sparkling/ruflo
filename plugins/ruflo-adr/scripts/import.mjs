@@ -131,6 +131,11 @@ function parseLinks(text, selfId) {
   if (fm) {
     for (const [field, relation] of [
       ['supersedes', 'supersedes'],
+      // ADR-0157 AC#4 — superseded-by is the inverse direction of supersedes
+      // (this ADR was superseded by ADR-NNNN; edge: NNNN -[supersedes]-> self).
+      // The adr-create template emits this field for ADRs that are explicitly
+      // marked superseded; importer MUST read it so the causal edge isn't lost.
+      ['superseded-by', 'supersedes-inverse'],
       ['amended-by', 'amends'],
       ['amends', 'amends'],
       ['related', 'related'],
@@ -140,6 +145,10 @@ function parseLinks(text, selfId) {
       const m = re.exec(fm[1]);
       if (m) for (const ref of extractAdrRefs(m[1])) {
         if (relation === 'supersedes') out.push({ from: ref, to: selfId, relation });
+        else if (relation === 'supersedes-inverse') {
+          // superseded-by: A → B means B supersedes A; edge is ref -[supersedes]-> self
+          out.push({ from: ref, to: selfId, relation: 'supersedes' });
+        }
         else out.push({ from: selfId, to: ref, relation });
       }
     }
