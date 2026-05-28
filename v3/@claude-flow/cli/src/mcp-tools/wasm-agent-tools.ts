@@ -17,6 +17,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSyn
 import { join, resolve } from 'node:path';
 import type { MCPTool } from './types.js';
 import { findProjectRoot } from './types.js';
+import { validateIdentifier } from './validate-input.js';
 
 async function loadAgentWasm() {
   const mod = await import('../ruvector/agent-wasm.js');
@@ -573,6 +574,113 @@ export const wasmAgentTools: MCPTool[] = [
           saveStore(store);
         });
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, agent: info, template: args.template }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
+      }
+    },
+  },
+
+  // ── ADR-129 P3 / ADR-0266 Phase 1 — Group 1 introspection (5 tools) ─────────
+  //
+  // Per ADR-0258 §Group 1: each handler's FIRST non-arg-parse statement is
+  // `await ensureLive(args.agentId as string)`. No `withStoreLock`. No
+  // re-snapshot. Pattern matches existing `wasm_agent_files` (`:485-494`).
+  // Handler bodies cribbed verbatim from upstream `47a7825b0:wasm-agent-tools
+  // .ts:437-531`, with `loadAgentWasm()` swapped for `ensureLive(...)` so the
+  // cold-process rehydrate path resolves before the live read.
+
+  {
+    name: 'wasm_agent_state',
+    description: 'Read the full internal state of a WASM agent (messages, turn count, config, stop status). Use when native Task is wrong because the agent runs in a sandboxed WASM runtime whose internal conversation history is not directly accessible from the host process.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { agentId: { type: 'string', description: 'WASM agent ID' } },
+      required: ['agentId'],
+    },
+    handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      try {
+        const wasm = await ensureLive(args.agentId as string);
+        const state = wasm.getWasmAgentState(args.agentId as string);
+        return { content: [{ type: 'text', text: JSON.stringify({ agentId: args.agentId, state }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'wasm_agent_todos',
+    description: 'Get the structured todo list of a WASM agent as JSON. Use when native Task is wrong because the todo state lives inside the sandboxed WASM runtime and is not visible to the host process.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { agentId: { type: 'string', description: 'WASM agent ID' } },
+      required: ['agentId'],
+    },
+    handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      try {
+        const wasm = await ensureLive(args.agentId as string);
+        const todos = wasm.getWasmAgentTodos(args.agentId as string);
+        return { content: [{ type: 'text', text: JSON.stringify({ agentId: args.agentId, todos }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'wasm_agent_tools',
+    description: 'List the tools registered on a WASM agent sandbox. Use when native Task is wrong because the tool registry lives inside the WASM runtime and cannot be inspected from the host via standard reflection.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { agentId: { type: 'string', description: 'WASM agent ID' } },
+      required: ['agentId'],
+    },
+    handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      try {
+        const wasm = await ensureLive(args.agentId as string);
+        const tools = wasm.getWasmAgentTools(args.agentId as string);
+        return { content: [{ type: 'text', text: JSON.stringify({ agentId: args.agentId, tools }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'wasm_agent_turn_count',
+    description: 'Return the current turn count of a WASM agent. Use when native Task is wrong because turn-limit enforcement and progress tracking must be polled from inside the sandboxed WASM runtime rather than inferred externally.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { agentId: { type: 'string', description: 'WASM agent ID' } },
+      required: ['agentId'],
+    },
+    handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      try {
+        const wasm = await ensureLive(args.agentId as string);
+        const info = wasm.getWasmAgent(args.agentId as string);
+        if (!info) return { content: [{ type: 'text', text: JSON.stringify({ error: `Agent not found: ${args.agentId}` }) }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify({ agentId: args.agentId, turnCount: info.turnCount }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'wasm_agent_is_stopped',
+    description: 'Check whether a WASM agent has reached its stop condition (max turns or explicit stop). Use when native Task is wrong because the stop condition is evaluated inside the WASM runtime and not observable from the host without an explicit query.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { agentId: { type: 'string', description: 'WASM agent ID' } },
+      required: ['agentId'],
+    },
+    handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      try {
+        const wasm = await ensureLive(args.agentId as string);
+        const info = wasm.getWasmAgent(args.agentId as string);
+        if (!info) return { content: [{ type: 'text', text: JSON.stringify({ error: `Agent not found: ${args.agentId}` }) }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify({ agentId: args.agentId, isStopped: info.isStopped }, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }], isError: true };
       }
