@@ -435,33 +435,33 @@ export class MCPServerManager extends EventEmitter {
       `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Starting in stdio mode`
     );
 
-    // ADR-0086 T2.7 + B3: router healthCheck replaces SQLite-based check
-    // ensureRouter() initialises RvfBackend; healthCheck() verifies it.
-    // Old checkMemoryInitialization() checked SQLite tables that RVF never
-    // creates, so it always returned { initialized: false } — bug B3.
-    try {
-      const { ensureRouter, healthCheck } = await import('./memory/memory-router.js');
-      const status = await healthCheck() as { available?: boolean; controllers?: number; error?: string };
-      if (!status.available) {
-        console.error(
-          `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Auto-initializing memory router...`
-        );
-        await ensureRouter();
-        console.error(
-          `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Memory router initialized`
-        );
-      } else {
-        console.error(
-          `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Memory router already available (${status.controllers ?? 0} controllers)`
-        );
-      }
-    } catch (memInitError) {
-      // Graceful degradation: server continues even if memory init fails.
-      // Memory tools will attempt lazy init on first call via ensureRouter().
-      console.error(
-        `[${new Date().toISOString()}] WARN [ruflo-mcp] (${sessionId}) Memory auto-init failed (tools will retry on first call): ${memInitError instanceof Error ? memInitError.message : String(memInitError)}`
-      );
-    }
+    // ADR-0267 fix (Option F): SKIP the eager memory-router init. Like
+    // warmUpRvfWithRetry below, `ensureRouter()` opens the RVF backend
+    // and the kernel flock(LOCK_EX) stays held for the MCP server's
+    // lifetime — blocking CLI memory operations from a separate process.
+    //
+    // Memory tools lazy-init on first call via routeMemoryOp's
+    // withRouter() wrapper (memory-router.ts:1068), so skipping the
+    // eager init here is operator-equivalent: the first MCP tool call
+    // that needs RVF triggers the open; the open is released on next
+    // CLI op via the same withRouter path. The fault-detection property
+    // (was: structural fault aborts MCP server startup) now surfaces in
+    // the first tool-call error frame — still LOUD, just timing-shifted.
+    //
+    // Per ADR-0267 §Pre-flight trace + Revision 2: this is the second
+    // half of Option F. The fork comment block on the prior memory-router
+    // init was preserved in git history; this comment replaces it for
+    // the active code path.
+    //
+    // The graceful-degradation try/catch is preserved too — memory init
+    // errors surface to the operator without killing the long-lived MCP
+    // server. The original block's `if (!status.available) ensureRouter()`
+    // pattern is deleted entirely: the lazy-init path inside
+    // routeMemoryOp's withRouter already does exactly this, so the eager
+    // wrap was duplicating the lazy mechanism.
+    console.error(
+      `[${new Date().toISOString()}] INFO [ruflo-mcp] (${sessionId}) Memory router init deferred to first tool call (ADR-0267 Option F)`
+    );
 
     // ADR-0181 Phase 1: feed the cli process's per-process Memory Archivist
     // before the MCP server goes live. This is a bare `await` — NOT inside the
