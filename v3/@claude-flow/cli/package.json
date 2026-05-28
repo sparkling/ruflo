@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/cli",
-  "version": "3.7.0-alpha.10-patch.353",
+  "version": "3.7.0-alpha.10-patch.354",
   "type": "module",
   "description": "Ruflo CLI - Enterprise AI agent orchestration with 60+ specialized agents, swarm coordination, MCP server, self-learning hooks, and vector memory for Claude Code",
   "main": "dist/src/index.js",
@@ -99,22 +99,22 @@
   "dependencies": {
     "@claude-flow/cli-core": "3.7.0-alpha.5-patch.146",
     "@claude-flow/mcp": "3.0.0-alpha.8-patch.596",
-    "@claude-flow/neural": "3.0.0-alpha.8-patch.353",
+    "@claude-flow/neural": "3.0.0-alpha.8-patch.354",
     "@claude-flow/shared": "3.0.0-alpha.7-patch.605",
     "@noble/ed25519": "^2.1.0",
-    "agentdb": "3.0.0-alpha.14-patch.365",
+    "agentdb": "3.0.0-alpha.14-patch.366",
     "semver": "^7.6.0"
   },
   "optionalDependencies": {
-    "@claude-flow/aidefence": "3.0.2-patch.876",
-    "@claude-flow/codex": "3.0.0-alpha.9-patch.921",
-    "@claude-flow/guidance": "3.0.0-alpha.3-patch.353",
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.353",
-    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.877",
+    "@claude-flow/aidefence": "3.0.2-patch.877",
+    "@claude-flow/codex": "3.0.0-alpha.9-patch.922",
+    "@claude-flow/guidance": "3.0.0-alpha.3-patch.354",
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.354",
+    "@claude-flow/plugin-gastown-bridge": "0.1.3-patch.878",
     "@claude-flow/security": "3.0.0-alpha.7-patch.135",
-    "@ruvector/attention": "0.1.4-patch.212",
+    "@ruvector/attention": "0.1.4-patch.213",
     "@ruvector/attention-darwin-arm64": "0.1.1-patch.165",
-    "@ruvector/core": "0.1.31-patch.243",
+    "@ruvector/core": "0.1.31-patch.244",
     "@ruvector/diskann": "0.1.0-patch.162",
     "@ruvector/graph-node": "2.0.3-patch.169",
     "@ruvector/learning-wasm": "0.1.29-patch.184",
@@ -124,7 +124,7 @@
     "@ruvector/ruvllm-wasm": "2.0.2-patch.56",
     "@ruvector/rvagent-wasm": "0.2.1-patch.184",
     "@ruvector/sona": "0.1.6-patch.171",
-    "agentic-flow": "2.0.2-alpha-patch.901",
+    "agentic-flow": "2.0.2-alpha-patch.902",
     "better-sqlite3": "^12.9.0"
   },
   "publishConfig": {
