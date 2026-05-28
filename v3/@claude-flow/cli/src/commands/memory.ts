@@ -187,6 +187,12 @@ const retrieveCommand: Command = {
       description: 'Memory namespace',
       type: 'string',
       default: 'default'
+    },
+    {
+      name: 'value-only',
+      description: 'Print only entry.content to stdout (pipe-friendly; no box, no banner). Trailing newline appended only when isTTY (ADR-0255 Phase 2).',
+      type: 'boolean',
+      default: false
     }
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
@@ -217,6 +223,15 @@ const retrieveCommand: Command = {
         namespace: string; key: string; content: string;
         accessCount: number; tags: string[]; hasEmbedding?: boolean;
       };
+
+      // ADR-0255 Decision #4 — pipe-friendly raw value stdout.
+      // No box, no banner, no decoration. Trailing newline only on TTY so
+      // piped output stays JSON.parse-clean for downstream consumers.
+      if (ctx.flags['value-only']) {
+        process.stdout.write(entry.content);
+        if (process.stdout.isTTY) process.stdout.write('\n');
+        return { success: true, data: entry };
+      }
 
       if (ctx.flags.format === 'json') {
         output.printJson(entry);
