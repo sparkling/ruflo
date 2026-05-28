@@ -478,36 +478,35 @@ export class MCPServerManager extends EventEmitter {
     const { initProcessArchivist, ensureRvfWired } = await import('./memory/archivist-init.js');
     await initProcessArchivist();
 
-    // ADR-0181 Phase 5 DA-L2 + Phase 6 CF#1: eager RVF warm-up at MCP server
-    // startup with bounded retry-with-backoff.
+    // ADR-0267 fix (Option F): SKIP the eager RVF warm-up here. The
+    // warmup acquires the RVF backend's kernel flock(LOCK_EX) and HOLDS
+    // it for the MCP server's lifetime because the Archivist's
+    // setRvfBackend installs the adapter against the cli's _storage
+    // global, and _storage stays cached with _isPersistent=true.
     //
-    // Two-part rationale:
-    //   1. Structural faults (corrupt `.rvf`, missing memory-router module)
-    //      should abort server startup loudly — the user gets a clear error
-    //      at launch, not a deferred per-tool failure hours later. Without
-    //      this eager call, the first MCP tool dispatch that needs RVF
-    //      would surface the fault, but the server would already be live
-    //      and the user has to dig through tool-call logs to find it.
-    //   2. Transient FS errors (EBUSY, EAGAIN, temporarily-locked file)
-    //      should NOT kill the long-lived MCP server. The L2 memo-only-
-    //      success policy clears `rvfWirePromise` on rejection so each
-    //      retry hits a fresh attempt. CF#1 closes the gap by retrying
-    //      here at startup as well — without retry the very first attempt
-    //      could lose to a brief lock and the server dies before the
-    //      runtime memo-clear policy ever gets a chance to help.
+    // The hold-for-lifetime is OS-kernel-level: CLI memory operations
+    // from a separate process block indefinitely on the flock — verified
+    // by ADR-0267 §Pre-flight trace + Revision 2 architectural analysis.
     //
-    // Discrimination posture (per `feedback-best-effort-must-rethrow-fatals`):
-    // recoverable error codes (EBUSY/EAGAIN/EBUSYISH) get bounded retries
-    // with linear backoff; everything else (corrupt-file errors, missing
-    // module, type errors) re-throws on first attempt and aborts startup.
-    // We never silently swallow a non-recoverable fatal as if it were
-    // recoverable.
-    try {
-      await warmUpRvfWithRetry(sessionId, ensureRvfWired);
-    } catch {
-      // FATAL diagnosis already emitted by warmUpRvfWithRetry's log sink.
-      process.exit(1);
-    }
+    // Trade-off accepted: ADR-0181 Phase 5 DA-L2's "fail loud at startup
+    // for corrupt-RVF structural faults" property is deferred to first
+    // dispatch instead. The dispatch path (routeMemoryOp through cli
+    // tools OR archivist.dispatch through plugin tools) lazy-installs
+    // the RVF backend via ensureRvfWired on first need; structural
+    // faults surface to the MCP client in the tool-call error frame at
+    // that point. The fault is still LOUD — it's just timing-shifted
+    // from startup to first-dispatch, which is operator-equivalent for
+    // a long-lived server.
+    //
+    // Per ADR-0267 Revision 2: this is Option F (not Option B which was
+    // architecturally unsound). The smoke at
+    // scripts/smoke-adr0267-rvf-lock.mjs in ruflo-patch is the canonical
+    // regression detector — it must flip FAIL→PASS when this fix lands.
+    //
+    // Preserves `ensureRvfWired` import binding so the helper stays
+    // available for first-dispatch lazy installation (the cli's
+    // memory-router calls it from ensureRouter on first use).
+    void ensureRvfWired; // intentional reference: keeps import live for the lazy-installer path
 
     console.error(JSON.stringify({
       arch: process.arch,
