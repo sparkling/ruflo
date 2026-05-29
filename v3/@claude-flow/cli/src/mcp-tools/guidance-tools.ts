@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 // ── Capability Catalog ──────────────────────────────────────
 
-interface CapabilityArea {
+export interface CapabilityArea {
   name: string;
   description: string;
   tools: string[];
@@ -27,29 +27,34 @@ interface CapabilityArea {
   whenToUse: string;
 }
 
-const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
+// ADR-0149: `tools` entries MUST be real registered MCP tool names (the
+// authoritative set is `listMCPTools()` from `../mcp-client.js`, assembled from
+// every `*-tools.ts` array). The drift test in
+// `__tests__/adr0149-guidance-coverage.test.ts` enforces catalog ⊆ registry and
+// FAILS on any phantom. Do not add a tool name here without a registered handler.
+export const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   'agent-management': {
     name: 'Agent Management',
     description: 'Spawn, manage, and monitor individual AI agents with lifecycle control.',
-    tools: ['agent_spawn', 'agent_list', 'agent_status', 'agent_stop', 'agent_metrics', 'agent_pool', 'agent_health', 'agent_logs'],
-    commands: ['agent spawn', 'agent list', 'agent status', 'agent stop', 'agent metrics', 'agent pool', 'agent health', 'agent logs'],
+    tools: ['agent_spawn', 'agent_list', 'agent_status', 'agent_terminate', 'agent_pool', 'agent_health', 'agent_update', 'agent_execute'],
+    commands: ['agent spawn', 'agent list', 'agent status', 'agent stop', 'agent pool', 'agent health'],
     agents: ['coder', 'tester', 'reviewer', 'researcher', 'planner'],
-    skills: [],
+    skills: ['agent-spawning', 'agent-coordination', 'agent-capabilities'],
     whenToUse: 'When you need to create or manage individual agents for specific tasks.',
   },
   'swarm-orchestration': {
     name: 'Swarm Orchestration',
     description: 'Multi-agent coordination with topology-aware communication and consensus.',
-    tools: ['swarm_init', 'swarm_status', 'swarm_spawn', 'swarm_terminate', 'swarm_topology', 'swarm_metrics'],
-    commands: ['swarm init', 'swarm status', 'swarm spawn', 'swarm terminate'],
+    tools: ['swarm_init', 'swarm_status', 'swarm_health', 'swarm_scale', 'swarm_shutdown', 'coordination_orchestrate', 'coordination_sync', 'coordination_topology'],
+    commands: ['swarm init', 'swarm status', 'swarm scale', 'swarm shutdown'],
     agents: ['hierarchical-coordinator', 'mesh-coordinator', 'adaptive-coordinator', 'queen-coordinator', 'collective-intelligence-coordinator'],
-    skills: ['swarm-orchestration', 'swarm-advanced', 'claude-flow-swarm'],
+    skills: ['swarm-orchestration', 'swarm-advanced'],
     whenToUse: 'When a task requires multiple agents working together (3+ files, features, refactoring).',
   },
   'memory-knowledge': {
     name: 'Memory & Knowledge',
     description: 'Persistent memory with HNSW vector search, AgentDB storage, and embeddings.',
-    tools: ['memory_store', 'memory_retrieve', 'memory_search', 'memory_list', 'memory_delete', 'memory_init', 'memory_export', 'memory_import', 'memory_stats', 'memory_compact', 'memory_namespace'],
+    tools: ['memory_store', 'memory_retrieve', 'memory_search', 'memory_search_unified', 'memory_list', 'memory_delete', 'memory_export', 'memory_stats', 'memory_migrate'],
     commands: ['memory store', 'memory retrieve', 'memory search', 'memory list', 'memory delete', 'memory init'],
     agents: ['swarm-memory-manager', 'v3-memory-specialist'],
     skills: ['v3-memory-unification', 'agentdb-advanced', 'agentdb-vector-search', 'agentdb-memory-patterns', 'agentdb-learning'],
@@ -67,7 +72,7 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   'hooks-automation': {
     name: 'Hooks & Automation',
     description: '17 lifecycle hooks + 12 background workers for automated learning and coordination.',
-    tools: ['hooks_pre_task', 'hooks_post_task', 'hooks_pre_edit', 'hooks_post_edit', 'hooks_route', 'hooks_explain'],
+    tools: ['hooks_pre-task', 'hooks_post-task', 'hooks_pre-edit', 'hooks_post-edit', 'hooks_route', 'hooks_explain', 'hooks_session-start', 'hooks_session-end', 'hooks_intelligence', 'hooks_worker-dispatch', 'hooks_worker-status', 'hooks_pretrain'],
     commands: [
       'hooks pre-task', 'hooks post-task', 'hooks pre-edit', 'hooks post-edit',
       'hooks session-start', 'hooks session-end', 'hooks route', 'hooks explain',
@@ -75,14 +80,14 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
       'hooks coverage-gaps', 'hooks coverage-route', 'hooks coverage-suggest',
       'hooks statusline', 'hooks progress',
     ],
-    agents: [],
+    agents: ['sona-learning-optimizer', 'safla-neural', 'smart-agent'],
     skills: ['hooks-automation'],
     whenToUse: 'When you need pre/post task hooks, background workers, coverage routing, or intelligence.',
   },
   'hive-mind': {
     name: 'Hive Mind Consensus',
     description: 'Queen-led Byzantine fault-tolerant distributed consensus with multiple strategies.',
-    tools: ['hive_mind_init', 'hive_mind_status', 'hive_mind_propose', 'hive_mind_vote', 'hive_mind_consensus', 'hive_mind_metrics'],
+    tools: ['hive-mind_init', 'hive-mind_spawn', 'hive-mind_status', 'hive-mind_consensus', 'hive-mind_broadcast', 'hive-mind_memory', 'hive-mind_join', 'hive-mind_leave', 'hive-mind_shutdown'],
     commands: ['hive-mind init', 'hive-mind status', 'hive-mind consensus', 'hive-mind sessions', 'hive-mind spawn', 'hive-mind stop'],
     agents: ['byzantine-coordinator', 'raft-manager', 'gossip-coordinator', 'crdt-synchronizer', 'quorum-manager'],
     skills: ['hive-mind-advanced'],
@@ -90,12 +95,12 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   },
   'security': {
     name: 'Security & Compliance',
-    description: 'Security scanning, CVE remediation, input validation, claims-based authorization.',
-    tools: ['security_scan', 'security_audit', 'security_cve', 'security_threats', 'security_validate', 'security_report', 'claims_check', 'claims_grant', 'claims_revoke', 'claims_list'],
-    commands: ['security scan', 'security audit', 'security cve', 'security threats', 'claims check', 'claims grant'],
+    description: 'AI-defence scanning (PII/prompt-injection), safety classification, and claims-based work coordination.',
+    tools: ['aidefence_scan', 'aidefence_analyze', 'aidefence_is_safe', 'aidefence_has_pii', 'aidefence_learn', 'aidefence_stats', 'claims_list', 'claims_status', 'claims_board'],
+    commands: ['security scan', 'claims list', 'claims status', 'claims board'],
     agents: ['v3-security-architect'],
     skills: ['v3-security-overhaul'],
-    whenToUse: 'When auditing code for vulnerabilities, managing permissions, or security reviews.',
+    whenToUse: 'When scanning input for PII or prompt-injection, classifying safety, or coordinating claimed work units.',
   },
   'performance': {
     name: 'Performance & Profiling',
@@ -109,7 +114,7 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   'github-integration': {
     name: 'GitHub Integration',
     description: 'PR management, code review, issue tracking, release automation, multi-repo coordination.',
-    tools: ['github_pr_manage', 'github_code_review', 'github_issue_track', 'github_repo_analyze', 'github_sync_coord', 'github_metrics'],
+    tools: ['github_pr_manage', 'github_issue_track', 'github_repo_analyze', 'github_workflow', 'github_metrics'],
     commands: [],
     agents: ['pr-manager', 'code-review-swarm', 'issue-tracker', 'release-manager', 'repo-architect', 'workflow-automation', 'multi-repo-swarm', 'project-board-sync', 'swarm-pr', 'swarm-issue', 'sync-coordinator', 'github-modes', 'release-swarm'],
     skills: ['github-release-management', 'github-workflow-automation', 'github-code-review', 'github-project-management', 'github-multi-repo'],
@@ -118,8 +123,8 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   'session-workflow': {
     name: 'Session & Workflow',
     description: 'Session state management, workflow execution, task lifecycle, and daemon scheduling.',
-    tools: ['session_start', 'session_end', 'session_restore', 'session_list', 'workflow_execute', 'workflow_create', 'task_create', 'task_assign', 'task_status'],
-    commands: ['session start', 'session end', 'session restore', 'workflow execute', 'workflow create', 'task create', 'daemon start', 'daemon stop'],
+    tools: ['session_save', 'session_restore', 'session_list', 'session_info', 'session_delete', 'workflow_execute', 'workflow_create', 'task_create', 'task_assign', 'task_status'],
+    commands: ['session save', 'session restore', 'session list', 'workflow execute', 'workflow create', 'task create', 'daemon start', 'daemon stop'],
     agents: [],
     skills: [],
     whenToUse: 'When managing long-running sessions, executing workflow templates, or scheduling tasks.',
@@ -127,8 +132,8 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   'embeddings-vectors': {
     name: 'Embeddings & Vector Search',
     description: 'Vector embeddings with SQLite, HNSW indexing, hyperbolic embeddings, ONNX integration.',
-    tools: ['embeddings_embed', 'embeddings_batch', 'embeddings_search', 'embeddings_init'],
-    commands: ['embeddings embed', 'embeddings batch', 'embeddings search', 'embeddings init'],
+    tools: ['embeddings_generate', 'embeddings_compare', 'embeddings_search', 'embeddings_init', 'embeddings_status', 'embeddings_hyperbolic', 'embeddings_neural'],
+    commands: ['embeddings embed', 'embeddings search', 'embeddings init'],
     agents: [],
     skills: ['agentdb-vector-search', 'agentdb-optimization'],
     whenToUse: 'When you need semantic search, document embedding, or vector similarity operations.',
@@ -145,20 +150,20 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   'ruvllm-inference': {
     name: 'RuVLLM Inference',
     description: 'WASM-based HNSW routing, SONA instant adaptation, MicroLoRA, chat formatting.',
-    tools: ['ruvllm_status', 'ruvllm_hnsw_create', 'ruvllm_sona_create', 'ruvllm_microlora_create', 'ruvllm_chat_format', 'ruvllm_kvcache_create'],
+    tools: ['ruvllm_status', 'ruvllm_hnsw_create', 'ruvllm_hnsw_add', 'ruvllm_hnsw_route', 'ruvllm_sona_create', 'ruvllm_sona_adapt', 'ruvllm_microlora_create', 'ruvllm_microlora_adapt', 'ruvllm_chat_format', 'ruvllm_generate_config'],
     commands: [],
     agents: [],
-    skills: [],
+    skills: ['ruvllm', 'chat-format', 'llm-config'],
     whenToUse: 'When you need WASM-native HNSW routing, SONA adaptation, or MicroLoRA fine-tuning.',
   },
   'code-analysis': {
     name: 'Code Analysis & Diff',
     description: 'AST analysis, diff classification, coverage routing, dependency graph analysis.',
-    tools: ['analyze_diff', 'analyze_coverage', 'analyze_graph'],
+    tools: ['analyze_diff', 'analyze_diff-classify', 'analyze_diff-risk', 'analyze_diff-reviewers', 'analyze_diff-stats', 'analyze_file-risk'],
     commands: [],
     agents: ['code-analyzer'],
     skills: ['verification-quality'],
-    whenToUse: 'When analyzing code quality, diffs, coverage gaps, or dependency graphs.',
+    whenToUse: 'When analyzing code quality, diffs, change risk, or reviewer routing.',
   },
   'sparc-methodology': {
     name: 'SPARC Methodology',
@@ -172,11 +177,88 @@ const CAPABILITY_CATALOG: Record<string, CapabilityArea> = {
   'config-system': {
     name: 'Configuration & System',
     description: 'Configuration management, provider setup, system diagnostics, shell completions.',
-    tools: ['config_get', 'config_set', 'config_list', 'config_provider'],
+    tools: ['config_get', 'config_set', 'config_list', 'config_import', 'config_export', 'config_reset'],
     commands: ['config get', 'config set', 'config list', 'config provider', 'doctor', 'status', 'providers list', 'completions'],
     agents: [],
     skills: [],
     whenToUse: 'When managing configuration, providers, or running diagnostics.',
+  },
+  // ── ADR-0149 Phase 2: previously-missing areas ──────────────
+  // Every `tools` entry below is a real registered MCP tool name (verified
+  // against `listMCPTools()`). Areas whose surface is plugin/skill/CLI-only
+  // (no registered MCP tool prefix) carry an empty `tools` array on purpose —
+  // see the per-area note. This keeps the ADR-0149 drift test green.
+  'agentdb': {
+    name: 'AgentDB Memory Controllers',
+    description: 'Direct AgentDB controllers: hierarchical/causal/reflexion memory, pattern store, semantic routing, embeddings, skills.',
+    tools: ['agentdb_health', 'agentdb_route', 'agentdb_semantic-route', 'agentdb_hierarchical-store', 'agentdb_hierarchical-recall', 'agentdb_causal-query', 'agentdb_causal-recall', 'agentdb_reflexion-store', 'agentdb_reflexion-retrieve', 'agentdb_pattern-store', 'agentdb_pattern-search', 'agentdb_context-synthesize', 'agentdb_embed', 'agentdb_consolidate', 'agentdb_skill_create', 'agentdb_skill_search', 'agentdb_controllers'],
+    commands: [],
+    agents: ['v3-memory-specialist', 'swarm-memory-manager'],
+    skills: ['agentdb-advanced', 'agentdb-vector-search', 'agentdb-memory-patterns', 'agentdb-learning'],
+    whenToUse: 'When you need direct AgentDB controller access: hierarchical/causal/reflexion memory, semantic routing, or skill storage.',
+  },
+  'task-management': {
+    name: 'Task Management',
+    description: 'Task lifecycle: create, assign, track, complete, and summarize work items.',
+    tools: ['task_create', 'task_assign', 'task_status', 'task_update', 'task_complete', 'task_cancel', 'task_list', 'task_summary'],
+    commands: ['task create', 'task list', 'task status'],
+    agents: ['planner', 'task-orchestrator'],
+    skills: ['task-orchestrate'],
+    whenToUse: 'When creating, assigning, tracking, or completing discrete task units.',
+  },
+  'aidefence': {
+    name: 'AI Defence',
+    description: 'Input safety: PII detection, prompt-injection scanning, safety classification, and adaptive learning.',
+    tools: ['aidefence_scan', 'aidefence_analyze', 'aidefence_is_safe', 'aidefence_has_pii', 'aidefence_learn', 'aidefence_stats'],
+    commands: ['security scan'],
+    agents: ['v3-security-architect'],
+    skills: ['v3-security-overhaul'],
+    whenToUse: 'When scanning untrusted input for PII or prompt-injection, or classifying content safety.',
+  },
+  'workflows': {
+    name: 'Workflows',
+    description: 'Workflow definition, execution, scheduling, and lifecycle control (pause/resume/cancel).',
+    tools: ['workflow_create', 'workflow_execute', 'workflow_run', 'workflow_status', 'workflow_list', 'workflow_pause', 'workflow_resume', 'workflow_cancel', 'workflow_delete', 'workflow_template'],
+    commands: ['workflow create', 'workflow execute', 'workflow list', 'workflow status'],
+    agents: ['workflow-automation'],
+    skills: ['workflow-create', 'workflow-run'],
+    whenToUse: 'When defining, running, or scheduling multi-step workflow templates.',
+  },
+  'observability': {
+    name: 'Observability & Telemetry',
+    description: 'System/agent metrics, health, status, and performance reporting for monitoring.',
+    tools: ['system_metrics', 'system_status', 'system_health', 'system_info', 'performance_metrics', 'performance_report', 'progress_summary', 'progress_check'],
+    commands: ['status', 'status --watch'],
+    agents: [],
+    skills: ['observe-metrics', 'observe-trace'],
+    whenToUse: 'When monitoring system/agent health, collecting metrics, or tracing execution.',
+  },
+  'federation': {
+    name: 'Cross-Installation Federation',
+    description: 'Federate agents and memory across ruflo installations. Plugin/CLI surface — no dedicated MCP tool prefix is registered yet.',
+    tools: [],
+    commands: ['federation init', 'federation status', 'federation audit'],
+    agents: [],
+    skills: ['federation-init', 'federation-status', 'federation-audit'],
+    whenToUse: 'When coordinating agents or memory across multiple ruflo installations.',
+  },
+  'knowledge-graph': {
+    name: 'Knowledge Graph',
+    description: 'Entity/relation extraction and graph traversal. Served via the ruflo-knowledge-graph plugin/skills and agentdb_graph_* controllers.',
+    tools: ['agentdb_graph_node_create', 'agentdb_graph_node_get', 'agentdb_graph_edge_create', 'agentdb_graph-query', 'agentdb_graph-pathfinder'],
+    commands: [],
+    agents: [],
+    skills: ['kg-extract', 'kg-traverse'],
+    whenToUse: 'When extracting entities/relations from source or traversing the knowledge graph.',
+  },
+  'rvf': {
+    name: 'RVF Memory',
+    description: 'RuVector Format memory store management. Plugin/CLI surface — no dedicated MCP tool prefix is registered yet (RVF is driven through memory_* and the ruflo-rvf plugin).',
+    tools: [],
+    commands: ['memory list', 'memory stats'],
+    agents: [],
+    skills: ['rvf-manage', 'session-persist'],
+    whenToUse: 'When inspecting RVF memory entries, stats, or session-scoped vector storage.',
   },
 };
 
