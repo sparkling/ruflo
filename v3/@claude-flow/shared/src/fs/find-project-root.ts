@@ -98,15 +98,24 @@ export function findProjectRoot(startDir?: string): string {
 }
 
 /**
- * ADR-0137 Part 2 — runtime write-path guard.
+ * ADR-0137 Part 2 — runtime write-path guard (OPT-IN).
  *
- * Assert that `targetPath` is anchored at the project root. Throws a fail-loud
- * error (per `feedback-no-fallbacks.md`) when a storage write targets a path
- * outside the resolved root — the signature of a cwd-anchoring regression that
- * would create a stray `.claude-flow/` / `.swarm/` / `.claude/` directory.
+ * Asserts `targetPath` is anchored at the project root and throws a fail-loud
+ * `[adr-0137]` error otherwise — but only when `RUFLO_ADR0137_ENFORCE=1`.
  *
- * Escape hatch: set `RUFLO_ADR0137_ENFORCE=0` to downgrade the throw to a
- * `console.warn` (emergency disable only — leaves the bug uncaught).
+ * Why opt-in (deviation from ADR-0137's "always-on after P4"): at the storage
+ * layer a legitimate out-of-root write (test temp dirs via `os.tmpdir()`, a
+ * user who configures storage outside the repo) is indistinguishable from a
+ * cwd-anchoring bug — both are absolute paths outside the root. A default-on
+ * hard guard therefore produces false positives (it breaks every temp-dir
+ * backend test) AND, because a stray under a project *subdir* is still "under
+ * root", false negatives. So the sound enforcement of ADR-0137 lives elsewhere:
+ *   - Part 1 — the call-site eradication (no handler anchors on process.cwd()),
+ *     enforced statically by `scripts/check-no-cwd-in-handlers.sh`.
+ *   - Part 3 — `lib/acceptance-adr0137-checks.sh` runs real CLI commands from
+ *     non-root cwds and walks the whole tree asserting zero stray `.claude-flow/`.
+ * This guard is the optional CI/dev regression net: set `RUFLO_ADR0137_ENFORCE=1`
+ * in a controlled project-root context to make any surviving violation fail loud.
  *
  * @param targetPath  The path about to be written (absolute or relative).
  * @param root        Resolved project root (defaults to `findProjectRoot()`).
@@ -115,20 +124,19 @@ export function assertProjectRootAnchored(
   targetPath: string,
   root: string = findProjectRoot(),
 ): void {
+  // Off unless explicitly enabled — see the soundness note above.
+  if (process.env.RUFLO_ADR0137_ENFORCE !== '1') {
+    return;
+  }
+
   const abs = resolve(targetPath);
   const resolvedRoot = resolve(root);
   if (abs === resolvedRoot || abs.startsWith(resolvedRoot + sep)) {
     return;
   }
 
-  const message =
+  throw new Error(
     `[adr-0137] storage write to '${abs}' is not anchored at project root ` +
-    `'${resolvedRoot}'. This indicates a cwd-anchoring violation. See ADR-0137.`;
-
-  if (process.env.RUFLO_ADR0137_ENFORCE === '0') {
-    console.warn(`${message} (enforcement disabled via RUFLO_ADR0137_ENFORCE=0)`);
-    return;
-  }
-
-  throw new Error(message);
+    `'${resolvedRoot}'. This indicates a cwd-anchoring violation. See ADR-0137.`,
+  );
 }
