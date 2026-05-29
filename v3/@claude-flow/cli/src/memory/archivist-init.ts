@@ -508,6 +508,9 @@ function makeCliReflexionStoreWriter(): ReflexionStoreWriter {
           sessionId: input.sessionId,
           session_id: input.sessionId, // back-compat
           task: input.task,
+          taskType: input.taskType, // ADR-0268
+          output: input.output, // ADR-0268
+          code: input.code, // ADR-0268
           reward: input.reward,
           success: input.success,
         });
