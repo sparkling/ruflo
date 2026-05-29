@@ -743,6 +743,65 @@ describe('MCP Tools Deep Test Suite', () => {
       const result: any = await tool.handler({ action: 'list' });
       expect(result.action).toBe('list');
     });
+
+    // ADR-0140 Piece 5 (see ADR-0270): dedicated handler-invocation coverage for
+    // the previously-untested join / leave / broadcast tools, parallel to the
+    // _init / _status / _consensus blocks above and the _spawn / _shutdown /
+    // _memory coverage in the ADR-0108 / ADR-0122/0123/0131 blocks below.
+    // (_memory is already covered there, so it is intentionally not re-tested.)
+    const hmTool = (name: string) => hiveMindTools.find(t => t.name === name)!;
+
+    it('hive-mind_join adds an agent to an initialized hive', async () => {
+      await hmTool('hive-mind_init').handler({ topology: 'mesh' });
+      const result: any = await hmTool('hive-mind_join').handler({
+        agentId: 'agent-join-1', role: 'specialist',
+      });
+      expect(result.success).toBe(true);
+      expect(result.agentId).toBe('agent-join-1');
+      expect(result.role).toBe('specialist');
+      expect(result.totalWorkers).toBeGreaterThanOrEqual(1);
+    });
+
+    it('hive-mind_join fails loud when the hive is not initialized', async () => {
+      await hmTool('hive-mind_shutdown').handler({ force: true });
+      const result: any = await hmTool('hive-mind_join').handler({ agentId: 'agent-x' });
+      expect(result.success).toBe(false);
+      expect(String(result.error)).toMatch(/not initialized/i);
+    });
+
+    it('hive-mind_leave removes a joined agent', async () => {
+      await hmTool('hive-mind_init').handler({ topology: 'mesh' });
+      await hmTool('hive-mind_join').handler({ agentId: 'agent-leave-1' });
+      const result: any = await hmTool('hive-mind_leave').handler({ agentId: 'agent-leave-1' });
+      expect(result.success).toBe(true);
+      expect(result.agentId).toBe('agent-leave-1');
+      expect(typeof result.remainingWorkers).toBe('number');
+    });
+
+    it('hive-mind_leave returns failure for an agent not in the hive', async () => {
+      await hmTool('hive-mind_init').handler({ topology: 'mesh' });
+      const result: any = await hmTool('hive-mind_leave').handler({ agentId: 'never-joined' });
+      expect(result.success).toBe(false);
+      expect(String(result.error)).toMatch(/not in hive/i);
+    });
+
+    it('hive-mind_broadcast delivers to workers and returns a messageId', async () => {
+      await hmTool('hive-mind_init').handler({ topology: 'mesh' });
+      const result: any = await hmTool('hive-mind_broadcast').handler({
+        message: 'all-hands', priority: 'high',
+      });
+      expect(result.success).toBe(true);
+      expect(typeof result.messageId).toBe('string');
+      expect(result.priority).toBe('high');
+      expect(typeof result.recipients).toBe('number');
+    });
+
+    it('hive-mind_broadcast fails loud when the hive is not initialized', async () => {
+      await hmTool('hive-mind_shutdown').handler({ force: true });
+      const result: any = await hmTool('hive-mind_broadcast').handler({ message: 'x' });
+      expect(result.success).toBe(false);
+      expect(String(result.error)).toMatch(/not initialized/i);
+    });
   });
 
   // --------------------------------------------------------------------------
