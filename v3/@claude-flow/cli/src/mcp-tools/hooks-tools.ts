@@ -1711,6 +1711,53 @@ export const hooksPostTask: MCPTool = {
       }
     }
 
+    // ADR-0268: record the task episode — the reward-bearing write half of the
+    // skill-promotion flywheel (upstream ADR-053 #1209 "post-task hook record"
+    // intent; the fork's analogue of upstream postTask(task, result)). task_type
+    // is derived symmetrically to the executeAgentTask retrieve side so promoted
+    // skills are found again. Reward integrity (skeptic R3): only an EXPLICITLY
+    // provided quality is promotion-eligible; an absent/defaulted quality records
+    // a sub-threshold reward so the 0.85 default can't auto-clear minReward (0.7)
+    // and manufacture a skill from a single run. Re-throws on fatal per
+    // feedback-best-effort-must-rethrow-fatals (no silent swallow).
+    try {
+      const { getProcessArchivist, ensureSqliteWired } = await import('../memory/archivist-init.js');
+      const { deriveTaskType } = await import('../learning/derive-task-type.js');
+      const taskText = (params.task as string) || taskId;
+      const taskType = deriveTaskType({
+        taskType: params.taskType as string | undefined,
+        type: params.type as string | undefined,
+        agentType: typeof params.agent === 'string' && params.agent ? params.agent : undefined,
+        description: taskText,
+      });
+      const qualityProvided = params.quality !== undefined && params.quality !== null;
+      const episodeReward = qualityProvided ? quality : success ? 0.6 : 0.2;
+      await ensureSqliteWired();
+      await (await getProcessArchivist()).dispatch(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        'agentdb_reflexion_store' as any,
+        {
+          session_id: (params.sessionId as string) || taskId,
+          task: taskText,
+          task_type: taskType,
+          output: (params.output as string) || undefined,
+          reward: episodeReward,
+          success,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      );
+    } catch (err) {
+      // ADR-0268 / skeptic R5: the episode record is a learning enhancement on
+      // the post-task hot path — surface the failure (no silent swallow per
+      // ADR-0082) but do NOT abort post-task over a learning write. This is not
+      // data-integrity, so it's discriminating-non-fatal per
+      // feedback-best-effort-must-rethrow-fatals.
+      console.warn(
+        `[ADR-0268] hooks_post-task episode record failed (non-blocking): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     // Persist routing outcome for runtime learning (file-based, always reliable)
     const taskText = (params.task as string) || '';
     const outcomeKeywords = extractKeywords(taskText);

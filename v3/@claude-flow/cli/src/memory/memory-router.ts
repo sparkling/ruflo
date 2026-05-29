@@ -2279,6 +2279,29 @@ export async function routeSessionOp(op: SessionOp): Promise<MemoryResult> {
         } catch { /* non-fatal */ }
       }
 
+      // ADR-0268: batch skill promotion at the session boundary — the promote
+      // half of the autonomous flywheel. consolidateEpisodesIntoSkills' built-in
+      // minAttempts(3)/minReward(0.7) gate is the trustworthiness guard (skeptic
+      // R2). Direct controller call matching the causal consolidation above.
+      // Non-fatal but SURFACED (warn, not a silent swallow per ADR-0082) — a
+      // deferred promotion re-runs next session (idempotent by skills.name), so
+      // it must not fail session-end.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const skillsCtrl = await getController<any>('skills');
+      if (skillsCtrl && typeof skillsCtrl.consolidateEpisodesIntoSkills === 'function') {
+        try {
+          const consolidation = await skillsCtrl.consolidateEpisodesIntoSkills({});
+          if (consolidation && (consolidation.created > 0 || consolidation.updated > 0)) {
+            controller += '+skills';
+          }
+        } catch (err) {
+          console.warn(
+            '[ADR-0268] session-end skill consolidation failed (non-blocking):',
+            (err as Error)?.message,
+          );
+        }
+      }
+
       return { success: true, controller, persisted };
     }
     default:
