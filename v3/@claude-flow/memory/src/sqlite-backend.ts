@@ -10,6 +10,7 @@
 
 import { EventEmitter } from 'node:events';
 import type Database from 'better-sqlite3';
+import { assertProjectRootAnchored } from '@claude-flow/shared/fs';
 import { MEMORY_ENTRIES_DDL, MEMORY_ENTRIES_INDEXES, MEMORY_EMBEDDINGS_DDL } from './memory-schema.js';
 import { safeJsonParse } from './json-security.js';
 
@@ -123,6 +124,13 @@ export class SQLiteBackend extends EventEmitter implements IMemoryBackend {
         "Install it with `npm i better-sqlite3` or use a different DatabaseProvider " +
         "(sql.js / rvf / json). Original error: " + (err instanceof Error ? err.message : String(err))
       );
+    }
+
+    // ADR-0137 Part 2: runtime write-path guard. Fail loud if the SQLite file
+    // would be created outside the project root (cwd-anchoring regression).
+    // `:memory:` is exempt (no on-disk artifact).
+    if (this.config.databasePath !== ':memory:') {
+      assertProjectRootAnchored(this.config.databasePath);
     }
 
     // Open database connection

@@ -10,6 +10,7 @@ import { callMCPTool, MCPClientError } from '../mcp-client.js';
 import { wasmSubcommands } from './agent-wasm.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 
 /**
  * Update swarm-activity.json metrics after agent count changes.
@@ -17,7 +18,7 @@ import * as path from 'path';
  */
 function updateSwarmActivityMetrics(agentCountDelta: number): void {
   try {
-    const metricsDir = path.join(process.cwd(), '.claude-flow', 'metrics'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const metricsDir = path.join(findProjectRoot(), '.claude-flow', 'metrics'); // ADR-0137: anchor metrics at project root, not cwd
     const activityPath = path.join(metricsDir, 'swarm-activity.json');
 
     let data: Record<string, unknown> = {
@@ -506,7 +507,7 @@ const metricsCommand: Command = {
     const typeCounts: Record<string, { count: number; tasks: number; success: number }> = {};
 
     // Read swarm agent state
-    const swarmDir = join(process.cwd(), '.swarm'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const swarmDir = join(findProjectRoot(), '.swarm'); // ADR-0137: anchor .swarm at project root, not cwd
     const agentsDir = join(swarmDir, 'agents');
     if (existsSync(agentsDir)) {
       try {

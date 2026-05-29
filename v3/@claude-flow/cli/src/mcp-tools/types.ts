@@ -4,10 +4,6 @@
  * Local type definitions to avoid external imports outside package boundary.
  */
 
-import { existsSync, mkdirSync, appendFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
-
 export interface MCPToolInputSchema {
   type: 'object';
   properties: Record<string, unknown>;
@@ -25,52 +21,13 @@ export interface MCPToolResult {
 }
 
 /**
- * Maximum parent-directory walk depth. 32 covers any real-world repo layout;
- * monorepos top out at ~12, deeply nested monorepos at ~20.
+ * ADR-0137: `findProjectRoot()` was relocated to `@claude-flow/shared` so the
+ * memory package (which cannot import from cli — that inverts the dependency
+ * graph) can share the same primitive. Re-exported here so every existing
+ * `import { findProjectRoot } from '.../mcp-tools/types.js'` callsite and the
+ * paired test keep resolving unchanged. See ADR-0100 for the marker rules.
  */
-const MAX_WALK_DEPTH = 32;
-
-/**
- * ADR-0100: find the nearest project root by walking upward from `startDir`
- * (or process.cwd()/CLAUDE_FLOW_CWD if omitted). Per-invocation — never cache
- * at module load; Claude Code CWD drifts mid-session and a cached root will
- * be stale.
- *
- * Marker priority (first match wins):
- *   1. `.ruflo-project` sentinel — explicit contract
- *   2. `CLAUDE.md` AND sibling `.claude/` — init'd project (BOTH required to
- *      skip docs/CLAUDE.md false-positives)
- *   3. `.git/` — generic repo fallback
- *   4. No marker → warn (stderr AND persistent log) + return startDir
- *
- * See docs/adr/ADR-0100-project-root-resolution.md for full rationale and
- * third-order adversarial-review outcomes. See upstream reproduction:
- * https://github.com/ruvnet/ruflo/issues/1639
- */
-export function findProjectRoot(startDir?: string): string {
-  const start = startDir ?? process.env.CLAUDE_FLOW_CWD ?? process.cwd();
-
-  let dir = start;
-  for (let i = 0; i < MAX_WALK_DEPTH; i++) {
-    if (existsSync(join(dir, '.ruflo-project'))) return dir;
-    if (existsSync(join(dir, 'CLAUDE.md')) && existsSync(join(dir, '.claude'))) return dir;
-    if (existsSync(join(dir, '.git'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  const msg = `[ruflo] No project root marker found from ${start}; falling back to CWD. Consider 'ruflo init' or creating '.ruflo-project'.`;
-  console.warn(msg);
-  try {
-    const logPath = join(homedir(), '.ruflo', 'resolver-warnings.log');
-    mkdirSync(dirname(logPath), { recursive: true });
-    appendFileSync(logPath, `${new Date().toISOString()} ${msg}\n`);
-  } catch {
-    // best-effort — resolver MUST NOT throw
-  }
-  return start;
-}
+export { findProjectRoot, assertProjectRootAnchored } from '@claude-flow/shared/fs';
 
 /**
  * @deprecated Use findProjectRoot() for ANY artifact/storage path.

@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile, writeFile, mkdir, rename, appendFile, unlink, open } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { assertProjectRootAnchored } from '@claude-flow/shared/fs';
 import type {
   IMemoryBackend,
   MemoryEntry,
@@ -250,6 +251,13 @@ export class RvfBackend implements IMemoryBackend {
       walCompactionThreshold: config.walCompactionThreshold ?? DEFAULT_WAL_COMPACTION_THRESHOLD,
     };
     validatePath(this.config.databasePath);
+    // ADR-0137 Part 2: runtime write-path guard. Every RVF write (WAL, lock,
+    // .rvf, .meta) is derived from databasePath, so anchoring it at the project
+    // root here fail-loud-rejects a cwd-anchoring regression before any file is
+    // created. `:memory:` is exempt (no on-disk artifact).
+    if (this.config.databasePath !== ':memory:') {
+      assertProjectRootAnchored(this.config.databasePath);
+    }
     // ADR-0095 amendment (2026-04-30, t3-2 fix): JS-side advisory lock
     // path is `.jslock`, NOT `.lock`. The native rvf-runtime crate
     // (forks/ruvector/crates/rvf/rvf-runtime/src/locking.rs lock_path_for)

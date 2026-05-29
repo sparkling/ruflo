@@ -51,7 +51,7 @@ const CONFIG = {
   maxAgents: ${maxAgents},
 };
 
-const CWD = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+const CWD = process.cwd(); // adr-0100-allow: intentional-cwd — emitted inside a generated statusline script that displays the user's current directory by design
 
 // ANSI colors
 const c = {

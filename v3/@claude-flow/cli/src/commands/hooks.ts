@@ -10,6 +10,7 @@ import { callMCPTool, MCPClientError } from '../mcp-client.js';
 import { storeCommand } from './transfer-store.js';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 
 /**
  * #1686 — `?? 0` only defaults null/undefined; NaN slips through and
@@ -54,7 +55,7 @@ interface CoverageData {
  * 3. .nyc_output/out.json (nyc)
  */
 function readCoverageFromDisk(): CoverageData {
-  const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  const cwd = findProjectRoot(); // ADR-0137: anchor coverage lookup at project root, not cwd
   const noData: CoverageData = {
     found: false,
     source: 'none',
@@ -4049,12 +4050,16 @@ const statuslineCommand: Command = {
     const fs = await import('fs');
     const path = await import('path');
     const { execSync } = await import('child_process');
+    // ADR-0137: resolve project root once; every statusline read below anchors
+    // here instead of the (possibly subdir) cwd, so `hooks statusline` from a
+    // subdirectory still reads the project's .claude-flow/.swarm/.claude state.
+    const projectRoot = findProjectRoot();
 
     // Get learning stats from memory database
     function getLearningStats() {
       const memoryPaths = [
-        path.join(process.cwd(), '.swarm', 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        path.join(process.cwd(), '.claude', 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+        path.join(projectRoot, '.swarm', 'memory.db'), // ADR-0137: anchored at project root
+        path.join(projectRoot, '.claude', 'memory.db'), // ADR-0137: anchored at project root
       ];
 
       let patterns = 0;
@@ -4076,7 +4081,7 @@ const statuslineCommand: Command = {
         }
       }
 
-      const sessionsPath = path.join(process.cwd(), '.claude', 'sessions'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const sessionsPath = path.join(projectRoot, '.claude', 'sessions'); // ADR-0137: anchored at project root
       if (fs.existsSync(sessionsPath)) {
         try {
           const sessionFiles = fs.readdirSync(sessionsPath).filter((f: string) => f.endsWith('.json'));
@@ -4107,7 +4112,7 @@ const statuslineCommand: Command = {
 
     // Get security status
     function getSecurityStatus() {
-      const scanResultsPath = path.join(process.cwd(), '.claude', 'security-scans'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const scanResultsPath = path.join(projectRoot, '.claude', 'security-scans'); // ADR-0137: anchored at project root
       let cvesFixed = 0;
       const totalCves = 3;
 
@@ -4120,7 +4125,7 @@ const statuslineCommand: Command = {
         }
       }
 
-      const auditPath = path.join(process.cwd(), '.swarm', 'security'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const auditPath = path.join(projectRoot, '.swarm', 'security'); // ADR-0137: anchored at project root
       if (fs.existsSync(auditPath)) {
         try {
           const audits = fs.readdirSync(auditPath).filter((f: string) => f.includes('audit'));
@@ -4172,9 +4177,9 @@ const statuslineCommand: Command = {
 
       // 1. Check learning.json for REAL intelligence metrics first
       const learningJsonPaths = [
-        path.join(process.cwd(), '.claude-flow', 'learning.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        path.join(process.cwd(), '.claude', '.claude-flow', 'learning.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        path.join(process.cwd(), '.swarm', 'learning.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+        path.join(projectRoot, '.claude-flow', 'learning.json'), // ADR-0137: anchored at project root
+        path.join(projectRoot, '.claude', '.claude-flow', 'learning.json'), // ADR-0137: anchored at project root
+        path.join(projectRoot, '.swarm', 'learning.json'), // ADR-0137: anchored at project root
       ];
       for (const lPath of learningJsonPaths) {
         if (fs.existsSync(lPath)) {
@@ -4199,21 +4204,21 @@ const statuslineCommand: Command = {
       if (intelligencePct === 0) {
         let maturityScore = 0;
         // Check for key project files/dirs
-        if (fs.existsSync(path.join(process.cwd(), '.claude'))) maturityScore += 15; // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        if (fs.existsSync(path.join(process.cwd(), '.claude-flow'))) maturityScore += 15; // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        if (fs.existsSync(path.join(process.cwd(), 'CLAUDE.md'))) maturityScore += 10; // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        if (fs.existsSync(path.join(process.cwd(), 'claude-flow.config.json'))) maturityScore += 10; // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        if (fs.existsSync(path.join(process.cwd(), '.swarm'))) maturityScore += 10; // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+        if (fs.existsSync(path.join(projectRoot, '.claude'))) maturityScore += 15; // ADR-0137: anchored at project root
+        if (fs.existsSync(path.join(projectRoot, '.claude-flow'))) maturityScore += 15; // ADR-0137: anchored at project root
+        if (fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))) maturityScore += 10; // ADR-0137: anchored at project root
+        if (fs.existsSync(path.join(projectRoot, 'claude-flow.config.json'))) maturityScore += 10; // ADR-0137: anchored at project root
+        if (fs.existsSync(path.join(projectRoot, '.swarm'))) maturityScore += 10; // ADR-0137: anchored at project root
         // Check for test files
         const testDirs = ['tests', '__tests__', 'test', 'v3/__tests__'];
         for (const dir of testDirs) {
-          if (fs.existsSync(path.join(process.cwd(), dir))) { // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+          if (fs.existsSync(path.join(projectRoot, dir))) { // ADR-0137: anchored at project root
             maturityScore += 10;
             break;
           }
         }
         // Check for hooks config
-        if (fs.existsSync(path.join(process.cwd(), '.claude', 'settings.json'))) maturityScore += 10; // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+        if (fs.existsSync(path.join(projectRoot, '.claude', 'settings.json'))) maturityScore += 10; // ADR-0137: anchored at project root
         intelligencePct = Math.min(100, maturityScore);
       }
 
@@ -4316,7 +4321,7 @@ const statuslineCommand: Command = {
 
     // Get hooks stats
     const hooksStats = { enabled: 0, total: 17 };
-    const settingsPath = path.join(process.cwd(), '.claude', 'settings.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const settingsPath = path.join(projectRoot, '.claude', 'settings.json'); // ADR-0137: anchored at project root
     if (fs.existsSync(settingsPath)) {
       try {
         const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
@@ -4331,13 +4336,13 @@ const statuslineCommand: Command = {
 
     // Check for direct database files first
     const dbPaths = [
-      path.join(process.cwd(), '.swarm', 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), '.claude-flow', 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), '.claude', 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), 'data', 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), '.agentdb', 'memory.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), '.claude-flow', 'memory', 'agentdb.db'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      path.join(projectRoot, '.swarm', 'memory.db'), // ADR-0137: anchored at project root
+      path.join(projectRoot, '.claude-flow', 'memory.db'), // ADR-0137: anchored at project root
+      path.join(projectRoot, '.claude', 'memory.db'), // ADR-0137: anchored at project root
+      path.join(projectRoot, 'data', 'memory.db'), // ADR-0137: anchored at project root
+      path.join(projectRoot, 'memory.db'), // ADR-0137: anchored at project root
+      path.join(projectRoot, '.agentdb', 'memory.db'), // ADR-0137: anchored at project root
+      path.join(projectRoot, '.claude-flow', 'memory', 'agentdb.db'), // ADR-0137: anchored at project root
     ];
     for (const dbPath of dbPaths) {
       if (fs.existsSync(dbPath)) {
@@ -4354,10 +4359,10 @@ const statuslineCommand: Command = {
     // Check for AgentDB directories if no direct db found
     if (agentdbStats.vectorCount === 0) {
       const agentdbDirs = [
-        path.join(process.cwd(), '.claude-flow', 'agentdb'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        path.join(process.cwd(), '.swarm', 'agentdb'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        path.join(process.cwd(), 'data', 'agentdb'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        path.join(process.cwd(), '.agentdb'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+        path.join(projectRoot, '.claude-flow', 'agentdb'), // ADR-0137: anchored at project root
+        path.join(projectRoot, '.swarm', 'agentdb'), // ADR-0137: anchored at project root
+        path.join(projectRoot, 'data', 'agentdb'), // ADR-0137: anchored at project root
+        path.join(projectRoot, '.agentdb'), // ADR-0137: anchored at project root
       ];
       for (const dir of agentdbDirs) {
         if (fs.existsSync(dir)) {
@@ -4380,9 +4385,9 @@ const statuslineCommand: Command = {
 
     // Check for HNSW index files
     const hnswPaths = [
-      path.join(process.cwd(), '.claude-flow', 'hnsw'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), '.swarm', 'hnsw'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), 'data', 'hnsw'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      path.join(projectRoot, '.claude-flow', 'hnsw'), // ADR-0137: anchored at project root
+      path.join(projectRoot, '.swarm', 'hnsw'), // ADR-0137: anchored at project root
+      path.join(projectRoot, 'data', 'hnsw'), // ADR-0137: anchored at project root
     ];
     for (const hnswPath of hnswPaths) {
       if (fs.existsSync(hnswPath)) {
@@ -4401,7 +4406,7 @@ const statuslineCommand: Command = {
     }
 
     // Check for vectors.json file
-    const vectorsPath = path.join(process.cwd(), '.claude-flow', 'vectors.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const vectorsPath = path.join(projectRoot, '.claude-flow', 'vectors.json'); // ADR-0137: anchored at project root
     if (fs.existsSync(vectorsPath) && agentdbStats.vectorCount === 0) {
       try {
         const data = JSON.parse(fs.readFileSync(vectorsPath, 'utf-8'));
@@ -4417,7 +4422,7 @@ const statuslineCommand: Command = {
     const testStats = { testFiles: 0, testCases: 0 };
     const testPaths = ['tests', '__tests__', 'test', 'spec'];
     for (const testPath of testPaths) {
-      const fullPath = path.join(process.cwd(), testPath); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const fullPath = path.join(projectRoot, testPath); // ADR-0137: anchored at project root
       if (fs.existsSync(fullPath)) {
         try {
           const files = fs.readdirSync(fullPath, { recursive: true }) as string[];
@@ -4429,7 +4434,7 @@ const statuslineCommand: Command = {
 
     // Get MCP stats
     const mcpStats = { enabled: 0, total: 0 };
-    const mcpPath = path.join(process.cwd(), '.mcp.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const mcpPath = path.join(projectRoot, '.mcp.json'); // ADR-0137: anchored at project root
     if (fs.existsSync(mcpPath)) {
       try {
         const mcp = JSON.parse(fs.readFileSync(mcpPath, 'utf-8'));

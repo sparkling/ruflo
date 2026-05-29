@@ -14,6 +14,7 @@
     "./mcp": "./dist/mcp/index.js",
     "./security": "./dist/security/index.js",
     "./resilience": "./dist/resilience/index.js",
+    "./fs": "./dist/fs/index.js",
     "./src/plugin-interface.js": "./dist/plugin-interface.js"
   },
   "scripts": {

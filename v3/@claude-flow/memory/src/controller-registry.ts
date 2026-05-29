@@ -998,7 +998,11 @@ export class ControllerRegistry extends EventEmitter {
     try {
       const { existsSync, readFileSync } = await import('node:fs');
       const { join } = await import('node:path');
-      const routesPath = join(process.cwd(), '.claude-flow', 'semantic-routes.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const { findProjectRoot } = await import('@claude-flow/shared/fs');
+      // ADR-0137: anchor on project root, not cwd — the matching write path in
+      // @claude-flow/cli's agentdb_semantic_add_route handler also uses
+      // findProjectRoot(), so read + write target the same .claude-flow/.
+      const routesPath = join(findProjectRoot(), '.claude-flow', 'semantic-routes.json');
       if (!existsSync(routesPath)) return;
       const routes = JSON.parse(readFileSync(routesPath, 'utf-8'));
       if (!Array.isArray(routes)) return;

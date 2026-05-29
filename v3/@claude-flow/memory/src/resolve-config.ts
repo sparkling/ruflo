@@ -17,7 +17,8 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 import { getEmbeddingConfig, resetConfig as resetChainConfig } from '@claude-flow/config-chain';
 import { deriveHNSWParams } from './hnsw-utils.js';
 import type { HNSWParams } from './hnsw-utils.js';
@@ -116,22 +117,18 @@ const DEFAULT_GRAPH_SIMILARITY_THRESHOLD = 0.25;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Walk up from cwd looking for `.claude-flow/embeddings.json`. */
+/** Read `.claude-flow/embeddings.json` anchored at the project root (ADR-0137). */
 function readEmbeddingsJson(): Record<string, unknown> | null {
-  let dir = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const candidate = join(dir, '.claude-flow', 'embeddings.json');
-    if (existsSync(candidate)) {
-      try {
-        return JSON.parse(readFileSync(candidate, 'utf-8')) as Record<string, unknown>;
-      } catch {
-        return null; // malformed JSON -- skip
-      }
+  // ADR-0137: replace the hand-rolled walk-up with the canonical
+  // findProjectRoot() primitive — single source of truth for marker rules,
+  // and never anchors a stray `.claude-flow/` under a non-root cwd.
+  const candidate = join(findProjectRoot(), '.claude-flow', 'embeddings.json');
+  if (existsSync(candidate)) {
+    try {
+      return JSON.parse(readFileSync(candidate, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      return null; // malformed JSON -- skip
     }
-    const parent = dirname(dir);
-    if (parent === dir) break; // reached filesystem root
-    dir = parent;
   }
   return null;
 }

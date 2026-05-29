@@ -93,7 +93,7 @@ const commands = {
     const session = {
       id: sessionId,
       startedAt: new Date().toISOString(),
-      cwd: process.cwd(), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      cwd: process.cwd(), // adr-0100-allow: intentional-cwd — generated-helper session metadata, records the actual invocation cwd by design
       context: {},
       metrics: {
         edits: 0,
@@ -1229,7 +1229,7 @@ const homeDir = os.homedir();
 
 // Get data directory based on platform
 function getDataDir() {
-  const localDir = path.join(process.cwd(), '.claude-flow', 'sessions'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  const localDir = path.join(process.cwd(), '.claude-flow', 'sessions'); // adr-0100-allow: intentional-cwd — emitted inside a standalone generated helper script that cannot import @claude-flow/shared; FLAGGED in ADR-0137 for human review (real .claude-flow artifact, but in generated code)
   if (fs.existsSync(path.dirname(localDir))) {
     return localDir;
   }
@@ -1262,7 +1262,7 @@ const commands = {
       id: sessionId,
       startedAt: new Date().toISOString(),
       platform: platform,
-      cwd: process.cwd(), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      cwd: process.cwd(), // adr-0100-allow: intentional-cwd — generated-helper session metadata, records the actual invocation cwd by design
       context: {},
       metrics: { edits: 0, commands: 0, tasks: 0, errors: 0 }
     };

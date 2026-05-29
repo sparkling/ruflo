@@ -21,6 +21,10 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import type * as fsTypes from 'node:fs';
+// ADR-0137: resolveAgentMemoryDir now defaults to findProjectRoot(), which
+// memoizes per start dir. Reset the cache between tests so mocked existsSync
+// states don't leak a stale resolved root across cases.
+import { resetProjectRootCache } from '@claude-flow/shared/fs';
 
 import {
   resolveAgentMemoryDir,
@@ -107,6 +111,7 @@ describe('resolveAgentMemoryDir', () => {
     mockExistsSync.mockReset();
     // Default: no .git found anywhere
     mockExistsSync.mockReturnValue(false);
+    resetProjectRootCache();
   });
 
   afterEach(() => {
@@ -190,14 +195,21 @@ describe('resolveAgentMemoryDir', () => {
     );
   });
 
-  it('should use cwd as fallback for project scope when workingDir is omitted', () => {
+  it('should anchor on the project root for project scope when workingDir is omitted (ADR-0137)', () => {
+    // ADR-0137: resolveAgentMemoryDir now defaults to findProjectRoot() (not
+    // raw process.cwd()) when no workingDir is supplied. With no markers on
+    // disk findProjectRoot warns and returns its start dir, so the resulting
+    // base is process.env.CLAUDE_FLOW_CWD ?? process.cwd(); either way it is the
+    // project-root primitive, never an arbitrary subdir cwd.
     mockExistsSync.mockReturnValue(false);
-    const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const expectedRoot = process.env.CLAUDE_FLOW_CWD ?? process.cwd(); // adr-0100-allow: intentional-cwd — test mirrors the SUT no-marker fallback to compute the expected root
 
     const result = resolveAgentMemoryDir('coder', 'project');
     expect(result).toBe(
-      path.join(cwd, '.claude', 'agent-memory', 'coder'),
+      path.join(expectedRoot, '.claude', 'agent-memory', 'coder'),
     );
+    warnSpy.mockRestore();
   });
 
   it('should preserve hyphens and underscores in agent name', () => {

@@ -200,3 +200,9 @@ export * from './resilience/index.js';
 // Services
 // =============================================================================
 export * from './services/index.js';
+
+// =============================================================================
+// Filesystem utilities — project-root resolution + write-path guard
+// (ADR-0100 findProjectRoot relocated here, ADR-0137 anchoring guard)
+// =============================================================================
+export * from './fs/index.js';

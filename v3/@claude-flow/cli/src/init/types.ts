@@ -454,7 +454,10 @@ export interface InitOptions {
  * Default init options - full V3 setup
  */
 export const DEFAULT_INIT_OPTIONS: InitOptions = {
-  targetDir: process.cwd(), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  // `init` scaffolds INTO the user's current directory by design. findProjectRoot()
+  // would walk up to a parent project's marker, breaking `ruflo init` in a
+  // fresh/nested dir (see ADR-0137 scenario J).
+  targetDir: process.cwd(), // adr-0100-allow: intentional-cwd — init scaffolds into the invocation dir (ADR-0137 J)
   force: false,
   interactive: true,
   components: {

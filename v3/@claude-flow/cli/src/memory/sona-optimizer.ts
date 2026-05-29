@@ -16,6 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 
 // ============================================================================
 // Types
@@ -833,7 +834,7 @@ export class SONAOptimizer {
    */
   private loadFromDisk(): boolean {
     try {
-      const fullPath = join(process.cwd(), this.persistencePath); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const fullPath = join(findProjectRoot(), this.persistencePath); // ADR-0137: anchor SONA state at project root, not cwd
       if (!existsSync(fullPath)) {
         return false;
       }
@@ -875,7 +876,7 @@ export class SONAOptimizer {
    */
   private saveToDisk(): boolean {
     try {
-      const fullPath = join(process.cwd(), this.persistencePath); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const fullPath = join(findProjectRoot(), this.persistencePath); // ADR-0137: anchor SONA state at project root, not cwd
       const dir = dirname(fullPath);
 
       // Ensure directory exists

@@ -14,6 +14,7 @@
 
 import * as path from 'node:path';
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 import type { IMemoryBackend, MemoryEntry } from './types.js';
 import { AutoMemoryBridge } from './auto-memory-bridge.js';
 import type {
@@ -131,8 +132,10 @@ export function resolveAgentMemoryDir(
     return path.join(home, '.claude', 'agent-memory', safeName);
   }
 
-  // For project and local scopes, find git root
-  const effectiveDir = workingDir || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  // For project and local scopes, find git root. ADR-0137: default to the
+  // project root (findProjectRoot walks markers incl `.git`), never the raw
+  // cwd — a non-root cwd would otherwise scope memory to the wrong directory.
+  const effectiveDir = workingDir || findProjectRoot();
   const gitRoot = findGitRootSync(effectiveDir);
   const baseDir = gitRoot || effectiveDir;
 
@@ -288,7 +291,8 @@ export async function transferKnowledge(
 export function listAgentScopes(
   workingDir?: string,
 ): Array<{ scope: AgentMemoryScope; agents: string[] }> {
-  const effectiveDir = workingDir || process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  // ADR-0137: default to project root, never raw cwd (see resolveAgentMemoryDir).
+  const effectiveDir = workingDir || findProjectRoot();
   const gitRoot = findGitRootSync(effectiveDir);
   const baseDir = gitRoot || effectiveDir;
   const home = process.env.HOME

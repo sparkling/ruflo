@@ -344,7 +344,7 @@ export const importCommand: Command = {
       output.writeln();
 
       // Write to temp file for execution
-      const tempFile = path.join(process.cwd(), '.ruvector-import-temp.sql'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const tempFile = path.join(process.cwd(), '.ruvector-import-temp.sql'); // adr-0100-allow: intentional-cwd — transient scratch .sql (not a .claude-flow/.swarm/.claude artifact), written+read+removed in this block; FLAGGED in ADR-0137 for human review (could move to os.tmpdir() or project root)
       try {
         fs.writeFileSync(tempFile, fullSQL);
 

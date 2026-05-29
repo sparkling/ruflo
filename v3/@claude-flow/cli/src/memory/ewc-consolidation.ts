@@ -23,6 +23,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 // ADR-0072: EMBEDDING_DIM removed (ADR-0052 superseded); not used at runtime (config-chain reads dimension)
 
 // Fail-loud: warn once per process when embeddings.json is missing
@@ -151,20 +152,14 @@ const DEFAULT_EWC_CONFIG: EWCConfig = {
   maxPatterns: 1000,
   fisherDecayRate: 0.01,
   importanceThreshold: 0.3,
-  storagePath: path.join(process.cwd(), '.swarm', 'ewc-fisher.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  storagePath: path.join(findProjectRoot(), '.swarm', 'ewc-fisher.json'), // ADR-0137: anchor EWC fisher at project root, not cwd
   onlineMode: true,
-  // ADR-0069: config-chain embedding dimension (uses ESM imports — fs/path already imported at top)
+  // ADR-0069: config-chain embedding dimension. ADR-0137: anchor on project
+  // root (findProjectRoot) instead of the hand-rolled cwd walk-up.
   dimensions: (() => { try {
-    let _dir = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    let _embPath = '';
-    // Walk up to find .claude-flow/embeddings.json
-    while (_dir !== path.dirname(_dir)) {
-      const candidate = path.join(_dir, '.claude-flow', 'embeddings.json');
-      if (fs.existsSync(candidate)) { _embPath = candidate; break; }
-      _dir = path.dirname(_dir);
-    }
-    if (_embPath) {
-      const c = JSON.parse(fs.readFileSync(_embPath, 'utf-8'));
+    const candidate = path.join(findProjectRoot(), '.claude-flow', 'embeddings.json');
+    if (fs.existsSync(candidate)) {
+      const c = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
       return c?.dimension ?? 768;
     }
     return 768;

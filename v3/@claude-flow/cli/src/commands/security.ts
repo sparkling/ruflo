@@ -566,9 +566,10 @@ const auditCommand: Command = {
     // Generate real audit entries from .swarm/ state and session history
     const { existsSync, readFileSync, readdirSync, statSync } = await import('fs');
     const { join } = await import('path');
+    const { findProjectRoot } = await import('@claude-flow/shared/fs');
 
     const auditEntries: { timestamp: string; event: string; user: string; status: string }[] = [];
-    const swarmDir = join(process.cwd(), '.swarm'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const swarmDir = join(findProjectRoot(), '.swarm'); // ADR-0137: anchor .swarm audit at project root, not cwd
 
     // Check session files for real audit events
     if (existsSync(swarmDir)) {

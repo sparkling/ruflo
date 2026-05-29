@@ -38,7 +38,7 @@ const startCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const quiet = ctx.flags.quiet as boolean;
     const foreground = ctx.flags.foreground as boolean;
-    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const projectRoot = findProjectRoot(); // ADR-0137: anchor daemon at project root, not cwd
     const isDaemonProcess = process.env.CLAUDE_FLOW_DAEMON === '1';
 
     // Parse resource threshold overrides from CLI flags
@@ -217,8 +217,9 @@ function validatePath(path: string, label: string): void {
 
   // Prevent path traversal outside expected directories
   if (!resolved.includes('.claude-flow') && !resolved.includes('bin')) {
-    // Allow only paths within project structure
-    const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    // Allow only paths within project structure. ADR-0137: the containment
+    // boundary is the project root, not the (drifting) cwd.
+    const cwd = findProjectRoot();
     if (!resolved.startsWith(cwd)) {
       throw new Error(`${label} escapes project directory`);
     }
@@ -345,7 +346,7 @@ const stopCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const quiet = ctx.flags.quiet as boolean;
-    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const projectRoot = findProjectRoot(); // ADR-0137: anchor daemon at project root, not cwd
 
     try {
       if (!quiet) {
@@ -401,7 +402,7 @@ const restartCommand: Command = {
     const graceMsRaw = ctx.flags['grace-ms'] as string | undefined;
     const maxCpuLoad = ctx.flags['max-cpu-load'] as string | undefined;
     const minFreeMemory = ctx.flags['min-free-memory'] as string | undefined;
-    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const projectRoot = findProjectRoot(); // ADR-0137: anchor daemon at project root, not cwd
 
     const graceMs = (() => {
       const n = graceMsRaw ? parseInt(graceMsRaw, 10) : 1000;
@@ -653,7 +654,7 @@ const statusCommand: Command = {
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const verbose = ctx.flags.verbose as boolean;
     const showModes = ctx.flags['show-modes'] as boolean;
-    const projectRoot = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const projectRoot = findProjectRoot(); // ADR-0137: anchor daemon at project root, not cwd
 
     try {
       const daemon = getDaemon(projectRoot);
@@ -844,7 +845,7 @@ const triggerCommand: Command = {
     }
 
     try {
-      const daemon = getDaemon(process.cwd()); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const daemon = getDaemon(findProjectRoot()); // ADR-0137: anchor daemon at project root, not cwd
 
       const spinner = output.createSpinner({ text: `Running ${workerType} worker...`, spinner: 'dots' });
       spinner.start();
@@ -893,7 +894,7 @@ const enableCommand: Command = {
     }
 
     try {
-      const daemon = getDaemon(process.cwd()); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const daemon = getDaemon(findProjectRoot()); // ADR-0137: anchor daemon at project root, not cwd
       daemon.setWorkerEnabled(workerType, !disable);
 
       output.printSuccess(`Worker ${workerType} ${disable ? 'disabled' : 'enabled'}`);

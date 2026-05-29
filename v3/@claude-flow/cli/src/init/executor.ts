@@ -1162,9 +1162,9 @@ function findSourceHelpersDir(sourceBaseDir?: string): string | null {
 
   // Strategy 4: Check cwd-relative paths (for local dev)
   const cwdBased = [
-    path.join(process.cwd(), '.claude', 'helpers'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    path.join(process.cwd(), '..', '.claude', 'helpers'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    path.join(process.cwd(), '..', '..', '.claude', 'helpers'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), '.claude', 'helpers'), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe, returns first existing candidate; not an artifact write
+    path.join(process.cwd(), '..', '.claude', 'helpers'), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
+    path.join(process.cwd(), '..', '..', '.claude', 'helpers'), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
   ];
   possiblePaths.push(...cwdBased);
 
@@ -2235,24 +2235,24 @@ function findSourceDir(type: 'skills' | 'commands' | 'agents', sourceBaseDir?: s
 
   // Also check relative to process.cwd() for development
   const cwdBased = [
-    path.join(process.cwd(), '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    path.join(process.cwd(), '..', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    path.join(process.cwd(), '..', '..', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), '.claude', type), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe, returns first existing candidate; not an artifact write
+    path.join(process.cwd(), '..', '.claude', type), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
+    path.join(process.cwd(), '..', '..', '.claude', type), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
   ];
   possiblePaths.push(...cwdBased);
 
   // Check v2 directory for agents
   if (type === 'agents') {
     possiblePaths.push(
-      path.join(process.cwd(), 'v2', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      path.join(process.cwd(), '..', 'v2', '.claude', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      path.join(process.cwd(), 'v2', '.claude', type), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
+      path.join(process.cwd(), '..', 'v2', '.claude', type), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
     );
   }
 
   // Plugin directory
   possiblePaths.push(
-    path.join(process.cwd(), 'plugin', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-    path.join(process.cwd(), '..', 'plugin', type), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    path.join(process.cwd(), 'plugin', type), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
+    path.join(process.cwd(), '..', 'plugin', type), // adr-0100-allow: intentional-cwd — read-side dev-checkout SOURCE probe
   );
 
   for (const p of possiblePaths) {

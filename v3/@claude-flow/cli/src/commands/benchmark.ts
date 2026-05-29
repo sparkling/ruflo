@@ -10,6 +10,7 @@ import type { MemoryOp, MemoryResult } from '../memory/memory-router.js';
 import { output } from '../output.js';
 import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 
 // Pretrain subcommand removed by ADR-0239 cluster 7 (Batch 3 deleted
 // `cli/src/benchmarks/pretrain/`). Keeping `neural`, `memory`, `all`.
@@ -352,7 +353,7 @@ const allCommand: Command = {
     // Save if requested
     const saveFile = ctx.flags.save as string | undefined;
     if (saveFile) {
-      const resultsDir = join(process.cwd(), '.claude-flow', 'benchmarks'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const resultsDir = join(findProjectRoot(), '.claude-flow', 'benchmarks'); // ADR-0137: anchor benchmarks at project root, not cwd
       if (!existsSync(resultsDir)) {
         mkdirSync(resultsDir, { recursive: true });
       }

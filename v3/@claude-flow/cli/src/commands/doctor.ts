@@ -227,7 +227,7 @@ async function checkMemoryBackend(): Promise<HealthCheck> {
   // a malformed config.json MUST surface — doctor exists precisely to flag
   // config issues, so silently using defaults defeats its purpose.
   let configuredBackend = 'hybrid';
-  const cfgPath = join(process.cwd(), '.claude-flow', 'config.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  const cfgPath = join(findProjectRoot(), '.claude-flow', 'config.json'); // ADR-0137: anchor config.json at project root, not cwd
   if (existsSync(cfgPath)) {
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
     if (cfg.memory && cfg.memory.backend) configuredBackend = cfg.memory.backend;
@@ -314,7 +314,7 @@ async function checkGitRepo(): Promise<HealthCheck> {
     // findProjectRoot() also matches CLAUDE.md+.claude/, which would mask a
     // missing-.git/ false negative the doctor needs to surface — so we keep
     // the diagnostic walk anchored on the user's interactive cwd here.
-    let dir = process.cwd(); // adr-0100-allow: diagnostic git-repo walk, see comment above
+    let dir = process.cwd(); // adr-0100-allow: intentional-cwd — diagnostic git-repo walk; findProjectRoot would mask a missing-.git false negative the doctor must surface (see comment above)
     while (true) {
       if (existsSync(join(dir, '.git'))) {
         return {
@@ -610,7 +610,7 @@ async function checkVersionFreshness(): Promise<HealthCheck> {
     // Check if running via npx (look for _npx in process path or argv)
     const isNpx = process.argv[1]?.includes('_npx') ||
                   process.env.npm_execpath?.includes('npx') ||
-                  process.cwd().includes('_npx'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+                  process.cwd().includes('_npx'); // adr-0100-allow: intentional-cwd — runtime-environment probe to detect npx execution; the actual cwd is the signal, not an artifact path
 
     // Query npm for latest version (using alpha tag since that's what we publish to)
     let latestVersion = currentVersion;
@@ -771,8 +771,8 @@ async function checkAgenticFlow(): Promise<HealthCheck> {
   try {
     // Walk common node_modules paths to find agentic-flow/package.json
     const candidates = [
-      join(process.cwd(), 'node_modules', 'agentic-flow', 'package.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-      join(process.cwd(), '..', 'node_modules', 'agentic-flow', 'package.json'), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      join(process.cwd(), 'node_modules', 'agentic-flow', 'package.json'), // adr-0100-allow: intentional-cwd — read-side node_modules dependency probe, returns first existing candidate
+      join(process.cwd(), '..', 'node_modules', 'agentic-flow', 'package.json'), // adr-0100-allow: intentional-cwd — read-side node_modules dependency probe (parent)
     ];
     let pkgJsonPath: string | null = null;
     for (const p of candidates) {

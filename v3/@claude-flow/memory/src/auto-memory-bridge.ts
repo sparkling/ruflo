@@ -17,6 +17,7 @@ import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs/promises';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 import {
   createDefaultEntry,
   type IMemoryBackend,
@@ -168,7 +169,9 @@ type ResolvedConfig = Required<Omit<AutoMemoryBridgeConfig, 'learning' | 'graph'
 
 const DEFAULT_CONFIG: ResolvedConfig = {
   memoryDir: '',
-  workingDir: process.env.CLAUDE_FLOW_CWD || process.cwd(), // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  // ADR-0137: anchor on project root (findProjectRoot honours CLAUDE_FLOW_CWD
+  // internally) instead of the raw cwd, so the bridge never targets a stray dir.
+  workingDir: findProjectRoot(),
   maxIndexLines: 180,
   topicMapping: DEFAULT_TOPIC_MAPPING,
   syncMode: 'on-session-end',

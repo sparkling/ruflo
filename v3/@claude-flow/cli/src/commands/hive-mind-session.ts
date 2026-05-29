@@ -455,7 +455,7 @@ export async function exportSessionToPath(sessionId: string, outputPath: string)
     ...(snapshot.queenType !== undefined ? { queenType: snapshot.queenType } : {}),
   };
   const compressed = encodeArchive(archive);
-  const absolute = isAbsolute(outputPath) ? outputPath : resolve(process.cwd(), outputPath); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+  const absolute = isAbsolute(outputPath) ? outputPath : resolve(process.cwd(), outputPath); // adr-0100-allow: intentional-cwd — resolves a user-supplied --output path relative to where the user invoked the export, standard CLI semantics
   writeArchiveAtomic(absolute, compressed);
 }
 

@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 
 // ADR-0076 Phase 2: lazily cache canonical cosineSimilarity at module load
 let _canonicalCosineSim: ((a: number[] | Float32Array, b: number[] | Float32Array) => number) | null = null;
@@ -36,12 +37,14 @@ let _embeddingsJsonWarned = false;
  * falling back to home directory
  */
 function getDataDir(): string {
-  const cwd = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-  const localDir = join(cwd, '.claude-flow', 'neural');
+  // ADR-0137: anchor on project root, not raw cwd, so neural state never
+  // lands in a stray subdir `.claude-flow/`.
+  const root = findProjectRoot();
+  const localDir = join(root, '.claude-flow', 'neural');
   const homeDir = join(homedir(), '.claude-flow', 'neural');
 
   // Prefer local directory if .claude-flow exists
-  if (existsSync(join(cwd, '.claude-flow'))) {
+  if (existsSync(join(root, '.claude-flow'))) {
     return localDir;
   }
 
@@ -336,16 +339,10 @@ class LocalSonaCoordinator {
       // Uses ESM imports (existsSync, readFileSync, dirname, join) already at top of file
       let ewcDim = 768;
       try {
-        let _dir = process.cwd(); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
-        let _embPath = '';
-        // Walk up to find .claude-flow/embeddings.json
-        while (_dir !== dirname(_dir)) {
-          const candidate = join(_dir, '.claude-flow', 'embeddings.json');
-          if (existsSync(candidate)) { _embPath = candidate; break; }
-          _dir = dirname(_dir);
-        }
-        if (_embPath) {
-          const c = JSON.parse(readFileSync(_embPath, 'utf-8'));
+        // ADR-0137: anchor on project root instead of the hand-rolled cwd walk-up.
+        const candidate = join(findProjectRoot(), '.claude-flow', 'embeddings.json');
+        if (existsSync(candidate)) {
+          const c = JSON.parse(readFileSync(candidate, 'utf-8'));
           ewcDim = c?.dimension ?? 768;
         }
       } catch { if (!_embeddingsJsonWarned) { _embeddingsJsonWarned = true; console.warn('[config-chain] embeddings.json not found — using fallback defaults. Run "claude-flow init" to generate.'); } }

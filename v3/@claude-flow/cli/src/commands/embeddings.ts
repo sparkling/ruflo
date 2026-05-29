@@ -655,9 +655,10 @@ const initCommand: Command = {
     try {
       const fs = await import('fs');
       const path = await import('path');
+      const { findProjectRoot } = await import('@claude-flow/shared/fs');
 
       // Create directories
-      const configDir = path.join(process.cwd(), '.claude-flow'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+      const configDir = path.join(findProjectRoot(), '.claude-flow'); // ADR-0137: anchor .claude-flow at project root, not cwd
       const modelDir = path.join(configDir, 'models');
       const configPath = path.join(configDir, 'embeddings.json');
 
@@ -1099,7 +1100,8 @@ const neuralCommand: Command = {
     // Check if embeddings config exists
     const fs = await import('fs');
     const path = await import('path');
-    const configPath = path.join(process.cwd(), '.claude-flow', 'embeddings.json'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const { findProjectRoot } = await import('@claude-flow/shared/fs');
+    const configPath = path.join(findProjectRoot(), '.claude-flow', 'embeddings.json'); // ADR-0137: anchor embeddings.json at project root, not cwd
 
     if (!fs.existsSync(configPath)) {
       output.printWarning('Embeddings not initialized');

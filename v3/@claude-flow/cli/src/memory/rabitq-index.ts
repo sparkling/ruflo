@@ -13,6 +13,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { findProjectRoot } from '@claude-flow/shared/fs';
 
 interface RabitqEntry {
   id: string;
@@ -92,7 +93,7 @@ export async function buildRabitqIndex(options?: {
     }
 
     const dimensions = options?.dimensions ?? 384;
-    const swarmDir = path.resolve(process.cwd(), '.swarm'); // adr-0100-allow: tracked in ADR-0118 hive-mind-runtime-gaps-tracker
+    const swarmDir = path.resolve(findProjectRoot(), '.swarm'); // ADR-0137: anchor .swarm at project root, not cwd
     const dbPath = options?.dbPath ? path.resolve(options.dbPath) : path.join(swarmDir, 'memory.db');
 
     const entries: RabitqEntry[] = [];
