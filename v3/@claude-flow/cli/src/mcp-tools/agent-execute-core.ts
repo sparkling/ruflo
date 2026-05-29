@@ -444,6 +444,31 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
     `Agent ID: ${input.agentId}. Domain: ${agent.domain ?? 'general'}. ` +
     `Respond directly and stay focused on the task. If you need information you don't have, state that explicitly.`;
 
+  // ADR-0268: pre-task skill injection — retrieve the promoted skill for this
+  // task_type and prepend it so the agent reuses learned solutions. Read-only,
+  // best-effort: a missing controller/skill degrades to no injection and never
+  // blocks the run; unexpected errors surface (warn) but stay non-fatal.
+  let learnedSkillPreamble = '';
+  try {
+    const { getController } = await import('../memory/memory-router.js');
+    const { deriveTaskType } = await import('../learning/derive-task-type.js');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const skillsCtrl = await getController<any>('skills');
+    if (skillsCtrl && typeof skillsCtrl.retrieveSkillByType === 'function') {
+      const taskType = deriveTaskType({ agentType: agent.agentType, description: input.prompt });
+      const skill = skillsCtrl.retrieveSkillByType(taskType);
+      if (skill && skill.description) {
+        learnedSkillPreamble =
+          `\n\nLearned skill for "${taskType}" ` +
+          `(success rate ${(skill.successRate ?? 0).toFixed(2)}, ${skill.uses ?? 0} uses):\n` +
+          `${skill.description}` +
+          (skill.code ? `\n\nReference solution:\n${skill.code}` : '');
+      }
+    }
+  } catch (err) {
+    console.warn('[ADR-0268] pre-task skill retrieval failed (non-blocking):', (err as Error)?.message);
+  }
+
   // Pre-LLM busy reservation — one audit-traced mutation. taskCountDelta:1
   // bumps the count; lastResult omitted so any prior execution's result
   // remains visible until the new one lands.
@@ -466,7 +491,7 @@ export async function executeAgentTask(input: AgentExecuteInput): Promise<AgentE
   const result = await callAnthropicMessages({
     model: anthropicModel,
     prompt: input.prompt,
-    systemPrompt,
+    systemPrompt: systemPrompt + learnedSkillPreamble,
     maxTokens: input.maxTokens,
     temperature: input.temperature,
     timeoutMs: input.timeoutMs,
