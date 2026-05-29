@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/performance",
-  "version": "3.0.0-alpha.6-patch.632",
+  "version": "3.0.0-alpha.6-patch.633",
   "type": "module",
   "description": "Performance module - benchmarking, Flash Attention validation, optimization",
   "main": "dist/index.js",
@@ -16,7 +16,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@ruvector/attention": "0.1.4-patch.229",
+    "@ruvector/attention": "0.1.4-patch.230",
     "@ruvector/sona": "0.1.6-patch.185"
   },
   "devDependencies": {
