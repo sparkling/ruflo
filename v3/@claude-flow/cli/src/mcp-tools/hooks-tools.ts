@@ -1066,33 +1066,32 @@ export const hooksRoute: MCPTool = {
       console.error(`[hooks_route] SolverBandit fall-through: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Phase 4: SkillLibrary (P4-A: ADR-0033)
+    // Phase 4: SkillLibrary (P4-A: ADR-0033) — ADR-0268: route via the promoted
+    // skill for this task_type. Fixes the dead probe: SkillLibrary has no
+    // `search` method (only retrieveSkillByType / retrieveSkills), so the old
+    // `typeof skills.search === 'function'` guard was permanently false and this
+    // arm never fired. Now uses the flywheel's exact read key
+    // (deriveTaskType -> retrieveSkillByType) so routing reuses promoted skills.
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const skills = await getController<any>('skills');
-      if (skills && typeof skills.search === 'function') {
-        const taskType = (params.task_type as string) || task || 'default';
-        const skillResult = await withTimeoutLogged(
-          skills.search(taskType, 3),
-          2000,
-          'SkillLibrary.search',
-        );
-        if (skillResult && Array.isArray(skillResult) && skillResult.length > 0) {
-          const bestSkill = skillResult[0];
-          if (bestSkill.confidence > 0.7 || bestSkill.score > 0.7) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: JSON.stringify({
-                  recommended_agent: bestSkill.agent || bestSkill.pattern || bestSkill.name,
-                  confidence: bestSkill.confidence || bestSkill.score,
-                  routing_method: 'skillLibrary',
-                  skill: bestSkill.name || bestSkill.pattern,
-                  task_type: taskType,
-                }),
-              }],
-            };
-          }
+      const { deriveTaskType } = await import('../learning/derive-task-type.js');
+      const taskType = deriveTaskType({ taskType: params.task_type as string | undefined, description: task });
+      if (skills && typeof skills.retrieveSkillByType === 'function') {
+        const skill = skills.retrieveSkillByType(taskType);
+        if (skill && (skill.successRate ?? 0) > 0.7) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                recommended_agent: skill.name,
+                confidence: skill.successRate,
+                routing_method: 'skillLibrary',
+                skill: skill.name,
+                task_type: taskType,
+              }),
+            }],
+          };
         }
       }
     } catch (e) {
@@ -1584,9 +1583,34 @@ export const hooksPreTask: MCPTool = {
       // Enhanced router not available
     }
 
+    // ADR-0268: inject the promoted skill for this task_type into the pre-task
+    // envelope (the read half for externally-driven hook flows; executeAgentTask
+    // covers the agent-runtime path). Best-effort, non-blocking.
+    let relevantSkills: Array<{ name: string; successRate: number; uses: number; description?: string }> = [];
+    try {
+      const { getController } = await import('../memory/memory-router.js');
+      const { deriveTaskType } = await import('../learning/derive-task-type.js');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const skillsCtrl = await getController<any>('skills');
+      if (skillsCtrl && typeof skillsCtrl.retrieveSkillByType === 'function') {
+        const skill = skillsCtrl.retrieveSkillByType(deriveTaskType({ description }));
+        if (skill && skill.name) {
+          relevantSkills = [{
+            name: skill.name,
+            successRate: skill.successRate ?? 0,
+            uses: skill.uses ?? 0,
+            description: skill.description,
+          }];
+        }
+      }
+    } catch (err) {
+      console.warn('[ADR-0268] hooks_pre-task skill retrieval failed (non-blocking):', (err as Error)?.message);
+    }
+
     return {
       taskId,
       description,
+      relevantSkills,
       suggestedAgents: suggestion.agents.map((agent, i) => ({
         type: agent,
         confidence: suggestion.confidence - (0.05 * i),
