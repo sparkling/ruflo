@@ -2015,16 +2015,11 @@ const sessionEndCommand: Command = {
     try {
       const result = await callMCPTool<{
         sessionId: string;
-        duration: number;
+        duration: number | null;
         statePath?: string;
-        summary: {
-          tasksExecuted: number;
-          tasksSucceeded: number;
-          tasksFailed: number;
-          commandsExecuted: number;
-          filesModified: number;
-          agentsSpawned: number;
-        };
+        daemon?: { stopped: boolean };
+        sessionPersistence?: { controller: string; persisted: boolean };
+        _note?: string;
       }>('hooks_session-end', {
         saveState: ctx.flags.saveState ?? true,
         timestamp: Date.now(),
@@ -2043,18 +2038,31 @@ const sessionEndCommand: Command = {
       output.printTable({
         columns: [
           { key: 'metric', header: 'Metric', width: 25 },
-          { key: 'value', header: 'Value', width: 15, align: 'right' }
+          { key: 'value', header: 'Value', width: 30, align: 'right' }
         ],
         data: [
-          { metric: 'Duration', value: `${(result.duration / 1000 / 60).toFixed(1)} min` },
-          { metric: 'Tasks Executed', value: result.summary.tasksExecuted },
-          { metric: 'Tasks Succeeded', value: output.success(String(result.summary.tasksSucceeded)) },
-          { metric: 'Tasks Failed', value: output.error(String(result.summary.tasksFailed)) },
-          { metric: 'Commands Executed', value: result.summary.commandsExecuted },
-          { metric: 'Files Modified', value: result.summary.filesModified },
-          { metric: 'Agents Spawned', value: result.summary.agentsSpawned }
+          {
+            metric: 'Duration',
+            value: typeof result.duration === 'number'
+              ? `${(result.duration / 1000 / 60).toFixed(1)} min`
+              : 'unknown',
+          },
+          { metric: 'Persistence', value: result.sessionPersistence?.controller ?? 'none' },
+          {
+            metric: 'Persisted',
+            value: result.sessionPersistence?.persisted ? output.success('yes') : 'no',
+          },
+          { metric: 'Daemon stopped', value: result.daemon?.stopped ? 'yes' : 'no' },
         ]
       });
+
+      // ADR-0210: per-session counters (tasksExecuted, etc.) are not persisted in
+      // this build — surface the tool's honest _note rather than crash on the
+      // removed `summary` block (or fabricate counts).
+      if (result._note) {
+        output.writeln();
+        output.writeln(output.dim(result._note));
+      }
 
       if (result.statePath) {
         output.writeln();
