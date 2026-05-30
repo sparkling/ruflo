@@ -163,6 +163,11 @@ export class RvfBackend implements IMemoryBackend {
   private _nativeParkTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly _NATIVE_PARK_IDLE_MS = Number(process.env.RUFLO_RVF_PARK_IDLE_MS) || 50;
 
+  // ADR-0275 Phase 1: the most recent query_with_envelope signal (Layer-B-active
+  // flag + quality), captured on each native search for observability. null
+  // until the first envelope query, or when the binding lacks queryWithEnvelope.
+  private _lastRvfEnvelope: { layerB: boolean; quality: string } | null = null;
+
   // ADR-0095 amendment (2026-05-01, swarm 2 instrumentation): per-instance
   // diag helper. Gated by RVF_DIAG=1 (separate from RVF_DEBUG so we can
   // turn on instrumentation without flooding existing debug paths). Logs
@@ -723,6 +728,13 @@ export class RvfBackend implements IMemoryBackend {
     return results;
   }
 
+  /** ADR-0275 Phase 1: the most recent query_with_envelope signal (Layer-B-active
+   *  flag + quality), or null if no envelope query has run or the native binding
+   *  lacks queryWithEnvelope. For observability / diagnostics. */
+  getLastRvfEnvelope(): { layerB: boolean; quality: string } | null {
+    return this._lastRvfEnvelope;
+  }
+
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
     this.requireInitialized('search');
     this.noteNativeFallbackUse('search');
@@ -737,10 +749,23 @@ export class RvfBackend implements IMemoryBackend {
       try {
         let mappedHits = 0;
         let orphanHits = 0;
-        const raw: Array<{ id: number; distance: number }> = this.nativeDb.query(
-          new Float32Array(embedding), options.k * 2,
-          { efSearch: this.config.hnswEfSearch },
-        );
+        // ADR-0275 Phase 1: prefer query_with_envelope (Layer-B HNSW base query
+        // + budgeted brute-force safety net + quality reporting) when the native
+        // binding exposes it; fall back to the bare query() on older bindings.
+        let raw: Array<{ id: number; distance: number }>;
+        if (typeof (this.nativeDb as any).queryWithEnvelope === 'function') {
+          const env = (this.nativeDb as any).queryWithEnvelope(
+            new Float32Array(embedding), options.k * 2,
+            { efSearch: this.config.hnswEfSearch },
+          );
+          raw = env.results as Array<{ id: number; distance: number }>;
+          this._lastRvfEnvelope = { layerB: !!env.layerB, quality: String(env.quality ?? '') };
+        } else {
+          raw = this.nativeDb.query(
+            new Float32Array(embedding), options.k * 2,
+            { efSearch: this.config.hnswEfSearch },
+          );
+        }
         results = [];
         for (const r of raw) {
           const stringId = this.nativeReverseMap.get(r.id);
