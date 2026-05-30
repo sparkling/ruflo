@@ -140,6 +140,18 @@ export class RvfBackend implements IMemoryBackend {
   private nativeFallbackMode = false;
   private nativeFallbackUseCount = 0;
 
+  // ADR-0274 (resolves ADR-0267): the native RVF writer (`nativeDb`) holds the
+  // kernel flock from open until close. A long-lived holder (the MCP server)
+  // kept it for its whole lifetime, blocking any concurrent CLI writer (e.g.
+  // `agentdb index`) for 30s → LockHeld. Fix: PARK the writer (release the
+  // flock, keep the handle + in-memory state) whenever the backend goes idle,
+  // and UNPARK (re-acquire, with O(1) txnid re-validation in the native layer)
+  // only for the duration of a write transaction. Every native write runs
+  // inside an acquireLock/releaseLock critical section; queries do not — so a
+  // parked handle still serves reads lock-free from its in-memory vectors.
+  // `true` == flock released. Starts false (open/create acquires the flock).
+  private _nativeFlockParked = false;
+
   // ADR-0095 amendment (2026-05-01, swarm 2 instrumentation): per-instance
   // diag helper. Gated by RVF_DIAG=1 (separate from RVF_DEBUG so we can
   // turn on instrumentation without flooding existing debug paths). Logs
@@ -1832,6 +1844,47 @@ export class RvfBackend implements IMemoryBackend {
   // shared across all e2e tests). 100 attempts at 20ms→500ms backoff covers
   // ~60s; bumping to 180s under init covers ~250 attempts and handles the
   // observed parallel-wave tail without changing the hot-path budget.
+  // ADR-0274 (resolves ADR-0267): release the native RVF writer flock while the
+  // backend is idle so a concurrent CLI process can acquire it. Best-effort +
+  // feature-detected — an older ruvector binding without `releaseLock` keeps
+  // the pre-0274 lifetime-hold behaviour rather than crashing. A failed release
+  // is NOT data-integrity fatal (the write already committed; only the flock
+  // lingers), so it is logged (verbose) not thrown. Paired with unparkNativeWriter().
+  private parkNativeWriter(): void {
+    if (this._nativeFlockParked) return;
+    const db = this.nativeDb;
+    if (!db || typeof db.releaseLock !== 'function') return;
+    try {
+      db.releaseLock();
+      this._nativeFlockParked = true;
+      this._diag('parkNativeWriter.released-native-flock');
+    } catch (err) {
+      if (this.config.verbose) {
+        console.error('[RvfBackend] parkNativeWriter releaseLock failed (flock lingers, degrades to pre-0274):', (err as Error).message);
+      }
+    }
+  }
+
+  // ADR-0274 (resolves ADR-0267): re-acquire the native writer flock before a
+  // write transaction, with O(1) txnid re-validation in the native layer
+  // (reloads only if a peer advanced the file while parked, so a stale segment
+  // directory can never clobber the peer's manifest). LockHeld/timeout is a
+  // genuine contention failure and is thrown loudly (ADR-0082, no masking) —
+  // the caller (acquireLock) releases the advisory lock it just took on throw.
+  private unparkNativeWriter(): void {
+    if (!this._nativeFlockParked) return;
+    const db = this.nativeDb;
+    if (!db || typeof db.reacquireLock !== 'function') {
+      // No reacquire API but we believe we're parked: clear the flag so we
+      // don't loop. The handle still holds whatever lock state it had.
+      this._nativeFlockParked = false;
+      return;
+    }
+    db.reacquireLock();
+    this._nativeFlockParked = false;
+    this._diag('unparkNativeWriter.reacquired-native-flock');
+  }
+
   private async acquireLock(maxWaitMs: number = 60_000): Promise<void> {
     if (!this.lockPath) return; // :memory: mode
     // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant.
@@ -1887,6 +1940,17 @@ export class RvfBackend implements IMemoryBackend {
       try {
         await wf(this.lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
         this._lockHeldDepth = 1;
+        // ADR-0274: re-acquire the native writer flock for this write
+        // transaction (no-op if not parked / older binding). On failure,
+        // release the advisory lock we just took so it doesn't leak, then
+        // surface the contention error loudly (ADR-0082).
+        try {
+          this.unparkNativeWriter();
+        } catch (unparkErr) {
+          this._lockHeldDepth = 0;
+          try { await ul(this.lockPath); } catch {}
+          throw unparkErr;
+        }
         this._diag(`acquireLock.acquired attempts=${attempt} elapsed=${Date.now() - acqStart}ms`);
         return; // Lock acquired
       } catch (e: any) {
@@ -1953,6 +2017,10 @@ export class RvfBackend implements IMemoryBackend {
       return;
     }
     this._lockHeldDepth = 0;
+    // ADR-0274: park the native writer (release its flock) now that this
+    // backend is going idle, so a concurrent CLI writer (e.g. `agentdb index`)
+    // can acquire it. Best-effort; never throws.
+    this.parkNativeWriter();
     this._diag('releaseLock.unlinking');
     // ADR-0095 amendment (2026-05-01, t3-2 fix): verify ownership before
     // unlinking. With .jslock the only writer is JS-side, but two
