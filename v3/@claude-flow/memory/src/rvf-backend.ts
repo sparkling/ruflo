@@ -163,6 +163,43 @@ export class RvfBackend implements IMemoryBackend {
   private _nativeParkTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly _NATIVE_PARK_IDLE_MS = Number(process.env.RUFLO_RVF_PARK_IDLE_MS) || 50;
 
+  // ADR-0274 D3/D4 (cross-process content-freshness): the park/unpark deviation
+  // (D5) dropped the read-handle freshness wiring that D3/D4 designed, so a
+  // long-lived reader (the MCP server) served a stale in-memory view after a
+  // PEER process wrote the same `.rvf` (e.g. a concurrent `agentdb index` /
+  // `cli memory store`). `this.entries`/`keyIndex` are loaded once at init and
+  // afterward mutated only by THIS process's own `store()`; a peer's commit
+  // never reaches them. _maybeReloadFromDisk() (called at the top of the
+  // read paths) closes that gap: it peeks the O(1) on-disk txnid and, only when
+  // a PEER advanced it, lazily re-reads the committed state via a LOCK-FREE
+  // read-only handle. The fields below bound that work.
+  //
+  // _lastSeenTxnid: the on-disk txnid this reader has already absorbed. Starts
+  // at -1 ("unknown") so the first read after init establishes the baseline
+  // without a spurious reload.
+  private _lastSeenTxnid = -1;
+  // _lastOwnWriteTxnid: the on-disk txnid produced by THIS process's most recent
+  // commit (captured via peekTxnid after store/bulkInsert release the lock).
+  // Self-write guard: an advance at or below this is our own write — the in-mem
+  // state already reflects it (read-your-own-writes), so we must NOT reload.
+  private _lastOwnWriteTxnid = 0;
+  // _lastReloadAt: timestamp of the last reload, for debounce.
+  private _lastReloadAt = 0;
+  // Debounce window. A concurrent bulk writer (hundreds of `agentdb index`
+  // commits) advances the txnid hundreds of times; without this we would reload
+  // O(writes)×O(entries). Reloading at most once per window bounds the worst
+  // case to a handful of reloads across a write burst.
+  private readonly _RELOAD_DEBOUNCE_MS = Number(process.env.RUFLO_RVF_RELOAD_DEBOUNCE_MS) || 250;
+  // Set when a freshness reload added entries this process's NATIVE index does
+  // not contain (peer-written vectors live on disk but were NOT re-ingested into
+  // `this.nativeDb` — that would grow the `.rvf` with orphan segments). The
+  // native ANN query() therefore cannot return them, and the existing orphan
+  // self-heal (keyed on orphan numIds) does not trigger because they are absent
+  // from native results entirely. The semantic read paths consult this flag to
+  // force a brute-force supplement over the refreshed `this.entries` so peer
+  // entries surface in search. Cleared once the supplement has run.
+  private _freshnessReloadAddedEntries = false;
+
   // ADR-0275 Phase 1: the most recent query_with_envelope signal (Layer-B-active
   // flag + quality), captured on each native search for observability. null
   // until the first envelope query, or when the binding lacks queryWithEnvelope.
@@ -551,7 +588,32 @@ export class RvfBackend implements IMemoryBackend {
       }
     } finally {
       await this.releaseLock();
+      this._noteOwnWrite();
       this._diag(`store.end key=${e.key} totalElapsed=${Date.now() - storeStart}ms`);
+    }
+  }
+
+  /**
+   * ADR-0274 D3/D4 self-write guard: after THIS process commits (store /
+   * bulkInsert), record the on-disk txnid our write produced. A later
+   * _maybeReloadFromDisk() that sees the txnid at or below this value knows the
+   * advance is our own (read-your-own-writes already satisfied by in-mem state)
+   * and must NOT reload. Best-effort: peekTxnid is O(1); if the binding lacks it
+   * or it throws, we simply leave the guard unchanged (a redundant reload of our
+   * own write is correct-but-wasteful, never wrong).
+   */
+  private _noteOwnWrite(): void {
+    const db = this.nativeDb;
+    if (!db) return;
+    const ctor = db.constructor as any;
+    if (!ctor || typeof ctor.peekTxnid !== 'function') return;
+    try {
+      const t = ctor.peekTxnid(this.config.databasePath) as number;
+      if (t > this._lastOwnWriteTxnid) this._lastOwnWriteTxnid = t;
+      // Our own write is, by definition, already reflected in `this.entries`.
+      if (t > this._lastSeenTxnid) this._lastSeenTxnid = t;
+    } catch {
+      // best-effort; see method doc.
     }
   }
 
@@ -665,6 +727,10 @@ export class RvfBackend implements IMemoryBackend {
   async query(q: MemoryQuery): Promise<MemoryEntry[]> {
     this.requireInitialized('query');
     this.noteNativeFallbackUse('query');
+    // ADR-0274 D3/D4: refresh from disk if a peer process committed since our
+    // last read, BEFORE reading `this.entries` below (covers both the list/
+    // enumerate path and the semantic arm). Near-zero cost when nothing changed.
+    this._maybeReloadFromDisk();
     const start = performance.now();
     let results = Array.from(this.entries.values());
 
@@ -697,6 +763,16 @@ export class RvfBackend implements IMemoryBackend {
         try {
           const raw = this.nativeDb.query(new Float32Array(q.embedding), q.limit * 2, {});
           semanticIds = new Set(raw.map((r: any) => this.nativeReverseMap.get(r.id)).filter(Boolean));
+          // ADR-0274 D3/D4: peer entries added by a freshness reload are absent
+          // from this process's native index, so the native query above cannot
+          // return them. Supplement via a brute-force pass over the refreshed
+          // `this.entries` so they survive the `semanticIds` filter below.
+          if (this._freshnessReloadAddedEntries) {
+            this._freshnessReloadAddedEntries = false;
+            for (const s of this.bruteForceSearch(new Float32Array(q.embedding), { k: q.limit * 2, threshold: q.threshold })) {
+              semanticIds.add(s.entry.id);
+            }
+          }
         } catch (err) {
           // ADR-0095 d5: if this is InvalidChecksum, degrade and retry via
           // HnswLite. Any other error still bubbles (ADR-0082: don't mask
@@ -738,6 +814,9 @@ export class RvfBackend implements IMemoryBackend {
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
     this.requireInitialized('search');
     this.noteNativeFallbackUse('search');
+    // ADR-0274 D3/D4: refresh from disk if a peer process committed since our
+    // last read, BEFORE the native query + orphan self-heal read `this.entries`.
+    this._maybeReloadFromDisk();
     const start = performance.now();
     let results: SearchResult[];
 
@@ -825,14 +904,18 @@ export class RvfBackend implements IMemoryBackend {
         // entries were silently dropped. New trigger: if more than half of native
         // hits were dropped as orphans, supplement with pureTsSearch over all
         // entries, dedupe by entry.id, sort by score-DESC, then slice to k.
-        if (raw.length > 0 && (orphanHits / Math.max(raw.length, 1)) > 0.5 && this.entries.size > 0) {
+        // ADR-0274 D3/D4: a freshness reload may have added peer entries that are
+        // absent from this process's native index (so they are not even orphan
+        // hits). Force the supplement in that case too, then clear the flag.
+        const freshnessSupplement = this._freshnessReloadAddedEntries;
+        if (((raw.length > 0 && (orphanHits / Math.max(raw.length, 1)) > 0.5) || freshnessSupplement) && this.entries.size > 0) {
           if (this.config.verbose) {
             console.warn(
-              `[RvfBackend] Native search returned ${orphanHits} orphan numIds ` +
-              `(${orphanHits}/${raw.length} of native hits). Supplementing with pure-TS over ` +
-              `${this.entries.size} entries. Run \`ruflo memory rebuild\` to compact the SFVR file.`,
+              `[RvfBackend] Native search supplement (${freshnessSupplement ? 'cross-process freshness reload' : `${orphanHits}/${raw.length} orphan numIds`}). ` +
+              `Brute-force over ${this.entries.size} entries.`,
             );
           }
+          this._freshnessReloadAddedEntries = false;
           const supplemental = this.pureTsSearch(embedding, options);
           const seen = new Set(results.map(r => r.entry.id));
           for (const s of supplemental) {
@@ -918,6 +1001,8 @@ export class RvfBackend implements IMemoryBackend {
     if (this.walEntryCount >= this.config.walCompactionThreshold) {
       await this.compactWal();
     }
+    // ADR-0274 D3/D4 self-write guard (see store()): record our own commit txnid.
+    this._noteOwnWrite();
   }
 
   async bulkDelete(ids: string[]): Promise<number> {
@@ -962,6 +1047,12 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async count(namespace?: string): Promise<number> {
+    // ADR-0274 D3/D4: refresh from disk if a peer process committed since our
+    // last read, BEFORE reading `this.entries`. memory_stats routes case 'stats'
+    // → count(ns) per-namespace; without this it stays stale after a peer write
+    // (the literal caveat #2 symptom: "183/2 in-memory vs 281/850 on disk"). The
+    // 250ms debounce makes the per-namespace count() loop reload at most once.
+    this._maybeReloadFromDisk();
     if (!namespace) return this.entries.size;
     let c = 0;
     for (const entry of this.entries.values()) {
@@ -971,6 +1062,11 @@ export class RvfBackend implements IMemoryBackend {
   }
 
   async listNamespaces(): Promise<string[]> {
+    // ADR-0274 D3/D4: memory_stats calls listNamespaces() FIRST to get the
+    // namespace set, then count(ns) per namespace. Refresh here too so a
+    // brand-new peer namespace appears (a per-ns count() reload alone cannot
+    // surface a namespace this set never enumerated).
+    this._maybeReloadFromDisk();
     const ns = new Set<string>();
     for (const entry of this.entries.values()) ns.add(entry.namespace);
     return Array.from(ns);
@@ -2623,7 +2719,25 @@ export class RvfBackend implements IMemoryBackend {
   private async loadFromNativeSegments(): Promise<boolean> {
     // silent-fallthrough-OK: nativeDb-null is a legitimate signal the caller acts on (falls back to legacy .meta path). Method is documented to handle either branch; throwing here would force every non-native deployment to crash on init.
     if (!this.nativeDb) return false;
+    const snapshots = this._collectNativeSnapshots(this.nativeDb);
+    if (!snapshots) return false;
+    if (snapshots.length === 0) return false;
+    const loaded = this._populateFromSnapshots(snapshots);
+    this._diag(`loadFromNativeSegments.done loaded=${loaded}`);
+    return loaded > 0;
+  }
 
+  /**
+   * ADR-0154 G5: read every (id, vector, metadata) tuple from a native handle
+   * in one pass. Extracted from loadFromNativeSegments so the read-only reload
+   * path (_maybeReloadFromDisk) can reuse the exact same reader against a
+   * lock-free `openReadonly` handle. Returns null when the file has no
+   * META_SEGs (caller falls back to the legacy `.meta` path); otherwise the
+   * snapshot array (possibly empty for a fresh store).
+   */
+  private _collectNativeSnapshots(
+    nativeDb: any,
+  ): Array<{ id: number; vector: Float32Array; metadata: RvfMetadataEntryWire[] }> | null {
     // ADR-0154 G5 (2026-05-07): batch reader. The earlier per-id pattern
     // (`listMetadataIds()` + N × `getMetadataEntries(id)` + N × `getVector(id)`)
     // crossed the napi boundary 2N+1 times and acquired the store mutex
@@ -2633,7 +2747,7 @@ export class RvfBackend implements IMemoryBackend {
     //
     // Defensive: older @latest binaries don't expose `iterAllWithVectors`.
     // Fall back to the per-id pattern when it's not available.
-    const native = this.nativeDb as any;
+    const native = nativeDb as any;
     type Snapshot = { id: number; vector: Float32Array; metadata: RvfMetadataEntryWire[] };
     let snapshots: Snapshot[] | null = null;
     if (typeof native.iterAllWithVectors === 'function') {
@@ -2715,7 +2829,7 @@ export class RvfBackend implements IMemoryBackend {
       // correctly (empty Float32Array fallback at the catch below).
       const ids = native.listMetadataIds?.() as number[] | undefined;
       // silent-fallthrough-OK: empty segment list is the expected fresh-store / legacy-pre-Phase-1 case; caller falls back to the legacy .meta path. Throwing would break every project on the day this version ships.
-      if (!ids || ids.length === 0) return false;
+      if (!ids || ids.length === 0) return null;
       snapshots = [];
       for (const numId of ids) {
         const metadata = (native.getMetadataEntries?.(numId) as RvfMetadataEntryWire[] | undefined)
@@ -2731,8 +2845,20 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
 
-    if (snapshots.length === 0) return false;
+    return snapshots;
+  }
 
+  /**
+   * ADR-0154 G5: decode a native snapshot array into `this.entries` /
+   * `seenIds` / `keyIndex` / `nativeIdMap`. Extracted from
+   * loadFromNativeSegments so the read-only reload path can reuse it.
+   * `set`-semantics: re-decoding an already-present id overwrites it with the
+   * fresh on-disk copy (correct for the reload path — a peer may have updated
+   * an entry we already hold). Returns the count successfully populated.
+   */
+  private _populateFromSnapshots(
+    snapshots: Array<{ id: number; vector: Float32Array; metadata: RvfMetadataEntryWire[] }>,
+  ): number {
     let loaded = 0;
     for (const snap of snapshots) {
       const numId = snap.id;
@@ -2775,8 +2901,157 @@ export class RvfBackend implements IMemoryBackend {
         }
       }
     }
-    this._diag(`loadFromNativeSegments.done loaded=${loaded}`);
-    return loaded > 0;
+    return loaded;
+  }
+
+  /**
+   * ADR-0274 D3/D4: cross-process content-freshness check, called at the top of
+   * the read paths (query semantic arm + search) before they read `this.entries`.
+   *
+   * The common case is near-zero cost: peek the O(1) on-disk txnid (no flock, no
+   * boot reload) and return immediately when it has not advanced past what this
+   * reader already absorbed. Only when a PEER process advanced the file do we
+   * pay a lazy, LOCK-FREE re-read of the committed state via `openReadonly`.
+   *
+   * Guards (each returns early, in cheapest-first order):
+   *   - nativeDb null / binding lacks peekTxnid|openReadonly → no-op. Pure-TS
+   *     mode keeps its existing single-loader behavior; older bindings degrade
+   *     to pre-0274 (stale-read) behavior rather than crash.
+   *   - same-process write mid-flight (`_lockHeldDepth > 0`) → skip, so we never
+   *     race an in-flight `store()` whose commit is not yet on disk.
+   *   - txnid not advanced past `_lastSeenTxnid` → skip (the hot path).
+   *   - the advance is THIS process's own commit (`<= _lastOwnWriteTxnid`) →
+   *     skip; the in-mem state already reflects it (read-your-own-writes).
+   *   - debounced: at most one reload per `_RELOAD_DEBOUNCE_MS`, so a concurrent
+   *     bulk writer (hundreds of commits) triggers a handful of reloads, not one
+   *     per record.
+   *
+   * LOCK-FREE: uses `openReadonly` (RvfStore::open_readonly → writer_lock:None),
+   * never `reacquireLock`/`unparkNativeWriter`, so it does not reintroduce the
+   * flock contention ADR-0274 removed. It also does NOT re-ingest native vectors
+   * into `this.nativeDb` (that is ensureNativeSemanticReady's job and grows the
+   * `.rvf` with orphan segments) — it only refreshes the JS-side `entries` /
+   * `keyIndex` (+ hnswIndex when present). The existing orphan self-heal in
+   * `search()` (supplement via bruteForceSearch over the refreshed `entries`)
+   * then surfaces peer entries in semantic search; `query()` reads `entries`
+   * directly so `memory_list` reflects them too.
+   *
+   * NOT a silent fallback (ADR-0082): a triggered reload loud-warns (verbose)
+   * with the before/after entry count and the txnid delta. A reload FAILURE
+   * (openReadonly throws) is logged and swallowed — we keep serving the prior
+   * (stale-but-valid) view rather than crashing a read; it is corrected on the
+   * next read attempt.
+   */
+  private _maybeReloadFromDisk(): void {
+    const db = this.nativeDb;
+    if (!db) return;
+    const ctor = db.constructor as any;
+    if (!ctor || typeof ctor.peekTxnid !== 'function' || typeof ctor.openReadonly !== 'function') {
+      // Older binding without the ADR-0274 read-freshness statics: keep
+      // pre-0274 behavior (no reload). Feature-detected, not assumed.
+      return;
+    }
+    // Never race an in-flight same-process write: its commit may not be on disk
+    // yet, and a reload here could observe a torn intermediate or clobber the
+    // about-to-be-committed in-mem state.
+    if (this._lockHeldDepth > 0) return;
+
+    let onDiskTxnid: number;
+    try {
+      onDiskTxnid = ctor.peekTxnid(this.config.databasePath) as number;
+    } catch (err) {
+      // peekTxnid is best-effort O(1); a transient failure (file mid-rename on a
+      // concurrent writer) must not break the read. Keep current view.
+      this._diag(`maybeReload.peekTxnid-failed: ${(err as Error).message}`);
+      return;
+    }
+
+    // Establish the baseline on the first call without reloading (init already
+    // loaded the current state).
+    if (this._lastSeenTxnid < 0) {
+      this._lastSeenTxnid = onDiskTxnid;
+      return;
+    }
+    // Hot path: nothing new on disk.
+    if (onDiskTxnid <= this._lastSeenTxnid) return;
+    // Self-write guard: the advance is our own commit; in-mem already reflects it.
+    if (onDiskTxnid <= this._lastOwnWriteTxnid) {
+      this._lastSeenTxnid = onDiskTxnid;
+      return;
+    }
+    // Debounce: bound reloads under a concurrent bulk writer.
+    const now = Date.now();
+    if (now - this._lastReloadAt < this._RELOAD_DEBOUNCE_MS) return;
+
+    this._reloadEntriesFromDisk(ctor, onDiskTxnid);
+  }
+
+  /**
+   * ADR-0274 D3/D4: lock-free, read-only re-read of committed on-disk state into
+   * the JS-side `entries` / `keyIndex` (+ hnswIndex when present). Opens a
+   * short-lived `openReadonly` handle (no write flock), reuses the same native
+   * snapshot reader + decoder as init (`_collectNativeSnapshots` /
+   * `_populateFromSnapshots`), then closes the handle. Does NOT touch
+   * `this.nativeDb` and does NOT re-ingest native vectors, so it cannot grow the
+   * `.rvf` with orphan segments.
+   */
+  private _reloadEntriesFromDisk(ctor: any, onDiskTxnid: number): void {
+    this._lastReloadAt = Date.now();
+    const before = this.entries.size;
+    let ro: any = null;
+    try {
+      ro = ctor.openReadonly(this.config.databasePath);
+      const snapshots = this._collectNativeSnapshots(ro);
+      if (snapshots === null) {
+        // No META_SEGs to read (fresh/legacy file). Nothing to merge; just
+        // record that we have observed this txnid so we don't re-peek-and-skip.
+        this._lastSeenTxnid = onDiskTxnid;
+        return;
+      }
+      // Rebuild the JS-side structures from the fresh on-disk snapshot. We do
+      // NOT clear `entries` first: `_populateFromSnapshots` uses set-semantics so
+      // peer-added/updated entries land and our own entries are re-affirmed. A
+      // peer DELETE is rare on the read path and is reconciled at next init; not
+      // reflecting it here is strictly less harmful than dropping live entries.
+      const loaded = this._populateFromSnapshots(snapshots);
+      // Peer entries are now in `this.entries` but NOT in this process's native
+      // index (we deliberately do not re-ingest — that grows the .rvf). Flag the
+      // semantic read paths to force a brute-force supplement so they surface.
+      if (this.entries.size > before) this._freshnessReloadAddedEntries = true;
+      // When a JS HnswLite index exists (pure-TS / degraded mode) keep it in
+      // sync so pureTsSearch surfaces the refreshed entries. In native mode
+      // hnswIndex is null and the orphan self-heal uses bruteForceSearch over
+      // `entries`, so no index rebuild is needed there.
+      if (this.hnswIndex) {
+        for (const snap of snapshots) {
+          const stringId = this.nativeReverseMap.get(snap.id);
+          if (stringId && snap.vector && snap.vector.length > 0) {
+            this.hnswIndex.remove(stringId);
+            this.hnswIndex.add(stringId, snap.vector);
+          }
+        }
+      }
+      this._lastSeenTxnid = onDiskTxnid;
+      if (this.config.verbose) {
+        console.warn(
+          `[RvfBackend] cross-process freshness reload (ADR-0274): on-disk txnid ` +
+          `advanced ${this._lastOwnWriteTxnid}→${onDiskTxnid}; entries ${before}→${this.entries.size} ` +
+          `(${loaded} decoded from disk).`,
+        );
+      }
+      this._diag(`maybeReload.done txnid=${onDiskTxnid} entries=${before}->${this.entries.size} loaded=${loaded}`);
+    } catch (err) {
+      // Reload failure is non-fatal: keep serving the prior valid (stale) view;
+      // the next read retries. Loud per ADR-0082 (not a silent success).
+      console.error(
+        `[RvfBackend] cross-process freshness reload failed (ADR-0274); serving prior view:`,
+        (err as Error).message,
+      );
+    } finally {
+      if (ro && typeof ro.close === 'function') {
+        try { ro.close(); } catch { /* read-only handle close is best-effort */ }
+      }
+    }
   }
 
   /**
