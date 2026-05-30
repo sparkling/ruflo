@@ -1870,7 +1870,7 @@ export class RvfBackend implements IMemoryBackend {
   // (reloads only if a peer advanced the file while parked, so a stale segment
   // directory can never clobber the peer's manifest). LockHeld/timeout is a
   // genuine contention failure and is thrown loudly (ADR-0082, no masking) —
-  // the caller (acquireLock) releases the advisory lock it just took on throw.
+  // the caller releases the advisory lock it just took on throw.
   private unparkNativeWriter(): void {
     // silent-fallthrough-OK: not parked → the writer already holds its flock; re-acquire is an idempotent no-op
     if (!this._nativeFlockParked) return;
