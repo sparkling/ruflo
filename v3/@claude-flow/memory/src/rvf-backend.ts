@@ -151,6 +151,17 @@ export class RvfBackend implements IMemoryBackend {
   // parked handle still serves reads lock-free from its in-memory vectors.
   // `true` == flock released. Starts false (open/create acquires the flock).
   private _nativeFlockParked = false;
+  // ADR-0274: parking (releasing the native flock) is DEBOUNCED on a short idle
+  // timer rather than done synchronously per write. A tight write burst (the
+  // index build, or an N-writer stress) thus holds the flock across the whole
+  // burst — no per-op release/reacquire/resync churn that would serialise into
+  // lock-timeout territory — while an idle backend (the long-lived MCP server
+  // between tool calls) still releases within _NATIVE_PARK_IDLE_MS so a
+  // concurrent CLI writer gets in (the ADR-0267 fix). The timer fires even while
+  // a write is blocked awaiting the advisory lock, so it cannot wedge a
+  // cross-process wait.
+  private _nativeParkTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly _NATIVE_PARK_IDLE_MS = Number(process.env.RUFLO_RVF_PARK_IDLE_MS) || 50;
 
   // ADR-0095 amendment (2026-05-01, swarm 2 instrumentation): per-instance
   // diag helper. Gated by RVF_DIAG=1 (separate from RVF_DEBUG so we can
@@ -405,6 +416,9 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
 
+    // ADR-0274: cancel any pending debounced park before closing (close()
+    // releases the flock anyway; this just avoids a late no-op callback).
+    this._cancelNativePark();
     if (this.nativeDb) {
       // silent-fallthrough-OK: shutdown is best-effort cleanup; native close failure does not affect data integrity
       try { this.nativeDb.close(); } catch {}
@@ -1886,6 +1900,26 @@ export class RvfBackend implements IMemoryBackend {
     this._diag('unparkNativeWriter.reacquired-native-flock');
   }
 
+  // ADR-0274: schedule a debounced park (release the native flock) once the
+  // backend goes idle. Resetting the timer on each release coalesces a burst.
+  private _scheduleNativePark(): void {
+    if (this._nativeParkTimer) clearTimeout(this._nativeParkTimer);
+    this._nativeParkTimer = setTimeout(() => {
+      this._nativeParkTimer = null;
+      this.parkNativeWriter();
+    }, this._NATIVE_PARK_IDLE_MS);
+    // Don't keep the event loop alive just for the park timer.
+    if (this._nativeParkTimer.unref) this._nativeParkTimer.unref();
+  }
+
+  // ADR-0274: cancel a pending debounced park (a write is starting, or shutdown).
+  private _cancelNativePark(): void {
+    if (this._nativeParkTimer) {
+      clearTimeout(this._nativeParkTimer);
+      this._nativeParkTimer = null;
+    }
+  }
+
   private async acquireLock(maxWaitMs: number = 60_000): Promise<void> {
     if (!this.lockPath) return; // :memory: mode
     // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant.
@@ -1946,6 +1980,7 @@ export class RvfBackend implements IMemoryBackend {
         // release the advisory lock we just took so it doesn't leak, then
         // surface the contention error loudly (ADR-0082).
         try {
+          this._cancelNativePark();
           this.unparkNativeWriter();
         } catch (unparkErr) {
           this._lockHeldDepth = 0;
@@ -2019,10 +2054,11 @@ export class RvfBackend implements IMemoryBackend {
       return;
     }
     this._lockHeldDepth = 0;
-    // ADR-0274: park the native writer (release its flock) now that this
-    // backend is going idle, so a concurrent CLI writer (e.g. `agentdb index`)
-    // can acquire it. Best-effort; never throws.
-    this.parkNativeWriter();
+    // ADR-0274: schedule a debounced park (release the native flock) now that
+    // this critical section is done. A following write within the idle window
+    // cancels it (the flock stays held across the burst); otherwise it fires and
+    // releases so a concurrent CLI writer (e.g. `agentdb index`) gets in.
+    this._scheduleNativePark();
     this._diag('releaseLock.unlinking');
     // ADR-0095 amendment (2026-05-01, t3-2 fix): verify ownership before
     // unlinking. With .jslock the only writer is JS-side, but two
