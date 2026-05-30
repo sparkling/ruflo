@@ -7,7 +7,7 @@ allowed-tools: Bash mcp__ruflo__memory_list mcp__ruflo__memory_search
 
 # ADR Index
 
-Persists every ADR under `*/docs/adr/` or `*/docs/adrs/` to the `adr-patterns` namespace and every relationship (supersedes / amends / related / depends-on) to `adr-edges`. Handles both ADR formats found in the Ruflo monorepo:
+Persists every ADR under `*/docs/adr/` or `*/docs/adrs/` to the `adr-patterns` namespace, the hierarchical `adr/<id>` store, and every relationship (supersedes / depends-on / implements, plus their derived inverses superseded-by / depended-on-by / implemented-by) to the `causal-edges` namespace. The canonical builder is the `agentdb index` command (ADR-0273), which writes all three surfaces in one in-process pass via `recordCausalEdge`; the legacy `adr-edges` namespace is retired. Handles both ADR formats found in the Ruflo monorepo:
 
 - **v3-style**: `# ADR-097: Title` heading + `**Status**: Proposed` line
 - **plugin-style**: YAML frontmatter (`id: ADR-NNNN`, `status: Proposed`)
@@ -59,10 +59,10 @@ tags: <comma-separated>
 
 The `completed` boolean (ADR-0262) is stored alongside `status` and `tags` for reference; absent → treated as `false`. No edges or filters derive from it.
 
-`adr-edges` namespace, key `<relation>:<FROM>-><TO>:<timestamp-rand>`, value:
+`causal-edges` namespace (written via `recordCausalEdge`; ADR-0273 D8), key `<relation>:<FROM>-><TO>:<timestamp-rand>`, value:
 
 ```json
-{ "from": "ADR-097", "to": "ADR-086", "relation": "related", "capturedAt": "<ISO>" }
+{ "from": "ADR-097", "to": "ADR-086", "relation": "supersedes", "capturedAt": "<ISO>" }
 ```
 
 ## False-positive guard
