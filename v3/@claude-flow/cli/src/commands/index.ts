@@ -33,6 +33,7 @@ const commandLoaders: Record<string, CommandLoader> = {
   agent: () => import('./agent.js'),
   swarm: () => import('./swarm.js'),
   memory: () => import('./memory.js'),
+  agentdb: () => import('./agentdb.js'),
   mcp: () => import('./mcp.js'),
   config: () => import('./config.js'),
   migrate: () => import('./migrate.js'),
@@ -162,6 +163,7 @@ import { applianceCommand } from './appliance.js';
 import { cleanupCommand } from './cleanup.js';
 import { autopilotCommand } from './autopilot.js';
 import { skillCommand } from './skill.js';
+import { agentdbCommand } from './agentdb.js';
 
 // Pre-populate cache with core commands
 loadedCommands.set('init', initCommand);
@@ -188,6 +190,7 @@ loadedCommands.set('cleanup', cleanupCommand);
 loadedCommands.set('autopilot', autopilotCommand);
 loadedCommands.set('skill', skillCommand);
 loadedCommands.set('skills', skillCommand);
+loadedCommands.set('agentdb', agentdbCommand);
 
 // =============================================================================
 // Exports (maintain backwards compatibility)
@@ -217,6 +220,7 @@ export { applianceCommand } from './appliance.js';
 export { cleanupCommand } from './cleanup.js';
 export { autopilotCommand } from './autopilot.js';
 export { skillCommand } from './skill.js';
+export { agentdbCommand } from './agentdb.js';
 
 // Lazy-loaded command re-exports (for backwards compatibility, but async-only)
 export async function getConfigCommand() { return loadCommand('config'); }
@@ -274,6 +278,7 @@ export const commands: Command[] = [
   cleanupCommand,
   autopilotCommand,
   skillCommand,
+  agentdbCommand,
 ];
 
 /**
