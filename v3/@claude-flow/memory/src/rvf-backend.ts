@@ -1872,6 +1872,7 @@ export class RvfBackend implements IMemoryBackend {
   // genuine contention failure and is thrown loudly (ADR-0082, no masking) —
   // the caller (acquireLock) releases the advisory lock it just took on throw.
   private unparkNativeWriter(): void {
+    // silent-fallthrough-OK: not parked → the writer already holds its flock; re-acquire is an idempotent no-op
     if (!this._nativeFlockParked) return;
     const db = this.nativeDb;
     if (!db || typeof db.reacquireLock !== 'function') {
@@ -1948,6 +1949,7 @@ export class RvfBackend implements IMemoryBackend {
           this.unparkNativeWriter();
         } catch (unparkErr) {
           this._lockHeldDepth = 0;
+          // silent-fallthrough-OK: best-effort unlink of the advisory lock we just took; the unparkErr below is the real error we surface
           try { await ul(this.lockPath); } catch {}
           throw unparkErr;
         }
