@@ -100,15 +100,18 @@ const indexCommand: Command = {
   options: [
     { name: 'dir', description: 'ADR directory (default: docs/adr)', type: 'string', default: 'docs/adr' },
     { name: 'dry-run', description: 'Parse + report without writing', type: 'boolean', default: false },
+    { name: 'purge', description: 'Clear existing adr/* hierarchical + adr-patterns + causal-edges entries before rebuilding (idempotent re-index)', type: 'boolean', default: false },
   ],
   examples: [
     { description: 'Index the corpus under docs/adr', command: 'agentdb index' },
+    { description: 'Purge + rebuild (deterministic, no duplicates)', command: 'agentdb index --purge' },
     { description: 'Index a custom directory', command: 'agentdb index --dir docs/adrs' },
     { description: 'Parse + report only', command: 'agentdb index --dry-run' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const dir = resolve(ctx.cwd, (ctx.flags.dir as string) || 'docs/adr');
     const dryRun = ctx.flags['dry-run'] === true;
+    const purge = ctx.flags.purge === true;
 
     if (!existsSync(dir) || !statSync(dir).isDirectory()) {
       output.printError(`ADR directory not found: ${dir}`);
@@ -159,7 +162,43 @@ const indexCommand: Command = {
     // registry + archivist + embedder ONCE; the rapid loop below coalesces into
     // one flock hold via the ADR-0274 idle-timer park (D7).
     const { hierarchicalStore, recordCausalEdge } = await import('../mcp-tools/agentdb-orchestration.js');
-    const { routeMemoryOp } = await import('../memory/memory-router.js');
+    const { routeMemoryOp, getController } = await import('../memory/memory-router.js');
+
+    // --purge: clear the 3 surfaces before rebuilding so a re-index is
+    // deterministic (HierarchicalMemory.store inserts by synthetic id and
+    // causal edges key on a timestamp, so without this a re-run duplicates).
+    // This is the canonical purge-then-rebuild (ADR-0271 Phase 3 / WS3) — not an
+    // ad-hoc script. NB: in this repo `causal-edges` is the ADR-index edge store;
+    // clearNamespace wipes the whole namespace.
+    if (purge) {
+      output.printInfo('Purging existing adr/* hierarchical + adr-patterns + causal-edges entries…');
+      try {
+        const hm = await getController<any>('hierarchicalMemory');
+        if (hm && typeof hm.query === 'function' && typeof hm.forget === 'function') {
+          const existing = await hm.query('adr/*', {});
+          let purged = 0;
+          for (const e of (existing || [])) {
+            const id = (e && (e.id ?? e.memoryId));
+            if (!id) continue;
+            const ok = await hm.forget(id).then(() => true).catch(() => false);
+            if (ok) purged++;
+          }
+          output.writeln(output.dim(`  purged ${purged}/${(existing || []).length} hierarchical adr/* entr(ies)`));
+        } else {
+          output.printWarning('hierarchical purge skipped: controller lacks query/forget');
+        }
+      } catch (e: any) {
+        output.printWarning(`hierarchical purge error: ${e?.message || e}`);
+      }
+      for (const ns of ['adr-patterns', 'causal-edges']) {
+        try {
+          await routeMemoryOp({ type: 'clearNamespace', namespace: ns } as any);
+          output.writeln(output.dim(`  cleared namespace ${ns}`));
+        } catch (e: any) {
+          output.printWarning(`clearNamespace ${ns} error: ${e?.message || e}`);
+        }
+      }
+    }
 
     let recCount = 0;
     let patCount = 0;
