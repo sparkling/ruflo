@@ -18,17 +18,24 @@ import { dirname, join } from 'node:path';
 import { findProjectRoot } from '@claude-flow/shared/fs';
 import { actionUplift } from '../learning/action-values.js';
 
-// ADR-0280: optional blend of the learner's de-confounded action-value uplift
-// (E[reward | action, task_type], ADR-0279) into the default retrieval rank, so
-// a pattern whose action *causes* success for the task-type outranks one that
-// merely co-occurs. Flag-gated via RUFLO_ROUTE_ACTION_UPLIFT (β, default 0 =
-// off — implement-ahead; cosine stays the relevance floor). Read once per
-// process; a setter exists for tests.
+// ADR-0280: blend the learner's de-confounded action-value uplift (E[reward |
+// action, task_type], ADR-0279) into the default retrieval rank, so a pattern
+// whose action *causes* success for the task-type outranks one that merely
+// co-occurs. ON by default (β = 0.2) — cosine stays the relevance floor, and the
+// blend is self-inert until the learner has persisted action-values (no data →
+// uplift 0 → pure cosine). Override β via RUFLO_ROUTE_ACTION_UPLIFT; set it to 0
+// to disable. Read once per process; a setter exists for tests.
+const DEFAULT_ACTION_UPLIFT_BETA = 0.2;
 let _actionUpliftBeta: number | null = null;
 function getActionUpliftBeta(): number {
   if (_actionUpliftBeta === null) {
-    const raw = Number.parseFloat(process.env.RUFLO_ROUTE_ACTION_UPLIFT ?? '');
-    _actionUpliftBeta = Number.isFinite(raw) && raw > 0 ? raw : 0;
+    const raw = process.env.RUFLO_ROUTE_ACTION_UPLIFT;
+    if (raw === undefined || raw === '') {
+      _actionUpliftBeta = DEFAULT_ACTION_UPLIFT_BETA; // on by default
+    } else {
+      const parsed = Number.parseFloat(raw);
+      _actionUpliftBeta = Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_ACTION_UPLIFT_BETA;
+    }
   }
   return _actionUpliftBeta;
 }

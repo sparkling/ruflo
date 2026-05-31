@@ -306,12 +306,21 @@ describe('ModelRouter — action-uplift A-coupling (ADR-0280)', () => {
     expect(opusBlend).toBeGreaterThan(opusPlain);
   }, 30_000);
 
-  it('γ=0 (default) does not read action-values — selection is unchanged', async () => {
-    persistActionValues([AV('opus', 'deploy', 1)]);
+  it('default config has the A-coupling ON — blends without explicit γ', async () => {
+    // Strong learned signal: opus causes success for 'deploy', haiku & sonnet fail.
+    persistActionValues([AV('opus', 'deploy', 1), AV('haiku', 'deploy', -1), AV('sonnet', 'deploy', -1)]);
     _resetActionValuesCache();
-    const router = new ModelRouter({ maxUncertainty: 1.0, enableCircuitBreaker: false }); // γ defaults to 0
-    // Just exercises the default path — no throw, returns a valid model.
-    const r = await router.route('deploy the service');
-    expect(['haiku', 'sonnet', 'opus']).toContain(r.model);
-  });
+    const task = 'deploy the service';
+    const dflt = new ModelRouter({ maxUncertainty: 1.0, enableCircuitBreaker: false }); // γ defaults to 0.3 (ON)
+    const off = new ModelRouter({ maxUncertainty: 1.0, enableCircuitBreaker: false, actionUpliftGamma: 0 });
+
+    let opusDflt = 0;
+    let opusOff = 0;
+    const N = 100;
+    for (let i = 0; i < N; i++) if ((await dflt.route(task)).model === 'opus') opusDflt++;
+    for (let i = 0; i < N; i++) if ((await off.route(task)).model === 'opus') opusOff++;
+
+    // Default blend (opus ×1.3, others ×0.7) shifts selection toward opus vs γ=0.
+    expect(opusDflt).toBeGreaterThan(opusOff);
+  }, 30_000);
 });

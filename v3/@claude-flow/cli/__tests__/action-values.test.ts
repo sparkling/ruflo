@@ -100,12 +100,28 @@ describe('LocalReasoningBank — action-uplift rerank (ADR-0280)', () => {
     return bank;
   };
 
-  it('β=0 (default): pure cosine — higher-cosine A ranks first', () => {
+  it('β=0 (explicitly disabled): pure cosine — higher-cosine A ranks first', () => {
     persistActionValues([AV('researcher', 'backend', -0.1), AV('coder', 'backend', 0.5)]);
     _resetActionValuesCache();
     setActionUpliftBeta(0);
     const res = setupBank().findSimilar(QUERY, { k: 2, taskType: 'backend' });
     expect(res.map(r => r.id)).toEqual(['A', 'B']);
+  });
+
+  it('default β (env unset) is ON — reranks without any explicit config', () => {
+    const saved = process.env.RUFLO_ROUTE_ACTION_UPLIFT;
+    delete process.env.RUFLO_ROUTE_ACTION_UPLIFT;
+    try {
+      // opposing uplift (gap 1.0) — at the default β=0.2 this flips the cosine-0.1 gap.
+      persistActionValues([AV('researcher', 'backend', -0.5), AV('coder', 'backend', 0.5)]);
+      _resetActionValuesCache();
+      setActionUpliftBeta(null); // re-read env → unset → default 0.2 (ON)
+      const res = setupBank().findSimilar(QUERY, { k: 2, taskType: 'backend' });
+      // A rank = 0.9 + 0.2·(−0.5) = 0.80; B rank = 0.8 + 0.2·(0.5) = 0.90 → B first
+      expect(res.map(r => r.id)).toEqual(['B', 'A']);
+    } finally {
+      if (saved !== undefined) process.env.RUFLO_ROUTE_ACTION_UPLIFT = saved;
+    }
   });
 
   it('β>0: a de-confounded high-uplift pattern (B) outranks higher-cosine A', () => {

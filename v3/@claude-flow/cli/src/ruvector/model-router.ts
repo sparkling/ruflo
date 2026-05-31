@@ -117,9 +117,11 @@ export interface ModelRouterConfig {
   /**
    * ADR-0280 A-coupling: blend the learner's model-uplift (E[reward | model,
    * task_type] from the episode stream, ADR-0279) into selection by scaling each
-   * sampled score by (1 + γ·uplift). 0 = off (default — implement-ahead; the
-   * online prior already de-confounds). A small γ favors a model that *causes*
-   * success for this task-type beyond what the router's own loop has seen.
+   * sampled score by (1 + γ·uplift). Default 0.3 (ON) — a small nudge favoring a
+   * model that *causes* success for this task-type, complementary to the
+   * router's own online prior. Self-inert until the learner has persisted
+   * action-values (`.swarm/action-values.json`): with no data, uplift = 0 and
+   * the factor is 1, i.e. identical to the pre-0280 bandit. Set 0 to disable.
    */
   actionUpliftGamma: number;
 }
@@ -348,7 +350,7 @@ const DEFAULT_CONFIG: ModelRouterConfig = {
   enableCostOptimization: true,
   preferSpeed: true,
   contextualPriors: true,
-  actionUpliftGamma: 0,
+  actionUpliftGamma: 0.3, // ADR-0280: on by default (self-inert until learner data exists)
 };
 
 // ============================================================================
