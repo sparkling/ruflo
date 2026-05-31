@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/codex",
-  "version": "3.0.0-alpha.9-patch.961",
+  "version": "3.0.0-alpha.9-patch.962",
   "description": "Codex CLI integration for Claude Flow - OpenAI Codex platform adapter",
   "type": "module",
   "main": "./dist/index.js",
@@ -72,7 +72,7 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "@claude-flow/cli": "3.7.0-alpha.10-patch.393"
+    "@claude-flow/cli": "3.7.0-alpha.10-patch.394"
   },
   "peerDependenciesMeta": {
     "@claude-flow/cli": {
