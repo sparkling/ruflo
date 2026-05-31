@@ -145,8 +145,25 @@ async function getBridge(): Promise<AgentDbBridge> {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result: any = await (fn as any).call(cg, numId, { cascade: true });
         const deletedNode = typeof result?.deletedNode === 'boolean' ? result.deletedNode : Boolean(result);
-        const deletedEdges = typeof result?.deletedEdges === 'number' ? result.deletedEdges : 0;
-        return { success: true, deleted: deletedNode, deletedNode, deletedEdges, nodeId, controller: 'bridge-fallback' };
+        let deletedEdges = typeof result?.deletedEdges === 'number' ? result.deletedEdges : 0;
+        // ADR-0276: the controller delete above removed the SQLite causal_edges
+        // rows, but the KV dual-write copies in the 'causal-edges' namespace
+        // survive and the dual-read would still return them. Clear the node's KV
+        // edges too. KV keys are `FROM→TO` with STRING ADR ids, so `nodeId`
+        // matches directly: outbound = `${nodeId}→*`, inbound = `*→${nodeId}`.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { routeMemoryOp } = await import('../memory/memory-router.js') as any;
+        const arrow = '→';
+        const listed: any = await routeMemoryOp({ type: 'list', namespace: 'causal-edges', limit: 100000 });
+        for (const e of (listed?.entries ?? [])) {
+          const k: string = e?.key ?? '';
+          if (typeof k === 'string' && (k.startsWith(`${nodeId}${arrow}`) || k.endsWith(`${arrow}${nodeId}`))) {
+            await routeMemoryOp({ type: 'delete', namespace: 'causal-edges', key: k });
+            deletedEdges++;
+          }
+        }
+        const anyDeleted = deletedNode || deletedEdges > 0;
+        return { success: true, deleted: anyDeleted, deletedNode: anyDeleted, deletedEdges, nodeId, controller: 'causalGraph+kv' };
       } catch (err) {
         return { success: false, deleted: false, deletedNode: false, deletedEdges: 0, nodeId, controller: 'sql-error', error: err instanceof Error ? err.message : String(err) };
       }
@@ -1815,22 +1832,23 @@ export const agentdbLearnerRun: MCPTool = {
       // L516/L1103/L1733 pattern. NOT mirrored at memory-router.ts:1958
       // because that branch is dead per task #88's misnamed-method bug.
       await ensureSqliteWired();
-      const learner = await getController<any>('nightlyLearner');
-      if (!learner) return { success: false, error: 'NightlyLearner controller not available' };
+      // ADR-0277 I2: delegate to routeLearningOp({type:'run'}), which bypasses
+      // the controller-registry MemoryConsolidator preference to reach the REAL
+      // NightlyLearner uplift pipeline. `getController('nightlyLearner')` here
+      // returns the consolidator (skillsCreated, no uplift) — the wrong producer
+      // for the autonomous causal-learning loop. routeLearningOp('run') is the
+      // same path the daemon 'learn' worker (I1) uses, so manual + scheduled
+      // invocation compute uplift identically.
+      const { routeLearningOp } = await import('../memory/memory-router.js');
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('learner-run timeout (10s)')), 10_000),
+        setTimeout(() => reject(new Error('learner-run timeout (15s)')), 15_000),
       );
-      if (typeof learner.run === 'function') {
-        const report = await Promise.race([learner.run(), timeoutPromise]);
-        return { success: true, report: report ?? {} };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result: any = await Promise.race([routeLearningOp({ type: 'run' } as any), timeoutPromise]);
+      if (result && result.success === false) {
+        return { success: false, error: result.error ?? 'learner-run failed' };
       }
-      // ADR-0181 follow-up #88: fallback to consolidateEpisodes (NightlyLearner's
-      // actual method name). The prior `consolidate` probe was dead code.
-      if (typeof learner.consolidateEpisodes === 'function') {
-        const report = await Promise.race([learner.consolidateEpisodes({}), timeoutPromise]);
-        return { success: true, report: report ?? {} };
-      }
-      return { success: false, error: 'NightlyLearner lacks run/consolidateEpisodes methods' };
+      return { success: true, report: result?.report ?? result ?? {} };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
     }
