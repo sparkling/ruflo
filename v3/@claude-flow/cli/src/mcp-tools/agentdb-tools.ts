@@ -2261,9 +2261,10 @@ export const agentdbHierarchicalDelete: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const vKey = validateIdentifier(params.key, 'key');
-      if (!vKey.valid) return { success: false, deleted: false, error: vKey.error };
-      if (params.tier) { const vTier = validateIdentifier(params.tier, 'tier'); if (!vTier.valid) return { success: false, deleted: false, error: vTier.error }; }
+      // ADR-0281: accept the same key charset `agentdb_hierarchical-store`
+      // accepts (validateString, length-only — allows `/`). validateIdentifier
+      // rejected `/`, refusing the very `adr/<id>` keys store writes. Keys flow
+      // into parameterized SQL on the controller → no injection surface.
       const key = validateString(params.key, 'key', 1000);
       if (!key) return { success: false, deleted: false, error: 'key is required (non-empty string, max 1KB)' };
       const tier = validateString(params.tier, 'tier', 20);
