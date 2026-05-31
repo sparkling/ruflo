@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/integration",
-  "version": "3.0.0-patch.947",
+  "version": "3.0.0-patch.948",
   "type": "module",
   "description": "Integration module - agentic-flow@alpha deep integration, ADR-001 compliance, TokenOptimizer",
   "main": "dist/index.js",
@@ -24,8 +24,8 @@
     "swarm"
   ],
   "peerDependencies": {
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.634",
-    "agentic-flow": "2.0.2-alpha-patch.940"
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.635",
+    "agentic-flow": "2.0.2-alpha-patch.941"
   },
   "devDependencies": {
     "vitest": "^4.0.16"
@@ -35,7 +35,7 @@
     "tag": "v3alpha"
   },
   "optionalDependencies": {
-    "agent-booster": "0.2.2-patch.617"
+    "agent-booster": "0.2.2-patch.618"
   },
   "claude-flow": {
     "optionalComponents": {
