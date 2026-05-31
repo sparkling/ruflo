@@ -54,8 +54,11 @@ export function persistActionValues(rows: ActionValue[] | undefined | null): voi
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, JSON.stringify({ updatedAt: Date.now(), rows }));
     _cache = null; // invalidate same-process cache
-  } catch {
-    // best-effort persistence
+  } catch (e) {
+    // Best-effort: a failed write only means routing misses the latest uplift
+    // (non-fatal). Surface it (stderr — never stdout, the MCP JSON-RPC channel)
+    // so a persistent FS problem isn't invisible, per the no-silent-catch gate.
+    console.warn(`[action-values] persist failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -81,8 +84,12 @@ export function loadActionValues(force = false): Map<string, ActionValue> {
         }
       }
     }
-  } catch {
-    // ignore — empty map → uplift 0 → callers fall back to cosine/prior
+  } catch (e) {
+    // A present-but-unreadable/corrupt file → empty map → uplift 0 → callers
+    // fall back to cosine/prior (non-fatal). Surface it (stderr) so corruption
+    // isn't silent; the 30s cache bounds the log rate. (Absent file is the
+    // existsSync branch above — no error, no log.)
+    console.warn(`[action-values] load failed — routing falls back to cosine/prior: ${e instanceof Error ? e.message : String(e)}`);
   }
   _cache = m;
   _loadedAt = now;

@@ -2497,7 +2497,12 @@ async function _routeLearningOpImpl(op: LearningOp): Promise<MemoryResult> {
           try {
             const { persistActionValues } = await import('../learning/action-values.js');
             persistActionValues((report as { actionValues?: unknown })?.actionValues as never);
-          } catch { /* best-effort */ }
+          } catch (e) {
+            // Best-effort — a failed persist only means the routing hot path
+            // misses this run's uplift (non-fatal). Surface it per the
+            // no-silent-catch gate rather than swallowing uniformly.
+            console.warn(`[action-values] persist after learner run failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+          }
           return { success: true, controller: 'nightlyLearner', learned: report };
         }
         if (typeof learner.consolidateEpisodes === 'function') {
