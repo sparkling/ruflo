@@ -131,7 +131,13 @@ export async function clearCausalEdgeKv(
       try {
         const parsed = typeof e?.content === 'string' ? JSON.parse(e.content) : undefined;
         storedRelation = parsed?.relation;
-      } catch { /* unparseable value → treat as a match, delete it */ }
+      } catch (err) {
+        // A SyntaxError means the stored value is unparseable → leave
+        // storedRelation undefined so we fall through and delete (a KV residual
+        // is worse than over-cleaning a corrupt copy). Any OTHER error type is
+        // unexpected — surface it rather than swallow it (ADR-0180).
+        if (!(err instanceof SyntaxError)) throw err;
+      }
       if (storedRelation !== undefined && storedRelation !== relation) continue;
     }
     await routeMemoryOp({ type: 'delete', namespace: 'causal-edges', key: k });
