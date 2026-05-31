@@ -513,6 +513,10 @@ function makeCliReflexionStoreWriter(): ReflexionStoreWriter {
           code: input.code, // ADR-0268
           reward: input.reward,
           success: input.success,
+          ts: input.ts, // ADR-0277: forward explicit episode ts (this adapter
+          // previously dropped it, so ts only flowed incidentally via per-call
+          // subprocess latency — explicit ts now reaches episodes.ts).
+          action: input.action, // ADR-0279: forward the action (model/agent) taken
         });
         let timer: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {

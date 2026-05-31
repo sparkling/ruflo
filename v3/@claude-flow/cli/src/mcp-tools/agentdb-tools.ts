@@ -1142,6 +1142,7 @@ export const agentdbReflexionStore: MCPTool = {
       reward: { type: 'number', description: 'Reward signal (0-1)' },
       success: { type: 'boolean', description: 'Whether the task succeeded' },
       ts: { type: 'number', description: 'Episode timestamp (unix seconds) — optional; lets callers control episode time (ADR-0277: NightlyLearner causal pair-discovery needs temporally-ordered episodes)' },
+      action: { type: 'string', description: 'The action taken — the model/agent actually used (ADR-0279: NightlyLearner aggregates E[reward | action, task_type] so routers can ask "what does doing X cause?")' },
     },
     required: ['session_id', 'task', 'reward', 'success'],
   },
@@ -1155,6 +1156,8 @@ export const agentdbReflexionStore: MCPTool = {
       const success = params.success === true;
       // ADR-0277: optional explicit episode timestamp (unix seconds).
       const ts = typeof params.ts === 'number' && Number.isFinite(params.ts) ? Math.floor(params.ts) : undefined;
+      // ADR-0279: optional action dimension (the model/agent actually used).
+      const action = validateString(params.action, 'action', 200) || undefined;
       // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
       // `handlers/agentdb/reflexion-store.ts` owns the ReflexionMemory write
       // under substrate.withWrite. ADR-0181 Phase 7 reclassification:
@@ -1170,6 +1173,7 @@ export const agentdbReflexionStore: MCPTool = {
         reward,
         success,
         ...(ts !== undefined ? { ts } : {}),
+        ...(action !== undefined ? { action } : {}),
       });
       return { success: true, sessionId, controller: 'archivist' };
     } catch (error) {

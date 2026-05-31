@@ -1756,6 +1756,15 @@ export const hooksPostTask: MCPTool = {
       });
       const qualityProvided = params.quality !== undefined && params.quality !== null;
       const episodeReward = qualityProvided ? quality : success ? 0.6 : 0.2;
+      // ADR-0279: record the action taken — the model the caller used when
+      // provided (the dimension the ModelRouter A-coupling consumes), else the
+      // agent — so NightlyLearner can aggregate E[reward | action, task_type].
+      const episodeAction =
+        typeof params.model === 'string' && params.model.trim()
+          ? params.model.trim()
+          : typeof agent === 'string' && agent
+            ? agent
+            : undefined;
       await ensureSqliteWired();
       await (await getProcessArchivist()).dispatch(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1767,6 +1776,7 @@ export const hooksPostTask: MCPTool = {
           output: (params.output as string) || undefined,
           reward: episodeReward,
           success,
+          ...(episodeAction ? { action: episodeAction } : {}),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       );
