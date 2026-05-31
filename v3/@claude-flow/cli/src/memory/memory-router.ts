@@ -136,7 +136,12 @@ export interface SessionOp {
   dbPath?: string;
 }
 
-export type LearningOpType = 'search' | 'consolidate';
+// ADR-0277 I2: 'run' drives the REAL NightlyLearner uplift pipeline (the
+// autonomous causal-learning producer), distinct from 'consolidate' which
+// runs the MemoryConsolidator sweep/dedup/compact. Kept separate so the
+// scheduled learning path can obtain the real learner without disturbing the
+// existing consolidate behavior.
+export type LearningOpType = 'search' | 'consolidate' | 'run';
 
 export interface LearningOp {
   type: LearningOpType;
@@ -1765,6 +1770,81 @@ export async function getControllerRegistryAgentDb(): Promise<any> {
 }
 
 /**
+ * ADR-0276 R1: map a string ADR id (e.g. `'ADR-0276'`) → a stable numeric
+ * `memory_id`, persisted in the shared-DB `adr_node_ids` table that
+ * agentdb's `loadSchemas()` provisions (commit ea627b1).
+ *
+ * RESERVED HIGH RANGE (`>= 1<<30` = 1073741824). This is load-bearing, not
+ * cosmetic: every multi-hop traversal in `CausalMemoryGraph`
+ * (`getCausalChain`, `getCausalChainWithAttention`, `calculateCausalGain`)
+ * matches by numeric id ALONE with no `memory_type` filter, and the
+ * attention path reads `episodes WHERE id=?`. A low ADR id would collide
+ * with an episode/skill id and silently embed the wrong content into a
+ * causal chain. Flooring the allocator at `1<<30` keeps ADR ids in a band
+ * that real episode/skill ids never reach.
+ *
+ * Allocation is idempotent (INSERT OR IGNORE), monotonic
+ * (`MAX(memory_id)+1`), and floored at `1<<30` (seed = `(1<<30)-1` so the
+ * first allocation lands exactly on `1<<30`). Centralizing here means the
+ * write arm (`op.sourceId`/`op.targetId`), the read arm
+ * (`op.cause`/`op.effect`), and the delete bridges
+ * (`mcp-tools/agentdb-tools.ts`) all resolve the SAME numeric id for a given
+ * ADR string.
+ *
+ * Throws loud (`feedback-no-fallbacks`) if the shared DB handle or the
+ * `adr_node_ids` table is unreachable — a NULL id here would corrupt the
+ * causal graph far more quietly than a thrown error.
+ */
+const ADR_NODE_ID_FLOOR = 1 << 30; // 1073741824 — reserved high range
+export async function allocAdrNodeId(adrId: string): Promise<number> {
+  if (!adrId) {
+    throw new Error('memory-router: allocAdrNodeId — empty ADR id (ADR-0276 R1)');
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db: any = await getControllerRegistryAgentDb();
+  // Idempotent + monotonic + floored at 1<<30. better-sqlite3 runs one
+  // statement per prepare(), so INSERT and SELECT are separate; a
+  // transaction makes the read-after-write atomic under concurrent daemon
+  // access (the learner and an MCP op can race on the same ADR id).
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO adr_node_ids(adr_id, memory_id) ' +
+      'VALUES (?, (SELECT COALESCE(MAX(memory_id), ? - 1) + 1 FROM adr_node_ids))',
+  );
+  const select = db.prepare('SELECT memory_id FROM adr_node_ids WHERE adr_id = ?');
+  const allocate = db.transaction((id: string) => {
+    insert.run(id, ADR_NODE_ID_FLOOR);
+    return select.get(id) as { memory_id?: number } | undefined;
+  });
+  const row = allocate(adrId);
+  const memoryId = row?.memory_id;
+  if (typeof memoryId !== 'number') {
+    throw new Error(
+      `memory-router: allocAdrNodeId — adr_node_ids returned no memory_id for ` +
+        `'${adrId}' after INSERT OR IGNORE. The shared-DB table is missing or ` +
+        `loadSchemas() did not run. (ADR-0276 R1)`,
+    );
+  }
+  return memoryId;
+}
+
+/**
+ * ADR-0276 R3: reverse-map a numeric `memory_id` → its ADR string for result
+ * shaping. The controller returns numeric ids on `CausalEdge` rows; the
+ * router's edge result shape is string-keyed (`sourceId`/`targetId`). Returns
+ * `undefined` when the id is not an allocated ADR id (e.g. a learned
+ * episode→episode edge that happens to flow through the same table query —
+ * which it cannot, given the reserved range, but the lookup is defensive).
+ */
+async function lookupAdrIdByNodeId(memoryId: number): Promise<string | undefined> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db: any = await getControllerRegistryAgentDb();
+  const row = db
+    .prepare('SELECT adr_id FROM adr_node_ids WHERE memory_id = ?')
+    .get(memoryId) as { adr_id?: string } | undefined;
+  return row?.adr_id;
+}
+
+/**
  * Check if a controller exists in the pool.
  * Same shared-singleton contract as getController — see its JSDoc.
  */
@@ -2372,6 +2452,59 @@ async function _routeLearningOpImpl(op: LearningOp): Promise<MemoryResult> {
         return { success: false, error: e instanceof Error ? e.message : String(e) };
       }
     }
+    case 'run': {
+      // ADR-0277 I2: run the REAL NightlyLearner uplift pipeline (the
+      // autonomous causal-learning producer scheduled by the daemon's 'learn'
+      // worker, I1).
+      //
+      // The `nightlyLearner` controller in the registry PREFERS the
+      // MemoryConsolidator wrapper (controller-registry.ts:1698-1709) and only
+      // falls back to the real learner — so `getController('nightlyLearner')`
+      // would hand us the consolidator's runAll(), NOT the uplift pipeline.
+      // Bypass that preference by reaching the AgentDB instance's OWN
+      // nightlyLearner controller (the real `NightlyLearner` constructed at
+      // AgentDB core; controller-registry.ts:1722-1726 uses the same path as
+      // its fallback). `run()` mines the live `episodes` stream for causal
+      // uplift and is a no-op below minSampleSize/upliftThreshold (so it is
+      // safe to schedule before enough episodes accrue).
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const agentdb: any =
+          _registryInstance && typeof _registryInstance.getAgentDB === 'function'
+            ? _registryInstance.getAgentDB()
+            : null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const learner: any =
+          agentdb && typeof agentdb.getController === 'function'
+            ? agentdb.getController('nightlyLearner')
+            : null;
+        if (!learner) {
+          return {
+            success: false,
+            error:
+              'NightlyLearner not available (AgentDB did not expose a nightlyLearner ' +
+              'controller — neural disabled or version mismatch). (ADR-0277 I2)',
+          };
+        }
+        // The MCP `agentdb_learner_run` tool invokes `run()` with no ctx;
+        // mirror that. Fall back to `consolidateEpisodes()` for AgentDB builds
+        // where the learner predates the `run()` entry point.
+        if (typeof learner.run === 'function') {
+          const report = await learner.run();
+          return { success: true, controller: 'nightlyLearner', learned: report };
+        }
+        if (typeof learner.consolidateEpisodes === 'function') {
+          const report = await learner.consolidateEpisodes();
+          return { success: true, controller: 'nightlyLearner', learned: report };
+        }
+        return {
+          success: false,
+          error: 'NightlyLearner lacks run/consolidateEpisodes methods (ADR-0277 I2)',
+        };
+      } catch (e: unknown) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
     default:
       return { success: false, error: `Unknown learning operation: ${(op as { type: string }).type}` };
   }
@@ -2447,35 +2580,50 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
     case 'edge': {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const causalGraph = await getController<any>('causalGraph');
-      // TODO ADR-0147 R7: deferred — controller exposes addCausalEdge(edge:
-      // CausalEdge) where CausalEdge requires NUMERIC fromMemoryId/toMemoryId
-      // and a fixed memoryType enum ('episode'|'skill'|'note'|'fact'). The
-      // router receives STRING ADR keys (e.g. "ADR-0147→ADR-0167") and has
-      // no machinery to allocate, persist, or look up numeric IDs for them.
-      // Wiring this requires:
-      //   1. an ADR-key→numeric-id allocator with a durable mapping table,
-      //   2. extending the memoryType enum (or registering ADRs as a new
-      //      memory class) — agentic-flow side change, not just router,
-      //   3. registering the mapping with NodeIdMapper at write time AND
-      //      restoring it at read time (NodeIdMapper is in-process, not
-      //      persisted).
-      // That's substantial new infrastructure across two packages. Until
-      // that lands, the addEdge() check below is intentionally false (the
-      // controller has no addEdge method, only addCausalEdge with the
-      // wrong-shape contract), and writes go through the namespace
-      // fallback, which IS correct end-to-end with R6's read-arm fix.
-      if (causalGraph && typeof causalGraph.addEdge === 'function') {
+      // ADR-0276 R2: real controller write (supersedes the ADR-0147 R7 dead
+      // `addEdge` guard). The controller's `addCausalEdge(edge: CausalEdge)`
+      // takes NUMERIC fromMemoryId/toMemoryId and (now) a 'adr' memoryType
+      // (agentdb ea627b1, ADR-0276 R4). R1's allocator maps the string ADR
+      // keys to stable numeric ids in the reserved high range.
+      //
+      // TRAPS encoded below:
+      //   - addCausalEdge is ASYNC → await.
+      //   - `similarity` is a REQUIRED NOT-NULL positional → pass 0.
+      //   - do NOT pass `uplift`: leave it undefined → stored NULL. NULL is
+      //     correct for ADR edges (no causal experiment behind them) and the
+      //     read arm's NULL-tolerant filter (ea627b1 R3) depends on it.
+      //   - mechanism carries the relation; metadata.relation mirrors it so
+      //     the read arm can recover the label either way.
+      let controllerWrote = false;
+      if (causalGraph && typeof causalGraph.addCausalEdge === 'function' && op.sourceId && op.targetId) {
         try {
-          causalGraph.addEdge(op.sourceId || '', op.targetId || '', {
-            relation: op.relation || '',
-            weight: op.weight ?? 1.0,
-            timestamp: Date.now(),
+          const fromId = await allocAdrNodeId(op.sourceId);
+          const toId = await allocAdrNodeId(op.targetId);
+          await causalGraph.addCausalEdge({
+            fromMemoryId: fromId, fromMemoryType: 'adr',
+            toMemoryId: toId, toMemoryType: 'adr',
+            similarity: 0, confidence: 1.0,
+            mechanism: op.relation || '',
+            metadata: { relation: op.relation },
           });
-          return { success: true, controller: 'causalGraph' };
-        } catch { /* fall through to fallback */ }
+          controllerWrote = true;
+          // NOTE: do NOT return here. The KV `causal-edges` dual-write below
+          // is MANDATORY (a b5 acceptance probe FAILs if the writer stops
+          // writing there) and the effect= read arm reads it as its only
+          // "all inbound" path. Fall through to the dual-write.
+        } catch (e: unknown) {
+          // Controller write is best-effort relative to the KV writer (the KV
+          // path is the contract). Log loud, then fall through to the KV
+          // dual-write so the edge is still recorded.
+          console.error(
+            `[causal:edge] addCausalEdge failed (ADR-0276 R2), KV dual-write proceeds: ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
       }
 
-      // Fallback: store edge as memory entry via router.
+      // KV dual-write (MANDATORY — retained from the pre-R2 fallback). Store
+      // edge as memory entry via router.
       // Bug-3 (2026-05-05): set upsert:true so re-recording shared (src,dst)
       // edges with different relation/weight succeeds via overwrite instead
       // of tripping the ADR-0094 RC-2 idempotency guard. Mid-batch failures
@@ -2491,46 +2639,105 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
           upsert: true,
         });
         return result.success
-          ? { success: true, controller: 'router-fallback' }
+          ? { success: true, controller: controllerWrote ? 'causalGraph+router' : 'router-fallback' }
           : { success: false, error: result.error || 'Causal edge recording unavailable' };
       } catch (e: unknown) {
         return { success: false, error: e instanceof Error ? e.message : 'Causal edge recording unavailable' };
       }
     }
     case 'query': {
-      // Bug-4 (ADR-0147 Refinement 3, 2026-05-06): always-merge controller +
-      // namespace fallback. The earlier Bug-2 fix at 71b2ad33e returned
-      // controller results immediately when controller.length > 0, falling
-      // through only on empty. Probe in ADR-0147 §"Bug 4" found that the
-      // agentic-flow CausalMemoryGraph controller is called with WRONG
-      // argument shapes (string ADR keys instead of numeric memory IDs +
-      // CausalQuery struct). queryCausalEffects("ADR-X", k) happens to match
-      // 1 stale row by accident; getCausalChain("ADR-Y", k) returns [] and
-      // falls through correctly. Asymmetry → cause= queries under-report.
-      // Fix: always merge controller + fallback, dedupe by (src,dst,relation)
-      // triple. Defense-in-depth: even if the controller is later corrected,
-      // supplementing with the fallback protects against future asymmetric
-      // breakage. Mirrors the supplement-instead-of-replace pattern from
-      // Refinement 1 (rvf-backend orphan-numId).
+      // ADR-0276 R3: real controller read for BOTH directions via the proper
+      // `CausalQuery` struct (supersedes the ADR-0147 Bug-4 wrong-shape
+      // `queryCausalEffects("ADR-X", k)` call, which matched stale rows by
+      // accident).
+      //   - cause=  → `queryCausalEffects`  (OUTBOUND: what does the cause cause?)
+      //   - effect= → `queryCausalCauses`   (INBOUND: what causes the effect?)
+      // Both filter on the correct numeric-id + 'adr' type with the NULL-tolerant
+      // uplift predicate (agentdb R3 / queryCausalCauses, ea627b1 + ADR-0276) and
+      // reverse-map the returned numeric ids back to ADR strings for the
+      // string-keyed result. effect= was previously controller-less:
+      // `getCausalChain` is point-to-point with no "all inbound" semantics, so
+      // effect= fell back to KV (`router-fallback`); `queryCausalCauses` is the
+      // reverse query that closes that gap (ADR-0276 §Confirmation).
+      //
+      // The KV `causal-edges` dual-read below is RETAINED as a merge for BOTH
+      // directions (R7 parity not yet proven): the always-merge + triple-dedupe
+      // shape from ADR-0147 Refinement 3 is preserved so neither the controller
+      // nor the namespace path can short-circuit the other.
       type ParsedEdge = { sourceId?: string; targetId?: string; relation?: string; weight?: number };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const causalGraph = await getController<any>('causalGraph');
       const k = op.k ?? 10;
       let controllerResults: ParsedEdge[] = [];
-      if (causalGraph) {
+      if (causalGraph && op.cause && typeof causalGraph.queryCausalEffects === 'function') {
         try {
-          const getEffectsFn = typeof causalGraph.queryCausalEffects === 'function' ? causalGraph.queryCausalEffects.bind(causalGraph)
-            : typeof causalGraph.getEffects === 'function' ? causalGraph.getEffects.bind(causalGraph) : null;
-          const getCausesFn = typeof causalGraph.getCausalChain === 'function' ? causalGraph.getCausalChain.bind(causalGraph)
-            : typeof causalGraph.getCauses === 'function' ? causalGraph.getCauses.bind(causalGraph) : null;
-          let raw: unknown[] = [];
-          if (op.cause && getEffectsFn) {
-            raw = await getEffectsFn(op.cause, k) as unknown[];
-          } else if (op.effect && getCausesFn) {
-            raw = await getCausesFn(op.effect, k) as unknown[];
-          }
+          const interventionMemoryId = await allocAdrNodeId(op.cause);
+          // queryCausalEffects is SYNCHRONOUS (returns CausalEdge[], not a
+          // Promise). minConfidence:0 / minUplift:0 surface every ADR edge
+          // (confidence is 1.0, uplift is NULL → caught by the IS NULL branch).
+          const raw = causalGraph.queryCausalEffects({
+            interventionMemoryId,
+            interventionMemoryType: 'adr',
+            minConfidence: 0,
+            minUplift: 0,
+          }) as Array<{ toMemoryId?: number; mechanism?: string; metadata?: { relation?: string } }>;
           if (Array.isArray(raw)) {
-            controllerResults = raw as ParsedEdge[];
+            const mapped = await Promise.all(
+              raw.map(async (edge): Promise<ParsedEdge | null> => {
+                const targetId = typeof edge.toMemoryId === 'number'
+                  ? await lookupAdrIdByNodeId(edge.toMemoryId)
+                  : undefined;
+                // Skip rows whose numeric target doesn't reverse-map to an ADR
+                // id (e.g. a learned non-ADR edge that shares from_memory_id);
+                // emitting a half-edge would pollute the string-keyed result.
+                if (!targetId) return null;
+                return {
+                  sourceId: op.cause,
+                  targetId,
+                  relation: edge.metadata?.relation ?? edge.mechanism ?? undefined,
+                };
+              }),
+            );
+            controllerResults = mapped.filter((e): e is ParsedEdge => e !== null);
+          }
+        } catch { /* fall through to namespace read */ }
+      } else if (causalGraph && op.effect && typeof causalGraph.queryCausalCauses === 'function') {
+        // ADR-0276: effect= INBOUND read. `queryCausalCauses` mirrors
+        // `queryCausalEffects` but matches `to_memory_id` — "what causes the
+        // effect?". The intervention node here is the EFFECT (op.effect); each
+        // returned edge's `fromMemoryId` is the CAUSE, which reverse-maps to the
+        // `sourceId`. `targetId` is the queried effect itself. (cause= and
+        // effect= are mutually exclusive on a single query, so reusing
+        // `controllerResults` is safe.)
+        try {
+          const interventionMemoryId = await allocAdrNodeId(op.effect);
+          // queryCausalCauses is SYNCHRONOUS (returns CausalEdge[]).
+          // minConfidence:0 / minUplift:0 surface every ADR edge (confidence is
+          // 1.0, uplift is NULL → caught by the IS NULL branch).
+          const raw = causalGraph.queryCausalCauses({
+            interventionMemoryId,
+            interventionMemoryType: 'adr',
+            minConfidence: 0,
+            minUplift: 0,
+          }) as Array<{ fromMemoryId?: number; mechanism?: string; metadata?: { relation?: string } }>;
+          if (Array.isArray(raw)) {
+            const mapped = await Promise.all(
+              raw.map(async (edge): Promise<ParsedEdge | null> => {
+                const sourceId = typeof edge.fromMemoryId === 'number'
+                  ? await lookupAdrIdByNodeId(edge.fromMemoryId)
+                  : undefined;
+                // Skip rows whose numeric source doesn't reverse-map to an ADR
+                // id (e.g. a learned non-ADR edge that shares to_memory_id);
+                // emitting a half-edge would pollute the string-keyed result.
+                if (!sourceId) return null;
+                return {
+                  sourceId,
+                  targetId: op.effect,
+                  relation: edge.metadata?.relation ?? edge.mechanism ?? undefined,
+                };
+              }),
+            );
+            controllerResults = mapped.filter((e): e is ParsedEdge => e !== null);
           }
         } catch { /* fall through to namespace read */ }
       }

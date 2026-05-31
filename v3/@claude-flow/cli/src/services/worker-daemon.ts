@@ -77,7 +77,12 @@ export type WorkerType =
   | 'document'
   | 'refactor'
   | 'benchmark'
-  | 'testgaps';
+  | 'testgaps'
+  // ADR-0277 I1: autonomous causal-learning producer. Runs the REAL
+  // NightlyLearner uplift pipeline over the live episodes stream (distinct
+  // from 'consolidate', which sweeps/dedups memory). No-op below the
+  // learner's minSampleSize/upliftThreshold, so it is safe to ship enabled.
+  | 'learn';
 
 interface WorkerConfig {
   type: WorkerType;
@@ -147,6 +152,16 @@ const DEFAULT_WORKERS: WorkerConfigInternal[] = [
   { type: 'audit', intervalMs: 30 * 60 * 1000, offsetMs: 2 * 60 * 1000, priority: 'critical', description: 'Security analysis', enabled: true },
   { type: 'optimize', intervalMs: 60 * 60 * 1000, offsetMs: 4 * 60 * 1000, priority: 'high', description: 'Performance optimization', enabled: true },
   { type: 'consolidate', intervalMs: 10 * 60 * 1000, offsetMs: 6 * 60 * 1000, priority: 'low', description: 'Memory consolidation', enabled: true },
+  // ADR-0277 I1: autonomous causal-learning producer — runs the REAL
+  // NightlyLearner uplift pipeline (routeLearningOp({type:'run'})) over the
+  // live episodes stream. Shipped ENABLED but GUARDED: the learner is a no-op
+  // below minSampleSize(30)/upliftThreshold, so on a fresh project it costs an
+  // episodes scan and returns early until enough trajectories accrue. To
+  // disable entirely, flip `enabled: true` -> `false` on this one line.
+  // Conservative 60-min cadence (heavier than the 10-min consolidate sweep);
+  // offset 12 min to stay clear of the consolidate/audit/optimize/testgaps
+  // stagger band.
+  { type: 'learn', intervalMs: 60 * 60 * 1000, offsetMs: 12 * 60 * 1000, priority: 'low', description: 'Autonomous causal learning (NightlyLearner uplift pipeline)', enabled: true },
   { type: 'testgaps', intervalMs: 60 * 60 * 1000, offsetMs: 8 * 60 * 1000, priority: 'normal', description: 'Test coverage analysis', enabled: true },
   { type: 'predict', intervalMs: 10 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Predictive preloading', enabled: false },
   { type: 'document', intervalMs: 60 * 60 * 1000, offsetMs: 0, priority: 'low', description: 'Auto-documentation', enabled: false },
@@ -1432,6 +1447,8 @@ export class WorkerDaemon extends EventEmitter {
         return this.runOptimizeWorkerLocal();
       case 'consolidate':
         return this.runConsolidateWorker();
+      case 'learn':
+        return this.runLearnWorker();
       case 'testgaps':
         return this.runTestGapsWorkerLocal();
       case 'predict':
@@ -1636,6 +1653,52 @@ export class WorkerDaemon extends EventEmitter {
     }
 
     writeFileSync(consolidateFile, JSON.stringify(result, null, 2));
+    return result;
+  }
+
+  /**
+   * ADR-0277 I1: autonomous causal-learning producer.
+   *
+   * Closes the autonomous loop — drives the REAL NightlyLearner uplift
+   * pipeline (via `routeLearningOp({type:'run'})`, which bypasses the
+   * MemoryConsolidator preference and resolves AgentDB's own nightlyLearner
+   * controller, ADR-0277 I2) over the live `episodes` stream. The learner
+   * self-guards to a no-op below its minSampleSize/upliftThreshold, so on a
+   * fresh project this is an inexpensive episodes scan that returns early.
+   *
+   * Unlike `runConsolidateWorker`, a `success:false` from the router (e.g.
+   * neural disabled → no NightlyLearner) is RECORDED, not thrown: this worker
+   * ships enabled, and crashing the worker loop on every fire for a perfectly
+   * valid "learning off" configuration would be wrong. Only a thrown
+   * exception (the import/route itself blowing up) propagates as a worker
+   * failure.
+   */
+  private async runLearnWorker(): Promise<unknown> {
+    const metricsDir = join(this.projectRoot, '.claude-flow', 'metrics');
+    const learnFile = join(metricsDir, 'learn.json');
+
+    if (!existsSync(metricsDir)) {
+      mkdirSync(metricsDir, { recursive: true });
+    }
+
+    const result: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      ran: false,
+    };
+
+    // ADR-0086 T2.7: import from router (was memory-initializer)
+    const mi = await import('../memory/memory-router.js');
+    const routerResult = await mi.routeLearningOp({ type: 'run' });
+    result.ran = routerResult?.success ?? false;
+    result.controller = (routerResult as { controller?: unknown })?.controller;
+    if (routerResult?.success) {
+      result.learned = (routerResult as { learned?: unknown }).learned;
+    } else {
+      // No-op / unavailable is expected on fresh or neural-disabled projects.
+      result.skipped = (routerResult as { error?: unknown })?.error ?? 'learner unavailable';
+    }
+
+    writeFileSync(learnFile, JSON.stringify(result, null, 2));
     return result;
   }
 

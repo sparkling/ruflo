@@ -52,6 +52,7 @@ import {
   listControllerInfo,
   getCallableMethod,
   routeCausalOp,
+  allocAdrNodeId,
 } from '../memory/memory-router.js';
 
 import { validateIdentifier } from './validate-input.js';
@@ -110,9 +111,19 @@ async function getBridge(): Promise<AgentDbBridge> {
         return { success: true, deleted: false, sourceId, targetId, controller: 'native-unsupported' };
       }
       try {
+        // ADR-0276 R5: deleteEdgesByEndpoints takes NUMERIC endpoint ids
+        // (relation stays a string — matched against the mechanism column).
+        // Map the string ADR ids through the same allocator the write/read
+        // arms use so the delete targets the same numeric rows that were
+        // written.
+        const fromNum = await allocAdrNodeId(sourceId);
+        const toNum = await allocAdrNodeId(targetId);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const result = await (fn as any).call(cg, sourceId, targetId, relation);
-        const deleted = typeof result === 'boolean' ? result : Boolean(result);
+        const result: any = await (fn as any).call(cg, fromNum, toNum, relation);
+        // deleteEdgesByEndpoints returns { deletedEdges }; legacy removeEdge
+        // may return boolean.
+        const deletedEdges = typeof result?.deletedEdges === 'number' ? result.deletedEdges : undefined;
+        const deleted = deletedEdges !== undefined ? deletedEdges > 0 : Boolean(result);
         return { success: true, deleted, sourceId, targetId, controller: 'bridge-fallback' };
       } catch (err) {
         return { success: false, deleted: false, sourceId, targetId, controller: 'sql-error', error: err instanceof Error ? err.message : String(err) };
@@ -127,8 +138,12 @@ async function getBridge(): Promise<AgentDbBridge> {
         return { success: true, deletedNode: false, deletedEdges: 0, deleted: false, nodeId, controller: 'native-unsupported' };
       }
       try {
+        // ADR-0276 R5: deleteNode takes a NUMERIC memory id. Map the string
+        // ADR id through the allocator (idempotent — re-resolves the same id
+        // allocated at write time) before the cascade delete.
+        const numId = await allocAdrNodeId(nodeId);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const result: any = await (fn as any).call(cg, nodeId, { cascade: true });
+        const result: any = await (fn as any).call(cg, numId, { cascade: true });
         const deletedNode = typeof result?.deletedNode === 'boolean' ? result.deletedNode : Boolean(result);
         const deletedEdges = typeof result?.deletedEdges === 'number' ? result.deletedEdges : 0;
         return { success: true, deleted: deletedNode, deletedNode, deletedEdges, nodeId, controller: 'bridge-fallback' };
