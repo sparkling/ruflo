@@ -22,6 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { deriveTaskType } from '../learning/derive-task-type.js';
+import { actionUplift } from '../learning/action-values.js';
 
 // ============================================================================
 // Types & Constants
@@ -113,6 +114,14 @@ export interface ModelRouterConfig {
    * off to that same marginal, so enabling it never starves a new task-type.
    */
   contextualPriors: boolean;
+  /**
+   * ADR-0280 A-coupling: blend the learner's model-uplift (E[reward | model,
+   * task_type] from the episode stream, ADR-0279) into selection by scaling each
+   * sampled score by (1 + γ·uplift). 0 = off (default — implement-ahead; the
+   * online prior already de-confounds). A small γ favors a model that *causes*
+   * success for this task-type beyond what the router's own loop has seen.
+   */
+  actionUpliftGamma: number;
 }
 
 /**
@@ -339,6 +348,7 @@ const DEFAULT_CONFIG: ModelRouterConfig = {
   enableCostOptimization: true,
   preferSpeed: true,
   contextualPriors: true,
+  actionUpliftGamma: 0,
 };
 
 // ============================================================================
@@ -605,6 +615,18 @@ export class ModelRouter {
       opus:    scores.opus    * sampleBeta(opusP.alpha,   opusP.beta),
       inherit: scores.inherit, // not bandit-controlled
     };
+
+    // ADR-0280 A-coupling: blend the learner's model-uplift (E[reward | model,
+    // task_type] from the episode stream) into the sampled scores. Flag-gated
+    // (γ=0 → off, no disk read). The (1 + γ·uplift) factor favors a model that
+    // *causes* success for this task-type and down-weights one that causes
+    // failure — the score stays the base (uplift only scales it; clamped ≥ 0).
+    const gamma = this.config.actionUpliftGamma;
+    if (gamma > 0) {
+      sampledScores.haiku  = Math.max(0, sampledScores.haiku  * (1 + gamma * actionUplift('haiku',  taskType)));
+      sampledScores.sonnet = Math.max(0, sampledScores.sonnet * (1 + gamma * actionUplift('sonnet', taskType)));
+      sampledScores.opus   = Math.max(0, sampledScores.opus   * (1 + gamma * actionUplift('opus',   taskType)));
+    }
 
     // Get sorted models by sampled score (drops 'inherit' from selection)
     const sorted = (Object.entries(sampledScores) as [ClaudeModel, number][])

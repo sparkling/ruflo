@@ -17,6 +17,7 @@ import { rmSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ModelRouter } from '../src/ruvector/model-router.js';
+import { persistActionValues, _resetActionValuesCache } from '../src/learning/action-values.js';
 
 let cwdRestore: string;
 let tmpDir: string;
@@ -268,5 +269,49 @@ describe('ModelRouter — contextual priors (ADR-0278)', () => {
     const g = router.getBanditPriors();
     expect(router.getExpectedReward('frontend', 'haiku'))
       .toBeCloseTo(g.haiku.alpha / (g.haiku.alpha + g.haiku.beta), 5);
+  });
+});
+
+/**
+ * ADR-0280 A-coupling — the ModelRouter blends the learner's model-uplift
+ * (E[reward | model, task_type] from the episode stream, persisted by the learn
+ * worker) into selection when actionUpliftGamma > 0. Flag off (γ=0, default) →
+ * no disk read, behavior unchanged.
+ */
+describe('ModelRouter — action-uplift A-coupling (ADR-0280)', () => {
+  beforeEach(() => { setupTempCwd(); _resetActionValuesCache(); });
+  afterEach(() => { _resetActionValuesCache(); cleanupTempCwd(); });
+
+  const AV = (action: string, taskType: string, uplift: number) => ({
+    action, taskType, uplift, meanReward: 0.5, samples: 10, baselineReward: 0.5, confidence: 0.5,
+  });
+
+  it('γ>0 shifts selection toward the learned high-uplift model for that task-type', async () => {
+    // Learner says: for 'deploy', opus causes success (+1), haiku causes failure (−1).
+    persistActionValues([AV('opus', 'deploy', 1), AV('haiku', 'deploy', -1)]);
+    _resetActionValuesCache();
+    const task = 'deploy the service'; // deriveTaskType → 'deploy', low complexity (opus base low)
+
+    // Escalation/circuit off so route() returns the raw Thompson winner.
+    const withBlend = new ModelRouter({ maxUncertainty: 1.0, enableCircuitBreaker: false, actionUpliftGamma: 2 });
+    const noBlend = new ModelRouter({ maxUncertainty: 1.0, enableCircuitBreaker: false, actionUpliftGamma: 0 });
+
+    let opusBlend = 0;
+    let opusPlain = 0;
+    const N = 50;
+    for (let i = 0; i < N; i++) if ((await withBlend.route(task)).model === 'opus') opusBlend++;
+    for (let i = 0; i < N; i++) if ((await noBlend.route(task)).model === 'opus') opusPlain++;
+
+    // opus ×(1+2·1)=×3 with the blend; haiku ×(1+2·(−1))→clamped 0. opus dominates.
+    expect(opusBlend).toBeGreaterThan(opusPlain);
+  }, 30_000);
+
+  it('γ=0 (default) does not read action-values — selection is unchanged', async () => {
+    persistActionValues([AV('opus', 'deploy', 1)]);
+    _resetActionValuesCache();
+    const router = new ModelRouter({ maxUncertainty: 1.0, enableCircuitBreaker: false }); // γ defaults to 0
+    // Just exercises the default path — no throw, returns a valid model.
+    const r = await router.route('deploy the service');
+    expect(['haiku', 'sonnet', 'opus']).toContain(r.model);
   });
 });

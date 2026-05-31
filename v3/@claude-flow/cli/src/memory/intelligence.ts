@@ -16,6 +16,36 @@ import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { findProjectRoot } from '@claude-flow/shared/fs';
+import { actionUplift } from '../learning/action-values.js';
+
+// ADR-0280: optional blend of the learner's de-confounded action-value uplift
+// (E[reward | action, task_type], ADR-0279) into the default retrieval rank, so
+// a pattern whose action *causes* success for the task-type outranks one that
+// merely co-occurs. Flag-gated via RUFLO_ROUTE_ACTION_UPLIFT (β, default 0 =
+// off — implement-ahead; cosine stays the relevance floor). Read once per
+// process; a setter exists for tests.
+let _actionUpliftBeta: number | null = null;
+function getActionUpliftBeta(): number {
+  if (_actionUpliftBeta === null) {
+    const raw = Number.parseFloat(process.env.RUFLO_ROUTE_ACTION_UPLIFT ?? '');
+    _actionUpliftBeta = Number.isFinite(raw) && raw > 0 ? raw : 0;
+  }
+  return _actionUpliftBeta;
+}
+/** Test/diagnostic — override the action-uplift blend β (null re-reads env). */
+export function setActionUpliftBeta(beta: number | null): void {
+  _actionUpliftBeta = beta;
+}
+/**
+ * The action identity of a stored pattern for action-value lookup (ADR-0280):
+ * the producing agent/action from metadata, else the pattern type.
+ */
+function patternAction(pattern: { type: string; metadata?: Record<string, unknown> }): string | null {
+  const m = pattern.metadata;
+  const a = (m?.agent ?? m?.action ?? m?.agentType) as unknown;
+  if (typeof a === 'string' && a) return a;
+  return pattern.type || null;
+}
 
 // ADR-0076 Phase 2: lazily cache canonical cosineSimilarity at module load
 let _canonicalCosineSim: ((a: number[] | Float32Array, b: number[] | Float32Array) => number) | null = null;
@@ -458,7 +488,7 @@ class LocalSonaCoordinator {
  * Uses Map for O(1) storage and array for similarity search
  * Supports persistence to disk
  */
-class LocalReasoningBank {
+export class LocalReasoningBank {
   private patterns: Map<string, StoredPattern> = new Map();
   private patternList: StoredPattern[] = [];
   private maxSize: number;
@@ -630,25 +660,36 @@ class LocalReasoningBank {
    */
   findSimilar(
     queryEmbedding: number[],
-    options: { k?: number; threshold?: number; type?: string }
+    options: { k?: number; threshold?: number; type?: string; taskType?: string }
   ): StoredPattern[] {
-    const { k = 5, threshold = 0.3, type } = options;
+    const { k = 5, threshold = 0.3, type, taskType } = options;
 
     // Filter by type if specified
     let candidates = type
       ? this.patternList.filter(p => p.type === type)
       : this.patternList;
 
-    // Compute similarities
-    const scored = candidates.map(pattern => ({
-      pattern,
-      score: this.cosineSim(queryEmbedding, pattern.embedding)
-    }));
+    // Compute cosine similarity; optionally rerank by the learner's action-value
+    // uplift (ADR-0280). The cosine `score` stays the relevance FLOOR — the
+    // threshold filters on it and the returned `confidence` echoes it; only the
+    // SORT blends `β·uplift`, so a de-confounded high-uplift pattern can outrank
+    // a marginally-higher-cosine one, but uplift never sneaks a sub-threshold
+    // pattern in. β=0 (default) → pure cosine, unchanged.
+    const beta = getActionUpliftBeta();
+    const scored = candidates.map(pattern => {
+      const score = this.cosineSim(queryEmbedding, pattern.embedding);
+      let rank = score;
+      if (beta > 0 && taskType) {
+        const action = patternAction(pattern);
+        if (action) rank = score + beta * actionUplift(action, taskType);
+      }
+      return { pattern, score, rank };
+    });
 
-    // Filter by threshold and sort
+    // Filter by threshold (cosine floor) and sort by the blended rank
     return scored
       .filter(s => s.score >= threshold)
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => b.rank - a.rank)
       .slice(0, k)
       .map(s => {
         // Update usage

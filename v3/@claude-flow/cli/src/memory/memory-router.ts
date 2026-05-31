@@ -2491,6 +2491,13 @@ async function _routeLearningOpImpl(op: LearningOp): Promise<MemoryResult> {
         // where the learner predates the `run()` entry point.
         if (typeof learner.run === 'function') {
           const report = await learner.run();
+          // ADR-0280: persist E[reward | action, task_type] for the routing hot
+          // path (ModelRouter A-coupling + LocalReasoningBank rerank) to consume
+          // cross-process. Best-effort — a routing miss is non-fatal.
+          try {
+            const { persistActionValues } = await import('../learning/action-values.js');
+            persistActionValues((report as { actionValues?: unknown })?.actionValues as never);
+          } catch { /* best-effort */ }
           return { success: true, controller: 'nightlyLearner', learned: report };
         }
         if (typeof learner.consolidateEpisodes === 'function') {
