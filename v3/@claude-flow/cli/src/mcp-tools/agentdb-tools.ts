@@ -1143,6 +1143,7 @@ export const agentdbReflexionStore: MCPTool = {
       success: { type: 'boolean', description: 'Whether the task succeeded' },
       ts: { type: 'number', description: 'Episode timestamp (unix seconds) — optional; lets callers control episode time (ADR-0277: NightlyLearner causal pair-discovery needs temporally-ordered episodes)' },
       action: { type: 'string', description: 'The action taken — the model/agent actually used (ADR-0279: NightlyLearner aggregates E[reward | action, task_type] so routers can ask "what does doing X cause?")' },
+      task_type: { type: 'string', description: 'Stable task-type grouping key (ADR-0268/0279) — optional; derived from the task via deriveTaskType when omitted. The task_type axis of the E[reward | action, task_type] aggregate.' },
     },
     required: ['session_id', 'task', 'reward', 'success'],
   },
@@ -1158,6 +1159,12 @@ export const agentdbReflexionStore: MCPTool = {
       const ts = typeof params.ts === 'number' && Number.isFinite(params.ts) ? Math.floor(params.ts) : undefined;
       // ADR-0279: optional action dimension (the model/agent actually used).
       const action = validateString(params.action, 'action', 200) || undefined;
+      // ADR-0279: task_type for the E[reward|action,task_type] aggregate —
+      // explicit, else derived from the task (mirrors the hooks_post-task
+      // producer; without it, direct-tool episodes are task-type-less and the
+      // aggregate collapses to a null task_type).
+      const { deriveTaskType } = await import('../learning/derive-task-type.js');
+      const taskType = validateString(params.task_type, 'task_type', 200) || deriveTaskType({ description: task });
       // ADR-0181 Phase 5 (F4-3): dispatch through the archivist. The handler at
       // `handlers/agentdb/reflexion-store.ts` owns the ReflexionMemory write
       // under substrate.withWrite. ADR-0181 Phase 7 reclassification:
@@ -1170,6 +1177,7 @@ export const agentdbReflexionStore: MCPTool = {
       await (await getProcessArchivist()).dispatch('agentdb_reflexion_store', {
         session_id: sessionId,
         task,
+        task_type: taskType,
         reward,
         success,
         ...(ts !== undefined ? { ts } : {}),
