@@ -84,6 +84,11 @@ declare module 'agentdb/adapters/memory-rvf-adapter' {
   export const MemoryRvfAdapter: any;
   export type MemoryRvfAdapter = any;
 }
+declare module 'agentdb/encoders/scalar-int8-encoder' {
+  // agentdb-tools.ts:2644 — `await import('agentdb/encoders/scalar-int8-encoder')`
+  // decodes int8-quantized embedding refs for the archivist-cosine graph-query.
+  export const decodeEmbedding: any;
+}
 
 // Codemod-renamed forms: `agentdb/*` → `@sparkleideas/agentdb/*`.
 // The codemod rewrites `import`/`require` strings in .ts but NOT the
@@ -141,6 +146,9 @@ declare module '@sparkleideas/agentdb/wasm' {
 declare module '@sparkleideas/agentdb/adapters/memory-rvf-adapter' {
   export const MemoryRvfAdapter: any;
   export type MemoryRvfAdapter = any;
+}
+declare module '@sparkleideas/agentdb/encoders/scalar-int8-encoder' {
+  export const decodeEmbedding: any;
 }
 declare module 'better-sqlite3' {
   // archivist-init.ts:137 imports `BetterSqlite3` default + references
