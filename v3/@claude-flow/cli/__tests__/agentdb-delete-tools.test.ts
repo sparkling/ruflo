@@ -78,7 +78,9 @@ describe('agentdb delete tools — surface (#1784)', () => {
     // If the bridge isn't available at all, the tool surfaces an error;
     // if it is, controller will be 'native-unsupported' or 'sql-error'.
     if (r.controller) {
-      expect(['native-unsupported', 'bridge-fallback', 'sql-error', 'guard']).toContain(r.controller);
+      // ADR-0276 (edge-delete KV residual): a live causalGraph controller now
+      // returns 'causalGraph+kv' (SQLite row + KV dual-write copy both cleared).
+      expect(['native-unsupported', 'bridge-fallback', 'causalGraph+kv', 'sql-error', 'guard']).toContain(r.controller);
     }
   });
 

@@ -17,7 +17,12 @@ import type { MCPTool } from './types.js';
 
 const MAX_STRING_LENGTH = 100_000; // 100KB max for any string input
 const MAX_BATCH_SIZE = 500;        // Max entries per batch operation
-const MAX_TOP_K = 100;             // Max results per query
+const MAX_TOP_K = 100;             // Max results per similarity query (top-K guard)
+// ADR-0282: path-ENUMERATION tools (agentdb_hierarchical-query) advertise
+// "default: unlimited" and must honor an explicit caller `limit`. Reusing the
+// MAX_TOP_K similarity guard silently clamped `limit:500` to 100 (a dishonest
+// surface). Use a generous safety ceiling instead; no limit still means all rows.
+const MAX_QUERY_LIMIT = 100_000;
 
 function validateString(value: unknown, name: string, maxLen = MAX_STRING_LENGTH): string | null {
   if (typeof value !== 'string' || value.length === 0) return null;
@@ -83,6 +88,58 @@ type AgentDbBridge = {
   bridgeDeleteCausalNode: (opts: { nodeId: string }) => Promise<(BridgeDeleteResult & { deletedNode: boolean; deletedEdges: number; nodeId?: string }) | null>;
 };
 
+/**
+ * ADR-0276 (edge-delete KV residual): clear the KV `causal-edges` dual-write
+ * copy for a single `(sourceId, targetId)` edge after the SQLite row has been
+ * removed. The dual-WRITE in memory-router's `routeCausalOp({type:'edge'})`
+ * stores the edge at the deterministic key `${sourceId}→${targetId}` (arrow =
+ * U+2192) with the `relation` carried in the JSON VALUE (NOT the key), so a
+ * given pair has at most one KV key. The dual-READ in `routeCausalOp({type:
+ * 'query'})` merges that KV copy unconditionally — so without this clear, a
+ * `causal-query` resurrects the edge from KV even though the SQLite row is gone
+ * (`controller:"router-fallback"`, `weight` field present).
+ *
+ * Mirrors `bridgeDeleteCausalNode`'s list+delete loop. Scope:
+ *   - `relation` provided  → only delete the KV copy whose stored value's
+ *     `relation` matches (defends the theoretical multi-relation-per-pair case;
+ *     in practice the dual-write upserts so there is one copy per pair).
+ *   - `relation` omitted    → delete every KV copy between the two endpoints.
+ *
+ * Returns the number of KV keys deleted (0 when the namespace is empty / no
+ * match — identical to the pre-fix behaviour for callers with no KV copy).
+ */
+export async function clearCausalEdgeKv(
+  sourceId: string,
+  targetId: string,
+  relation?: string,
+): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { routeMemoryOp } = await import('../memory/memory-router.js') as any;
+  const arrow = '→';
+  const wantKey = `${sourceId}${arrow}${targetId}`;
+  let kvDeleted = 0;
+  const listed: any = await routeMemoryOp({ type: 'list', namespace: 'causal-edges', limit: 100000 });
+  for (const e of (listed?.entries ?? [])) {
+    const k: string = e?.key ?? '';
+    if (k !== wantKey) continue;
+    if (relation !== undefined) {
+      // Scope to the matching relation. The list path returns the stored JSON
+      // as `content`; parse it and skip on mismatch. If the value is
+      // unparseable (legacy/corrupt copy), fall through and delete — leaving a
+      // KV residual that `causal-query` would resurrect is the worse outcome.
+      let storedRelation: string | undefined;
+      try {
+        const parsed = typeof e?.content === 'string' ? JSON.parse(e.content) : undefined;
+        storedRelation = parsed?.relation;
+      } catch { /* unparseable value → treat as a match, delete it */ }
+      if (storedRelation !== undefined && storedRelation !== relation) continue;
+    }
+    await routeMemoryOp({ type: 'delete', namespace: 'causal-edges', key: k });
+    kvDeleted++;
+  }
+  return kvDeleted;
+}
+
 async function getBridge(): Promise<AgentDbBridge> {
   return {
     async bridgeDeleteHierarchical({ key, tier }) {
@@ -123,8 +180,14 @@ async function getBridge(): Promise<AgentDbBridge> {
         // deleteEdgesByEndpoints returns { deletedEdges }; legacy removeEdge
         // may return boolean.
         const deletedEdges = typeof result?.deletedEdges === 'number' ? result.deletedEdges : undefined;
-        const deleted = deletedEdges !== undefined ? deletedEdges > 0 : Boolean(result);
-        return { success: true, deleted, sourceId, targetId, controller: 'bridge-fallback' };
+        // ADR-0276 (edge-delete KV residual): the controller delete above
+        // removed the SQLite causal_edges row, but the KV dual-write copy in
+        // the 'causal-edges' namespace survives — `causal-query`'s
+        // unconditional KV merge would resurrect the edge. Clear the KV copy
+        // for this specific edge (scoped to `relation` when provided).
+        const kvDeleted = await clearCausalEdgeKv(sourceId, targetId, relation);
+        const deleted = (deletedEdges !== undefined ? deletedEdges > 0 : Boolean(result)) || kvDeleted > 0;
+        return { success: true, deleted, sourceId, targetId, kvDeleted, controller: 'causalGraph+kv' };
       } catch (err) {
         return { success: false, deleted: false, sourceId, targetId, controller: 'sql-error', error: err instanceof Error ? err.message : String(err) };
       }
@@ -658,7 +721,7 @@ export const agentdbHierarchicalQuery: MCPTool = {
       const result = await hierarchicalQuery({
         pathPattern,
         tier: tier as 'working' | 'episodic' | 'semantic' | undefined,
-        limit: validatePositiveInt(params.limit, undefined as any, MAX_TOP_K),
+        limit: validatePositiveInt(params.limit, undefined as any, MAX_QUERY_LIMIT),
       });
       return result ?? { results: [], error: 'AgentDB not available.' };
     } catch (error) {

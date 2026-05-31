@@ -110,7 +110,12 @@ const indexCommand: Command = {
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const dir = resolve(ctx.cwd, (ctx.flags.dir as string) || 'docs/adr');
-    const dryRun = ctx.flags['dry-run'] === true;
+    // The parser normalizes kebab flags to camelCase (parser.ts normalizeKey),
+    // so `--dry-run` lands in ctx.flags as `dryRun`, never `dry-run`. Reading
+    // only the kebab key left `dryRun` permanently false and the guard below
+    // never fired — `--dry-run` performed the full index write. Read both keys
+    // (same pattern as daemon.ts / hive-mind.ts).
+    const dryRun = ctx.flags.dryRun === true || ctx.flags['dry-run'] === true;
     const purge = ctx.flags.purge === true;
 
     if (!existsSync(dir) || !statSync(dir).isDirectory()) {
