@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/swarm",
-  "version": "3.0.0-alpha.6-patch.898",
+  "version": "3.0.0-alpha.6-patch.899",
   "type": "module",
   "description": "Standalone swarm coordination - up to 100+ agents, 4 topologies, hive-mind, consensus",
   "main": "dist/index.js",
@@ -14,7 +14,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@claude-flow/memory": "3.0.0-alpha.15-patch.389"
+    "@claude-flow/memory": "3.0.0-alpha.15-patch.390"
   },
   "devDependencies": {
     "vitest": "^4.0.16"
