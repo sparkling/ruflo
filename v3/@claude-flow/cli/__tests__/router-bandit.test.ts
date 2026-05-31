@@ -13,9 +13,9 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { rmSync, mkdtempSync } from 'node:fs';
+import { rmSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ModelRouter } from '../src/ruvector/model-router.js';
 
 let cwdRestore: string;
@@ -157,4 +157,116 @@ describe('ModelRouter — Thompson sampling bandit (#1772)', () => {
     const meanOpus  = priors.opus.alpha  / (priors.opus.alpha  + priors.opus.beta);
     expect(meanHaiku).toBeGreaterThan(meanOpus);
   }, 30_000);
+});
+
+/**
+ * Contextual priors (ADR-0278) — stratify the Thompson bandit by derived
+ * task-type so it learns E[reward | model, task_type] instead of the
+ * marginalized E[reward | model]. That per-task-type stratification IS the
+ * de-confounding: a model can win one task-type while losing another, which
+ * the pooled marginal structurally cannot represent.
+ */
+describe('ModelRouter — contextual priors (ADR-0278)', () => {
+  beforeEach(setupTempCwd);
+  afterEach(cleanupTempCwd);
+
+  it('stratifies priors by task-type — a model wins one type while losing another', () => {
+    const router = new ModelRouter();
+    // frontend: haiku is right (success); opus is wasteful (escalated).
+    for (let i = 0; i < 3; i++) router.recordOutcome('fix the frontend layout', 'haiku', 'success');
+    for (let i = 0; i < 2; i++) router.recordOutcome('fix the frontend layout', 'opus', 'escalated');
+    // database: opus is right (success); haiku is wrong (failure).
+    for (let i = 0; i < 3; i++) router.recordOutcome('optimize the database schema', 'opus', 'success');
+    for (let i = 0; i < 3; i++) router.recordOutcome('optimize the database schema', 'haiku', 'failure');
+
+    // Contextually the winner FLIPS by task-type (the de-confounding):
+    expect(router.getExpectedReward('frontend', 'haiku'))
+      .toBeGreaterThan(router.getExpectedReward('frontend', 'opus'));
+    expect(router.getExpectedReward('database', 'opus'))
+      .toBeGreaterThan(router.getExpectedReward('database', 'haiku'));
+
+    // …whereas the pooled marginal ranks haiku above opus for BOTH — the
+    // confound the old per-model bandit could not see.
+    const g = router.getBanditPriors();
+    const marHaiku = g.haiku.alpha / (g.haiku.alpha + g.haiku.beta);
+    const marOpus = g.opus.alpha / (g.opus.alpha + g.opus.beta);
+    expect(marHaiku).toBeGreaterThan(marOpus);
+
+    // Contextual keys are namespaced by task-type and genuinely distinct.
+    const ctx = router.getContextualPriors();
+    expect(ctx['frontend:haiku']).toBeDefined();
+    expect(ctx['database:opus']).toBeDefined();
+    expect(ctx['frontend:haiku']).not.toEqual(ctx['database:haiku']);
+  });
+
+  it('backs off to the pooled global marginal for an unseen task-type (cold-start not starved)', () => {
+    const router = new ModelRouter();
+    for (let i = 0; i < 8; i++) router.recordOutcome('fix the frontend layout', 'haiku', 'success');
+    const g = router.getBanditPriors();
+    const marginalHaiku = g.haiku.alpha / (g.haiku.alpha + g.haiku.beta);
+    // A brand-new, never-seen task-type inherits the pooled marginal — not a
+    // cold uniform 0.5 — so enabling stratification never starves it.
+    expect(router.getExpectedReward('security', 'haiku')).toBeCloseTo(marginalHaiku, 5);
+    expect(router.getContextualPriors()['security:haiku']).toBeUndefined();
+  });
+
+  it('migrates pre-0278 per-model state into globalPriors (old learning preserved as the marginal)', () => {
+    const statePath = join(tmpDir, '.swarm', 'model-router-state.json');
+    mkdirSync(dirname(statePath), { recursive: true });
+    // Old shape: `priors` keyed by bare model name (no taskType prefix).
+    const oldState = {
+      totalDecisions: 5,
+      modelDistribution: { haiku: 5, sonnet: 0, opus: 0, inherit: 0 },
+      avgComplexity: 0.3, avgConfidence: 0.8, circuitBreakerTrips: 0,
+      lastUpdated: new Date().toISOString(), learningHistory: [],
+      priors: {
+        haiku: { alpha: 9, beta: 1 }, sonnet: { alpha: 1, beta: 1 },
+        opus: { alpha: 1, beta: 1 }, inherit: { alpha: 1, beta: 1 },
+      },
+    };
+    writeFileSync(statePath, JSON.stringify(oldState));
+
+    const router = new ModelRouter();
+    // Old per-model priors become the pooled marginal…
+    expect(router.getBanditPriors().haiku).toEqual({ alpha: 9, beta: 1 });
+    // …and the contextual map starts empty (no taskType:model keys yet).
+    expect(Object.keys(router.getContextualPriors())).toHaveLength(0);
+  });
+
+  it('route() shifts model selection by task-type (the contextual prior changes the choice)', async () => {
+    // Isolate the bandit prior's effect on the argmax: disable the uncertainty
+    // escalation (which would rewrite a haiku pick to sonnet) and the circuit
+    // breaker, so route() returns the raw Thompson winner. This tests the
+    // contextual prior, not the escalation policy.
+    const router = new ModelRouter({ maxUncertainty: 1.0, enableCircuitBreaker: false });
+    // Two task-types with IDENTICAL complexity indicators ('rename' → low) but
+    // different derived types. Reinforce haiku for one, tank it for the other;
+    // since the deterministic score is identical, only the prior differs.
+    const taskA = 'rename the frontend file'; // → 'frontend'
+    const taskB = 'rename the api file';      // → 'api'
+    for (let i = 0; i < 30; i++) router.recordOutcome(taskA, 'haiku', 'success'); // frontend:haiku → Beta(31,1)
+    for (let i = 0; i < 30; i++) router.recordOutcome(taskB, 'haiku', 'failure'); // api:haiku → Beta(1,31)
+
+    let haikuA = 0;
+    let haikuB = 0;
+    const N = 50;
+    for (let i = 0; i < N; i++) if ((await router.route(taskA)).model === 'haiku') haikuA++;
+    for (let i = 0; i < N; i++) if ((await router.route(taskB)).model === 'haiku') haikuB++;
+
+    // Same complexity, opposite priors → haiku dominates A, is suppressed in B.
+    expect(haikuA).toBeGreaterThan(haikuB);
+    expect(haikuA).toBeGreaterThan(N / 4); // the reinforcement actually took
+  }, 30_000);
+
+  it('contextualPriors:false uses the pooled per-model marginal (pre-0278 behavior)', () => {
+    const router = new ModelRouter({ contextualPriors: false });
+    for (let i = 0; i < 3; i++) router.recordOutcome('fix the frontend layout', 'haiku', 'success');
+    // Flag off → selection ignores the per-task-type prior: every task-type
+    // resolves to the same pooled marginal.
+    expect(router.getExpectedReward('frontend', 'haiku'))
+      .toBe(router.getExpectedReward('database', 'haiku'));
+    const g = router.getBanditPriors();
+    expect(router.getExpectedReward('frontend', 'haiku'))
+      .toBeCloseTo(g.haiku.alpha / (g.haiku.alpha + g.haiku.beta), 5);
+  });
 });

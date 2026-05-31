@@ -4527,6 +4527,11 @@ export const hooksModelStats: MCPTool = {
     return {
       available: true,
       ...stats,
+      // ADR-0278: per-task-type contextual priors (E[reward | model, task_type])
+      // plus the pooled per-model marginal, so dashboards/smokes can observe
+      // the de-confounding (a model can win one task-type while losing another).
+      contextualPriors: router.getContextualPriors(),
+      globalPriors: router.getBanditPriors(),
       timestamp: new Date().toISOString(),
     };
   },

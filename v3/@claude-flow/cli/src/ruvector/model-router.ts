@@ -21,6 +21,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { deriveTaskType } from '../learning/derive-task-type.js';
 
 // ============================================================================
 // Types & Constants
@@ -105,6 +106,13 @@ export interface ModelRouterConfig {
   enableCostOptimization: boolean;
   /** Prefer faster models when confidence is high (default: true) */
   preferSpeed: boolean;
+  /**
+   * Stratify the Thompson-sampling bandit priors by derived task-type
+   * (ADR-0278, default: true). When false, selection uses the pooled per-model
+   * marginal only (pre-0278 behavior). Cold-start for an unseen task-type backs
+   * off to that same marginal, so enabling it never starves a new task-type.
+   */
+  contextualPriors: boolean;
 }
 
 /**
@@ -192,11 +200,19 @@ interface RouterState {
     timestamp: string;
   }>;
   /**
-   * Beta(α, β) priors per model — populated by recordOutcome via Thompson
-   * sampling. Defaults to {alpha:1,beta:1} (uniform). After ~50 outcomes
-   * these converge so the router auto-corrects against tier overuse.
+   * Contextual Beta(α, β) priors keyed by `${taskType}:${model}` (ADR-0278).
+   * recordOutcome stratifies outcomes per derived task-type so the bandit
+   * learns E[reward | model, task_type] — "haiku wins" conditional on the task,
+   * not marginalized across easy+hard work (the de-confounding). Unseen
+   * `(taskType, model)` pairs back off to `globalPriors` at selection time.
    */
-  priors?: Record<ClaudeModel, BetaPrior>;
+  priors?: Record<string, BetaPrior>;
+  /**
+   * Per-model pooled marginal (the pre-0278 bandit). Updated on every outcome;
+   * the cold-start fallback for unseen task-types, the migration target for old
+   * per-model-keyed state files, and what getBanditPriors() reports.
+   */
+  globalPriors?: Record<ClaudeModel, BetaPrior>;
 }
 
 // ============================================================================
@@ -266,6 +282,49 @@ function defaultBanditPriors(): Record<ClaudeModel, BetaPrior> {
   };
 }
 
+/**
+ * The bandit-controlled models. 'inherit' carries a marginal prior for
+ * bookkeeping but is never Thompson-sampled in selectModel.
+ */
+const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus', 'inherit'];
+
+/**
+ * Contextual prior key — `${taskType}:${model}` (ADR-0278). The ':' separator
+ * also lets loadState distinguish the contextual shape (keys contain ':') from
+ * the pre-0278 per-model shape (bare model-name keys) during migration.
+ */
+function priorKey(taskType: string, model: ClaudeModel): string {
+  return `${taskType}:${model}`;
+}
+
+/**
+ * Migrate persisted router state to the ADR-0278 contextual shape. Pre-0278
+ * `priors` were keyed by bare model name (`haiku`/`sonnet`/`opus`/`inherit`);
+ * those become the pooled `globalPriors` fallback (preserving accumulated
+ * learning as the marginal) while contextual `priors` start empty. New-shape
+ * `priors` (keys contain ':') pass through untouched. Also backfills
+ * `globalPriors` for pre-bandit state files. Mutates `loaded`.
+ */
+function migratePriorState(loaded: {
+  priors?: Record<string, BetaPrior>;
+  globalPriors?: Record<ClaudeModel, BetaPrior>;
+}): void {
+  const p = loaded.priors;
+  if (p && typeof p === 'object') {
+    const keys = Object.keys(p);
+    const isOldPerModelShape =
+      keys.length > 0 && keys.every((k) => (MODELS as string[]).includes(k));
+    if (isOldPerModelShape) {
+      if (!loaded.globalPriors) {
+        loaded.globalPriors = p as unknown as Record<ClaudeModel, BetaPrior>;
+      }
+      loaded.priors = {};
+    }
+  }
+  if (!loaded.globalPriors) loaded.globalPriors = defaultBanditPriors();
+  if (!loaded.priors) loaded.priors = {};
+}
+
 // ============================================================================
 // Default Configuration
 // ============================================================================
@@ -279,6 +338,7 @@ const DEFAULT_CONFIG: ModelRouterConfig = {
   autoSaveInterval: 1, // Save after every decision for CLI persistence
   enableCostOptimization: true,
   preferSpeed: true,
+  contextualPriors: true,
 };
 
 // ============================================================================
@@ -319,8 +379,9 @@ export class ModelRouter {
     // Apply circuit breaker adjustments
     const adjustedScores = this.applyCircuitBreaker(scores);
 
-    // Select best model
-    const { model, confidence, uncertainty } = this.selectModel(adjustedScores, complexity.score);
+    // Select best model — stratify the bandit posterior by derived task-type.
+    const taskType = deriveTaskType({ description: task });
+    const { model, confidence, uncertainty } = this.selectModel(adjustedScores, complexity.score, taskType);
 
     const inferenceTimeUs = (performance.now() - startTime) * 1000;
 
@@ -502,6 +563,21 @@ export class ModelRouter {
   }
 
   /**
+   * Resolve the Beta prior for `(taskType, model)`. Returns the contextual
+   * prior when present; otherwise backs off to the pooled global marginal,
+   * then to uniform Beta(1,1). When `contextualPriors` is disabled the global
+   * marginal is used directly (pre-0278 behavior). Read-only — callers must not
+   * mutate the returned object (recordOutcome owns prior mutation).
+   */
+  private getPrior(taskType: string, model: ClaudeModel): BetaPrior {
+    if (this.config.contextualPriors) {
+      const ctx = this.state.priors?.[priorKey(taskType, model)];
+      if (ctx) return ctx;
+    }
+    return this.state.globalPriors?.[model] ?? { alpha: 1, beta: 1 };
+  }
+
+  /**
    * Select the best model from scores. Uses Thompson sampling (#1772):
    * each model's deterministic complexity score is multiplied by a draw
    * θ_m ~ Beta(α_m, β_m) from its bandit prior. Models with strong empirical
@@ -512,14 +588,21 @@ export class ModelRouter {
    */
   private selectModel(
     scores: Record<ClaudeModel, number>,
-    complexityScore: number
+    complexityScore: number,
+    taskType: string
   ): { model: ClaudeModel; confidence: number; uncertainty: number } {
-    // Thompson sampling: combine deterministic score with bandit posterior
-    const priors = this.state.priors ?? defaultBanditPriors();
+    // Thompson sampling: combine the deterministic score with the contextual
+    // bandit posterior for this task-type (ADR-0278). getPrior backs off to the
+    // pooled global marginal for unseen (taskType, model) pairs, so cold-start
+    // degrades to the pre-0278 per-model behavior and then de-confounds as
+    // per-task-type evidence accrues.
+    const haikuP  = this.getPrior(taskType, 'haiku');
+    const sonnetP = this.getPrior(taskType, 'sonnet');
+    const opusP   = this.getPrior(taskType, 'opus');
     const sampledScores: Record<ClaudeModel, number> = {
-      haiku:   scores.haiku   * sampleBeta(priors.haiku.alpha,   priors.haiku.beta),
-      sonnet:  scores.sonnet  * sampleBeta(priors.sonnet.alpha,  priors.sonnet.beta),
-      opus:    scores.opus    * sampleBeta(priors.opus.alpha,    priors.opus.beta),
+      haiku:   scores.haiku   * sampleBeta(haikuP.alpha,  haikuP.beta),
+      sonnet:  scores.sonnet  * sampleBeta(sonnetP.alpha, sonnetP.beta),
+      opus:    scores.opus    * sampleBeta(opusP.alpha,   opusP.beta),
       inherit: scores.inherit, // not bandit-controlled
     };
 
@@ -629,13 +712,25 @@ export class ModelRouter {
       this.state.circuitBreakerTrips++;
     }
 
-    // Thompson sampling update (#1772): cost-adjusted Bernoulli reward.
-    // Haiku-success > Sonnet-success > Opus-success (Opus on simple tasks
-    // is wasteful even when correct). Failure/escalation always β++.
-    if (!this.state.priors) this.state.priors = defaultBanditPriors();
+    // Thompson sampling update (#1772, ADR-0278 contextual): cost-adjusted
+    // Bernoulli reward. Haiku-success > Sonnet-success > Opus-success (Opus on
+    // simple tasks is wasteful even when correct). Failure/escalation always β++.
     const reward = BANDIT_REWARDS[model]?.[outcome] ?? 0.5;
-    this.state.priors[model].alpha += reward;
-    this.state.priors[model].beta += 1 - reward;
+    const taskType = deriveTaskType({ description: task });
+
+    // Contextual prior E[reward | model, task_type] — the de-confounding signal.
+    if (!this.state.priors) this.state.priors = {};
+    const key = priorKey(taskType, model);
+    let ctx = this.state.priors[key];
+    if (!ctx) { ctx = { alpha: 1, beta: 1 }; this.state.priors[key] = ctx; }
+    ctx.alpha += reward;
+    ctx.beta += 1 - reward;
+
+    // Pooled global marginal — cold-start backoff for unseen task-types and the
+    // value getBanditPriors() reports. Updated on every outcome.
+    if (!this.state.globalPriors) this.state.globalPriors = defaultBanditPriors();
+    this.state.globalPriors[model].alpha += reward;
+    this.state.globalPriors[model].beta += 1 - reward;
 
     this.saveState();
   }
@@ -673,7 +768,8 @@ export class ModelRouter {
       circuitBreakerTrips: 0,
       lastUpdated: new Date().toISOString(),
       learningHistory: [],
-      priors: defaultBanditPriors(),
+      priors: {},
+      globalPriors: defaultBanditPriors(),
     };
 
     try {
@@ -681,8 +777,8 @@ export class ModelRouter {
       if (existsSync(fullPath)) {
         const data = readFileSync(fullPath, 'utf-8');
         const loaded = JSON.parse(data) as Partial<RouterState>;
-        // Backfill priors for state files written by pre-bandit cli versions.
-        if (!loaded.priors) loaded.priors = defaultBanditPriors();
+        // Migrate pre-0278 per-model priors → globalPriors; backfill defaults.
+        migratePriorState(loaded);
         return { ...defaultState, ...loaded };
       }
     } catch {
@@ -721,7 +817,8 @@ export class ModelRouter {
       circuitBreakerTrips: 0,
       lastUpdated: new Date().toISOString(),
       learningHistory: [],
-      priors: defaultBanditPriors(),
+      priors: {},
+      globalPriors: defaultBanditPriors(),
     };
     this.consecutiveFailures = { haiku: 0, sonnet: 0, opus: 0, inherit: 0 };
     this.decisionCount = 0;
@@ -729,18 +826,41 @@ export class ModelRouter {
   }
 
   /**
-   * Public read-only accessor for the bandit priors. Useful for tests,
-   * dashboards, and the pending hooks_intelligence_stats integration that
-   * surfaces convergence in the dashboard. Returns a copy.
+   * Public read-only accessor for the pooled per-model bandit priors (the
+   * global marginal). Useful for tests, dashboards, and the
+   * hooks_intelligence_stats integration that surfaces convergence. Returns a
+   * copy. For per-task-type priors see getContextualPriors().
    */
   getBanditPriors(): Record<ClaudeModel, BetaPrior> {
-    const p = this.state.priors ?? defaultBanditPriors();
+    const p = this.state.globalPriors ?? defaultBanditPriors();
     return {
       haiku:   { ...p.haiku },
       sonnet:  { ...p.sonnet },
       opus:    { ...p.opus },
       inherit: { ...p.inherit },
     };
+  }
+
+  /**
+   * Per-task-type contextual priors keyed `${taskType}:${model}` (ADR-0278).
+   * Returns a deep copy for tests/dashboards.
+   */
+  getContextualPriors(): Record<string, BetaPrior> {
+    const out: Record<string, BetaPrior> = {};
+    for (const [k, v] of Object.entries(this.state.priors ?? {})) {
+      out[k] = { alpha: v.alpha, beta: v.beta };
+    }
+    return out;
+  }
+
+  /**
+   * Posterior mean reward E[reward | model, taskType] from the contextual prior,
+   * backing off to the pooled global marginal. Deterministic (no Thompson draw)
+   * — for tests/dashboards that assert per-task-type divergence.
+   */
+  getExpectedReward(taskType: string, model: ClaudeModel): number {
+    const p = this.getPrior(taskType, model);
+    return p.alpha / (p.alpha + p.beta);
   }
 }
 
