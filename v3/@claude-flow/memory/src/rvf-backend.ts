@@ -650,43 +650,52 @@ export class RvfBackend implements IMemoryBackend {
       updatedAt: Date.now(),
       version: entry.version + 1,
     };
-    this.entries.set(id, updated);
-    // Re-index in ONE backend, not both (Debt 8)
-    // ADR-0164 A0c (J2): δ+ vectorless update path mirrors J1. Vectorless
-    // updates route delete + ingestMetadataOnly so the new META_SEG shadows
-    // any prior one for this id.
-    if (this.nativeDb) {
-      const numId = this.assignNativeId(id);
-      try {
-        this.nativeDb.delete([numId]);
-        // ADR-0154 Phase 3: re-emit metadata on update so the new META_SEG
-        // shadows the previous one. boot() replays segments in order so
-        // the latest write wins.
-        const metaEntries = encodeMemoryEntryMetadata(updated);
-        if (updated.embedding) {
-          this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId], metaEntries);
-        } else {
-          this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
+    // ADR-0284 single-flock collapse: bracket the native re-ingest + WAL under the
+    // flock (acquireLock unparks, releaseLock parks). Without this the write runs
+    // with the flock PARKED (INIT-WRAP parks after init), unserialised cross-process.
+    await this.acquireLock();
+    try {
+      this.entries.set(id, updated);
+      // Re-index in ONE backend, not both (Debt 8)
+      // ADR-0164 A0c (J2): δ+ vectorless update path mirrors J1. Vectorless
+      // updates route delete + ingestMetadataOnly so the new META_SEG shadows
+      // any prior one for this id.
+      if (this.nativeDb) {
+        const numId = this.assignNativeId(id);
+        try {
+          this.nativeDb.delete([numId]);
+          // ADR-0154 Phase 3: re-emit metadata on update so the new META_SEG
+          // shadows the previous one. boot() replays segments in order so
+          // the latest write wins.
+          const metaEntries = encodeMemoryEntryMetadata(updated);
+          if (updated.embedding) {
+            this.nativeDb.ingestBatch(new Float32Array(updated.embedding), [numId], metaEntries);
+          } else {
+            this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
+          }
+        } catch (err) {
+          // ADR-0095 d5: checksum failure during update — degrade, then
+          // re-apply via reIndexAfterDegrade (idempotent remove+add).
+          if (!this.degradeToFallbackMode('update', err) && this.config.verbose) {
+            console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
+          }
+          // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
+          this.removeAfterDegrade(id);
+          // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
+          if (updated.embedding) this.reIndexAfterDegrade(id, updated.embedding);
         }
-      } catch (err) {
-        // ADR-0095 d5: checksum failure during update — degrade, then
-        // re-apply via reIndexAfterDegrade (idempotent remove+add).
-        if (!this.degradeToFallbackMode('update', err) && this.config.verbose) {
-          console.error('[RvfBackend] Native update re-ingest failed:', (err as Error).message);
-        }
-        // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
-        this.removeAfterDegrade(id);
-        // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
-        if (updated.embedding) this.reIndexAfterDegrade(id, updated.embedding);
+      } else if (updated.embedding && this.hnswIndex) {
+        this.hnswIndex.remove(id);
+        this.hnswIndex.add(id, updated.embedding);
       }
-    } else if (updated.embedding && this.hnswIndex) {
-      this.hnswIndex.remove(id);
-      this.hnswIndex.add(id, updated.embedding);
-    }
-    this.dirty = true;
-    await this.appendToWal(updated);
-    if (this.walEntryCount >= this.config.walCompactionThreshold) {
-      await this.compactWal();
+      this.dirty = true;
+      await this.appendToWal(updated);
+      if (this.walEntryCount >= this.config.walCompactionThreshold) {
+        await this.compactWal();
+      }
+    } finally {
+      await this.releaseLock();
+      this._noteOwnWrite();
     }
     return updated;
   }
@@ -695,35 +704,46 @@ export class RvfBackend implements IMemoryBackend {
     this.requireInitialized('delete');
     const entry = this.entries.get(id);
     if (!entry) return false;
-    this.entries.delete(id);
-    this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
-    if (this.hnswIndex) this.hnswIndex.remove(id);
-    // Native vector routing: remove from NAPI backend when available
-    if (this.nativeDb) {
-      const numId = this.nativeIdMap.get(id);
-      if (numId !== undefined) {
-        try {
-          this.nativeDb.delete([numId]);
-        } catch (err) {
-          // ADR-0095 d5: handle InvalidChecksum here too — a delete on a
-          // checksum-corrupt file can throw the same 0x0102.
-          if (!this.degradeToFallbackMode('delete', err) && this.config.verbose) {
-            console.error('[RvfBackend] Native delete failed:', (err as Error).message);
+    // ADR-0284 single-flock collapse: bracket the native delete + WAL-truncate +
+    // persist under the flock (acquireLock unparks, releaseLock parks). The council
+    // flagged the delete-path .wal truncate as unbracketed; under the collapse
+    // (flock parked between envelopes) that becomes a live cross-process hazard, so
+    // bracket it now (no longer a deferred "no new exposure" item).
+    await this.acquireLock();
+    try {
+      this.entries.delete(id);
+      this.keyIndex.delete(this.compositeKey(entry.namespace, entry.key));
+      if (this.hnswIndex) this.hnswIndex.remove(id);
+      // Native vector routing: remove from NAPI backend when available
+      if (this.nativeDb) {
+        const numId = this.nativeIdMap.get(id);
+        if (numId !== undefined) {
+          try {
+            this.nativeDb.delete([numId]);
+          } catch (err) {
+            // ADR-0095 d5: handle InvalidChecksum here too — a delete on a
+            // checksum-corrupt file can throw the same 0x0102.
+            if (!this.degradeToFallbackMode('delete', err) && this.config.verbose) {
+              console.error('[RvfBackend] Native delete failed:', (err as Error).message);
+            }
           }
+          this.nativeIdMap.delete(id);
+          this.nativeReverseMap.delete(numId);
         }
-        this.nativeIdMap.delete(id);
-        this.nativeReverseMap.delete(numId);
       }
+      this.dirty = true;
+      // Truncate WAL BEFORE full rewrite — prevents deleted entries from
+      // resurrecting if process crashes between persist and unlink.
+      if (this.walPath && this.walEntryCount > 0) {
+        // silent-fallthrough-OK: WAL truncate is a defense-in-depth step before full persist; persist itself is the durable write
+        try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
+        this.walEntryCount = 0;
+      }
+      await this.persistToDisk();
+    } finally {
+      await this.releaseLock();
+      this._noteOwnWrite();
     }
-    this.dirty = true;
-    // Truncate WAL BEFORE full rewrite — prevents deleted entries from
-    // resurrecting if process crashes between persist and unlink.
-    if (this.walPath && this.walEntryCount > 0) {
-      // silent-fallthrough-OK: WAL truncate is a defense-in-depth step before full persist; persist itself is the durable write
-      try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
-      this.walEntryCount = 0;
-    }
-    await this.persistToDisk();
     this._capacityWarned = false;
     return true;
   }
@@ -970,43 +990,55 @@ export class RvfBackend implements IMemoryBackend {
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
     this.requireInitialized('bulkInsert');
     this.checkCapacity(entries.length);
-    for (const entry of entries) {
-      this.entries.set(entry.id, entry);
-      this.seenIds.add(entry.id);
-      this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
-      // Index in ONE backend, not both (Debt 8)
-      // ADR-0164 A0c (J3): δ+ vectorless bulk insert mirrors J1.
-      if (this.nativeDb) {
-        const numId = this.assignNativeId(entry.id);
-        try {
-          // ADR-0154 Phase 3: persist metadata via META_SEG.
-          const metaEntries = encodeMemoryEntryMetadata(entry);
-          if (entry.embedding) {
-            this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId], metaEntries);
-          } else {
-            this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
+    // ADR-0284 single-flock collapse: hold the flock across the WHOLE bulk envelope
+    // (all N native ingests + WAL), unparking once and parking once. Previously
+    // bulkInsert took NO lock and relied on the writer's open()-held flock lingering;
+    // under the collapse the flock is PARKED between envelopes (INIT-WRAP parks after
+    // init), so an unbracketed bulkInsert ingested with NO cross-process exclusion —
+    // concurrent bulk writers clobbered each other's segments (measured 331/600 at
+    // N=6×100). One wide critical section is also far cheaper than per-entry cycling.
+    await this.acquireLock();
+    try {
+      for (const entry of entries) {
+        this.entries.set(entry.id, entry);
+        this.seenIds.add(entry.id);
+        this.keyIndex.set(this.compositeKey(entry.namespace, entry.key), entry.id);
+        // Index in ONE backend, not both (Debt 8)
+        // ADR-0164 A0c (J3): δ+ vectorless bulk insert mirrors J1.
+        if (this.nativeDb) {
+          const numId = this.assignNativeId(entry.id);
+          try {
+            // ADR-0154 Phase 3: persist metadata via META_SEG.
+            const metaEntries = encodeMemoryEntryMetadata(entry);
+            if (entry.embedding) {
+              this.nativeDb.ingestBatch(new Float32Array(entry.embedding), [numId], metaEntries);
+            } else {
+              this.nativeDb.ingestMetadataOnly([numId], [metaEntries]);
+            }
+          } catch (err) {
+            // ADR-0095 d5: same degrade path used by store() — first
+            // InvalidChecksum kills native for this process and re-routes
+            // subsequent entries via reIndexAfterDegrade.
+            if (!this.degradeToFallbackMode('bulkInsert', err) && this.config.verbose) {
+              console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
+            }
+            // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
+            if (entry.embedding) this.reIndexAfterDegrade(entry.id, entry.embedding);
           }
-        } catch (err) {
-          // ADR-0095 d5: same degrade path used by store() — first
-          // InvalidChecksum kills native for this process and re-routes
-          // subsequent entries via reIndexAfterDegrade.
-          if (!this.degradeToFallbackMode('bulkInsert', err) && this.config.verbose) {
-            console.error('[RvfBackend] Native bulk ingest failed:', (err as Error).message);
-          }
-          // ADR-0164 A0d: unreachable under δ-strict (degradeToFallbackMode throws).
-          if (entry.embedding) this.reIndexAfterDegrade(entry.id, entry.embedding);
+        } else if (entry.embedding && this.hnswIndex) {
+          this.hnswIndex.add(entry.id, entry.embedding);
         }
-      } else if (entry.embedding && this.hnswIndex) {
-        this.hnswIndex.add(entry.id, entry.embedding);
+        await this.appendToWal(entry);
       }
-      await this.appendToWal(entry);
+      this.dirty = true;
+      if (this.walEntryCount >= this.config.walCompactionThreshold) {
+        await this.compactWal();
+      }
+    } finally {
+      await this.releaseLock();
+      // ADR-0274 D3/D4 self-write guard (see store()): record our own commit txnid.
+      this._noteOwnWrite();
     }
-    this.dirty = true;
-    if (this.walEntryCount >= this.config.walCompactionThreshold) {
-      await this.compactWal();
-    }
-    // ADR-0274 D3/D4 self-write guard (see store()): record our own commit txnid.
-    this._noteOwnWrite();
   }
 
   async bulkDelete(ids: string[]): Promise<number> {
@@ -1029,23 +1061,31 @@ export class RvfBackend implements IMemoryBackend {
       }
     }
     if (count > 0) {
-      if (this.nativeDb && nativeIds.length > 0) {
-        try {
-          this.nativeDb.delete(nativeIds);
-        } catch (err) {
-          if (!this.degradeToFallbackMode('bulkDelete', err) && this.config.verbose) {
-            console.error('[RvfBackend] Native bulk delete failed:', (err as Error).message);
+      // ADR-0284 single-flock collapse: bracket the native bulk-delete + WAL-truncate
+      // + persist under the flock (parked between envelopes post-collapse).
+      await this.acquireLock();
+      try {
+        if (this.nativeDb && nativeIds.length > 0) {
+          try {
+            this.nativeDb.delete(nativeIds);
+          } catch (err) {
+            if (!this.degradeToFallbackMode('bulkDelete', err) && this.config.verbose) {
+              console.error('[RvfBackend] Native bulk delete failed:', (err as Error).message);
+            }
           }
         }
+        this.dirty = true;
+        // Truncate WAL BEFORE full rewrite — prevents resurrection on crash
+        if (this.walPath && this.walEntryCount > 0) {
+          // silent-fallthrough-OK: WAL truncate is a defense-in-depth step before full persist; persist itself is the durable write
+          try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
+          this.walEntryCount = 0;
+        }
+        await this.persistToDisk();
+      } finally {
+        await this.releaseLock();
+        this._noteOwnWrite();
       }
-      this.dirty = true;
-      // Truncate WAL BEFORE full rewrite — prevents resurrection on crash
-      if (this.walPath && this.walEntryCount > 0) {
-        // silent-fallthrough-OK: WAL truncate is a defense-in-depth step before full persist; persist itself is the durable write
-      try { await writeFile(this.walPath, Buffer.alloc(0)); } catch {}
-        this.walEntryCount = 0;
-      }
-      await this.persistToDisk();
     }
     return count;
   }
