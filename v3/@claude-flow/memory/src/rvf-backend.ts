@@ -397,15 +397,19 @@ export class RvfBackend implements IMemoryBackend {
     // budget hits 100-attempt timeout under that load. Init is one-time
     // per process and tolerating a 1-3 minute wait beats failing the
     // memory_store call entirely.
-    this._diag('initialize.preLoadFromDisk acquiring jslock');
-    await this.acquireLock(180_000);
-    this._diag(`initialize.loadFromDisk.start entriesBefore=${this.entries.size} seenIdsBefore=${this.seenIds.size}`);
+    // ADR-0284 INIT-WRAP: the native flock taken at open() (tryNativeInit) already
+    // covers loadFromDisk — no separate JS lock. Hold it across the load, then park
+    // so peers can write (single-lock order open→load→park). Supersedes the ADR-0095
+    // §353-372 init scope-down, which only existed to keep the now-removed `.jslock`
+    // off the native open path. Park-after-load (C1) prevents a 0267-shaped hold
+    // spanning init→first-store.
+    this._diag(`initialize.loadFromDisk.start (under open() flock) entriesBefore=${this.entries.size} seenIdsBefore=${this.seenIds.size}`);
     try {
       await this.loadFromDisk();
       this._diag(`initialize.loadFromDisk.done entriesAfter=${this.entries.size} seenIdsAfter=${this.seenIds.size}`);
     } finally {
-      await this.releaseLock();
-      this._diag('initialize.releasedJslock');
+      this.parkNativeWriter();
+      this._diag('initialize.parked-native-flock');
     }
     this._diag(`initialize.complete entries=${this.entries.size} fallback=${this.nativeFallbackMode} deferred=${this._deferredCorruptReason ? 'set' : 'null'}`);
 
@@ -1869,10 +1873,40 @@ export class RvfBackend implements IMemoryBackend {
   private assignNativeId(stringId: string): number {
     let numId = this.nativeIdMap.get(stringId);
     if (numId !== undefined) return numId;
-    numId = this.nextNativeId++;
+    // ADR-0284 root-cause fix: derive the native numeric id DETERMINISTICALLY from
+    // the string id, NOT a per-process counter. `nextNativeId++` is seeded identically
+    // across concurrent processes (all load the same file → same maxId+1), so two
+    // processes assign the SAME numeric id to DIFFERENT entries; the native store keys
+    // vectors by id, so the later writer overwrites the earlier → cross-process write
+    // loss (the t3-2 flake's dominant cause). A stable hash gives every distinct string
+    // id its own native id, identical in every process — concurrent appends never
+    // collide. Proven in forks/ruvector tests/adr0167_n8_stress.rs: unique ids → 16/16,
+    // dup ids → 1 entry. Pairs with the single-flock collapse (which serializes the
+    // append) to reach a clean 16/16.
+    numId = this.hashStringIdToNativeId(stringId);
     this.nativeIdMap.set(stringId, numId);
     this.nativeReverseMap.set(numId, stringId);
     return numId;
+  }
+
+  /**
+   * ADR-0284: stable string-id → native numeric id (64-bit FNV-1a folded into
+   * [2^50, 2^51)). High enough to never collide with legacy small counter ids (1..N)
+   * in pre-fix data, and within Number.MAX_SAFE_INTEGER (2^53) so the JS number →
+   * native i64 conversion is exact. Deterministic across processes — the property the
+   * per-process counter lacked. 50-bit hash-collision is birthday-bounded at ~2^25
+   * entries; at this corpus scale it is not a practical loss vector, and any collision
+   * degrades to the same rare overwrite the counter produced SYSTEMATICALLY.
+   */
+  private hashStringIdToNativeId(s: string): number {
+    let h = 0xcbf29ce484222325n; // FNV-1a 64-bit offset basis
+    const prime = 0x100000001b3n;
+    const mask = 0xffffffffffffffffn;
+    for (let i = 0; i < s.length; i++) {
+      h = (((h ^ BigInt(s.charCodeAt(i))) & mask) * prime) & mask;
+    }
+    // 50-bit hash with bit-50 set → range [2^50, 2^51), disjoint from legacy ids.
+    return Number((h & 0x3ffffffffffffn) | 0x4000000000000n);
   }
 
   /**
@@ -2041,161 +2075,62 @@ export class RvfBackend implements IMemoryBackend {
     }
   }
 
+  // ADR-0284 single-lock collapse: the native kernel flock (rvf-runtime
+  // WriterLock — NB-poll + RVF_LOCK_ACQUIRE_TIMEOUT_MS, same-inode FIFO queue) is
+  // the SOLE cross-process write serializer, held across the whole store+WAL
+  // envelope. The JS `.jslock` (wx-create + PID-liveness steal) is REMOVED: it
+  // failed to serialize concurrent writers at high concurrency (the t3-2 silent
+  // loss) and created the AB-BA inversion that wedged the blocking-flock build
+  // (ADR-0284 §Council review). This supersedes the ADR-0095 `.jslock`/d13 design
+  // + the 2026-05-01 init scope-down, and ADR-0274's debounced park. Re-entrant:
+  // the nested WAL helpers bump the depth counter; the inner native ingest takes
+  // NO new WriterLock (same-process repeat nests via the Rust process-local
+  // refcount). `maxWaitMs` is retained for signature compatibility — the wait is
+  // now governed by the native flock's own RVF_LOCK_ACQUIRE_TIMEOUT_MS.
   private async acquireLock(maxWaitMs: number = 60_000): Promise<void> {
-    if (!this.lockPath) return; // :memory: mode
-    // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant.
-    // If THIS process+instance already holds the lock, just bump depth
-    // and return. Lets store() compose its three lock-needing helpers
-    // under one wide critical section without releasing between them.
-    // Peer writers can't interleave during the wide hold.
+    void maxWaitMs;
+    if (!this.nativeDb) return; // pure-TS / :memory: — no native handle, no cross-process flock
+    // Re-entrant: if THIS instance already holds the flock, bump depth and return.
+    // Lets store() compose its WAL helpers under one wide critical section without
+    // releasing between them; peer writers can't interleave during the hold.
     if (this._lockHeldDepth > 0) {
       this._lockHeldDepth++;
       this._diag(`acquireLock.reentrant depth=${this._lockHeldDepth}`);
       return;
     }
-    const acqStart = Date.now();
-    this._diag('acquireLock.start');
-    const { writeFile: wf, readFile: rf, unlink: ul, mkdir: mk } = await import('node:fs/promises');
-    // ADR-0095 Pass 3 (d3): ensure lockfile parent directory exists before the
-    // open-wx below. acquireLock is called from initialize/persist/delete
-    // paths, some of which fire before any file on the parent path is created
-    // (cold-start race or peer-first-persist). Without this mkdir the
-    // writeFile below throws ENOENT and the whole operation aborts.
-    const lockDir = dirname(this.lockPath);
-    try {
-      await mk(lockDir, { recursive: true });
-    } catch (err: any) {
-      // `{recursive:true}` handles EEXIST internally; any other error is
-      // load-bearing — the wx open below will fail anyway if mkdir couldn't
-      // create the path, so surface it here per ADR-0082 (no silent swallow).
-      if (err?.code && err.code !== 'EEXIST') throw err;
-    }
-    // ADR-0095 amendment (2026-05-01, t3-2 fix): with the .jslock path
-    // rename (constructor line 246), JS no longer collides with the native
-    // rvf-runtime crate's `.lock` file. The lock content is now ALWAYS
-    // JSON written by us, so:
-    //   - no time-based stealing (a slow but live holder must NOT be
-    //     preempted — that's the corruption vector that wrote
-    //     incompatible content to the same lock file)
-    //   - no blind unlink on parse failure (the only way parse fails
-    //     with .jslock is the wf-not-yet-completed window — the holder
-    //     IS alive and writing; back off, retry)
-    //   - 60s default budget (hot path: store/persist/delete). Subprocess
-    //     CLI inits under heavy contention take 1-3s each; 6 serialized =
-    //     up to ~18s; 60s gives headroom for OS scheduling jitter, native
-    //     flock contention, and tail latency.
-    //   - Init-time callers may override with a longer budget (Bug-4 fix:
-    //     acceptance harness E2E_DIR shared across all e2e tests sees ~10
-    //     contenders simultaneously; 180s budget at init lifts the
-    //     parallel-wave tail past the observed 30-60s saturation point).
-    const baseDelayMs = 20;
-    const maxDelayMs = 500;
-    const startTime = Date.now();
-    let attempt = 0;
-    while (Date.now() - startTime < maxWaitMs) {
-      try {
-        await wf(this.lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
-        this._lockHeldDepth = 1;
-        // ADR-0274: re-acquire the native writer flock for this write
-        // transaction (no-op if not parked / older binding). On failure,
-        // release the advisory lock we just took so it doesn't leak, then
-        // surface the contention error loudly (ADR-0082).
-        try {
-          this._cancelNativePark();
-          this.unparkNativeWriter();
-        } catch (unparkErr) {
-          this._lockHeldDepth = 0;
-          // silent-fallthrough-OK: best-effort unlink of the advisory lock we just took; the unparkErr below is the real error we surface
-          try { await ul(this.lockPath); } catch {}
-          throw unparkErr;
-        }
-        this._diag(`acquireLock.acquired attempts=${attempt} elapsed=${Date.now() - acqStart}ms`);
-        return; // Lock acquired
-      } catch (e: any) {
-        if (e.code !== 'EEXIST') throw e;
-        // Lock exists — only steal when recorded PID is dead.
-        let parseSuccessful = false;
-        let holderAlive = true;
-        try {
-          const content = await rf(this.lockPath, 'utf-8');
-          const parsed = JSON.parse(content);
-          const pid = parsed?.pid;
-          parseSuccessful = typeof pid === 'number' && pid > 0;
-          if (parseSuccessful) {
-            try { process.kill(pid, 0); } catch { holderAlive = false; }
-          }
-        } catch {
-          // silent-fallthrough-OK: transient mid-write read on the
-          // wf-creates-then-writes window — holder IS alive and
-          // committing JSON content, back off and retry. NEVER unlink
-          // on parse failure; that was the t3-2 corruption vector.
-          parseSuccessful = false;
-          holderAlive = true;
-        }
-        if (parseSuccessful && !holderAlive) {
-          // silent-fallthrough-OK: best-effort cleanup of dead-holder lock
-          try { await ul(this.lockPath); } catch {}
-          continue;
-        }
-        const expDelay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
-        const jitter = expDelay * 0.5 * Math.random();
-        const delayMs = expDelay + jitter;
-        await new Promise(r => setTimeout(r, delayMs));
-        attempt++;
-      }
-    }
-    // Bug-4: tag with code='ELOCKACQUIRE' so StorageFactory's err.code wrap
-    // surfaces the real cause instead of '(unknown)'. Also include the .jslock
-    // path so concurrent-process diagnostics can correlate by file.
-    const lockErr: Error & { code?: string } = new Error(
-      `Failed to acquire advisory lock after ${attempt} attempts over ${Date.now() - startTime}ms ` +
-      `(budget=${maxWaitMs}ms, lockPath=${this.lockPath})`,
-    );
-    lockErr.code = 'ELOCKACQUIRE';
-    throw lockErr;
+    // Acquire (re-acquire if parked) the native writer flock for this envelope.
+    // unparkNativeWriter blocks via NB-poll until the peer parks, then resyncs the
+    // peer's committed segment directory before we append; on timeout it throws
+    // LockHeld loudly (ADR-0082, no masking). This IS the cross-process serializer.
+    this.unparkNativeWriter();
+    this._lockHeldDepth = 1;
+    this._diag('acquireLock.acquired-native-flock');
   }
 
-  /** Release advisory lock — only if WE still own it. */
+  /**
+   * Release the native writer flock at the END of the envelope — ADR-0284
+   * synchronous park. Replaces ADR-0274's debounced `_scheduleNativePark`, whose
+   * `setTimeout` was starved under load and left the flock held across the former
+   * `.jslock` boundary. Re-entrant: only the outer-most caller parks, so the nested
+   * WAL helpers don't release mid-envelope. `parkNativeWriter` → `park_writer`
+   * `sync_all`s before dropping the flock, so the next peer's `unparkNativeWriter()`
+   * observes our committed bytes.
+   */
   private async releaseLock(): Promise<void> {
-    // silent-fallthrough-OK: no lockPath = :memory: mode = no lock acquired = nothing to release
-    if (!this.lockPath) return;
-    // ADR-0095 amendment (2026-05-01, t3-2 silent-loss fix): re-entrant.
-    // Decrement; only physically release when the OUTER caller exits.
-    // Mirrors the depth bump in acquireLock so nested helpers (e.g.
-    // store() wrapping its WAL helpers under one acquire) don't
-    // release until the outer-most try/finally fires.
+    if (!this.nativeDb) return; // pure-TS / :memory: — nothing to release
     if (this._lockHeldDepth > 1) {
       this._lockHeldDepth--;
       this._diag(`releaseLock.reentrant depth=${this._lockHeldDepth}`);
       return;
     }
     if (this._lockHeldDepth === 0) {
-      // silent-fallthrough-OK: defensive — paired release without acquire (e.g. acquireLock threw before bumping). Nothing to do.
+      // silent-fallthrough-OK: paired release without acquire (acquireLock threw before bumping). Nothing to do.
       this._diag('releaseLock.unpaired (depth=0, no-op)');
       return;
     }
     this._lockHeldDepth = 0;
-    // ADR-0274: schedule a debounced park (release the native flock) now that
-    // this critical section is done. A following write within the idle window
-    // cancels it (the flock stays held across the burst); otherwise it fires and
-    // releases so a concurrent CLI writer (e.g. `agentdb index`) gets in.
-    this._scheduleNativePark();
-    this._diag('releaseLock.unlinking');
-    // ADR-0095 amendment (2026-05-01, t3-2 fix): verify ownership before
-    // unlinking. With .jslock the only writer is JS-side, but two
-    // concurrent JS instances can race during shutdown — A's release
-    // unlinking B's lock would let C acquire concurrently with B.
-    try {
-      const { readFile: rf, unlink: ul } = await import('node:fs/promises');
-      const content = await rf(this.lockPath, 'utf-8');
-      const { pid } = JSON.parse(content);
-      if (pid === process.pid) {
-        // silent-fallthrough-OK: lock file may be removed between read and unlink (peer cleanup race); ENOENT is expected
-        try { await ul(this.lockPath); } catch {}
-      }
-    } catch {
-      // silent-fallthrough-OK: lock file gone (already unlinked or never created) — nothing to release
-    }
+    this.parkNativeWriter();
+    this._diag('releaseLock.parked-native-flock');
   }
 
   private bruteForceSearch(embedding: Float32Array, options: SearchOptions): SearchResult[] {
