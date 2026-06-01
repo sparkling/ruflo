@@ -42,11 +42,12 @@ function validateScore(value: unknown, defaultVal: number): number {
 }
 
 function sanitizeError(error: unknown): string {
-  // ADR-0285: surface non-Error throws too. A bare string throw (e.g. sql.js's
-  // `Wrong API use : tried to bind a value of an unknown type (...)`) is not an
-  // Error instance; returning a generic 'Internal error' here MASKED the real
-  // cause of the P6 recall failure for an entire debugging cycle. Mirror the
-  // path-strip + truncate applied to Error messages; never erase the message.
+  // ADR-0285: surface non-Error throws too. A bare string throw (e.g. the WASM
+  // SQLite fallback's `Wrong API use : tried to bind a value of an unknown type
+  // (...)`) is not an Error instance; returning a generic 'Internal error' here
+  // MASKED the real cause of the P6 recall failure for an entire debugging
+  // cycle. Mirror the path-strip + truncate applied to Error messages; never
+  // erase the message.
   const msg = error instanceof Error ? error.message : String(error);
   return msg.replace(/\/[^\s:]+\//g, '<path>/').substring(0, 500);
 }
