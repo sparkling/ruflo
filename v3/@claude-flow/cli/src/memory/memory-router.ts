@@ -2936,8 +2936,13 @@ export async function routeCausalOp(op: CausalOp): Promise<MemoryResult> {
             return { success: true, results: [], warning: 'Cold start: fewer than 5 causal edges' };
           }
         }
+        // ADR-0285 follow-up: hang-detector, not a latency SLA. CausalRecall on a
+        // cold process loads the RVF `causal-edges` namespace (HNSW) first, which
+        // can exceed 2s on a large store. Default 15s, env-overridable (shared knob
+        // with causal_query).
+        const causalReadTimeoutMs = Number(process.env.RUFLO_CAUSAL_READ_TIMEOUT_MS) || 15000;
         const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('CausalRecall timeout (2s)')), 2000)
+          setTimeout(() => reject(new Error(`CausalRecall timeout (${causalReadTimeoutMs}ms)`)), causalReadTimeoutMs)
         );
         const results = await Promise.race([
           cr.search({ query: op.query || '', k: op.k || 10, includeEvidence: op.includeEvidence }),

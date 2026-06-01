@@ -1322,8 +1322,15 @@ export const agentdbCausalQuery: MCPTool = {
       const effect = normalizeAdrId(validateString(params.effect, 'effect', 1000)) ?? undefined;
       const k = validatePositiveInt(params.k, 10, MAX_TOP_K);
 
+      // ADR-0285 follow-up: this guard is a hang-detector, NOT a latency SLA.
+      // The query's SQLite leg is ~5ms (idx_causal_edges_from), but the always-run
+      // RVF `causal-edges` namespace merge (ADR-0147 R6, unconditional) must load
+      // the whole .rvf on a cold process — which legitimately exceeds 2s on a large
+      // store (it false-rejected a valid `cause=adr/ADR-0274` on the 72MB prod store
+      // once the P7 id-resolution fix made the node resolve). Default 15s, env-overridable.
+      const causalReadTimeoutMs = Number(process.env.RUFLO_CAUSAL_READ_TIMEOUT_MS) || 15000;
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('causal_query timeout (2s)')), 2000),
+        setTimeout(() => reject(new Error(`causal_query timeout (${causalReadTimeoutMs}ms)`)), causalReadTimeoutMs),
       );
       const routed = await Promise.race([
         routeCausalOp({ type: 'query', cause, effect, k }),
