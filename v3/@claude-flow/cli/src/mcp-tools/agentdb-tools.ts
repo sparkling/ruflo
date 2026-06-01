@@ -42,11 +42,41 @@ function validateScore(value: unknown, defaultVal: number): number {
 }
 
 function sanitizeError(error: unknown): string {
-  if (error instanceof Error) {
-    // Strip filesystem paths from error messages
-    return error.message.replace(/\/[^\s:]+\//g, '<path>/').substring(0, 500);
-  }
-  return 'Internal error';
+  // ADR-0285: surface non-Error throws too. A bare string throw (e.g. sql.js's
+  // `Wrong API use : tried to bind a value of an unknown type (...)`) is not an
+  // Error instance; returning a generic 'Internal error' here MASKED the real
+  // cause of the P6 recall failure for an entire debugging cycle. Mirror the
+  // path-strip + truncate applied to Error messages; never erase the message.
+  const msg = error instanceof Error ? error.message : String(error);
+  return msg.replace(/\/[^\s:]+\//g, '<path>/').substring(0, 500);
+}
+
+/**
+ * ADR-0285 P7: normalize a causal-surface ADR identifier to the canonical
+ * form the surface is keyed on.
+ *
+ * The causal surface (`adr_node_ids` map + `causal_edges` rows) is keyed on the
+ * BARE id (`ADR-0274`): the batch writer records edges via
+ * `recordCausalEdge({ sourceId: r.id })` where `r.id` is the bare id, and
+ * `allocAdrNodeId` persists that bare string as the `adr_node_ids.adr_id` key.
+ * The HIERARCHICAL surface, by contrast, keys on `adr/<id>` — so a caller (or
+ * the recall path) that passes `adr/ADR-0274` to a CAUSAL tool would land in
+ * `allocAdrNodeId('adr/ADR-0274')`, which `INSERT OR IGNORE`s a BRAND-NEW
+ * phantom node id (no `causal_edges` row references it) → `queryCausalEffects`
+ * returns 0 and the handler reports `controller:"router-fallback"` with an
+ * empty result for a cause that has real outbound edges.
+ *
+ * Stripping a single leading `adr/` (case-insensitive on the prefix only)
+ * makes both accepted input forms — `adr/ADR-x` and `ADR-x` — resolve to the
+ * SAME node id, closing the id-format ambiguity. A non-string / empty input
+ * passes through unchanged so the caller's existing required-field check still
+ * fires. Only the `adr/` prefix is stripped; the id body is otherwise
+ * untouched (no lowercasing — `adr_node_ids` keys are case-sensitive
+ * `ADR-NNNN`).
+ */
+function normalizeAdrId(id: string | null): string | null {
+  if (!id) return id;
+  return id.replace(/^adr\//i, '');
 }
 
 import {
@@ -463,8 +493,12 @@ export const agentdbCausalEdge: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const sourceId = validateString(params.sourceId, 'sourceId', 500);
-      const targetId = validateString(params.targetId, 'targetId', 500);
+      // ADR-0285 P7: normalize `adr/ADR-x` → `ADR-x` so create writes the edge
+      // under the SAME bare-id node the batch writer and a bare-id query use —
+      // a create that stored a phantom `adr/...` node would be unreachable by a
+      // canonical query (and asymmetric with delete, which also normalizes).
+      const sourceId = normalizeAdrId(validateString(params.sourceId, 'sourceId', 500));
+      const targetId = normalizeAdrId(validateString(params.targetId, 'targetId', 500));
       const relation = validateString(params.relation, 'relation', 200);
       if (!sourceId) return { success: false, error: 'sourceId is required (non-empty string)' };
       if (!targetId) return { success: false, error: 'targetId is required (non-empty string)' };
@@ -1279,8 +1313,12 @@ export const agentdbCausalQuery: MCPTool = {
     // Previously this handler bypassed the router entirely, so edges
     // written to the 'causal-edges' namespace via fallback were unreachable.
     try {
-      const cause = validateString(params.cause, 'cause', 1000) ?? undefined;
-      const effect = validateString(params.effect, 'effect', 1000) ?? undefined;
+      // ADR-0285 P7: normalize `adr/ADR-x` → `ADR-x` so a cause/effect lands on
+      // the SAME `adr_node_ids` node the batch writer allocated (it stores the
+      // bare id). Without this, `allocAdrNodeId('adr/ADR-x')` mints a phantom
+      // node and the query returns 0 via `router-fallback` for a valid cause.
+      const cause = normalizeAdrId(validateString(params.cause, 'cause', 1000)) ?? undefined;
+      const effect = normalizeAdrId(validateString(params.effect, 'effect', 1000)) ?? undefined;
       const k = validatePositiveInt(params.k, 10, MAX_TOP_K);
 
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -2363,12 +2401,15 @@ export const agentdbCausalEdgeDelete: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const vSourceId = validateIdentifier(params.sourceId, 'sourceId');
-      if (!vSourceId.valid) return { success: false, deleted: false, error: vSourceId.error };
-      const vTargetId = validateIdentifier(params.targetId, 'targetId');
-      if (!vTargetId.valid) return { success: false, deleted: false, error: vTargetId.error };
-      const sourceId = validateString(params.sourceId, 'sourceId', 500);
-      const targetId = validateString(params.targetId, 'targetId', 500);
+      // ADR-0285 P5: accept the same id charset `agentdb_causal-edge` (create)
+      // accepts (validateString, length-only — allows `/`). validateIdentifier
+      // rejected `/`, refusing the very `adr/<id>` ids the create path and the
+      // batch writer emit — the same create/delete asymmetry ADR-0281 R3 fixed
+      // for `agentdb_hierarchical-delete`. Ids flow into parameterized SQL
+      // (allocAdrNodeId → INSERT/SELECT bind; deleteEdgesByEndpoints numeric
+      // bind) → no injection surface.
+      const sourceId = normalizeAdrId(validateString(params.sourceId, 'sourceId', 500));
+      const targetId = normalizeAdrId(validateString(params.targetId, 'targetId', 500));
       if (!sourceId) return { success: false, deleted: false, error: 'sourceId is required (non-empty string)' };
       if (!targetId) return { success: false, deleted: false, error: 'targetId is required (non-empty string)' };
       const relation = validateString(params.relation, 'relation', 200) ?? undefined;
@@ -2393,9 +2434,13 @@ export const agentdbCausalNodeDelete: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     try {
-      const vNodeId = validateIdentifier(params.nodeId, 'nodeId');
-      if (!vNodeId.valid) return { success: false, deletedNode: false, deletedEdges: 0, error: vNodeId.error };
-      const nodeId = validateString(params.nodeId, 'nodeId', 500);
+      // ADR-0285 P5 (surface symmetry): accept the same id charset the causal
+      // create/query paths accept (length-only, allows `/`); the
+      // validateIdentifier charset gate rejected the `adr/<id>` ids those
+      // paths emit. nodeId is mapped through allocAdrNodeId → parameterized
+      // bind in the bridge → no injection surface. (The separate `undefined`
+      // bind on node-delete, P4, is an agentdb CausalMemoryGraph fix.)
+      const nodeId = normalizeAdrId(validateString(params.nodeId, 'nodeId', 500));
       if (!nodeId) return { success: false, deletedNode: false, deletedEdges: 0, error: 'nodeId is required (non-empty string)' };
       const bridge = await getBridge();
       const result = await bridge.bridgeDeleteCausalNode({ nodeId });
