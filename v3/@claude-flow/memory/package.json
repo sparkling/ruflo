@@ -1,6 +1,6 @@
 {
   "name": "@claude-flow/memory",
-  "version": "3.0.0-alpha.15-patch.397",
+  "version": "3.0.0-alpha.15-patch.398",
   "type": "module",
   "description": "Memory module - AgentDB unification, HNSW indexing, vector search, hybrid SQLite+AgentDB backend (ADR-009)",
   "main": "dist/index.js",
@@ -18,14 +18,14 @@
     "prepublishOnly": "npm run build && node -e \"const m = await import('./dist/index.js'); const required = ['ControllerRegistry','MemoryService','UnifiedMemoryService','PersistentSonaCoordinator','RvfLearningStore','RvfMigrator']; const missing = required.filter(k => !m[k]); if (missing.length) { console.error('Missing exports:', missing); process.exit(1); } const forbidden = ['HnswLite','RvfBackend']; const leaks = forbidden.filter(k => k in m); if (leaks.length) { console.error('Forbidden public exports present (ADR-125):', leaks); process.exit(1); } console.log('All required exports present; ADR-125 surface clean');\""
   },
   "dependencies": {
-    "@claude-flow/config-chain": "3.0.0-alpha.1-patch.214",
-    "@claude-flow/shared": "3.0.0-alpha.7-patch.639",
-    "agentdb": "3.0.0-alpha.14-patch.409",
+    "@claude-flow/config-chain": "3.0.0-alpha.1-patch.215",
+    "@claude-flow/shared": "3.0.0-alpha.7-patch.640",
+    "agentdb": "3.0.0-alpha.14-patch.410",
     "sql.js": "^1.10.3"
   },
   "optionalDependencies": {
-    "@claude-flow/neural": "3.0.0-alpha.8-patch.397",
-    "@ruvector/rvf-node": "0.1.7-patch.236",
+    "@claude-flow/neural": "3.0.0-alpha.8-patch.398",
+    "@ruvector/rvf-node": "0.1.7-patch.237",
     "@xenova/transformers": "^2.17.0",
     "better-sqlite3": "^12.9.0"
   },
