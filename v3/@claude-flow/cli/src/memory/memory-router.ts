@@ -1845,6 +1845,89 @@ async function lookupAdrIdByNodeId(memoryId: number): Promise<string | undefined
 }
 
 /**
+ * ADR-0285 P1+P2: purge the two SQLite tables the ADR index writes through the
+ * causal arm — `causal_edges` (the edge rows `routeCausalOp('edge')` /
+ * `addCausalEdge` append) and `adr_node_ids` (the string→numeric allocator
+ * map). `clearNamespace('causal-edges')` only wipes the RVF/KV namespace
+ * (`storage.clearNamespace`), NOT these tables, so without this a re-index
+ * APPENDS duplicate edges (every triple doubled) and leaves a stale, capped
+ * `adr_node_ids` map under which newly-added ADRs get no node id and their
+ * edges are silently dropped. Both deletes run in ONE transaction so a killed
+ * purge cannot leave one table cleared and the other intact.
+ *
+ * Returns the pre-purge row counts (for observable purge output). Throws loud
+ * (`feedback-no-fallbacks`) if the shared DB handle is unreachable — a silent
+ * skip here is exactly the P1/P2 defect this closes.
+ */
+export async function purgeAdrCausalTables(): Promise<{ edges: number; nodeIds: number }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db: any = await getControllerRegistryAgentDb();
+  const countEdges = db.prepare('SELECT COUNT(*) AS n FROM causal_edges');
+  const countNodes = db.prepare('SELECT COUNT(*) AS n FROM adr_node_ids');
+  const delEdges = db.prepare('DELETE FROM causal_edges');
+  const delNodes = db.prepare('DELETE FROM adr_node_ids');
+  const purge = db.transaction(() => {
+    const edges = (countEdges.get() as { n?: number } | undefined)?.n ?? 0;
+    const nodeIds = (countNodes.get() as { n?: number } | undefined)?.n ?? 0;
+    delEdges.run();
+    delNodes.run();
+    return { edges, nodeIds };
+  });
+  return purge() as { edges: number; nodeIds: number };
+}
+
+/**
+ * ADR-0285 P2: reconcile the SQLite `causal_edges` table after an index
+ * rebuild. The index's distinct edge identity is the triple
+ * `(from_memory_id, to_memory_id, mechanism)` — `mechanism` carries the
+ * relation label (see `routeCausalOp` edge write). A healthy rebuild satisfies
+ * `total === distinct` (no duplicate triples) and assigns a node id to every
+ * ADR that participates in a typed relation.
+ *
+ * Two silent-drop variants exist and BOTH must be caught:
+ *   1. node-id missing — the controller leg was skipped/failed before
+ *      `allocAdrNodeId` ran, so only the KV dual-write landed (no SQLite row,
+ *      no node id). `participatingAdrs` lets us flag any ADR with no
+ *      `adr_node_ids` row.
+ *   2. node-id present but edge row absent — `allocAdrNodeId` ran (inside the
+ *      controller try) but `addCausalEdge` then threw; the KV write still
+ *      reported success. The node-id check misses this, so we ALSO compare the
+ *      actual distinct triple count against `expectedDistinct` (the count of
+ *      distinct planned triples) and report the shortfall.
+ *
+ * Surfacing either is the fail-loud the index summary checks (ADR-0082 / no
+ * silent drops). `expectedDistinct` is optional: pass `undefined` (e.g. a
+ * non-purge re-index, where accumulation makes the count non-comparable) to
+ * skip the shortfall check and only run the node-id check.
+ */
+export async function reconcileAdrCausalEdges(
+  participatingAdrs: readonly string[],
+  expectedDistinct?: number,
+): Promise<{
+  total: number;
+  distinct: number;
+  nodeIds: number;
+  adrsMissingNodeId: string[];
+  droppedTriples: number;
+}> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db: any = await getControllerRegistryAgentDb();
+  const total = (db.prepare('SELECT COUNT(*) AS n FROM causal_edges').get() as { n?: number } | undefined)?.n ?? 0;
+  const distinct = (db
+    .prepare('SELECT COUNT(*) AS n FROM (SELECT DISTINCT from_memory_id, to_memory_id, mechanism FROM causal_edges)')
+    .get() as { n?: number } | undefined)?.n ?? 0;
+  const nodeIds = (db.prepare('SELECT COUNT(*) AS n FROM adr_node_ids').get() as { n?: number } | undefined)?.n ?? 0;
+  const has = db.prepare('SELECT 1 FROM adr_node_ids WHERE adr_id = ?');
+  const adrsMissingNodeId: string[] = [];
+  for (const adr of participatingAdrs) {
+    if (!has.get(adr)) adrsMissingNodeId.push(adr);
+  }
+  const droppedTriples =
+    typeof expectedDistinct === 'number' ? Math.max(0, expectedDistinct - distinct) : 0;
+  return { total, distinct, nodeIds, adrsMissingNodeId, droppedTriples };
+}
+
+/**
  * Check if a controller exists in the pool.
  * Same shared-singleton contract as getController — see its JSDoc.
  */
