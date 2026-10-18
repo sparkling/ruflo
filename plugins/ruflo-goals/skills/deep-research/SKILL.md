@@ -13,6 +13,8 @@ Orchestrate multi-phase deep research campaigns that gather, cross-reference, an
 
 When you need to investigate a complex topic thoroughly — spanning web sources, codebase patterns, stored memory, and external documentation — and produce a structured synthesis.
 
+Do not impose a discretionary per-run spend, token, or source-size cap. Scope the question, report actual spend when available, and state any provider hard limit that interrupts the work.
+
 ## Steps
 
 1. **Define research scope** — break the question into 3-7 sub-questions that together answer the main question
